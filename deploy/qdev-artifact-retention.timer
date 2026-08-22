@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily QDev CI artifact retention
+
+[Timer]
+OnCalendar=*-*-* 03:37:00 UTC
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target
+

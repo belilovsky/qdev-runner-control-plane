@@ -1,0 +1,2113 @@
+{
+  "schema_version": "qdev-runner-inventory-v1",
+  "generated_at": "2026-08-22T05:06:40.217545+00:00",
+  "owner": "belilovsky",
+  "active_repository_count": 90,
+  "runner_repository_count": 86,
+  "repositories": [
+    {
+      "id": 1309880938,
+      "full_name": "belilovsky/adilet-digest-studio",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": []
+    },
+    {
+      "id": 985872688,
+      "full_name": "belilovsky/akorda_bot",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/python-tests.yml",
+          "sha": "75c3bead4eaeba60dd89fbef188131c2cf0e461d",
+          "hosted_selectors": 3,
+          "cache_refs": 0,
+          "artifact_refs": 4,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/release-sbom.yml",
+          "sha": "840791c6ac2bbb489c03f361ff11aeb838c1834c",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1199428805,
+      "full_name": "belilovsky/atlas-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1244441460,
+      "full_name": "belilovsky/av-platform-core",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "f27fb2da942888cbdae34c8bec7292132b85f580",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1340976990,
+      "full_name": "belilovsky/avds",
+      "private": true,
+      "archived": false,
+      "default_branch": "codex/avds-5-launch",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "ae59c0b55fa525011dd1e50ed70b8f0c986a5007",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/publish-packages.yml",
+          "sha": "e7c5659a810ae2e83dcce0716408015a3b7ce2b1",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1282237158,
+      "full_name": "belilovsky/cmnt-bank-league",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "97d17ad55a2b605385d305d87d569e2d7ea634e2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1207244406,
+      "full_name": "belilovsky/cmnt-web",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/live-quality.yml",
+          "sha": "7af2133f0fdeeaaf1887e45e92d6384f5d3b5bde",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "c73dbcace8547b55ff9d80df3e192f65c96607f2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1201958249,
+      "full_name": "belilovsky/com-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1222812552,
+      "full_name": "belilovsky/comm-strat",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1201958264,
+      "full_name": "belilovsky/commstrat-standalone",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "00554435c7799c25b254b85deef396a4169d5304",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 3,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1178154490,
+      "full_name": "belilovsky/constitution-rag",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/advisory-validation.yml",
+          "sha": "c6e7ba3a625852cc4dcb0427642dea6f91b1e185",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1172900762,
+      "full_name": "belilovsky/constitution_my",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/README.md",
+          "sha": "6cb164e7d4188255ac241a4a953a19cae55ecb83",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/avds-upstream-drift.yml",
+          "sha": "4ba9bd836938c50262012b285d06ea52a35ad12d",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "ce4c6cab708aa55d70b32da4da2ff621751a260f",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1336954646,
+      "full_name": "belilovsky/contr-control",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "298f3112989a7ba627b890ff9f1ab6b26f1eede7",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1325881697,
+      "full_name": "belilovsky/contr-influence",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/contract-gate.yml",
+          "sha": "bec85f8d02b6cdd8cff1ae51b993d2e2fd202e7f",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 990798983,
+      "full_name": "belilovsky/Crisis-Monitor",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/main.yml",
+          "sha": "32f7cd8e1689841e46bafce376e42a2008f7ac49",
+          "hosted_selectors": 9,
+          "cache_refs": 4,
+          "artifact_refs": 4,
+          "ghcr_refs": 4
+        }
+      ]
+    },
+    {
+      "id": 1245612260,
+      "full_name": "belilovsky/deploy-webhook",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 985817646,
+      "full_name": "belilovsky/echo-sounder-",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/gdelt-daily.yml",
+          "sha": "e7863f4ea9bf53719a3bb2acc186249d6a206c0b",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/test-and-deploy.yml",
+          "sha": "847d6f0e5351ebe78b6732e7e2ed18729bc0c0f3",
+          "hosted_selectors": 5,
+          "cache_refs": 0,
+          "artifact_refs": 3,
+          "ghcr_refs": 3
+        },
+        {
+          "path": ".github/workflows/verify-qazgeo-full.yml",
+          "sha": "8804091731c2dba8767bc5f747fca36b3efb0a15",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1209827374,
+      "full_name": "belilovsky/ecosystem",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 5,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci-node.yml",
+          "sha": "ec3da05eadb727d67dfa8e6a9fbbb61b3e35f564",
+          "hosted_selectors": 5,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci-python.yml",
+          "sha": "d676aa886b24eb76952dec81f7dabb9f9e424f16",
+          "hosted_selectors": 4,
+          "cache_refs": 3,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci-static.yml",
+          "sha": "2eedb0533a84ce28511edd4224151c79bdea7d27",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality-v3.yml",
+          "sha": "ca55510089396b1297aff2997d19a7996f07f24c",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1207972218,
+      "full_name": "belilovsky/editorial",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1248307405,
+      "full_name": "belilovsky/editorial-hub",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "70e4b17fd07efcaba8f690e152a61ff9efc9a668",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1223873932,
+      "full_name": "belilovsky/fbrk-clone",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": []
+    },
+    {
+      "id": 1243905644,
+      "full_name": "belilovsky/grant-radar",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "ae5112af5f5ba4bb92918e3a48d84d52a58542dd",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1280492289,
+      "full_name": "belilovsky/grant-radar-public",
+      "private": false,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "932b6bb042d2ba6fcf18470abe1110d2fff1eb6a",
+          "hosted_selectors": 3,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1262803409,
+      "full_name": "belilovsky/how-kazakhstan-works",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qz-site-checks.yml",
+          "sha": "019a80ff48d534464bbc51a4adf61a688b3ca3b9",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1301686414,
+      "full_name": "belilovsky/id-qdev-run",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "3081c7302e43bed145a4aec21809b4e6bbd76d1d",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1198392709,
+      "full_name": "belilovsky/ideo-calendar",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "5901f2932ce9c2dd6638bf319b77f2c1487adaf7",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1341880514,
+      "full_name": "belilovsky/ipos",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "ab64864659bf9d317ad7fa195f9180ce1b0aa623",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha": "08278efa055c928873f4011649e97e22226bcbfb",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 4
+        }
+      ]
+    },
+    {
+      "id": 1196548785,
+      "full_name": "belilovsky/kazakh-translate",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "a174affb0287eb19489837373fb03cfa9e127e59",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1184480538,
+      "full_name": "belilovsky/knife-collection",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "8b668a18319d7f3d7cf81bd645081041819daef0",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1296275606,
+      "full_name": "belilovsky/koz-news",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "cbb84e731cc08f4d2113ddd3130122b414ccbe2b",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1181897477,
+      "full_name": "belilovsky/kz-report",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/monitoring.yml",
+          "sha": "2b754c48a5fae00eb0292ba272b9cbb0c9c386b3",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "55591936c2ba6e0d7aee74b60d0070e0f5b40750",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1298661066,
+      "full_name": "belilovsky/llm-kb-rag",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "9770755748bcd42d28bff5ac4a26d20a4f1f7f48",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 2
+        }
+      ]
+    },
+    {
+      "id": 985693354,
+      "full_name": "belilovsky/MapRegion",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": []
+    },
+    {
+      "id": 1203801372,
+      "full_name": "belilovsky/mazhilis-viii",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/deploy-monitor.yml",
+          "sha": "9d94421d369033b1633734d4ea3d0e030ab7c81a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "d778694b42abe1c4b389e4f88be7e7085194f1aa",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "c91d45f611f7084410558e367b20d37db305afc0",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1248255043,
+      "full_name": "belilovsky/mcp-servers",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "1ddd9736f7e61ac020b69e0124e8d8c68f7eda6c",
+          "hosted_selectors": 2,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1245612207,
+      "full_name": "belilovsky/migrations",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1245612231,
+      "full_name": "belilovsky/nginx-confs",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1198612843,
+      "full_name": "belilovsky/npa-collector",
+      "private": true,
+      "archived": false,
+      "default_branch": "feat/npa-collector-mvp",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "40a910e45e9f4d1c95fc54bcc88b8177ce57686e",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1193484892,
+      "full_name": "belilovsky/ortcom-kz",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "b5624f33dd139d736ed2b700cce21cbf008aca8e",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 3,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "11d3a42935ae9f8bb42f19f34be791c271d7b7bb",
+          "hosted_selectors": 3,
+          "cache_refs": 0,
+          "artifact_refs": 2,
+          "ghcr_refs": 2
+        }
+      ]
+    },
+    {
+      "id": 1330078890,
+      "full_name": "belilovsky/osint-hub",
+      "private": true,
+      "archived": false,
+      "default_branch": "codex/osint-hub-foundation",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "911419db9b0d9650199ab6441d2af49c350a9ea8",
+          "hosted_selectors": 6,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1194349181,
+      "full_name": "belilovsky/papa-ryadom",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "1cf0dd02b29a1f836e52e5f2fa23edb048ad520a",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1206276864,
+      "full_name": "belilovsky/papa-tips",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": []
+    },
+    {
+      "id": 1203946225,
+      "full_name": "belilovsky/photo-finder",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "8aed3d94e2563252f6904a66bb560d63ae3ba15c",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "67884f91089b43a7428a5bc8ac224e64f4cfc920",
+          "hosted_selectors": 3,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "876218dda17310bafd330349f9b8fc1a867b0d89",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1186984439,
+      "full_name": "belilovsky/platform-monitor",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1193061288,
+      "full_name": "belilovsky/platform-portal",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 9,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/daily-scan.yml",
+          "sha": "38022575b50dbe3e72775c5bdf959388aabdcadf",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy-platform.yml",
+          "sha": "b10e6de03646011179aba815b147e8eb66fcc8f5",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy-wm-surface.yml",
+          "sha": "04b3aeb0bdd629a7e39190cd8cea63a91958d6d9",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/discover-qazstack.yml",
+          "sha": "1d543320cd7d378164294e574faa5d3f7bf75451",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/project-idea-radar-github-discovery.yml",
+          "sha": "be866243dc0c6f58c0185913f6f3fe44fb695262",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/sync-docmost.yml",
+          "sha": "a98492a66e5f6503a31b7b6007d10c2781974179",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/validate.yml",
+          "sha": "e3212e722d9e0609a5fe345c39fd64713abb0da4",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1239741044,
+      "full_name": "belilovsky/project-idea-radar",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "ff9a215846c6640afc17bbfb09990aa8b1930c40",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1208083152,
+      "full_name": "belilovsky/pssr",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1222416869,
+      "full_name": "belilovsky/pssr-cockpit-ui",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci-self-hosted.yml",
+          "sha": "30ea7e24d1d04f8d2efec7602faf5f7a17052dbd",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "a0f3102612aff7a0044b66bee63827fe11838cb0",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1222362358,
+      "full_name": "belilovsky/pssr-electoral-os",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 5,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci-self-hosted.yml",
+          "sha": "2d739734063a6c3820a59cd09f1c7c6e53c9e78f",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "495d9e9f430e27624f95fe576caca1d6dc4ce65a",
+          "hosted_selectors": 4,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy-cockpit-ui.yml",
+          "sha": "39b226f68608d8fd3d76658bdde2c1a4409f8f84",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1193529225,
+      "full_name": "belilovsky/pssr-kb",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "4231899ebc6652ce9204d0fccc50c0f0ce2e4c29",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1182674211,
+      "full_name": "belilovsky/pssr-regime-engine",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "693d3cf101eea336ba71c87b987a244d0203a0a9",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1201958695,
+      "full_name": "belilovsky/qalam",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "0b7ba3e11e2933edcb7b70a85701ca9c0e1b5508",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 997960229,
+      "full_name": "belilovsky/qantar",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "5228536d2af5aaf90d59d38ad550e2737079eee2",
+          "hosted_selectors": 6,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1241329321,
+      "full_name": "belilovsky/qaz-admin-kit",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "a26f7a90e981a3fa6e5d85f7e574e1591f4b6c23",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1328550142,
+      "full_name": "belilovsky/qaz-industries",
+      "private": false,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "3ce913f407ea51f41153964987546520428a0298",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/public-contract-monitor.yml",
+          "sha": "c6e78a520f83521b2f2fc843c1c688e832b6efcc",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1330627318,
+      "full_name": "belilovsky/qaz-six-previews",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "eeae16f1e092a421953d8dc7917f84338c3f7bd3",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1330071094,
+      "full_name": "belilovsky/qaz-support",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "c0087b00ee1649a02f680c3ec02a3acde54b53cb",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1225689075,
+      "full_name": "belilovsky/qazagents",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "a17e736566f9aad1056488439ea0d67945942ce5",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/lint-agents.yml",
+          "sha": "bbf5b4f3ba78ea8d7627c653201d05f27bcfaa46",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1206670519,
+      "full_name": "belilovsky/qazcompute",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "28a19089f1244ebefb4de9bb8895a2b7f6ab15b5",
+          "hosted_selectors": 0,
+          "cache_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 1
+        }
+      ]
+    },
+    {
+      "id": 1206670536,
+      "full_name": "belilovsky/qazgeo",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "429648374cfb0a60e4fd2132b1c2bae4b43483da",
+          "hosted_selectors": 0,
+          "cache_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 1
+        }
+      ]
+    },
+    {
+      "id": 1223670728,
+      "full_name": "belilovsky/qazinvestigate",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/advisory-validation.yml",
+          "sha": "68a096797af803ace69235b1a564866da84b9f01",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1217048965,
+      "full_name": "belilovsky/qazknowledge",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/scientific-foundations.yml",
+          "sha": "98748760a098aa40d353fe1c109f00c2db4b834e",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1189789782,
+      "full_name": "belilovsky/qazlake",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "5e608e1cdcff654580de8fa26a9b9b6a070851c0",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1201958710,
+      "full_name": "belilovsky/qazlake-api",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/python-tests.yml",
+          "sha": "b708386314d93b15281a4a1d82a7b2f3d1cf2572",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1328544546,
+      "full_name": "belilovsky/qazlost",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qazlost-checks.yml",
+          "sha": "ba8c68abf9794d4a394138e8fb35f0d176054a7e",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1202131289,
+      "full_name": "belilovsky/qazpipe",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/advisory-validation.yml",
+          "sha": "86ba3debd63e725fa55a8e6d735389c9e08fb1b1",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "0f757d002e0912c70b1b1195cda6c8f9bd5d514b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1181835333,
+      "full_name": "belilovsky/qazpolit",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "ffaaac93b4ff3575b0876d8396473359f5e93f40",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1206312132,
+      "full_name": "belilovsky/qazposter",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "e00c5c5d857173e6434b9a9c23677c118a6661bd",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1209855413,
+      "full_name": "belilovsky/qazshield",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "42570f90f29fef052352acd08d9e5e3e26b5a494",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1187599574,
+      "full_name": "belilovsky/qazstack",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "bf4e52642277307e22af3f427c0c1db68c3ab76f",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha": "7a60fc318bfbc2f540caebb28d7a29cbe74fe81e",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1207939141,
+      "full_name": "belilovsky/qazstack-proxy",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1300961536,
+      "full_name": "belilovsky/qdev-mail-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "3540d52ecb2960a0ce51909113f6760653f86e90",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1300014582,
+      "full_name": "belilovsky/qdev-run-site",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "5d4ab795cd5736fa775a8151b09b526fb9791199",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1316426720,
+      "full_name": "belilovsky/qradio",
+      "private": true,
+      "archived": false,
+      "default_branch": "codex/qradio-transcript-sharing-20260803",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "b2473e6df2eb3617c694f4eb99eb518d2cc12a3e",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "a271bc3721f59eedab81e426d92eade5575c3e29",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1280505532,
+      "full_name": "belilovsky/qsign-translator",
+      "private": false,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "306832dfdffd803349e78827912313941eb48791",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1163998423,
+      "full_name": "belilovsky/ref26-data-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1232274220,
+      "full_name": "belilovsky/regional-brief",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "dbe2bae1047770b993e655bffe7bd663e9d10c7a",
+          "hosted_selectors": 3,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1196687854,
+      "full_name": "belilovsky/sgeo-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 5,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/benchmark-cron.yml",
+          "sha": "5a2ac709f05b35161f6e3a1bf25c793a207718ab",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "aab28713e06c05297e6b10971a19e3a8b1135dfa",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "554797c7d08626756691a5e0844fe9970f6fef3c",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/selftest.yml",
+          "sha": "26c45169b902b90546fdc0c460aa3a416dfe6fc5",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1205908531,
+      "full_name": "belilovsky/shelter-kz",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/android.yml",
+          "sha": "efc372e2533d3273a491f914a06d28e25bdb89d0",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/deploy.yml",
+          "sha": "a553e98c09987966b217ea5d01074091293ff09f",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/lint.yml",
+          "sha": "f73b65cd27d3ff59cc992459f18174b5a9cfadb0",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1222289682,
+      "full_name": "belilovsky/taskqueue",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1237430354,
+      "full_name": "belilovsky/tazy-platform",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1245934210,
+      "full_name": "belilovsky/tazy-pro",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "24ee7f40edd76d58fcbb1cd6428dcc3bc71f547b",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1255912457,
+      "full_name": "belilovsky/tazy-pro-navigator",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "27709824d72199eab363de50c1d8d93b75ca664d",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1198304657,
+      "full_name": "belilovsky/tokaev-module",
+      "private": true,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/android-release.yml",
+          "sha": "77d8f5363460c6e30861058df6d3d822272676a5",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1184408501,
+      "full_name": "belilovsky/total-kz",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": []
+    },
+    {
+      "id": 1201958270,
+      "full_name": "belilovsky/vps-pipelines",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/deploy_geo.yml",
+          "sha": "92423956194556d5242ae284307ead27d88b0cd3",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    }
+  ]
+}

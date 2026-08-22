@@ -1,0 +1,48 @@
+ci.qdev.run {
+  encode zstd gzip
+
+  @public_health path /health
+  handle @public_health {
+    reverse_proxy 127.0.0.1:9020
+  }
+
+  @github_webhook path /github/workflow-job
+  handle @github_webhook {
+    request_body {
+      max_size 2MB
+    }
+    reverse_proxy 127.0.0.1:9020
+  }
+
+  @artifact path /artifacts/*
+  handle @artifact {
+    request_body {
+      max_size 250MB
+    }
+    reverse_proxy 127.0.0.1:9020
+  }
+
+  respond 404
+}
+
+worker.ci.qdev.run {
+  tls {
+    client_auth {
+      mode require_and_verify
+      trust_pool file /etc/qdev-runner/mtls/ca.pem
+    }
+  }
+  @internal path /internal/*
+  handle @internal {
+    reverse_proxy 127.0.0.1:9020
+  }
+  respond 404
+}
+
+registry.ci.qdev.run {
+  encode zstd gzip
+  basic_auth {
+    qdev {$QDEV_REGISTRY_PASSWORD_HASH}
+  }
+  reverse_proxy 127.0.0.1:5000
+}

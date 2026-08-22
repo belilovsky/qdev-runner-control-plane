@@ -1,0 +1,25 @@
+[Unit]
+Description=QDev ephemeral Actions runner worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qdev-runner
+Group=qdev-runner
+EnvironmentFile=/etc/qdev-runner/worker.env
+ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qdev-runner-worker
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+

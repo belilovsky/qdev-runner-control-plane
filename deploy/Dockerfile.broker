@@ -1,0 +1,9 @@
+FROM python:3.12.11-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN useradd --system --uid 9020 --home /nonexistent --shell /usr/sbin/nologin qdev-runner
+WORKDIR /app
+COPY pyproject.toml requirements.runtime.txt README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir -r requirements.runtime.txt && pip install --no-deps .
+USER qdev-runner
+ENTRYPOINT ["qdev-runner-broker"]

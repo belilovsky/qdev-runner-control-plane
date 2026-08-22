@@ -1,0 +1,16 @@
+schema_version: qdev-runner-v1
+profiles:
+  - qdev-ci
+trusted_events:
+  - push
+  - workflow_dispatch
+  - schedule
+  - pull_request_internal
+resources:
+  cpu: 1
+  memory_mb: 3072
+  disk_mb: 12288
+artifact_policy: qdev-artifact-v1
+github_hosted_fallback: false
+release_runner: null
+

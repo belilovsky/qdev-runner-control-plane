@@ -1,0 +1,3 @@
+[console_scripts]
+qdev-runner-broker = qdev_runner.broker:main
+qdev-runner-worker = qdev_runner.worker:main

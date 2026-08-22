@@ -1,0 +1,32 @@
+services:
+  broker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.broker
+    restart: unless-stopped
+    env_file: /etc/qdev-runner/broker.env
+    volumes:
+      - /etc/qdev-runner:/etc/qdev-runner:ro
+      - /var/lib/qdev-runner:/var/lib/qdev-runner
+      - /var/log/qdev-runner:/var/log/qdev-runner
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 127.0.0.1:5000
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - /var/lib/qdev-runner/registry:/var/lib/registry
+    network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+

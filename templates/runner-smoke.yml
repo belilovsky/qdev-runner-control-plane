@@ -1,0 +1,29 @@
+name: QDev runner smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/qdev-runner.yml
+      - .github/workflows/runner-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  runner-smoke:
+    name: runner-smoke
+    runs-on: [self-hosted, Linux, X64, qdev-ci]
+    timeout-minutes: 10
+    steps:
+      - name: Verify ephemeral runner contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = "self-hosted"
+          test -n "${RUNNER_NAME}"
+          test -n "${GITHUB_SHA}"
+          test ! -S /var/run/docker.sock
+          printf 'runner_smoke_ok repo=%s sha=%s runner=%s\n' \
+            "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RUNNER_NAME}"
+
