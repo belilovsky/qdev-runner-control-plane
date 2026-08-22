@@ -101,8 +101,14 @@ def create_app(
             "schema": "qdev-runner-health-v1",
             "pending": data["jobs"].get("pending", 0),
             "active_workers": len(fresh_workers),
-            "primary_available": any(worker["tier"] == "primary" for worker in fresh_workers),
-            "reserve_available": any(worker["tier"] == "reserve" for worker in fresh_workers),
+            "primary_available": any(
+                worker["tier"] == "primary" and worker["available"]
+                for worker in fresh_workers
+            ),
+            "reserve_available": any(
+                worker["tier"] == "reserve" and worker["available"]
+                for worker in fresh_workers
+            ),
         }
 
     @app.post("/github/workflow-job")

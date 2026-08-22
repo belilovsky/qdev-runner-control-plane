@@ -55,6 +55,19 @@ def test_primary_heartbeat_blocks_reserve_and_renews_job(tmp_path: Path) -> None
     assert store.recover_stale_jobs(300) == 0
 
 
+def test_capacity_blocked_primary_does_not_block_reserve(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        0,
+        {"tier": "primary", "allowed": False, "blockers": ["load_15"]},
+    )
+    assert not store.has_fresh_tier("primary", 90)
+    worker = store.health()["workers"][0]
+    assert worker["available"] is False
+
+
 def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

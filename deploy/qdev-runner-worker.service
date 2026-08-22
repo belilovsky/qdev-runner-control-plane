@@ -16,7 +16,9 @@ RestartSec=5
 # The worker itself has no root privileges and only owns its assigned subuid range.
 NoNewPrivileges=false
 PrivateTmp=true
-ProtectHome=true
+# The worker must reach the rootless Docker socket under /run/user/9021.
+# Jobs run in disposable containers and do not receive the host home directory.
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/var/lib/qdev-runner-worker
 RestrictSUIDSGID=true

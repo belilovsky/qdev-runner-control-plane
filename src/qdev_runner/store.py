@@ -176,7 +176,11 @@ class Store:
             rows = connection.execute(
                 "SELECT last_seen, detail_json FROM workers WHERE last_seen>=?", (cutoff,)
             ).fetchall()
-        return any(json.loads(row["detail_json"]).get("tier") == tier for row in rows)
+        return any(
+            detail.get("tier") == tier and detail.get("allowed", True) is True
+            for row in rows
+            for detail in (json.loads(row["detail_json"]),)
+        )
 
     def recover_stale_jobs(self, worker_timeout_seconds: int) -> int:
         cutoff = time.time() - worker_timeout_seconds
@@ -203,10 +207,16 @@ class Store:
                     "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
                 ).fetchall()
             }
-            workers = [
-                dict(row) | {"tier": json.loads(row["detail_json"]).get("tier", "unknown")}
-                for row in connection.execute(
-                    "SELECT name, profiles_json, active_jobs, last_seen, detail_json FROM workers"
-                ).fetchall()
-            ]
+            workers = []
+            for row in connection.execute(
+                "SELECT name, profiles_json, active_jobs, last_seen, detail_json FROM workers"
+            ).fetchall():
+                detail = json.loads(row["detail_json"])
+                workers.append(
+                    dict(row)
+                    | {
+                        "tier": detail.get("tier", "unknown"),
+                        "available": detail.get("allowed", True) is True,
+                    }
+                )
         return {"jobs": counts, "workers": workers, "now": time.time()}
