@@ -21,6 +21,7 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   }
 
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane
+install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0750 /etc/qdev-runner
 install -d -o root -g root -m 0700 /etc/qdev-runner/mtls
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner
