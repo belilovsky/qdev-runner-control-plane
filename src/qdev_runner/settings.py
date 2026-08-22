@@ -52,7 +52,7 @@ class WorkerSettings:
     concurrency: int
     poll_seconds: float
     container_engine: str
-    runner_image: str
+    runner_images: dict[str, str]
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
@@ -73,9 +73,20 @@ class WorkerSettings:
             concurrency=max(1, int(os.environ.get("QDEV_WORKER_CONCURRENCY", "1"))),
             poll_seconds=max(1.0, float(os.environ.get("QDEV_WORKER_POLL_SECONDS", "3"))),
             container_engine=os.environ.get("QDEV_CONTAINER_ENGINE", "docker"),
-            runner_image=os.environ.get(
-                "QDEV_RUNNER_IMAGE", "registry.ci.qdev.run/qdev/actions-runner:2.336.0"
-            ),
+            runner_images={
+                "qdev-ci": os.environ.get(
+                    "QDEV_RUNNER_IMAGE",
+                    "registry.ci.qdev.run/qdev/actions-runner:2.336.0",
+                ),
+                "qdev-ci-browser": os.environ.get(
+                    "QDEV_RUNNER_BROWSER_IMAGE",
+                    "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0",
+                ),
+                "qdev-ci-docker": os.environ.get(
+                    "QDEV_RUNNER_DOCKER_IMAGE",
+                    "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0",
+                ),
+            },
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),

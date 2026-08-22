@@ -62,6 +62,11 @@ class Worker:
 
     def container_command(self, job: dict[str, Any]) -> list[str]:
         profile = job["profile"]
+        profile_name = str(profile["name"])
+        try:
+            image = self.settings.runner_images[profile_name]
+        except KeyError as error:
+            raise RuntimeError(f"no runner image configured for profile: {profile_name}") from error
         memory = f"{int(profile['memory_mb'])}m"
         name = job["runner_name"]
         return [
@@ -96,7 +101,7 @@ class Worker:
             f"QDEV_REPOSITORY={job['repository']}",
             "--env",
             f"QDEV_HEAD_SHA={job['head_sha']}",
-            self.settings.runner_image,
+            image,
         ]
 
     async def execute(self, job: dict[str, Any]) -> None:

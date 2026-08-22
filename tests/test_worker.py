@@ -14,7 +14,7 @@ def test_container_command_has_no_host_socket() -> None:
             concurrency=1,
             poll_seconds=3,
             container_engine="docker",
-            runner_image="runner:test",
+            runner_images={"qdev-ci": "runner:test"},
         )
     )
     command = worker.container_command(
@@ -25,6 +25,7 @@ def test_container_command_has_no_host_socket() -> None:
             "runner_name": "runner-1",
             "jit_config": "encoded",
             "profile": {
+                "name": "qdev-ci",
                 "cpu": 1,
                 "memory_mb": 3072,
                 "pids_limit": 512,
@@ -37,3 +38,4 @@ def test_container_command_has_no_host_socket() -> None:
     assert "/var/run/docker.sock" not in joined
     assert "--cap-drop ALL" in joined
     assert "no-new-privileges:true" in joined
+    assert command[-1] == "runner:test"

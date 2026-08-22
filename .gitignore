@@ -1,4 +1,5 @@
 .venv/
+*.egg-info/
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -9,4 +10,3 @@ __pycache__/
 secrets/
 work/
 dist/
-
