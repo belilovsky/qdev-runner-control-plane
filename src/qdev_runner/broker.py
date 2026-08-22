@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import secrets
+import ssl
 from typing import Any
 
 import uvicorn
@@ -23,6 +24,7 @@ LOGGER = logging.getLogger("qdev-runner-broker")
 
 class ClaimRequest(BaseModel):
     worker_name: str
+    tier: str
     profiles: list[str]
 
 
@@ -35,6 +37,7 @@ class CompletionRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     worker_name: str
+    tier: str
     profiles: list[str]
     active_jobs: int
     detail: dict[str, Any]
@@ -90,13 +93,16 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, Any]:
         data = store.health()
+        fresh_workers = [
+            worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
+        ]
         return {
             "ok": True,
             "schema": "qdev-runner-health-v1",
             "pending": data["jobs"].get("pending", 0),
-            "active_workers": sum(
-                1 for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
-            ),
+            "active_workers": len(fresh_workers),
+            "primary_available": any(worker["tier"] == "primary" for worker in fresh_workers),
+            "reserve_available": any(worker["tier"] == "reserve" for worker in fresh_workers),
         }
 
     @app.post("/github/workflow-job")
@@ -154,6 +160,11 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         require_worker(x_qdev_worker_token)
+        if request.tier not in {"primary", "reserve"}:
+            raise HTTPException(status_code=400, detail="invalid worker tier")
+        store.recover_stale_jobs(worker_timeout_seconds=300)
+        if request.tier == "reserve" and store.has_fresh_tier("primary", max_age_seconds=90):
+            return Response(status_code=204)
         claimed = store.claim(request.worker_name, tuple(request.profiles))
         if claimed is None:
             return Response(status_code=204)
@@ -229,7 +240,7 @@ def create_app(
             request.worker_name,
             tuple(request.profiles),
             request.active_jobs,
-            request.detail,
+            request.detail | {"tier": request.tier},
         )
         return Response(status_code=204)
 
@@ -271,7 +282,25 @@ def create_app(
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    uvicorn.run(create_app(), host="127.0.0.1", port=int(os.environ.get("PORT", "9020")))
+    certificate = os.environ.get("QDEV_TLS_CERT")
+    private_key = os.environ.get("QDEV_TLS_KEY")
+    client_ca = os.environ.get("QDEV_TLS_CLIENT_CA")
+    tls_options: dict[str, Any] = {}
+    if certificate or private_key or client_ca:
+        if not certificate or not private_key or not client_ca:
+            raise RuntimeError("QDEV_TLS_CERT, QDEV_TLS_KEY and QDEV_TLS_CLIENT_CA are atomic")
+        tls_options = {
+            "ssl_certfile": certificate,
+            "ssl_keyfile": private_key,
+            "ssl_ca_certs": client_ca,
+            "ssl_cert_reqs": ssl.CERT_REQUIRED,
+        }
+    uvicorn.run(
+        create_app(),
+        host=os.environ.get("QDEV_LISTEN_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "9020")),
+        **tls_options,
+    )
 
 
 if __name__ == "__main__":

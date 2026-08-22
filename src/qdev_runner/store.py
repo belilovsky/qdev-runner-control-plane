@@ -164,6 +164,36 @@ class Store:
                 """,
                 (name, json.dumps(profiles), active_jobs, time.time(), json.dumps(detail)),
             )
+            connection.execute(
+                "UPDATE jobs SET updated_at=? WHERE worker_name=? "
+                "AND status IN ('claimed','running')",
+                (time.time(), name),
+            )
+
+    def has_fresh_tier(self, tier: str, max_age_seconds: int) -> bool:
+        cutoff = time.time() - max_age_seconds
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT last_seen, detail_json FROM workers WHERE last_seen>=?", (cutoff,)
+            ).fetchall()
+        return any(json.loads(row["detail_json"]).get("tier") == tier for row in rows)
+
+    def recover_stale_jobs(self, worker_timeout_seconds: int) -> int:
+        cutoff = time.time() - worker_timeout_seconds
+        now = time.time()
+        with self.connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                    claimed_at=NULL, updated_at=?, result='worker lease expired'
+                WHERE status IN ('claimed','running') AND updated_at<?
+                  AND (worker_name IS NULL OR worker_name NOT IN (
+                    SELECT name FROM workers WHERE last_seen>=?
+                  ))
+                """,
+                (now, cutoff, cutoff),
+            )
+        return updated.rowcount
 
     def health(self) -> dict[str, Any]:
         with self.connect() as connection:
@@ -174,9 +204,9 @@ class Store:
                 ).fetchall()
             }
             workers = [
-                dict(row)
+                dict(row) | {"tier": json.loads(row["detail_json"]).get("tier", "unknown")}
                 for row in connection.execute(
-                    "SELECT name, profiles_json, active_jobs, last_seen FROM workers"
+                    "SELECT name, profiles_json, active_jobs, last_seen, detail_json FROM workers"
                 ).fetchall()
             ]
         return {"jobs": counts, "workers": workers, "now": time.time()}

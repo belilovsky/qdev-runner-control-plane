@@ -10,6 +10,7 @@ def test_container_command_has_no_host_socket() -> None:
             broker_url="https://worker.ci.qdev.run",
             worker_token="token",
             worker_name="worker-1",
+            tier="primary",
             profiles=("qdev-ci",),
             concurrency=1,
             poll_seconds=3,

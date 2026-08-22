@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from qdev_runner.models import QueuedJob
@@ -43,3 +44,24 @@ def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store.claim("worker-1", ("qdev-ci",))
     store.requeue(100, "temporary GitHub error")
     assert store.claim("worker-2", ("qdev-ci",)) is not None
+
+
+def test_primary_heartbeat_blocks_reserve_and_renews_job(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    store.heartbeat("primary-1", ("qdev-ci",), 1, {"tier": "primary"})
+    assert store.has_fresh_tier("primary", 90)
+    assert store.recover_stale_jobs(300) == 0
+
+
+def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("lost-worker", ("qdev-ci",))
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,)
+        )
+    assert store.recover_stale_jobs(300) == 1
+    assert store.claim("reserve-1", ("qdev-ci",)) is not None

@@ -1,6 +1,6 @@
 [Unit]
 Description=QDev ephemeral Actions runner worker
-After=network-online.target docker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -8,6 +8,7 @@ Type=simple
 User=qdev-runner
 Group=qdev-runner
 EnvironmentFile=/etc/qdev-runner/worker.env
+Environment=DOCKER_HOST=unix:///run/user/9021/docker.sock
 ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
 Restart=always
 RestartSec=5
@@ -22,4 +23,3 @@ SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
-

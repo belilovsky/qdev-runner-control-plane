@@ -48,6 +48,7 @@ class WorkerSettings:
     broker_url: str
     worker_token: str
     worker_name: str
+    tier: str
     profiles: tuple[str, ...]
     concurrency: int
     poll_seconds: float
@@ -63,6 +64,7 @@ class WorkerSettings:
             broker_url=_required("QDEV_BROKER_URL").rstrip("/"),
             worker_token=_required("QDEV_WORKER_TOKEN"),
             worker_name=_required("QDEV_WORKER_NAME"),
+            tier=os.environ.get("QDEV_WORKER_TIER", "primary").strip().lower(),
             profiles=tuple(
                 part.strip()
                 for part in os.environ.get(

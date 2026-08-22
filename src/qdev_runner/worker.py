@@ -41,6 +41,7 @@ class Worker:
             "/internal/v1/workers/heartbeat",
             json={
                 "worker_name": self.settings.worker_name,
+                "tier": self.settings.tier,
                 "profiles": self.settings.profiles,
                 "active_jobs": len(self.tasks),
                 "detail": capacity.__dict__,
@@ -52,6 +53,7 @@ class Worker:
             "/internal/v1/jobs/claim",
             json={
                 "worker_name": self.settings.worker_name,
+                "tier": self.settings.tier,
                 "profiles": self.settings.profiles,
             },
         )
