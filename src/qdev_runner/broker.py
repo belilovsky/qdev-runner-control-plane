@@ -187,7 +187,7 @@ def create_app(
                 int(claimed["installation_id"]),
                 claimed["repository"],
                 runner_name,
-                profile.labels,
+                tuple(dict.fromkeys(labels)),
             )
             store.set_status(job_id, "running", f"runner={runner_name}")
             token = artifact_token(
