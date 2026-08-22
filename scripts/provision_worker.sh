@@ -9,6 +9,9 @@ fi
 worker_uid=9021
 worker_user=qdev-runner
 install_root=/opt/qdev-runner-worker
+buildkit_version=0.32.2
+buildkit_sha256=2975d0f651ad96ba8b80b9992ae1f9a964f4408569af5b6dc36544165c3926af
+buildkit_root="/opt/qdev-buildkit/${buildkit_version}"
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
@@ -57,12 +60,26 @@ runuser -u "$worker_user" -- env \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
   systemctl --user enable --now docker.service
 
+if [[ ! -x "${buildkit_root}/bin/buildkitd" ]]; then
+  buildkit_archive="$(mktemp /tmp/qdev-buildkit.XXXXXX.tar.gz)"
+  trap 'rm -f -- "$buildkit_archive"' EXIT
+  curl --fail --location --retry 5 \
+    "https://github.com/moby/buildkit/releases/download/v${buildkit_version}/buildkit-v${buildkit_version}.linux-amd64.tar.gz" \
+    --output "$buildkit_archive"
+  printf '%s  %s\n' "$buildkit_sha256" "$buildkit_archive" | sha256sum --check -
+  install -d -o root -g root -m 0755 "$buildkit_root"
+  tar -xzf "$buildkit_archive" -C "$buildkit_root"
+  rm -f -- "$buildkit_archive"
+  trap - EXIT
+fi
+
 install -d -o root -g root -m 0755 "$install_root"
 python3 -m venv "${install_root}/.venv"
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-cache-dir \
   -r requirements.runtime.txt
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-deps .
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker
+install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker/jobs
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls/worker
 install -m 0644 deploy/qdev-runner-worker.service /etc/systemd/system/qdev-runner-worker.service

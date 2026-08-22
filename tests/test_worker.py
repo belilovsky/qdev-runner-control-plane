@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
 
@@ -16,7 +18,10 @@ def test_container_command_has_no_host_socket() -> None:
             poll_seconds=3,
             container_engine="docker",
             runner_images={"qdev-ci": "runner:test"},
-            buildkit_image="buildkit:test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=Path("/var/lib/qdev-runner-worker/jobs"),
         )
     )
     command = worker.container_command(
@@ -55,7 +60,10 @@ def test_docker_profile_gets_isolated_rootless_buildkit() -> None:
             poll_seconds=3,
             container_engine="docker",
             runner_images={"qdev-ci-docker": "runner-docker:test"},
-            buildkit_image="buildkit:test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=Path("/var/lib/qdev-runner-worker/jobs"),
         )
     )
     job = {
@@ -78,5 +86,7 @@ def test_docker_profile_gets_isolated_rootless_buildkit() -> None:
     assert "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock" in runner_command
     assert "/var/run/docker.sock" not in runner_command
     assert "--privileged" not in buildkit_command
-    assert "--device /dev/fuse" in buildkit_command
-    assert "buildkit:test" in buildkit_command
+    assert "/var/run/docker.sock" not in buildkit_command
+    assert "/usr/bin/rootlesskit" in buildkit_command
+    assert "/opt/buildkitd" in buildkit_command
+    assert "--rootless" in buildkit_command

@@ -54,7 +54,10 @@ class WorkerSettings:
     poll_seconds: float
     container_engine: str
     runner_images: dict[str, str]
-    buildkit_image: str
+    rootlesskit_path: str
+    buildkitd_path: str
+    buildctl_path: str
+    buildkit_root: Path
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
@@ -90,9 +93,15 @@ class WorkerSettings:
                     "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0",
                 ),
             },
-            buildkit_image=os.environ.get(
-                "QDEV_BUILDKIT_IMAGE",
-                "moby/buildkit@sha256:60d1f642e29dc938bd6c109ba5500849fccf41921927c5339788b8227f57feb9",
+            rootlesskit_path=os.environ.get("QDEV_ROOTLESSKIT", "/usr/bin/rootlesskit"),
+            buildkitd_path=os.environ.get(
+                "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.32.2/bin/buildkitd"
+            ),
+            buildctl_path=os.environ.get(
+                "QDEV_BUILDCTL", "/opt/qdev-buildkit/0.32.2/bin/buildctl"
+            ),
+            buildkit_root=Path(
+                os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),

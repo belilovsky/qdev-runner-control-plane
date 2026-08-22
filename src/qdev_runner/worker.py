@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import ssl
-from typing import Any, cast
+from pathlib import Path
+from typing import IO, Any, cast
 
 import httpx
 
@@ -30,6 +32,7 @@ class Worker:
         )
         self.semaphore = asyncio.Semaphore(settings.concurrency)
         self.tasks: set[asyncio.Task[None]] = set()
+        self.buildkits: dict[int, tuple[asyncio.subprocess.Process, IO[bytes]]] = {}
         self.stopping = asyncio.Event()
 
     async def close(self) -> None:
@@ -107,8 +110,8 @@ class Worker:
         if profile_name == "qdev-ci-docker":
             command.extend(
                 [
-                    "--volume",
-                    f"{self.buildkit_volume(job)}:/run/buildkit",
+                    "--mount",
+                    f"type=bind,src={self.buildkit_run_dir(job)},dst=/run/buildkit",
                     "--env",
                     "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock",
                 ]
@@ -116,76 +119,85 @@ class Worker:
         command.append(image)
         return command
 
-    @staticmethod
-    def buildkit_volume(job: dict[str, Any]) -> str:
-        return f"{job['runner_name'][:48]}-buildkit-run"
+    def buildkit_job_root(self, job: dict[str, Any]) -> Path:
+        safe_name = "".join(
+            character
+            for character in str(job["runner_name"])[:48]
+            if character.isalnum() or character in {"-", "_"}
+        )
+        if not safe_name:
+            raise RuntimeError("invalid runner name for BuildKit isolation")
+        return self.settings.buildkit_root / safe_name
 
-    @staticmethod
-    def buildkit_container(job: dict[str, Any]) -> str:
-        return f"{job['runner_name'][:48]}-buildkit"
+    def buildkit_run_dir(self, job: dict[str, Any]) -> Path:
+        return self.buildkit_job_root(job) / "run"
 
     def buildkit_command(self, job: dict[str, Any]) -> list[str]:
+        job_root = self.buildkit_job_root(job)
         return [
-            self.settings.container_engine,
-            "run",
-            "--detach",
-            "--rm",
-            "--name",
-            self.buildkit_container(job),
-            "--network",
-            "qdev-ci-egress",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "seccomp=unconfined",
-            "--security-opt",
-            "apparmor=unconfined",
-            "--device",
-            "/dev/fuse",
-            "--volume",
-            f"{self.buildkit_volume(job)}:/run/buildkit",
-            self.settings.buildkit_image,
+            self.settings.rootlesskit_path,
+            "--state-dir",
+            str(job_root / "rootlesskit"),
+            "--net=slirp4netns",
+            "--copy-up=/etc",
+            "--copy-up=/run",
+            "--disable-host-loopback",
+            self.settings.buildkitd_path,
             "--addr",
-            "unix:///run/buildkit/buildkitd.sock",
+            f"unix://{self.buildkit_run_dir(job)}/buildkitd.sock",
+            "--root",
+            str(job_root / "data"),
+            "--rootless",
             "--oci-worker-no-process-sandbox",
         ]
 
-    async def engine(self, *arguments: str, check: bool = True) -> tuple[int, str]:
-        process = await asyncio.create_subprocess_exec(
-            self.settings.container_engine,
-            *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        output, _ = await process.communicate()
-        detail = output.decode("utf-8", errors="replace")
-        if check and process.returncode != 0:
-            raise RuntimeError(f"container engine failed: {detail[-2000:]}")
-        return int(process.returncode or 0), detail
-
     async def start_buildkit(self, job: dict[str, Any]) -> None:
-        await self.engine("volume", "create", self.buildkit_volume(job))
+        job_root = self.buildkit_job_root(job)
+        run_dir = self.buildkit_run_dir(job)
+        run_dir.mkdir(parents=True, mode=0o755)
+        (job_root / "data").mkdir(mode=0o700)
+        log_handle = (job_root / "buildkit.log").open("ab", buffering=0)
         command = self.buildkit_command(job)
-        await self.engine(*command[1:])
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=log_handle,
+            stderr=asyncio.subprocess.STDOUT,
+            env=os.environ | {"XDG_RUNTIME_DIR": "/run/user/9021"},
+        )
+        self.buildkits[int(job["job_id"])] = (process, log_handle)
         for _ in range(30):
-            code, _ = await self.engine(
-                "exec",
-                self.buildkit_container(job),
-                "buildctl",
+            if process.returncode is not None:
+                detail = (job_root / "buildkit.log").read_text(errors="replace")[-2000:]
+                raise RuntimeError(f"rootless BuildKit exited early: {detail}")
+            probe = await asyncio.create_subprocess_exec(
+                self.settings.buildctl_path,
                 "--addr",
-                "unix:///run/buildkit/buildkitd.sock",
+                f"unix://{run_dir}/buildkitd.sock",
                 "debug",
                 "workers",
-                check=False,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
-            if code == 0:
+            if await probe.wait() == 0:
+                socket = run_dir / "buildkitd.sock"
+                socket.chmod(0o666)
                 return
             await asyncio.sleep(1)
         raise RuntimeError("rootless BuildKit did not become ready")
 
     async def stop_buildkit(self, job: dict[str, Any]) -> None:
-        await self.engine("rm", "--force", self.buildkit_container(job), check=False)
-        await self.engine("volume", "rm", "--force", self.buildkit_volume(job), check=False)
+        running = self.buildkits.pop(int(job["job_id"]), None)
+        if running:
+            process, log_handle = running
+            if process.returncode is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=20)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+            log_handle.close()
+        shutil.rmtree(self.buildkit_job_root(job), ignore_errors=True)
 
     async def execute(self, job: dict[str, Any]) -> None:
         async with self.semaphore:

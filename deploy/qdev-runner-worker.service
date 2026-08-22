@@ -12,7 +12,9 @@ Environment=DOCKER_HOST=unix:///run/user/9021/docker.sock
 ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
 Restart=always
 RestartSec=5
-NoNewPrivileges=true
+# newuidmap is required to give each BuildKit process its own subordinate UID map.
+# The worker itself has no root privileges and only owns its assigned subuid range.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
