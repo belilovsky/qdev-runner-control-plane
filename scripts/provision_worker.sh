@@ -43,15 +43,18 @@ loginctl enable-linger "$worker_user"
 
 install -d -o "$worker_user" -g "$worker_user" "/run/user/${worker_uid}"
 install -d -o "$worker_user" -g "$worker_user" "/home/${worker_user}/.config/systemd/user"
+systemctl start "user@${worker_uid}.service"
 if [[ ! -S "/run/user/${worker_uid}/docker.sock" ]]; then
   runuser -u "$worker_user" -- env \
     HOME="/home/${worker_user}" \
     XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
     dockerd-rootless-setuptool.sh install --force
 fi
 runuser -u "$worker_user" -- env \
   HOME="/home/${worker_user}" \
   XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
   systemctl --user enable --now docker.service
 
 install -d -o root -g root -m 0755 "$install_root"
