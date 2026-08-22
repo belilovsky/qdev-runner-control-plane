@@ -1068,6 +1068,7 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
+      "release_label": "qdev-platform-ci",
       "workflow_count": 9,
       "workflow_files": [
         {
@@ -1209,6 +1210,7 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
+      "release_label": "pssr",
       "workflow_count": 5,
       "workflow_files": [
         {
