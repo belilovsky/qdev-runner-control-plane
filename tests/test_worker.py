@@ -93,3 +93,10 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
     assert "/var/run/docker.sock" not in sidecar_command
     assert "qdev-ci-egress" in sidecar_command
     assert "docker:dind-test" in sidecar_command
+    assert worker.docker_sidecar_remove_command("runner-1-docker") == [
+        "docker",
+        "rm",
+        "--force",
+        "--volumes",
+        "runner-1-docker",
+    ]

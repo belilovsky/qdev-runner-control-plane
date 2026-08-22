@@ -141,6 +141,15 @@ class Worker:
     def docker_sidecar_name(self, job: dict[str, Any]) -> str:
         return f"{job['runner_name']}-docker"
 
+    def docker_sidecar_remove_command(self, name: str) -> list[str]:
+        return [
+            self.settings.container_engine,
+            "rm",
+            "--force",
+            "--volumes",
+            name,
+        ]
+
     def docker_sidecar_command(self, job: dict[str, Any]) -> list[str]:
         job_root = self.docker_job_root(job)
         profile = job["profile"]
@@ -207,10 +216,7 @@ class Worker:
     async def stop_docker_sidecar(self, job: dict[str, Any]) -> None:
         name = self.docker_sidecars.pop(int(job["job_id"]), self.docker_sidecar_name(job))
         process = await asyncio.create_subprocess_exec(
-            self.settings.container_engine,
-            "rm",
-            "--force",
-            name,
+            *self.docker_sidecar_remove_command(name),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
