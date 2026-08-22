@@ -54,6 +54,7 @@ class WorkerSettings:
     poll_seconds: float
     container_engine: str
     runner_images: dict[str, str]
+    buildkit_image: str
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
@@ -89,6 +90,10 @@ class WorkerSettings:
                     "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0",
                 ),
             },
+            buildkit_image=os.environ.get(
+                "QDEV_BUILDKIT_IMAGE",
+                "moby/buildkit@sha256:60d1f642e29dc938bd6c109ba5500849fccf41921927c5339788b8227f57feb9",
+            ),
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),

@@ -2,7 +2,7 @@
 ARG RUNNER_VERSION=2.336.0
 ARG RUNNER_SHA256=04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d
 
-FROM ubuntu:24.04 AS base
+FROM ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS base
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 ENV DEBIAN_FRONTEND=noninteractive
@@ -28,7 +28,7 @@ ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS general
 
-FROM mcr.microsoft.com/playwright:v1.55.0-noble AS browser
+FROM mcr.microsoft.com/playwright@sha256:ffc33305f7b4b04057ae4a0caa70aad4fde87454fb403a1a22e7f931707dfcf9 AS browser
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 RUN apt-get update && apt-get install -y --no-install-recommends \

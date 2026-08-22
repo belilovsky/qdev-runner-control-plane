@@ -71,7 +71,7 @@ class Worker:
             raise RuntimeError(f"no runner image configured for profile: {profile_name}") from error
         memory = f"{int(profile['memory_mb'])}m"
         name = job["runner_name"]
-        return [
+        command = [
             self.settings.container_engine,
             "run",
             "--rm",
@@ -103,32 +103,123 @@ class Worker:
             f"QDEV_REPOSITORY={job['repository']}",
             "--env",
             f"QDEV_HEAD_SHA={job['head_sha']}",
-            image,
         ]
+        if profile_name == "qdev-ci-docker":
+            command.extend(
+                [
+                    "--volume",
+                    f"{self.buildkit_volume(job)}:/run/buildkit",
+                    "--env",
+                    "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock",
+                ]
+            )
+        command.append(image)
+        return command
+
+    @staticmethod
+    def buildkit_volume(job: dict[str, Any]) -> str:
+        return f"{job['runner_name'][:48]}-buildkit-run"
+
+    @staticmethod
+    def buildkit_container(job: dict[str, Any]) -> str:
+        return f"{job['runner_name'][:48]}-buildkit"
+
+    def buildkit_command(self, job: dict[str, Any]) -> list[str]:
+        return [
+            self.settings.container_engine,
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            self.buildkit_container(job),
+            "--network",
+            "qdev-ci-egress",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "seccomp=unconfined",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--device",
+            "/dev/fuse",
+            "--volume",
+            f"{self.buildkit_volume(job)}:/run/buildkit",
+            self.settings.buildkit_image,
+            "--addr",
+            "unix:///run/buildkit/buildkitd.sock",
+            "--oci-worker-no-process-sandbox",
+        ]
+
+    async def engine(self, *arguments: str, check: bool = True) -> tuple[int, str]:
+        process = await asyncio.create_subprocess_exec(
+            self.settings.container_engine,
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await process.communicate()
+        detail = output.decode("utf-8", errors="replace")
+        if check and process.returncode != 0:
+            raise RuntimeError(f"container engine failed: {detail[-2000:]}")
+        return int(process.returncode or 0), detail
+
+    async def start_buildkit(self, job: dict[str, Any]) -> None:
+        await self.engine("volume", "create", self.buildkit_volume(job))
+        command = self.buildkit_command(job)
+        await self.engine(*command[1:])
+        for _ in range(30):
+            code, _ = await self.engine(
+                "exec",
+                self.buildkit_container(job),
+                "buildctl",
+                "--addr",
+                "unix:///run/buildkit/buildkitd.sock",
+                "debug",
+                "workers",
+                check=False,
+            )
+            if code == 0:
+                return
+            await asyncio.sleep(1)
+        raise RuntimeError("rootless BuildKit did not become ready")
+
+    async def stop_buildkit(self, job: dict[str, Any]) -> None:
+        await self.engine("rm", "--force", self.buildkit_container(job), check=False)
+        await self.engine("volume", "rm", "--force", self.buildkit_volume(job), check=False)
 
     async def execute(self, job: dict[str, Any]) -> None:
         async with self.semaphore:
-            command = self.container_command(job)
-            LOGGER.info("starting job=%s runner=%s", job["job_id"], job["runner_name"])
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            timeout = int(job["profile"]["timeout_minutes"]) * 60
             detail = ""
             try:
-                output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-                detail = output.decode("utf-8", errors="replace")[-2000:]
-            except TimeoutError:
-                process.send_signal(signal.SIGTERM)
+                if job["profile"]["name"] == "qdev-ci-docker":
+                    await self.start_buildkit(job)
+                command = self.container_command(job)
+                LOGGER.info("starting job=%s runner=%s", job["job_id"], job["runner_name"])
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                timeout = int(job["profile"]["timeout_minutes"]) * 60
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=20)
+                    output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    detail = output.decode("utf-8", errors="replace")[-2000:]
                 except TimeoutError:
-                    process.kill()
-                    await process.wait()
-                detail = f"runner exceeded timeout={timeout}s"
-            exit_code = process.returncode if process.returncode is not None else 124
+                    process.send_signal(signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=20)
+                    except TimeoutError:
+                        process.kill()
+                        await process.wait()
+                    detail = f"runner exceeded timeout={timeout}s"
+                exit_code = process.returncode if process.returncode is not None else 124
+            except Exception as error:
+                LOGGER.exception("runner setup failed job=%s", job["job_id"])
+                detail = str(error)[-2000:]
+                exit_code = 125
+            finally:
+                if job["profile"]["name"] == "qdev-ci-docker":
+                    await self.stop_buildkit(job)
             await self.client.post(
                 "/internal/v1/jobs/complete",
                 json={
