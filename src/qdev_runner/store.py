@@ -144,6 +144,11 @@ class Store:
             ).fetchone()
         return str(row["status"]) if row is not None else None
 
+    def job(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        return dict(row) if row is not None else None
+
     def fail_if_active(self, job_id: int, result: str) -> bool:
         now = time.time()
         with self.connect() as connection:
@@ -153,6 +158,18 @@ class Store:
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
                 (result[:4000], now, now, job_id),
+            )
+        return updated.rowcount == 1
+
+    def requeue_active(self, job_id: int, reason: str) -> bool:
+        with self.connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                    claimed_at=NULL, updated_at=?, result=?
+                WHERE job_id=? AND status IN ('claimed','running')
+                """,
+                (time.time(), reason[:4000], job_id),
             )
         return updated.rowcount == 1
 

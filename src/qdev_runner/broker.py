@@ -182,6 +182,15 @@ def create_app(
                 int(claimed["installation_id"]), claimed["repository"], int(claimed["run_id"])
             )
             policy.authorize_run(claimed["repository"], profile, run)
+            remote_job = github.workflow_job(
+                int(claimed["installation_id"]), claimed["repository"], job_id
+            )
+            if str(remote_job.get("status")) != "queued":
+                store.complete_from_webhook(
+                    job_id,
+                    str(remote_job.get("conclusion") or remote_job.get("status") or "unknown"),
+                )
+                return Response(status_code=204)
             runner_name = f"qdev-{claimed['repository'].split('/')[-1]}-{job_id}"[:63]
             jit_config = github.generate_jit_config(
                 int(claimed["installation_id"]),
@@ -228,10 +237,28 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> Response:
         require_worker(x_qdev_worker_token)
+        job = store.job(request.job_id)
+        if job is None:
+            return Response(status_code=204)
         if request.runner_exit_code != 0:
             store.fail_if_active(
                 request.job_id,
                 f"worker={request.worker_name} exit={request.runner_exit_code} {request.detail}",
+            )
+            return Response(status_code=204)
+        try:
+            remote_job = github.workflow_job(
+                int(job["installation_id"]), str(job["repository"]), request.job_id
+            )
+        except GitHubError:
+            LOGGER.warning("could not reconcile successful worker exit job=%s", request.job_id)
+            return Response(status_code=204)
+        remote_status = str(remote_job.get("status") or "unknown")
+        if remote_status == "queued":
+            store.requeue_active(request.job_id, "runner exited before GitHub assigned the job")
+        elif remote_status == "completed":
+            store.complete_from_webhook(
+                request.job_id, str(remote_job.get("conclusion") or "unknown")
             )
         return Response(status_code=204)
 
@@ -241,9 +268,22 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         require_worker(x_qdev_worker_token)
-        status = store.job_status(job_id)
-        if status is None:
+        job = store.job(job_id)
+        if job is None:
             raise HTTPException(status_code=404, detail="job not found")
+        status = str(job["status"])
+        if status in {"claimed", "running"}:
+            try:
+                remote_job = github.workflow_job(
+                    int(job["installation_id"]), str(job["repository"]), job_id
+                )
+                if str(remote_job.get("status")) == "completed":
+                    store.complete_from_webhook(
+                        job_id, str(remote_job.get("conclusion") or "unknown")
+                    )
+                    status = "completed"
+            except GitHubError:
+                LOGGER.warning("could not reconcile active job=%s", job_id)
         return {"schema": "qdev-runner-job-status-v1", "job_id": job_id, "status": status}
 
     @app.post("/internal/v1/workers/heartbeat")

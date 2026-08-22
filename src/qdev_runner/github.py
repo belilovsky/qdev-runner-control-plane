@@ -87,6 +87,17 @@ class GitHubAppClient:
             )
         return cast(dict[str, Any], response.json())
 
+    def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, Any]:
+        response = self._client.get(
+            f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}",
+            headers=self._headers(self.installation_token(installation_id)),
+        )
+        if response.status_code != 200:
+            raise GitHubError(
+                f"workflow job request failed: {response.status_code} {response.text[:300]}"
+            )
+        return cast(dict[str, Any], response.json())
+
     def generate_jit_config(
         self,
         installation_id: int,
