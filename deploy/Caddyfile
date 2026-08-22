@@ -3,7 +3,7 @@ ci.qdev.run {
 
   @public_health path /health
   handle @public_health {
-    reverse_proxy 127.0.0.1:9020
+    reverse_proxy qdev-runner-broker-public:9020
   }
 
   @github_webhook path /github/workflow-job
@@ -11,7 +11,7 @@ ci.qdev.run {
     request_body {
       max_size 2MB
     }
-    reverse_proxy 127.0.0.1:9020
+    reverse_proxy qdev-runner-broker-public:9020
   }
 
   @artifact path /artifacts/*
@@ -19,7 +19,7 @@ ci.qdev.run {
     request_body {
       max_size 250MB
     }
-    reverse_proxy 127.0.0.1:9020
+    reverse_proxy qdev-runner-broker-public:9020
   }
 
   respond 404
@@ -44,5 +44,5 @@ registry.ci.qdev.run {
   basic_auth {
     qdev {$QDEV_REGISTRY_PASSWORD_HASH}
   }
-  reverse_proxy 127.0.0.1:5000
+  reverse_proxy qdev-runner-registry:5000
 }

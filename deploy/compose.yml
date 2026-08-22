@@ -1,15 +1,20 @@
 services:
   broker-public:
+    container_name: qdev-runner-broker-public
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker
     restart: unless-stopped
     env_file: /etc/qdev-runner/broker.env
+    environment:
+      PORT: "9020"
+      QDEV_LISTEN_HOST: "0.0.0.0"
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
       - /var/log/qdev-runner:/var/log/qdev-runner
-    network_mode: host
+    networks:
+      - qdev_edge
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -42,14 +47,21 @@ services:
     cap_drop: [ALL]
 
   registry:
+    container_name: qdev-runner-registry
     image: registry:2.8.3
     restart: unless-stopped
     environment:
-      REGISTRY_HTTP_ADDR: 127.0.0.1:5000
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
       - /var/lib/qdev-runner/registry:/var/lib/registry
-    network_mode: host
+    networks:
+      - qdev_edge
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+
+networks:
+  qdev_edge:
+    external: true
+    name: qdev_edge
