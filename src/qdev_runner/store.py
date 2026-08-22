@@ -137,6 +137,25 @@ class Store:
                 (status, result[:4000], now, completed_at, job_id),
             )
 
+    def job_status(self, job_id: int) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+        return str(row["status"]) if row is not None else None
+
+    def fail_if_active(self, job_id: int, result: str) -> bool:
+        now = time.time()
+        with self.connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET status='failed', result=?, updated_at=?, completed_at=?
+                WHERE job_id=? AND status IN ('claimed','running')
+                """,
+                (result[:4000], now, now, job_id),
+            )
+        return updated.rowcount == 1
+
     def requeue(self, job_id: int, reason: str) -> None:
         with self.connect() as connection:
             connection.execute(

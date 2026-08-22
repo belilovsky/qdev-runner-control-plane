@@ -1068,7 +1068,7 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "release_label": "qdev-platform-ci",
+      "release_runner": "qdev-platform-ci",
       "workflow_count": 9,
       "workflow_files": [
         {
@@ -1210,7 +1210,7 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_label": "pssr",
+      "release_runner": "pssr",
       "workflow_count": 5,
       "workflow_files": [
         {
@@ -1642,6 +1642,7 @@
       "profiles": [
         "qdev-ci"
       ],
+      "release_runner": "qazpolit-release",
       "workflow_count": 2,
       "workflow_files": [
         {
@@ -1706,6 +1707,7 @@
       "profiles": [
         "qdev-ci"
       ],
+      "release_runner": "qazstack-release",
       "workflow_count": 4,
       "workflow_files": [
         {
@@ -1894,6 +1896,7 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
+      "release_runner": "sgeo-deploy",
       "workflow_count": 5,
       "workflow_files": [
         {
@@ -1940,6 +1943,7 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
+      "release_runner": "shelter-deploy",
       "workflow_count": 4,
       "workflow_files": [
         {
@@ -2062,6 +2066,7 @@
       "profiles": [
         "qdev-ci"
       ],
+      "release_runner": "tokaev-android-release",
       "workflow_count": 4,
       "workflow_files": [
         {
@@ -2104,6 +2109,7 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
+      "release_runner": "vps-pipelines-deploy",
       "workflow_count": 2,
       "workflow_files": [
         {

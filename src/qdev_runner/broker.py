@@ -229,12 +229,22 @@ def create_app(
     ) -> Response:
         require_worker(x_qdev_worker_token)
         if request.runner_exit_code != 0:
-            store.set_status(
+            store.fail_if_active(
                 request.job_id,
-                "failed",
                 f"worker={request.worker_name} exit={request.runner_exit_code} {request.detail}",
             )
         return Response(status_code=204)
+
+    @app.get("/internal/v1/jobs/{job_id}/status")
+    def job_status(
+        job_id: int,
+        x_qdev_worker_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        require_worker(x_qdev_worker_token)
+        status = store.job_status(job_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return {"schema": "qdev-runner-job-status-v1", "job_id": job_id, "status": status}
 
     @app.post("/internal/v1/workers/heartbeat")
     def heartbeat(

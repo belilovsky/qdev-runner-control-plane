@@ -100,3 +100,10 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
         "--volumes",
         "runner-1-docker",
     ]
+    assert worker.runner_remove_command("runner-1") == [
+        "docker",
+        "rm",
+        "--force",
+        "--volumes",
+        "runner-1",
+    ]

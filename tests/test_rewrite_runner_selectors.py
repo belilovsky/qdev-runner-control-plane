@@ -1,7 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[1] / "scripts" / "rewrite_runner_selectors.py"
 SPEC = importlib.util.spec_from_file_location("rewrite_runner_selectors", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

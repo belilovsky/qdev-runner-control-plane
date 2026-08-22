@@ -38,6 +38,17 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     assert store.claim("worker-2", ("qdev-ci",)) is None
 
 
+def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("worker-1", ("qdev-ci",))
+    store.set_status(100, "running")
+    store.complete_from_webhook(100, "cancelled")
+    assert store.job_status(100) == "completed"
+    assert store.fail_if_active(100, "late container exit") is False
+    assert store.job_status(100) == "completed"
+
+
 def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

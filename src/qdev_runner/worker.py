@@ -150,6 +150,15 @@ class Worker:
             name,
         ]
 
+    def runner_remove_command(self, name: str) -> list[str]:
+        return [
+            self.settings.container_engine,
+            "rm",
+            "--force",
+            "--volumes",
+            name,
+        ]
+
     def docker_sidecar_command(self, job: dict[str, Any]) -> list[str]:
         job_root = self.docker_job_root(job)
         profile = job["profile"]
@@ -223,6 +232,56 @@ class Worker:
         await process.wait()
         shutil.rmtree(self.docker_job_root(job), ignore_errors=True)
 
+    async def stop_runner_container(self, job: dict[str, Any]) -> None:
+        process = await asyncio.create_subprocess_exec(
+            *self.runner_remove_command(str(job["runner_name"])),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+
+    async def terminate_process(self, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        process.send_signal(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=20)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+    async def wait_for_runner(
+        self,
+        process: asyncio.subprocess.Process,
+        job: dict[str, Any],
+        timeout: int,
+    ) -> tuple[bytes, str]:
+        communicate = asyncio.create_task(process.communicate())
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                await self.terminate_process(process)
+                output, _ = await communicate
+                return output, f"runner exceeded timeout={timeout}s"
+            done, _ = await asyncio.wait({communicate}, timeout=min(5, remaining))
+            if communicate in done:
+                output, _ = communicate.result()
+                return output, ""
+            try:
+                response = await self.client.get(
+                    f"/internal/v1/jobs/{int(job['job_id'])}/status"
+                )
+                response.raise_for_status()
+                status = str(response.json()["status"])
+            except (httpx.HTTPError, KeyError, TypeError, ValueError):
+                LOGGER.warning("job status check failed job=%s", job["job_id"])
+                continue
+            if status in {"completed", "failed", "rejected"}:
+                await self.terminate_process(process)
+                output, _ = await communicate
+                return output, f"broker status={status}"
+
     async def execute(self, job: dict[str, Any]) -> None:
         async with self.semaphore:
             detail = ""
@@ -237,23 +296,17 @@ class Worker:
                     stderr=asyncio.subprocess.STDOUT,
                 )
                 timeout = int(job["profile"]["timeout_minutes"]) * 60
-                try:
-                    output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-                    detail = output.decode("utf-8", errors="replace")[-2000:]
-                except TimeoutError:
-                    process.send_signal(signal.SIGTERM)
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=20)
-                    except TimeoutError:
-                        process.kill()
-                        await process.wait()
-                    detail = f"runner exceeded timeout={timeout}s"
+                output, stop_detail = await self.wait_for_runner(process, job, timeout)
+                detail = (stop_detail + "\n" + output.decode("utf-8", errors="replace"))[
+                    -2000:
+                ]
                 exit_code = process.returncode if process.returncode is not None else 124
             except Exception as error:
                 LOGGER.exception("runner setup failed job=%s", job["job_id"])
                 detail = str(error)[-2000:]
                 exit_code = 125
             finally:
+                await self.stop_runner_container(job)
                 if job["profile"]["name"] == "qdev-ci-docker":
                     await self.stop_docker_sidecar(job)
             await self.client.post(
