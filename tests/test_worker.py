@@ -18,6 +18,7 @@ def test_container_command_has_no_host_socket() -> None:
             poll_seconds=3,
             container_engine="docker",
             runner_images={"qdev-ci": "runner:test"},
+            docker_sidecar_image="docker:dind-test",
             rootlesskit_path="/usr/bin/rootlesskit",
             buildkitd_path="/opt/buildkitd",
             buildctl_path="/opt/buildctl",
@@ -48,7 +49,7 @@ def test_container_command_has_no_host_socket() -> None:
     assert command[-1] == "runner:test"
 
 
-def test_docker_profile_gets_isolated_rootless_buildkit() -> None:
+def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
     worker = Worker(
         WorkerSettings(
             broker_url="https://worker.ci.qdev.run",
@@ -60,6 +61,7 @@ def test_docker_profile_gets_isolated_rootless_buildkit() -> None:
             poll_seconds=3,
             container_engine="docker",
             runner_images={"qdev-ci-docker": "runner-docker:test"},
+            docker_sidecar_image="docker:dind-test",
             rootlesskit_path="/usr/bin/rootlesskit",
             buildkitd_path="/opt/buildkitd",
             buildctl_path="/opt/buildctl",
@@ -82,11 +84,12 @@ def test_docker_profile_gets_isolated_rootless_buildkit() -> None:
         "artifact": {"base_url": "https://ci.qdev.run/artifacts", "token": "token"},
     }
     runner_command = " ".join(worker.container_command(job))
-    buildkit_command = " ".join(worker.buildkit_command(job))
-    assert "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock" in runner_command
+    sidecar_command = " ".join(worker.docker_sidecar_command(job))
+    assert "DOCKER_HOST=unix:///run/qdev-docker/docker.sock" in runner_command
+    assert "DOCKER_BUILDKIT=1" in runner_command
     assert "/var/run/docker.sock" not in runner_command
-    assert "--privileged" not in buildkit_command
-    assert "/var/run/docker.sock" not in buildkit_command
-    assert "/usr/bin/rootlesskit" in buildkit_command
-    assert "/opt/buildkitd" in buildkit_command
-    assert "--rootless" in buildkit_command
+    assert "--network container:runner-1-docker" in runner_command
+    assert "--privileged" in sidecar_command
+    assert "/var/run/docker.sock" not in sidecar_command
+    assert "qdev-ci-egress" in sidecar_command
+    assert "docker:dind-test" in sidecar_command

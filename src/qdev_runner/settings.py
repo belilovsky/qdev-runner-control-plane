@@ -54,6 +54,7 @@ class WorkerSettings:
     poll_seconds: float
     container_engine: str
     runner_images: dict[str, str]
+    docker_sidecar_image: str
     rootlesskit_path: str
     buildkitd_path: str
     buildctl_path: str
@@ -93,6 +94,10 @@ class WorkerSettings:
                     "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0",
                 ),
             },
+            docker_sidecar_image=os.environ.get(
+                "QDEV_DOCKER_SIDECAR_IMAGE",
+                "docker.io/library/docker@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac",
+            ),
             rootlesskit_path=os.environ.get("QDEV_ROOTLESSKIT", "/usr/bin/rootlesskit"),
             buildkitd_path=os.environ.get(
                 "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.32.2/bin/buildkitd"

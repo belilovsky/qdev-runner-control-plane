@@ -13,6 +13,10 @@ dependencies.
   `inventory/repos.json` and a profile allowed by `.github/qdev-runner.yml`.
 - The broker creates a JIT registration. A worker starts one rootless,
   resource-limited container for one job and removes it afterwards.
+- `qdev-ci-docker` receives a job-scoped Docker/BuildKit daemon inside a
+  disposable privileged sidecar of the rootless worker engine. The runner
+  shares only that sidecar's network namespace and socket; the worker's Docker
+  socket is never mounted into a job.
 - Public fork pull requests are rejected. Dedicated release labels remain
   product-specific and are not assigned to the general pool.
 - The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
@@ -41,4 +45,3 @@ python3 scripts/audit_workflows.py --allow-migration
 Secrets are provisioned only on the broker/worker hosts. GitHub App keys,
 webhook secrets, worker tokens, registry passwords and client certificates
 must never be committed.
-

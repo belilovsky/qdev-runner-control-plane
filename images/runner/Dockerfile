@@ -55,7 +55,9 @@ FROM base AS docker
 ARG BUILDKIT_VERSION=0.32.2
 ARG BUILDKIT_SHA256=2975d0f651ad96ba8b80b9992ae1f9a964f4408569af5b6dc36544165c3926af
 USER root
-RUN curl --fail --location --retry 5 \
+RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --retry 5 \
       "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
       --output /tmp/buildkit.tar.gz \
     && echo "${BUILDKIT_SHA256}  /tmp/buildkit.tar.gz" | sha256sum --check - \

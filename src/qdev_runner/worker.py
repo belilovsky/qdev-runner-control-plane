@@ -7,7 +7,7 @@ import shutil
 import signal
 import ssl
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import Any, cast
 
 import httpx
 
@@ -32,7 +32,7 @@ class Worker:
         )
         self.semaphore = asyncio.Semaphore(settings.concurrency)
         self.tasks: set[asyncio.Task[None]] = set()
-        self.buildkits: dict[int, tuple[asyncio.subprocess.Process, IO[bytes]]] = {}
+        self.docker_sidecars: dict[int, str] = {}
         self.stopping = asyncio.Event()
 
     async def close(self) -> None:
@@ -81,7 +81,11 @@ class Worker:
             "--name",
             name,
             "--network",
-            "qdev-ci-egress",
+            (
+                f"container:{self.docker_sidecar_name(job)}"
+                if profile_name == "qdev-ci-docker"
+                else "qdev-ci-egress"
+            ),
             "--cpus",
             str(profile["cpu"]),
             "--memory",
@@ -111,100 +115,114 @@ class Worker:
             command.extend(
                 [
                     "--mount",
-                    f"type=bind,src={self.buildkit_run_dir(job)},dst=/run/buildkit",
+                    f"type=bind,src={self.docker_run_dir(job)},dst=/run/qdev-docker",
                     "--env",
-                    "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock",
+                    "DOCKER_HOST=unix:///run/qdev-docker/docker.sock",
+                    "--env",
+                    "DOCKER_BUILDKIT=1",
                 ]
             )
         command.append(image)
         return command
 
-    def buildkit_job_root(self, job: dict[str, Any]) -> Path:
+    def docker_job_root(self, job: dict[str, Any]) -> Path:
         safe_name = "".join(
             character
             for character in str(job["runner_name"])[:48]
             if character.isalnum() or character in {"-", "_"}
         )
         if not safe_name:
-            raise RuntimeError("invalid runner name for BuildKit isolation")
+            raise RuntimeError("invalid runner name for Docker isolation")
         return self.settings.buildkit_root / safe_name
 
-    def buildkit_run_dir(self, job: dict[str, Any]) -> Path:
-        return self.buildkit_job_root(job) / "run"
+    def docker_run_dir(self, job: dict[str, Any]) -> Path:
+        return self.docker_job_root(job) / "run"
 
-    def buildkit_command(self, job: dict[str, Any]) -> list[str]:
-        job_root = self.buildkit_job_root(job)
+    def docker_sidecar_name(self, job: dict[str, Any]) -> str:
+        return f"{job['runner_name']}-docker"
+
+    def docker_sidecar_command(self, job: dict[str, Any]) -> list[str]:
+        job_root = self.docker_job_root(job)
+        profile = job["profile"]
         return [
-            self.settings.rootlesskit_path,
-            "--state-dir",
-            str(job_root / "rootlesskit"),
-            "--net=slirp4netns",
-            "--copy-up=/etc",
-            "--copy-up=/run",
-            "--disable-host-loopback",
-            self.settings.buildkitd_path,
-            "--addr",
-            f"unix://{self.buildkit_run_dir(job)}/buildkitd.sock",
-            "--root",
-            str(job_root / "data"),
-            "--rootless",
-            "--oci-worker-no-process-sandbox",
+            self.settings.container_engine,
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            self.docker_sidecar_name(job),
+            "--privileged",
+            "--network",
+            "qdev-ci-egress",
+            "--cpus",
+            str(profile["cpu"]),
+            "--memory",
+            f"{int(profile['memory_mb'])}m",
+            "--memory-swap",
+            f"{int(profile['memory_mb'])}m",
+            "--pids-limit",
+            str(profile["pids_limit"]),
+            "--env",
+            "DOCKER_TLS_CERTDIR=",
+            "--mount",
+            f"type=bind,src={job_root / 'run'},dst=/run/qdev",
+            self.settings.docker_sidecar_image,
+            "--host=unix:///run/qdev/docker.sock",
         ]
 
-    async def start_buildkit(self, job: dict[str, Any]) -> None:
-        job_root = self.buildkit_job_root(job)
-        run_dir = self.buildkit_run_dir(job)
-        run_dir.mkdir(parents=True, mode=0o755)
-        (job_root / "data").mkdir(mode=0o700)
-        log_handle = (job_root / "buildkit.log").open("ab", buffering=0)
-        command = self.buildkit_command(job)
+    async def start_docker_sidecar(self, job: dict[str, Any]) -> None:
+        run_dir = self.docker_run_dir(job)
+        run_dir.mkdir(parents=True, mode=0o777)
+        run_dir.chmod(0o777)
+        command = self.docker_sidecar_command(job)
         process = await asyncio.create_subprocess_exec(
             *command,
-            stdout=log_handle,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=os.environ | {"XDG_RUNTIME_DIR": "/run/user/9021"},
         )
-        self.buildkits[int(job["job_id"])] = (process, log_handle)
-        for _ in range(30):
-            if process.returncode is not None:
-                detail = (job_root / "buildkit.log").read_text(errors="replace")[-2000:]
-                raise RuntimeError(f"rootless BuildKit exited early: {detail}")
+        output, _ = await process.communicate()
+        if process.returncode != 0:
+            detail = output.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"isolated Docker sidecar failed: {detail}")
+        self.docker_sidecars[int(job["job_id"])] = self.docker_sidecar_name(job)
+        for _ in range(45):
+            socket = run_dir / "docker.sock"
+            if socket.exists():
+                socket.chmod(0o666)
             probe = await asyncio.create_subprocess_exec(
-                self.settings.buildctl_path,
-                "--addr",
-                f"unix://{run_dir}/buildkitd.sock",
-                "debug",
-                "workers",
+                self.settings.container_engine,
+                "exec",
+                self.docker_sidecar_name(job),
+                "docker",
+                "info",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             if await probe.wait() == 0:
-                socket = run_dir / "buildkitd.sock"
                 socket.chmod(0o666)
                 return
             await asyncio.sleep(1)
-        raise RuntimeError("rootless BuildKit did not become ready")
+        raise RuntimeError("isolated Docker/BuildKit sidecar did not become ready")
 
-    async def stop_buildkit(self, job: dict[str, Any]) -> None:
-        running = self.buildkits.pop(int(job["job_id"]), None)
-        if running:
-            process, log_handle = running
-            if process.returncode is None:
-                process.send_signal(signal.SIGTERM)
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=20)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
-            log_handle.close()
-        shutil.rmtree(self.buildkit_job_root(job), ignore_errors=True)
+    async def stop_docker_sidecar(self, job: dict[str, Any]) -> None:
+        name = self.docker_sidecars.pop(int(job["job_id"]), self.docker_sidecar_name(job))
+        process = await asyncio.create_subprocess_exec(
+            self.settings.container_engine,
+            "rm",
+            "--force",
+            name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+        shutil.rmtree(self.docker_job_root(job), ignore_errors=True)
 
     async def execute(self, job: dict[str, Any]) -> None:
         async with self.semaphore:
             detail = ""
             try:
                 if job["profile"]["name"] == "qdev-ci-docker":
-                    await self.start_buildkit(job)
+                    await self.start_docker_sidecar(job)
                 command = self.container_command(job)
                 LOGGER.info("starting job=%s runner=%s", job["job_id"], job["runner_name"])
                 process = await asyncio.create_subprocess_exec(
@@ -231,7 +249,7 @@ class Worker:
                 exit_code = 125
             finally:
                 if job["profile"]["name"] == "qdev-ci-docker":
-                    await self.stop_buildkit(job)
+                    await self.stop_docker_sidecar(job)
             await self.client.post(
                 "/internal/v1/jobs/complete",
                 json={
