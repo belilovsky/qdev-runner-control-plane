@@ -17,8 +17,8 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load="$load_15" 'BEGIN {
-    if (used > 85 || free < 31457280 || mem < 4194304 || load > (2 * cpus)) exit 1
+  -v cpus="$cpu_count" -v load15="$load_15" 'BEGIN {
+    if (used > 85 || free < 31457280 || mem < 4194304 || load15 > (2 * cpus)) exit 1
   }' || {
     printf 'capacity gate rejected worker provisioning\n' >&2
     exit 1
