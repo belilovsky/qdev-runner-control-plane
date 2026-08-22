@@ -63,7 +63,8 @@ python3 -m venv "${install_root}/.venv"
   -r requirements.runtime.txt
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-deps .
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker
-install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls
+install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
+install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls/worker
 install -m 0644 deploy/qdev-runner-worker.service /etc/systemd/system/qdev-runner-worker.service
 
 runuser -u "$worker_user" -- env \

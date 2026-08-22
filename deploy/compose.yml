@@ -26,9 +26,9 @@ services:
     environment:
       PORT: "9443"
       QDEV_LISTEN_HOST: "0.0.0.0"
-      QDEV_TLS_CERT: /etc/qdev-runner/mtls/controller-cert.pem
-      QDEV_TLS_KEY: /etc/qdev-runner/mtls/controller-key.pem
-      QDEV_TLS_CLIENT_CA: /etc/qdev-runner/mtls/ca.pem
+      QDEV_TLS_CERT: /etc/qdev-runner/mtls/controller/controller-cert.pem
+      QDEV_TLS_KEY: /etc/qdev-runner/mtls/controller/controller-key.pem
+      QDEV_TLS_CLIENT_CA: /etc/qdev-runner/mtls/controller/ca.pem
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner

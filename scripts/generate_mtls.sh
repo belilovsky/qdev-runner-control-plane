@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-target="${1:-/etc/qdev-runner/mtls}"
+target="${1:-/etc/qdev-runner/mtls/controller}"
 controller_ip="${QDEV_CONTROLLER_IP:-186.240.148.129}"
 install -d -m 0700 "$target"
 
