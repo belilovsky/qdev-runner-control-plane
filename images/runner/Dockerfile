@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git git-lfs jq openssh-client python3 python3-pip python3-venv \
       rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1001 --shell /bin/bash runner \
+    && useradd --create-home --uid 1002 --shell /bin/bash runner \
     && mkdir -p /home/runner/actions-runner \
     && curl --fail --location --retry 5 \
       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
