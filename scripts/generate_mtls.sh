@@ -30,7 +30,14 @@ issue_certificate() {
   'extendedKeyUsage=clientAuth'
 [[ -f "$target/reserve-cert.pem" ]] || issue_certificate reserve \
   'extendedKeyUsage=clientAuth'
-chmod 0600 "$target"/*-key.pem
+chown root:9020 "$target"
+chmod 0750 "$target"
+chown root:root "$target/ca-key.pem"
+chmod 0600 "$target/ca-key.pem"
+chown root:9020 "$target/controller-key.pem"
+chmod 0640 "$target/controller-key.pem"
+chown root:root "$target"/primary-key.pem "$target"/reserve-key.pem
+chmod 0600 "$target"/primary-key.pem "$target"/reserve-key.pem
 chmod 0644 "$target"/*-cert.pem "$target/ca.pem"
 openssl verify -CAfile "$target/ca.pem" \
   "$target/controller-cert.pem" "$target/primary-cert.pem" "$target/reserve-cert.pem"
