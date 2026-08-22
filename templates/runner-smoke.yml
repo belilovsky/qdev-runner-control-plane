@@ -13,7 +13,12 @@ permissions:
 jobs:
   runner-smoke:
     name: runner-smoke
-    runs-on: [self-hosted, Linux, X64, qdev-ci]
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-smoke
     timeout-minutes: 10
     steps:
       - name: Verify ephemeral runner contract
@@ -26,4 +31,3 @@ jobs:
           test ! -S /var/run/docker.sock
           printf 'runner_smoke_ok repo=%s sha=%s runner=%s\n' \
             "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RUNNER_NAME}"
-
