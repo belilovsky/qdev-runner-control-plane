@@ -154,7 +154,7 @@ def create_app(
             return Response(status_code=202)
         return Response(status_code=202)
 
-    @app.post("/internal/v1/jobs/claim")
+    @app.post("/internal/v1/jobs/claim", response_model=None)
     def claim_job(
         request: ClaimRequest,
         x_qdev_worker_token: str | None = Header(default=None),
