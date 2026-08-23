@@ -43,6 +43,7 @@ registry.ci.qdev.run {
   encode zstd gzip
   basic_auth {
     qdev {$QDEV_REGISTRY_PASSWORD_HASH}
+    qdev-runner {$QDEV_RUNNER_REGISTRY_PASSWORD_HASH}
   }
   reverse_proxy qdev-runner-registry:5000
 }

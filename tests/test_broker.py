@@ -59,7 +59,7 @@ def test_registry_credentials_are_limited_to_docker_profile() -> None:
     assert registry_credentials(settings, "qdev-ci-browser") is None
     assert registry_credentials(settings, "qdev-ci-docker") == {
         "url": "registry.ci.qdev.run",
-        "username": "qdev",
+        "username": "qdev-runner",
         "password": "registry-token",
     }
 

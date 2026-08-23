@@ -35,3 +35,10 @@ def test_controller_compose_project_is_namespaced() -> None:
 
     assert compose.startswith("name: qdev-runner\n")
     assert service.count("--project-name qdev-runner") == 2
+
+
+def test_registry_keeps_human_account_separate_from_job_account() -> None:
+    caddyfile = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
+
+    assert "qdev {$QDEV_REGISTRY_PASSWORD_HASH}" in caddyfile
+    assert "qdev-runner {$QDEV_RUNNER_REGISTRY_PASSWORD_HASH}" in caddyfile

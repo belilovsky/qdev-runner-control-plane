@@ -25,7 +25,7 @@ class BrokerSettings:
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
     registry_url: str = "registry.ci.qdev.run"
-    registry_username: str = "qdev"
+    registry_username: str = "qdev-runner"
     registry_password: str | None = None
 
     @classmethod
@@ -44,7 +44,7 @@ class BrokerSettings:
             github_api_url=os.environ.get("QDEV_GITHUB_API_URL", "https://api.github.com"),
             github_api_version=os.environ.get("QDEV_GITHUB_API_VERSION", "2026-03-10"),
             registry_url=os.environ.get("QDEV_REGISTRY_URL", "registry.ci.qdev.run").strip(),
-            registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev").strip(),
+            registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev-runner").strip(),
             registry_password=os.environ.get("QDEV_REGISTRY_PASSWORD", "").strip() or None,
         )
 
