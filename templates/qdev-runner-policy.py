@@ -15,19 +15,18 @@ FORBIDDEN = {
     "ghcr.io": "ghcr",
     "npm.pkg.github.com": "github-packages",
 }
-SETUP_CACHE = re.compile(r"^\s*cache:\s*(?:pip|npm|yarn|pnpm)\s*$", re.I)
+SETUP_CACHE = re.compile(r"^\s*cache:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$", re.I)
 USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
+PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
 RUNS_ON = re.compile(r"^(\s*)runs-on:\s*(.*)$")
-DYNAMIC_DEPLOYMENT = re.compile(
-    r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$"
-)
+DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 
 
-def workflow_violations(path: Path, root: Path) -> list[str]:
+def workflow_violations(path: Path, root: Path, allowed_profiles: set[str]) -> list[str]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -43,7 +42,10 @@ def workflow_violations(path: Path, root: Path) -> list[str]:
         action = USES.search(line)
         if action:
             reference = action.group(1)
-            if not reference.startswith(("./", "docker://")):
+            if reference.startswith("docker://"):
+                if not PINNED_CONTAINER.fullmatch(reference):
+                    errors.append(f"{rel}:{number}: unpinned-container-action {reference}")
+            elif not reference.startswith("./"):
                 revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
                 if not PINNED_SHA.fullmatch(revision):
                     errors.append(f"{rel}:{number}: unpinned-action {reference}")
@@ -66,13 +68,21 @@ def workflow_violations(path: Path, root: Path) -> list[str]:
             and not DYNAMIC_DEPLOYMENT.fullmatch(selector)
         ):
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
-        if QDEV_PROFILE.search(selector) and "qdev-job-" not in selector:
-            errors.append(f"{rel}:{number}: missing-unique-job-label")
+        selected_profiles = set(QDEV_PROFILE.findall(selector))
+        if selected_profiles:
+            if not selected_profiles <= allowed_profiles:
+                errors.append(f"{rel}:{number}: profile-not-allowed")
+            if not all(
+                marker in selector
+                for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
+            ):
+                errors.append(f"{rel}:{number}: missing-unique-job-label")
     return errors
 
 
 def check_repository(root: Path) -> list[str]:
     errors: list[str] = []
+    allowed_profiles: set[str] = set()
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
@@ -82,6 +92,9 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
         if not re.search(r"(?m)^github_hosted_fallback:\s*false\s*$", text):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
+        allowed_profiles = set(re.findall(r"(?m)^\s+-\s+(qdev-ci(?:-browser|-docker)?)\s*$", text))
+        if not allowed_profiles:
+            errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
 
     agents = root / "AGENTS.md"
     agents_text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
@@ -95,7 +108,7 @@ def check_repository(root: Path) -> list[str]:
         errors.append(".github/workflows:1: missing-workflow-directory")
         return errors
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
-        errors.extend(workflow_violations(path, root))
+        errors.extend(workflow_violations(path, root, allowed_profiles))
     return errors
 
 

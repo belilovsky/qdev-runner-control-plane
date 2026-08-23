@@ -22,9 +22,7 @@ def repository(tmp_path: Path, workflow: str) -> Path:
     root = tmp_path / "repo"
     (root / ".github/workflows").mkdir(parents=True)
     (root / ".github/qdev-runner.yml").write_text(
-        "schema_version: qdev-runner-v1\n"
-        "profiles:\n  - qdev-ci\n"
-        "github_hosted_fallback: false\n",
+        "schema_version: qdev-runner-v1\nprofiles:\n  - qdev-ci\ngithub_hosted_fallback: false\n",
         encoding="utf-8",
     )
     (root / ".github/workflows/ci.yml").write_text(workflow, encoding="utf-8")
@@ -33,7 +31,12 @@ def repository(tmp_path: Path, workflow: str) -> Path:
 
 GOOD_WORKFLOW = """jobs:
   test:
-    runs-on: [self-hosted, Linux, X64, qdev-ci, \"qdev-job-${{ github.run_id }}-test\"]
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test\"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 """
@@ -73,9 +76,7 @@ def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None
 def test_installer_uses_broker_scoped_artifact_identity(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     load_installer().install(root)
-    uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(
-        encoding="utf-8"
-    )
+    uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
     assert "${QDEV_REPOSITORY:?}/${QDEV_HEAD_SHA:?}/${QDEV_JOB_ID:?}" in uploader
     assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}" not in uploader
 
@@ -115,6 +116,85 @@ def test_guard_rejects_dynamic_runner_and_missing_unique_label(tmp_path: Path) -
     assert result.returncode == 1
     assert "dynamic-runner-selector" in result.stdout
     assert "missing-unique-job-label" in result.stdout
+
+
+def test_guard_rejects_static_or_incomplete_job_labels(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  static:
+    runs-on: [self-hosted, Linux, X64, qdev-ci, qdev-job-test]
+  incomplete:
+    runs-on: [self-hosted, Linux, X64, qdev-ci, \"qdev-job-${{ github.run_id }}-test\"]
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert result.stdout.count("missing-unique-job-label") == 2
+
+
+def test_guard_enforces_contract_profiles(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  browser:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci-browser
+      - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-browser\"
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "profile-not-allowed" in result.stdout
+
+
+def test_guard_rejects_quoted_setup_cache_and_mutable_container_action(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test\"
+    steps:
+      - uses: actions/setup-node@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          cache: \"npm\"
+      - uses: docker://vendor/tool:latest
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "github-cache" in result.stdout
+    assert "unpinned-container-action" in result.stdout
+
+
+def test_guard_allows_digest_pinned_container_action(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test\"
+    steps:
+      - uses: docker://vendor/tool@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+""",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
 
 
 def test_guard_allows_product_specific_release_label(tmp_path: Path) -> None:

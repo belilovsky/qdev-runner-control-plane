@@ -25,9 +25,10 @@ FORBIDDEN = {
     "ghcr.io": "ghcr",
     "npm.pkg.github.com": "github-packages",
 }
-SETUP_CACHE = re.compile(r"^\s*cache:\s*(?:pip|npm|yarn|pnpm)\s*$", re.I)
+SETUP_CACHE = re.compile(r"^\s*cache:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$", re.I)
 USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
+PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
 DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
@@ -165,7 +166,12 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             action = USES.search(line)
             if action:
                 reference = action.group(1)
-                if not reference.startswith(("./", "docker://")):
+                if reference.startswith("docker://"):
+                    if not PINNED_CONTAINER.fullmatch(reference):
+                        violations.append(
+                            violation(path, line_number, "unpinned-container-action", reference)
+                        )
+                elif not reference.startswith("./"):
                     revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
                     if not PINNED_SHA.fullmatch(revision):
                         violations.append(
@@ -190,7 +196,12 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 if profiles:
                     if not profiles <= allowed_profiles:
                         violations.append(violation(path, 1, "profile-not-allowed", str(job_name)))
-                    if not any(label.startswith("qdev-job-") for label in labels):
+                    if not any(
+                        label.startswith("qdev-job-")
+                        and "github.run_id" in label
+                        and "github.run_attempt" in label
+                        for label in labels
+                    ):
                         violations.append(
                             violation(path, 1, "missing-unique-job-label", str(job_name))
                         )
