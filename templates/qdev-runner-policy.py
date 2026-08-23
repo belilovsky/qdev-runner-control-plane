@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501, FURB167
 """Repository-local, dependency-free QDev workflow policy check."""
 
 from __future__ import annotations
