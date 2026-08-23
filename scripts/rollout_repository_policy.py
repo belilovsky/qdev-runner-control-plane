@@ -157,7 +157,9 @@ def main() -> None:
         start_name = (
             args.start_at if "/" in args.start_at else f"{inventory['owner']}/{args.start_at}"
         )
-        positions = [index for index, repo in enumerate(selected) if repo["full_name"] == start_name]
+        positions = [
+            index for index, repo in enumerate(selected) if repo["full_name"] == start_name
+        ]
         if not positions:
             parser.error(f"start repository not selected: {start_name}")
         selected = selected[positions[0] :]
