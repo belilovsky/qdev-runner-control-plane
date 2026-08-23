@@ -616,7 +616,8 @@
       "archived": false,
       "default_branch": "master",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-browser"
       ],
       "workflow_count": 2,
       "workflow_files": [
