@@ -130,9 +130,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
     if contract and contract.get("schema_version") != "qdev-runner-v1":
         violations.append(violation(contract_path, 1, "invalid-contract-version"))
     allowed_profiles = set(contract.get("profiles", []))
-    release_runner = contract.get("release_runner")
-    if not isinstance(release_runner, str) or not release_runner:
-        release_runner = None
+    release_runners = {
+        value
+        for value in [contract.get("release_runner"), *(contract.get("release_runners") or [])]
+        if isinstance(value, str) and value
+    }
     if not allowed_profiles or not allowed_profiles <= QDEV_PROFILES:
         violations.append(
             violation(contract_path, 1, "invalid-contract-profiles", ",".join(allowed_profiles))
@@ -219,7 +221,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                         )
                 elif (
                     "self-hosted" in labels
-                    and not (release_runner and release_runner in labels)
+                    and not release_runners.intersection(labels)
                     and not (isinstance(runner, str) and DYNAMIC_DEPLOYMENT.fullmatch(runner))
                 ):
                     violations.append(

@@ -243,6 +243,26 @@ def test_guard_allows_product_specific_release_label(tmp_path: Path) -> None:
     assert run_guard(root).returncode == 0
 
 
+def test_guard_allows_explicit_release_runner_list(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64, product-release-secondary]
+""",
+    )
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "release_runners:\n"
+        + "  - product-release-primary\n"
+        + "  - product-release-secondary\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
 def test_guard_rejects_undeclared_self_hosted_runner(tmp_path: Path) -> None:
     root = repository(
         tmp_path,

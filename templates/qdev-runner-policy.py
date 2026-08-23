@@ -37,7 +37,7 @@ def workflow_violations(
     path: Path,
     root: Path,
     allowed_profiles: set[str],
-    release_runner: str | None,
+    release_runners: set[str],
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8")
@@ -96,7 +96,7 @@ def workflow_violations(
             ):
                 errors.append(f"{rel}:{number}: missing-unique-job-label")
         elif "self-hosted" in selector and not (
-            release_runner and re.search(rf"\b{re.escape(release_runner)}\b", selector)
+            any(re.search(rf"\b{re.escape(label)}\b", selector) for label in release_runners)
         ):
             errors.append(f"{rel}:{number}: unapproved-runner-profile")
     return errors
@@ -105,7 +105,7 @@ def workflow_violations(
 def check_repository(root: Path) -> list[str]:
     errors: list[str] = []
     allowed_profiles: set[str] = set()
-    release_runner: str | None = None
+    release_runners: set[str] = set()
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
@@ -120,7 +120,14 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
         release_match = re.search(r"(?m)^release_runner:\s*([^\s#]+)", text)
         if release_match and release_match.group(1).lower() != "null":
-            release_runner = release_match.group(1)
+            release_runners.add(release_match.group(1))
+        release_block = re.search(
+            r"(?ms)^release_runners:\s*\n((?:[ \t]+-[^\n]+\n?)+)", text
+        )
+        if release_block:
+            release_runners.update(
+                re.findall(r"(?m)^\s+-\s+([A-Za-z0-9_.-]+)\s*$", release_block.group(1))
+            )
 
     agents = root / "AGENTS.md"
     agents_text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
@@ -134,7 +141,7 @@ def check_repository(root: Path) -> list[str]:
         errors.append(".github/workflows:1: missing-workflow-directory")
         return errors
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
-        errors.extend(workflow_violations(path, root, allowed_profiles, release_runner))
+        errors.extend(workflow_violations(path, root, allowed_profiles, release_runners))
     return errors
 
 
