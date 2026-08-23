@@ -50,6 +50,50 @@ section.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
 
+## Guarded controller release
+
+Stage each revision in its own directory below
+`/opt/qdev-runner-control-plane/releases/`. Activate it with the revision's
+own script:
+
+```bash
+sudo scripts/activate_controller_release.sh \
+  /opt/qdev-runner-control-plane/releases/REVISION
+```
+
+Activation requires at least 40 GiB free disk, less than 85% disk use, at
+least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
+atomically changes `current`, refreshes the repository inventory, and recreates
+only `broker-public` and `broker-internal`. It does not restart a worker, stop
+the registry, remove Compose or Docker objects, or touch product containers.
+If either Compose or the public health check fails, the script restores the
+previous release and its inventory.
+
+To select a previously staged revision without rebuilding its cached images:
+
+```bash
+sudo scripts/rollback_controller_release.sh REVISION
+```
+
+Runner images are built from the pinned definitions in `images/runner` and
+published only after the same capacity gate is healthy:
+
+```bash
+QDEV_PUSH_IMAGES=true scripts/build_runner_images.sh
+```
+
+Record the three resulting registry digests in rollout evidence. Do not reuse
+a mutable image from an unverified build.
+
+## Portfolio rollout
+
+Use `scripts/rollout_repository_policy.py` from isolated temporary clones and
+merge in bounded waves. Preserve every existing required check and add
+`qdev-runner-contract` only after that workflow is present on the default
+branch. Run `runner-smoke` on each resulting default SHA and record repository,
+SHA, run ID, queue time, and runner name. Deployment workflows and dedicated
+release labels are never dispatched as part of this validation.
+
 ## Local verification
 
 ```bash
