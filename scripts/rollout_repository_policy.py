@@ -14,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/apply_repository_policy.py"
 MIGRATION_BRANCH = "codex/self-hosted-runner-v1"
 POLICY_BRANCH = "codex/qdev-runner-policy-v1"
+MANAGED_PATHS = {
+    "AGENTS.md",
+    ".github/QDEV_RUNNERS.md",
+    ".github/scripts/qdev-runner-policy.py",
+    ".github/scripts/qdev-upload-artifact.sh",
+    ".github/workflows/qdev-runner-contract.yml",
+}
 
 
 def run(args: list[str], cwd: Path | None = None, capture: bool = False) -> str:
@@ -49,6 +56,26 @@ def open_pr(full_name: str, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
+def merge_default(checkout: Path, default_branch: str) -> None:
+    try:
+        run(["git", "merge", "--no-edit", f"origin/{default_branch}"], cwd=checkout)
+        return
+    except subprocess.CalledProcessError:
+        conflicted = set(
+            run(
+                ["git", "diff", "--name-only", "--diff-filter=U"],
+                cwd=checkout,
+                capture=True,
+            ).splitlines()
+        )
+        if not conflicted or not conflicted <= MANAGED_PATHS:
+            raise
+        for path in sorted(conflicted):
+            run(["git", "checkout", "--theirs", "--", path], cwd=checkout)
+            run(["git", "add", "--", path], cwd=checkout)
+        run(["git", "commit", "--no-edit"], cwd=checkout)
+
+
 def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, Any]:
     full_name = repo["full_name"]
     default_branch = repo["default_branch"]
@@ -78,7 +105,7 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
         if remote_branch:
             run(["git", "fetch", "origin", branch], cwd=checkout)
             run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=checkout)
-            run(["git", "merge", "--no-edit", f"origin/{default_branch}"], cwd=checkout)
+            merge_default(checkout, default_branch)
         else:
             run(["git", "checkout", "-B", branch, f"origin/{default_branch}"], cwd=checkout)
 
