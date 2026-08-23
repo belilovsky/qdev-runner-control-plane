@@ -64,11 +64,13 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
                 "git",
                 "clone",
                 "--filter=blob:none",
+                "--sparse",
                 "--no-checkout",
                 f"https://github.com/{full_name}.git",
                 str(checkout),
             ]
         )
+        run(["git", "sparse-checkout", "set", ".github"], cwd=checkout)
         run(["git", "fetch", "origin", default_branch], cwd=checkout)
         remote_branch = run(
             ["git", "ls-remote", "--heads", "origin", branch], cwd=checkout, capture=True
@@ -138,6 +140,7 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", action="append", default=[])
+    parser.add_argument("--start-at")
     args = parser.parse_args()
     inventory = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
     selected = inventory["repositories"]
@@ -150,6 +153,14 @@ def main() -> None:
         missing = names - {repo["full_name"] for repo in selected}
         if missing:
             parser.error(f"repositories not in inventory: {', '.join(sorted(missing))}")
+    if args.start_at:
+        start_name = (
+            args.start_at if "/" in args.start_at else f"{inventory['owner']}/{args.start_at}"
+        )
+        positions = [index for index, repo in enumerate(selected) if repo["full_name"] == start_name]
+        if not positions:
+            parser.error(f"start repository not selected: {start_name}")
+        selected = selected[positions[0] :]
     for repo in selected:
         try:
             print(json.dumps(rollout(repo), sort_keys=True), flush=True)
