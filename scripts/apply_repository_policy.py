@@ -19,9 +19,11 @@ def managed_agents(existing: str, managed: str) -> str:
         before, remainder = existing.split(START, 1)
         _, after = remainder.split(END, 1)
         prefix = before.rstrip()
+        if not prefix:
+            prefix = "# Repository instructions"
         return (prefix + "\n\n" if prefix else "") + managed + after.lstrip("\n")
     if not existing.strip():
-        return managed
+        return "# Repository instructions\n\n" + managed
     return existing.rstrip() + "\n\n" + managed
 
 

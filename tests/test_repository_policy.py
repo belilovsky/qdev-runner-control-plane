@@ -68,9 +68,22 @@ def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None
     installer = load_installer()
     assert installer.install(root)
     first = (root / "AGENTS.md").read_text(encoding="utf-8")
-    assert not first.startswith("\n")
+    assert first.startswith("# Repository instructions\n\n")
     assert installer.install(root) == []
     assert (root / "AGENTS.md").read_text(encoding="utf-8") == first
+
+
+def test_installer_repairs_managed_only_agents_without_heading(tmp_path: Path) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    managed = (ROOT / "templates/AGENTS.qdev-runner.md").read_text(encoding="utf-8")
+    (root / "AGENTS.md").write_text(managed, encoding="utf-8")
+
+    installer = load_installer()
+    assert installer.install(root)
+    first = (root / "AGENTS.md").read_text(encoding="utf-8")
+    assert first.startswith("# Repository instructions\n\n")
+    assert first.count("<!-- qdev-runner-policy:start -->") == 1
+    assert installer.install(root) == []
 
 
 def test_installer_uses_broker_scoped_artifact_identity(tmp_path: Path) -> None:
