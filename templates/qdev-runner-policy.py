@@ -33,12 +33,19 @@ MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 
 
-def workflow_violations(path: Path, root: Path, allowed_profiles: set[str]) -> list[str]:
+def workflow_violations(
+    path: Path,
+    root: Path,
+    allowed_profiles: set[str],
+    release_runner: str | None,
+) -> list[str]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     errors: list[str] = []
     for number, line in enumerate(lines, 1):
+        if line.lstrip().startswith("#"):
+            continue
         if HOSTED.search(line):
             errors.append(f"{rel}:{number}: hosted-runner")
         for marker, kind in FORBIDDEN.items():
@@ -88,12 +95,17 @@ def workflow_violations(path: Path, root: Path, allowed_profiles: set[str]) -> l
                 for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
             ):
                 errors.append(f"{rel}:{number}: missing-unique-job-label")
+        elif "self-hosted" in selector and not (
+            release_runner and re.search(rf"\b{re.escape(release_runner)}\b", selector)
+        ):
+            errors.append(f"{rel}:{number}: unapproved-runner-profile")
     return errors
 
 
 def check_repository(root: Path) -> list[str]:
     errors: list[str] = []
     allowed_profiles: set[str] = set()
+    release_runner: str | None = None
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
@@ -106,6 +118,9 @@ def check_repository(root: Path) -> list[str]:
         allowed_profiles = set(CONTRACT_PROFILE.findall(text))
         if not allowed_profiles:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
+        release_match = re.search(r"(?m)^release_runner:\s*([^\s#]+)", text)
+        if release_match and release_match.group(1).lower() != "null":
+            release_runner = release_match.group(1)
 
     agents = root / "AGENTS.md"
     agents_text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
@@ -119,7 +134,7 @@ def check_repository(root: Path) -> list[str]:
         errors.append(".github/workflows:1: missing-workflow-directory")
         return errors
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
-        errors.extend(workflow_violations(path, root, allowed_profiles))
+        errors.extend(workflow_violations(path, root, allowed_profiles, release_runner))
     return errors
 
 

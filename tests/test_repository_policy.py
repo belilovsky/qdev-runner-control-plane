@@ -102,6 +102,15 @@ def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> N
         assert marker in result.stdout
 
 
+def test_guard_ignores_commented_action_reference(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        GOOD_WORKFLOW + "    # uses: vendor/example@v1 was replaced\n",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
 def test_guard_rejects_dynamic_runner_and_missing_unique_label(tmp_path: Path) -> None:
     root = repository(
         tmp_path,
@@ -225,8 +234,27 @@ def test_guard_allows_product_specific_release_label(tmp_path: Path) -> None:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 """,
     )
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8") + "release_runner: product-release\n",
+        encoding="utf-8",
+    )
     load_installer().install(root)
     assert run_guard(root).returncode == 0
+
+
+def test_guard_rejects_undeclared_self_hosted_runner(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  bypass:
+    runs-on: [self-hosted, Linux, X64, repository-runner]
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "unapproved-runner-profile" in result.stdout
 
 
 def test_guard_allows_explicit_dynamic_deployment_labels(tmp_path: Path) -> None:

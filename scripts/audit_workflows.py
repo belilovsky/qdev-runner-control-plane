@@ -130,6 +130,9 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
     if contract and contract.get("schema_version") != "qdev-runner-v1":
         violations.append(violation(contract_path, 1, "invalid-contract-version"))
     allowed_profiles = set(contract.get("profiles", []))
+    release_runner = contract.get("release_runner")
+    if not isinstance(release_runner, str) or not release_runner:
+        release_runner = None
     if not allowed_profiles or not allowed_profiles <= QDEV_PROFILES:
         violations.append(
             violation(contract_path, 1, "invalid-contract-profiles", ",".join(allowed_profiles))
@@ -159,6 +162,8 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         text = content_text(full_name, path, ref)
         document = yaml.safe_load(text) or {}
         for line_number, line in enumerate(text.splitlines(), start=1):
+            if line.lstrip().startswith("#"):
+                continue
             if HOSTED.search(line):
                 violations.append(violation(path, line_number, "hosted-runner"))
             for marker, kind in FORBIDDEN.items():
@@ -212,6 +217,14 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                         violations.append(
                             violation(path, 1, "missing-unique-job-label", str(job_name))
                         )
+                elif (
+                    "self-hosted" in labels
+                    and not (release_runner and release_runner in labels)
+                    and not (isinstance(runner, str) and DYNAMIC_DEPLOYMENT.fullmatch(runner))
+                ):
+                    violations.append(
+                        violation(path, 1, "unapproved-runner-profile", str(job_name))
+                    )
     return {"repository": full_name, "ref": ref, "violations": violations}
 
 
