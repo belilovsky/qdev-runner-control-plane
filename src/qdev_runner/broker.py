@@ -11,7 +11,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
@@ -40,6 +40,7 @@ class HeartbeatRequest(BaseModel):
     tier: str
     profiles: list[str]
     active_jobs: int
+    active_job_ids: list[int] = Field(default_factory=list)
     detail: dict[str, Any]
 
 
@@ -306,6 +307,7 @@ def create_app(
             request.worker_name,
             tuple(request.profiles),
             request.active_jobs,
+            tuple(request.active_job_ids),
             request.detail | {"tier": request.tier},
         )
         return Response(status_code=204)

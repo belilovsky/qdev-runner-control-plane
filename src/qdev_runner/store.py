@@ -139,9 +139,7 @@ class Store:
 
     def job_status(self, job_id: int) -> str | None:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT status FROM jobs WHERE job_id=?", (job_id,)
-            ).fetchone()
+            row = connection.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         return str(row["status"]) if row is not None else None
 
     def job(self, job_id: int) -> dict[str, Any] | None:
@@ -187,9 +185,17 @@ class Store:
         self.set_status(job_id, "completed", conclusion)
 
     def heartbeat(
-        self, name: str, profiles: tuple[str, ...], active_jobs: int, detail: dict[str, Any]
+        self,
+        name: str,
+        profiles: tuple[str, ...],
+        active_jobs: int,
+        active_job_ids: tuple[int, ...],
+        detail: dict[str, Any],
     ) -> None:
+        now = time.time()
+        worker_detail = detail | {"active_job_ids": list(active_job_ids)}
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO workers(name, profiles_json, active_jobs, last_seen, detail_json)
@@ -198,13 +204,37 @@ class Store:
                     active_jobs=excluded.active_jobs, last_seen=excluded.last_seen,
                     detail_json=excluded.detail_json
                 """,
-                (name, json.dumps(profiles), active_jobs, time.time(), json.dumps(detail)),
+                (name, json.dumps(profiles), active_jobs, now, json.dumps(worker_detail)),
             )
-            connection.execute(
-                "UPDATE jobs SET updated_at=? WHERE worker_name=? "
-                "AND status IN ('claimed','running')",
-                (time.time(), name),
-            )
+            if active_job_ids:
+                connection.execute(
+                    """
+                    UPDATE jobs SET updated_at=? WHERE worker_name=?
+                    AND status IN ('claimed','running')
+                    AND job_id IN (SELECT value FROM json_each(?))
+                    """,
+                    (now, name, json.dumps(active_job_ids)),
+                )
+                connection.execute(
+                    """
+                    UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                        claimed_at=NULL, updated_at=?, result='worker no longer reports job'
+                    WHERE worker_name=? AND status IN ('claimed','running')
+                      AND updated_at<?
+                      AND job_id NOT IN (SELECT value FROM json_each(?))
+                    """,
+                    (now, name, now - 30, json.dumps(active_job_ids)),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                        claimed_at=NULL, updated_at=?, result='worker no longer reports job'
+                    WHERE worker_name=? AND status IN ('claimed','running') AND updated_at<?
+                    """,
+                    (now, name, now - 30),
+                )
+            connection.execute("COMMIT")
 
     def has_fresh_tier(self, tier: str, max_age_seconds: int) -> bool:
         cutoff = time.time() - max_age_seconds

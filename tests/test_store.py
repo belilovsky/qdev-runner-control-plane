@@ -71,7 +71,7 @@ def test_primary_heartbeat_blocks_reserve_and_renews_job(tmp_path: Path) -> None
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
-    store.heartbeat("primary-1", ("qdev-ci",), 1, {"tier": "primary"})
+    store.heartbeat("primary-1", ("qdev-ci",), 1, (100,), {"tier": "primary"})
     assert store.has_fresh_tier("primary", 90)
     assert store.recover_stale_jobs(300) == 0
 
@@ -82,6 +82,7 @@ def test_capacity_blocked_primary_does_not_block_reserve(tmp_path: Path) -> None
         "primary-1",
         ("qdev-ci",),
         0,
+        (),
         {"tier": "primary", "allowed": False, "blockers": ["load_15"]},
     )
     assert not store.has_fresh_tier("primary", 90)
@@ -94,8 +95,28 @@ def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store.enqueue(job())
     store.claim("lost-worker", ("qdev-ci",))
     with store.connect() as connection:
-        connection.execute(
-            "UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,)
-        )
+        connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,))
     assert store.recover_stale_jobs(300) == 1
     assert store.claim("reserve-1", ("qdev-ci",)) is not None
+
+
+def test_heartbeat_requeues_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    store.set_status(100, "running")
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 60,))
+    store.heartbeat("primary-1", ("qdev-ci",), 0, (), {"tier": "primary"})
+    assert store.job_status(100) == "pending"
+
+
+def test_heartbeat_renews_only_reported_job(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    store.set_status(100, "running")
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 60,))
+    store.heartbeat("primary-1", ("qdev-ci",), 1, (100,), {"tier": "primary"})
+    assert store.job_status(100) == "running"

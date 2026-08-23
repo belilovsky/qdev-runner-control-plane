@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import ssl
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,11 +33,16 @@ class Worker:
         )
         self.semaphore = asyncio.Semaphore(settings.concurrency)
         self.tasks: set[asyncio.Task[None]] = set()
+        self.active_job_ids: set[int] = set()
         self.docker_sidecars: dict[int, str] = {}
         self.stopping = asyncio.Event()
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    def job_task_done(self, task: asyncio.Task[None], *, job_id: int) -> None:
+        self.tasks.discard(task)
+        self.active_job_ids.discard(job_id)
 
     async def heartbeat(self) -> None:
         capacity = measure()
@@ -46,7 +52,8 @@ class Worker:
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
                 "profiles": self.settings.profiles,
-                "active_jobs": len(self.tasks),
+                "active_jobs": len(self.active_job_ids),
+                "active_job_ids": sorted(self.active_job_ids),
                 "detail": capacity.__dict__,
             },
         )
@@ -341,9 +348,11 @@ class Worker:
                 if capacity.allowed and len(self.tasks) < self.settings.concurrency:
                     job = await self.claim()
                     if job:
+                        job_id = int(job["job_id"])
+                        self.active_job_ids.add(job_id)
                         task = asyncio.create_task(self.execute(job))
                         self.tasks.add(task)
-                        task.add_done_callback(self.tasks.discard)
+                        task.add_done_callback(partial(self.job_task_done, job_id=job_id))
                 await asyncio.wait_for(self.stopping.wait(), timeout=self.settings.poll_seconds)
             except TimeoutError:
                 continue
