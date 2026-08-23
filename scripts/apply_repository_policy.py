@@ -18,7 +18,8 @@ def managed_agents(existing: str, managed: str) -> str:
     if START in existing and END in existing:
         before, remainder = existing.split(START, 1)
         _, after = remainder.split(END, 1)
-        return before.rstrip() + "\n\n" + managed + after.lstrip("\n")
+        prefix = before.rstrip()
+        return (prefix + "\n\n" if prefix else "") + managed + after.lstrip("\n")
     if not existing.strip():
         return managed
     return existing.rstrip() + "\n\n" + managed

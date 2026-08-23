@@ -60,6 +60,16 @@ def test_installer_is_idempotent_and_preserves_existing_agents(tmp_path: Path) -
     assert run_guard(root).returncode == 0
 
 
+def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    installer = load_installer()
+    assert installer.install(root)
+    first = (root / "AGENTS.md").read_text(encoding="utf-8")
+    assert not first.startswith("\n")
+    assert installer.install(root) == []
+    assert (root / "AGENTS.md").read_text(encoding="utf-8") == first
+
+
 def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> None:
     root = repository(
         tmp_path,
