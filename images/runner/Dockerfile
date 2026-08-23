@@ -7,7 +7,7 @@ ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git git-lfs gnupg jq openssh-client python3 python3-pip \
+      ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
       python3-venv rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
@@ -32,7 +32,7 @@ FROM mcr.microsoft.com/playwright@sha256:ffc33305f7b4b04057ae4a0caa70aad4fde8745
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git git-lfs jq openssh-client python3 python3-pip python3-venv \
+      ca-certificates curl git git-lfs jq lsb-release openssh-client python3 python3-pip python3-venv \
       rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1002 --shell /bin/bash runner \
