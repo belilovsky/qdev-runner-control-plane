@@ -3,7 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from qdev_runner.broker import artifact_job_is_active, artifact_token, verify_signature
+from qdev_runner.broker import (
+    artifact_job_is_active,
+    artifact_token,
+    completed_run_conclusion,
+    verify_signature,
+)
 
 
 def test_webhook_signature() -> None:
@@ -32,3 +37,11 @@ def test_artifact_credentials_expire_with_job() -> None:
     assert not artifact_job_is_active(job, "belilovsky/repo", "abc", 1)
     assert not artifact_job_is_active(job, "belilovsky/other", "abc", 1)
     assert not artifact_job_is_active(None, "belilovsky/repo", "abc", 1)
+
+
+def test_completed_parent_run_is_terminal_even_when_job_api_stays_queued() -> None:
+    assert completed_run_conclusion({"status": "completed", "conclusion": "cancelled"}) == (
+        "cancelled"
+    )
+    assert completed_run_conclusion({"status": "completed", "conclusion": None}) == "unknown"
+    assert completed_run_conclusion({"status": "in_progress", "conclusion": None}) is None

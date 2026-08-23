@@ -68,6 +68,12 @@ def artifact_job_is_active(
     )
 
 
+def completed_run_conclusion(run: dict[str, Any]) -> str | None:
+    if str(run.get("status") or "") != "completed":
+        return None
+    return str(run.get("conclusion") or "unknown")
+
+
 def _safe_segment(value: str) -> str:
     allowed = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
@@ -193,6 +199,9 @@ def create_app(
                 int(claimed["installation_id"]), claimed["repository"], int(claimed["run_id"])
             )
             policy.authorize_run(claimed["repository"], profile, run)
+            if conclusion := completed_run_conclusion(run):
+                store.complete_from_webhook(job_id, conclusion)
+                return Response(status_code=204)
             remote_job = github.workflow_job(
                 int(claimed["installation_id"]), claimed["repository"], job_id
             )
@@ -266,7 +275,19 @@ def create_app(
             return Response(status_code=204)
         remote_status = str(remote_job.get("status") or "unknown")
         if remote_status == "queued":
-            store.requeue_active(request.job_id, "runner exited before GitHub assigned the job")
+            try:
+                run = github.workflow_run(
+                    int(job["installation_id"]),
+                    str(job["repository"]),
+                    int(job["run_id"]),
+                )
+            except GitHubError:
+                LOGGER.warning("could not reconcile parent run job=%s", request.job_id)
+                return Response(status_code=204)
+            if conclusion := completed_run_conclusion(run):
+                store.complete_from_webhook(request.job_id, conclusion)
+            else:
+                store.requeue_active(request.job_id, "runner exited before GitHub assigned the job")
         elif remote_status == "completed":
             store.complete_from_webhook(
                 request.job_id, str(remote_job.get("conclusion") or "unknown")
@@ -293,6 +314,15 @@ def create_app(
                         job_id, str(remote_job.get("conclusion") or "unknown")
                     )
                     status = "completed"
+                elif str(remote_job.get("status")) == "queued":
+                    run = github.workflow_run(
+                        int(job["installation_id"]),
+                        str(job["repository"]),
+                        int(job["run_id"]),
+                    )
+                    if conclusion := completed_run_conclusion(run):
+                        store.complete_from_webhook(job_id, conclusion)
+                        status = "completed"
             except GitHubError:
                 LOGGER.warning("could not reconcile active job=%s", job_id)
         return {"schema": "qdev-runner-job-status-v1", "job_id": job_id, "status": status}
