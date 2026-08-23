@@ -6,6 +6,7 @@ import base64
 import json
 import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,7 @@ SETUP_CACHE = re.compile(r"^\s*cache:\s*(?:pip|npm|yarn|pnpm)\s*$", re.I)
 USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
-DYNAMIC_DEPLOYMENT = re.compile(
-    r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$"
-)
+DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 REQUIRED_POLICY_FILES = {
@@ -38,9 +37,22 @@ REQUIRED_POLICY_FILES = {
 }
 
 
-def gh_api(endpoint: str) -> Any:
-    completed = subprocess.run(["gh", "api", endpoint], check=True, capture_output=True, text=True)
-    return json.loads(completed.stdout)
+def gh_api(endpoint: str, *, attempts: int = 4) -> Any:
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(attempts):
+        completed = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True)
+        if completed.returncode == 0:
+            return json.loads(completed.stdout)
+        last_error = subprocess.CalledProcessError(
+            completed.returncode,
+            completed.args,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
+        if attempt + 1 < attempts:
+            time.sleep(0.5 * (2**attempt))
+    assert last_error is not None
+    raise last_error
 
 
 def content_text(full_name: str, path: str, ref: str) -> str:
@@ -138,14 +150,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                     and not profiles
                     and not DYNAMIC_DEPLOYMENT.fullmatch(runner)
                 ):
-                    violations.append(
-                        violation(path, 1, "dynamic-runner-selector", str(job_name))
-                    )
+                    violations.append(violation(path, 1, "dynamic-runner-selector", str(job_name)))
                 if profiles:
                     if not profiles <= allowed_profiles:
-                        violations.append(
-                            violation(path, 1, "profile-not-allowed", str(job_name))
-                        )
+                        violations.append(violation(path, 1, "profile-not-allowed", str(job_name)))
                     if not any(label.startswith("qdev-job-") for label in labels):
                         violations.append(
                             violation(path, 1, "missing-unique-job-label", str(job_name))
