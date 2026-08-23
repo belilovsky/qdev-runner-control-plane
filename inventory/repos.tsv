@@ -55,7 +55,7 @@ belilovsky/qantar	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	2	6	0	0	0
 belilovsky/qaz-admin-kit	true	main	qdev-ci	1	1	1	0	0
 belilovsky/qaz-industries	false	main	qdev-ci	2	2	1	0	0
 belilovsky/qaz-six-previews	true	main	qdev-ci	1	1	0	0	0
-belilovsky/qaz-support	true	main	qdev-ci	1	1	0	0	0
+belilovsky/qaz-support	true	main	qdev-ci,qdev-ci-browser	1	1	0	0	0
 belilovsky/qazagents	true	main	qdev-ci	3	2	1	0	0
 belilovsky/qazcompute	true	main	qdev-ci,qdev-ci-docker	2	0	0	1	1
 belilovsky/qazgeo	true	main	qdev-ci,qdev-ci-docker	2	0	0	1	1
