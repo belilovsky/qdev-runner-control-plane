@@ -99,6 +99,7 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
                 [
                     "git",
                     "add",
+                    "--force",
                     "AGENTS.md",
                     ".github/QDEV_RUNNERS.md",
                     ".github/scripts/qdev-runner-policy.py",
