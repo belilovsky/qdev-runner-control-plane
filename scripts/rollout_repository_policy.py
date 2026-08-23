@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,14 @@ def run(args: list[str], cwd: Path | None = None, capture: bool = False) -> str:
 
 
 def gh_json(args: list[str]) -> Any:
-    return json.loads(run(["gh", *args], capture=True))
+    for attempt in range(5):
+        try:
+            return json.loads(run(["gh", *args], capture=True))
+        except subprocess.CalledProcessError:
+            if attempt == 4:
+                raise
+            time.sleep(0.5 * (2**attempt))
+    raise RuntimeError("unreachable GitHub CLI retry state")
 
 
 def open_pr(full_name: str, branch: str) -> dict[str, Any] | None:
