@@ -49,7 +49,7 @@ def open_pr(full_name: str, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
-def rollout(repo: dict[str, Any]) -> dict[str, Any]:
+def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, Any]:
     full_name = repo["full_name"]
     default_branch = repo["default_branch"]
     migration_pr = open_pr(full_name, MIGRATION_BRANCH)
@@ -111,9 +111,10 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
                 cwd=checkout,
             )
             run(["git", "commit", "-m", "ci: enforce centralized runner policy"], cwd=checkout)
-            run(["git", "push", "--set-upstream", "origin", branch], cwd=checkout)
+            if not prepare_only:
+                run(["git", "push", "--set-upstream", "origin", branch], cwd=checkout)
 
-        if existing_pr is None:
+        if existing_pr is None and not prepare_only:
             url = run(
                 [
                     "gh",
@@ -135,13 +136,24 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
                 capture=True,
             )
             existing_pr = {"url": url}
-        return {"repository": full_name, "branch": branch, "pr": existing_pr["url"]}
+        return {
+            "repository": full_name,
+            "branch": branch,
+            "pr": existing_pr["url"] if existing_pr else None,
+            "changed": bool(changed),
+            "prepare_only": prepare_only,
+        }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", action="append", default=[])
     parser.add_argument("--start-at")
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="clone, refresh, validate and commit locally without push or PR creation",
+    )
     args = parser.parse_args()
     inventory = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
     selected = inventory["repositories"]
@@ -166,7 +178,12 @@ def main() -> None:
         selected = selected[positions[0] :]
     for repo in selected:
         try:
-            print(json.dumps(rollout(repo), sort_keys=True), flush=True)
+            print(
+                json.dumps(
+                    rollout(repo, prepare_only=args.prepare_only), sort_keys=True
+                ),
+                flush=True,
+            )
         except subprocess.CalledProcessError as exc:
             print(
                 json.dumps(
