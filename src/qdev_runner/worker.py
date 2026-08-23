@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import httpx
 
-from .capacity import measure
+from .capacity import Capacity, measure
 from .settings import WorkerSettings
 
 LOGGER = logging.getLogger("qdev-runner-worker")
@@ -44,8 +44,17 @@ class Worker:
         self.tasks.discard(task)
         self.active_job_ids.discard(job_id)
 
+    def capacity(self) -> Capacity:
+        return measure(
+            min_disk_free_gib=self.settings.min_disk_free_gib,
+            max_disk_used_pct=self.settings.max_disk_used_pct,
+            min_memory_available_gib=self.settings.min_memory_available_gib,
+            max_load_per_cpu=self.settings.max_load_per_cpu,
+            max_cpu_psi_avg10=self.settings.max_cpu_psi_avg10,
+        )
+
     async def heartbeat(self) -> None:
-        capacity = measure()
+        capacity = self.capacity()
         await self.client.post(
             "/internal/v1/workers/heartbeat",
             json={
@@ -353,7 +362,7 @@ class Worker:
         while not self.stopping.is_set():
             try:
                 await self.heartbeat()
-                capacity = measure()
+                capacity = self.capacity()
                 if capacity.allowed and len(self.tasks) < self.settings.concurrency:
                     job = await self.claim()
                     if job:
