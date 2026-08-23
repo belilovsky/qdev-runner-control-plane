@@ -1,9 +1,9 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-08-22T05:06:40.217545+00:00",
+  "generated_at": "2026-08-23T10:20:41.925708+00:00",
   "owner": "belilovsky",
-  "active_repository_count": 90,
-  "runner_repository_count": 86,
+  "active_repository_count": 91,
+  "runner_repository_count": 87,
   "repositories": [
     {
       "id": 1309880938,
@@ -1391,6 +1391,35 @@
           "path": ".github/workflows/ci.yml",
           "sha": "eeae16f1e092a421953d8dc7917f84338c3f7bd3",
           "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1343633064,
+      "full_name": "belilovsky/qazaqstan-space",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 2,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "550bcdde4ee91100b6156e8c7104da67ff2d7a6d",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "6e912fa898c4cb34f77eafda04a857b1d8bc8019",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
