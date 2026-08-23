@@ -134,6 +134,15 @@ class Worker:
             "QDEV_REPOSITORY": job["repository"],
             "QDEV_HEAD_SHA": job["head_sha"],
         }
+        registry = job.get("registry")
+        if registry:
+            values.update(
+                {
+                    "QDEV_REGISTRY_URL": registry["url"],
+                    "QDEV_REGISTRY_USERNAME": registry["username"],
+                    "QDEV_REGISTRY_PASSWORD": registry["password"],
+                }
+            )
         if any("\n" in str(value) or "\r" in str(value) for value in values.values()):
             raise RuntimeError("runner environment contains a newline")
         job_root = self.docker_job_root(job)

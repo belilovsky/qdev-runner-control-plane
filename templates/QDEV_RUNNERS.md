@@ -24,6 +24,61 @@ rootless Docker/BuildKit service. Never mount the host Docker socket.
 Install the requested language runtime with a commit-SHA-pinned setup action.
 Do not assume that Node, npm, or a specific Python version is globally present.
 
+## Job examples
+
+Node:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-node"]
+steps:
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+    with: {persist-credentials: false}
+  - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+    with: {node-version: "22"}
+  - run: npm ci && npm test
+```
+
+Python:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-python"]
+steps:
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+    with: {persist-credentials: false}
+  - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+    with: {python-version: "3.12"}
+  - run: python -m pip install -r requirements.txt && python -m pytest
+```
+
+Browser:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci-browser, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-browser"]
+steps:
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+    with: {persist-credentials: false}
+  - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+    with: {node-version: "22"}
+  - run: npm ci && npx playwright install chromium && npm test
+```
+
+Docker/BuildKit:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci-docker, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-image"]
+steps:
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+    with: {persist-credentials: false}
+  - run: |
+      docker compose version
+      docker build -t "${QDEV_REGISTRY_URL}/${GITHUB_REPOSITORY}:${GITHUB_SHA}" .
+      docker push "${QDEV_REGISTRY_URL}/${GITHUB_REPOSITORY}:${GITHUB_SHA}"
+```
+
+The Docker profile is logged into `registry.ci.qdev.run` before the job starts.
+Its narrow registry credential exists only in the disposable runner environment
+and is removed with the runner container and private env-file after the job.
+
 ## Storage and security
 
 - Upload transient evidence through `.github/scripts/qdev-upload-artifact.sh`.

@@ -68,6 +68,16 @@ def artifact_job_is_active(
     )
 
 
+def registry_credentials(settings: BrokerSettings, profile_name: str) -> dict[str, str] | None:
+    if not settings.registry_password or profile_name != "qdev-ci-docker":
+        return None
+    return {
+        "url": settings.registry_url,
+        "username": settings.registry_username,
+        "password": settings.registry_password,
+    }
+
+
 def completed_run_conclusion(run: dict[str, Any]) -> str | None:
     if str(run.get("status") or "") != "completed":
         return None
@@ -222,7 +232,7 @@ def create_app(
             token = artifact_token(
                 settings.worker_token, claimed["repository"], claimed["head_sha"], job_id
             )
-            return {
+            response: dict[str, Any] = {
                 "schema": "qdev-runner-job-v1",
                 "job_id": job_id,
                 "repository": claimed["repository"],
@@ -242,6 +252,9 @@ def create_app(
                     "token": token,
                 },
             }
+            if registry := registry_credentials(settings, profile.name):
+                response["registry"] = registry
+            return response
         except PolicyError as error:
             store.set_status(job_id, "rejected", str(error))
             raise HTTPException(status_code=403, detail="job rejected by policy") from error

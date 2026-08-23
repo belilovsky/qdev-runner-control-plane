@@ -24,6 +24,9 @@ class BrokerSettings:
     artifact_root: Path
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
+    registry_url: str = "registry.ci.qdev.run"
+    registry_username: str = "qdev"
+    registry_password: str | None = None
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -40,6 +43,9 @@ class BrokerSettings:
             ),
             github_api_url=os.environ.get("QDEV_GITHUB_API_URL", "https://api.github.com"),
             github_api_version=os.environ.get("QDEV_GITHUB_API_VERSION", "2026-03-10"),
+            registry_url=os.environ.get("QDEV_REGISTRY_URL", "registry.ci.qdev.run").strip(),
+            registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev").strip(),
+            registry_password=os.environ.get("QDEV_REGISTRY_PASSWORD", "").strip() or None,
         )
 
 
@@ -102,9 +108,7 @@ class WorkerSettings:
             buildkitd_path=os.environ.get(
                 "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.32.2/bin/buildkitd"
             ),
-            buildctl_path=os.environ.get(
-                "QDEV_BUILDCTL", "/opt/qdev-buildkit/0.32.2/bin/buildctl"
-            ),
+            buildctl_path=os.environ.get("QDEV_BUILDCTL", "/opt/qdev-buildkit/0.32.2/bin/buildctl"),
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),

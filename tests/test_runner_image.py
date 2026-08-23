@@ -19,3 +19,11 @@ def test_docker_profile_has_compose_plugin() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
     assert "docker.io docker-buildx docker-compose-v2" in dockerfile
+
+
+def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:
+    entrypoint = (ROOT / "images/runner/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "QDEV_REGISTRY_PASSWORD" in entrypoint
+    assert "--password-stdin" in entrypoint
+    assert "QDEV_REGISTRY_URL" in entrypoint

@@ -78,12 +78,20 @@ def test_runner_environment_is_job_scoped_and_private(tmp_path: Path) -> None:
         "runner_name": "runner-1",
         "jit_config": "encoded",
         "artifact": {"base_url": "https://ci.qdev.run/artifacts", "token": "token"},
+        "registry": {
+            "url": "registry.ci.qdev.run",
+            "username": "qdev",
+            "password": "registry-token",
+        },
     }
     path = worker.write_runner_environment(job)
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
     assert "QDEV_JIT_CONFIG=encoded" in path.read_text(encoding="utf-8")
     assert "QDEV_ARTIFACT_TOKEN=token" in path.read_text(encoding="utf-8")
+    assert "QDEV_REGISTRY_URL=registry.ci.qdev.run" in path.read_text(encoding="utf-8")
+    assert "QDEV_REGISTRY_USERNAME=qdev" in path.read_text(encoding="utf-8")
+    assert "QDEV_REGISTRY_PASSWORD=registry-token" in path.read_text(encoding="utf-8")
 
 
 def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:

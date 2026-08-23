@@ -16,7 +16,9 @@ dependencies.
 - `qdev-ci-docker` receives a job-scoped Docker/BuildKit daemon inside a
   disposable privileged sidecar of the rootless worker engine. The runner
   shares only that sidecar's network namespace and socket; the worker's Docker
-  socket is never mounted into a job.
+  socket is never mounted into a job. The broker injects the narrow registry
+  credential through the private job env-file, and the runner logs into the
+  private registry only inside its disposable container.
 - Public fork pull requests are rejected. Dedicated release labels remain
   product-specific and are not assigned to the general pool.
 - The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
