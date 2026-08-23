@@ -61,7 +61,7 @@ sudo scripts/activate_controller_release.sh \
   /opt/qdev-runner-control-plane/releases/REVISION
 ```
 
-Activation requires at least 40 GiB free disk, less than 85% disk use, at
+Activation requires at least 30 GiB free disk, less than 85% disk use, at
 least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
 atomically changes `current`, refreshes the repository inventory, and recreates
 only `broker-public` and `broker-internal`. It does not restart a worker, stop
