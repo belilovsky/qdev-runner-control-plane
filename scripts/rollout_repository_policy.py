@@ -105,6 +105,7 @@ def rollout(repo: dict[str, Any]) -> dict[str, Any]:
                     "AGENTS.md",
                     ".github/QDEV_RUNNERS.md",
                     ".github/scripts/qdev-runner-policy.py",
+                    ".github/scripts/qdev-upload-artifact.sh",
                     ".github/workflows/qdev-runner-contract.yml",
                 ],
                 cwd=checkout,

@@ -26,5 +26,5 @@ curl --fail --silent --show-error --request PUT \
   --header "X-QDev-Artifact-Token: ${QDEV_ARTIFACT_TOKEN:?}" \
   --header "X-QDev-SHA256: ${digest}" \
   --data-binary "@${archive}" \
-  "${QDEV_ARTIFACT_URL:?}/${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}/${QDEV_JOB_ID:?}/${name}.tar.gz"
+  "${QDEV_ARTIFACT_URL:?}/${QDEV_REPOSITORY:?}/${QDEV_HEAD_SHA:?}/${QDEV_JOB_ID:?}/${name}.tar.gz"
 printf '\nqdev_artifact_ok name=%s sha256=%s\n' "$name" "$digest"

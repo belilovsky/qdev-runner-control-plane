@@ -70,6 +70,16 @@ def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None
     assert (root / "AGENTS.md").read_text(encoding="utf-8") == first
 
 
+def test_installer_uses_broker_scoped_artifact_identity(tmp_path: Path) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "${QDEV_REPOSITORY:?}/${QDEV_HEAD_SHA:?}/${QDEV_JOB_ID:?}" in uploader
+    assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}" not in uploader
+
+
 def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> None:
     root = repository(
         tmp_path,

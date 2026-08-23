@@ -36,6 +36,8 @@ def install(checkout: Path) -> list[Path]:
         / "qdev-runner-contract.yml",
         checkout / ".github/scripts/qdev-runner-policy.py": TEMPLATES
         / "qdev-runner-policy.py",
+        checkout / ".github/scripts/qdev-upload-artifact.sh": TEMPLATES
+        / "qdev-upload-artifact.sh",
     }
     changed: list[Path] = []
     agents = checkout / "AGENTS.md"
@@ -56,6 +58,8 @@ def install(checkout: Path) -> list[Path]:
             changed.append(target)
     policy = checkout / ".github/scripts/qdev-runner-policy.py"
     policy.chmod(0o755)
+    uploader = checkout / ".github/scripts/qdev-upload-artifact.sh"
+    uploader.chmod(0o755)
     return changed
 
 
