@@ -48,6 +48,19 @@ Register the repository in `inventory/repos.json`, install the GitHub App, and
 run `runner-smoke` on its default branch. The installer is idempotent and
 preserves repository-specific instructions outside its marked `AGENTS.md`
 section.
+
+After the policy workflow is present on the default branch, preserve the
+repository's existing classic branch-protection settings and add only the
+managed check:
+
+```bash
+python3 scripts/configure_required_check.py --repository owner/repository
+python3 scripts/configure_required_check.py --apply --repository owner/repository
+```
+
+The first command is a dry run. Repositories without classic branch protection
+are reported and left unchanged.
+
 ## Services
 
 - `https://ci.qdev.run/github/workflow-job` — signed GitHub App webhook.
