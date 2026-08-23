@@ -7,7 +7,7 @@ ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
+      build-essential ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
       python3-venv rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
@@ -32,7 +32,7 @@ FROM mcr.microsoft.com/playwright@sha256:ffc33305f7b4b04057ae4a0caa70aad4fde8745
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git git-lfs jq lsb-release openssh-client python3 python3-pip python3-venv \
+      build-essential ca-certificates curl git git-lfs jq lsb-release openssh-client python3 python3-pip python3-venv \
       rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1002 --shell /bin/bash runner \
@@ -55,7 +55,7 @@ FROM base AS docker
 ARG BUILDKIT_VERSION=0.32.2
 ARG BUILDKIT_SHA256=2975d0f651ad96ba8b80b9992ae1f9a964f4408569af5b6dc36544165c3926af
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx \
+RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/* \
     && curl --fail --location --retry 5 \
       "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
