@@ -1,3 +1,5 @@
+name: qdev-runner
+
 services:
   broker-public:
     container_name: qdev-runner-broker-public
@@ -23,6 +25,7 @@ services:
     cap_drop: [ALL]
 
   broker-internal:
+    container_name: qdev-runner-broker-internal
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker

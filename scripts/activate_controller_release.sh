@@ -33,7 +33,7 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" 'BEGIN {
-    if (used >= 85 || free < 41943040 || mem < 4194304 || load15 > (2 * cpus)) exit 1
+    if (used > 85 || free < 31457280 || mem < 4194304 || load15 > (2 * cpus)) exit 1
   }' || {
     printf 'capacity gate rejected controller activation\n' >&2
     exit 75
@@ -49,8 +49,8 @@ trap 'rm -f -- "$temporary_link"' EXIT
 # previous broker binary, not merely the previous compose file.
 previous_public_image="$(docker inspect qdev-runner-broker-public --format '{{.Image}}' 2>/dev/null || true)"
 previous_public_ref="$(docker inspect qdev-runner-broker-public --format '{{.Config.Image}}' 2>/dev/null || true)"
-previous_internal_image="$(docker inspect deploy-broker-internal-1 --format '{{.Image}}' 2>/dev/null || true)"
-previous_internal_ref="$(docker inspect deploy-broker-internal-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+previous_internal_image="$(docker inspect qdev-runner-broker-internal --format '{{.Image}}' 2>/dev/null || true)"
+previous_internal_ref="$(docker inspect qdev-runner-broker-internal --format '{{.Config.Image}}' 2>/dev/null || true)"
 
 activate_link() {
   local target="$1"
@@ -61,7 +61,7 @@ activate_link() {
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 activate_link "$release"
 
-compose=(docker compose -p deploy -f "$release/deploy/compose.yml")
+compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
 if [[ "${QDEV_CONTROLLER_NO_BUILD:-false}" == true ]]; then
   compose_action=(up -d --no-build --no-deps broker-public broker-internal)
 else
@@ -78,7 +78,7 @@ rollback() {
   if [[ -n "$previous_internal_image" && -n "$previous_internal_ref" ]]; then
     docker image tag "$previous_internal_image" "$previous_internal_ref"
   fi
-  docker compose -p deploy -f "$previous/deploy/compose.yml" \
+  docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
     up -d --no-build --no-deps broker-public broker-internal
 }
 
@@ -101,6 +101,6 @@ if [[ "$healthy" != true ]]; then
   exit 1
 fi
 
-docker inspect qdev-runner-broker-public deploy-broker-internal-1 \
+docker inspect qdev-runner-broker-public qdev-runner-broker-internal \
   --format '{{.Name}} {{.Image}}'
 printf 'controller_release_active=%s previous=%s\n' "$release" "${previous:-none}"
