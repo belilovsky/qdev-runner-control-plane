@@ -6,12 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/apply_repository_policy.py"
+PIN_ACTIONS = ROOT / "scripts/pin_workflow_actions.py"
+REWRITE_DEPENDENCIES = ROOT / "scripts/rewrite_github_dependencies.py"
+REWRITE_SELECTORS = ROOT / "scripts/rewrite_runner_selectors.py"
 MIGRATION_BRANCH = "codex/self-hosted-runner-v1"
 POLICY_BRANCH = "codex/qdev-runner-policy-v1"
 MANAGED_PATHS = {
@@ -109,10 +113,30 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
         else:
             run(["git", "checkout", "-B", branch, f"origin/{default_branch}"], cwd=checkout)
 
-        run(["python3", str(INSTALLER), str(checkout)], cwd=checkout)
+        run([sys.executable, str(INSTALLER), str(checkout)], cwd=checkout)
+        workflow_root = checkout / ".github/workflows"
+        workflow_files = sorted(workflow_root.glob("*.yml")) + sorted(
+            workflow_root.glob("*.yaml")
+        )
+        if workflow_files:
+            paths = [str(path) for path in workflow_files]
+            run(
+                [
+                    sys.executable,
+                    str(REWRITE_SELECTORS),
+                    "--docker-job",
+                    "(?i)(docker|container|image|buildkit|trivy|zap|service)",
+                    "--browser-job",
+                    "(?i)(browser|playwright|visual|e2e|lighthouse|android|emulator)",
+                    *paths,
+                ],
+                cwd=checkout,
+            )
+            run([sys.executable, str(REWRITE_DEPENDENCIES), *paths], cwd=checkout)
+            run([sys.executable, str(PIN_ACTIONS), *paths], cwd=checkout)
         run(
             [
-                "python3",
+                sys.executable,
                 str(checkout / ".github/scripts/qdev-runner-policy.py"),
                 "--root",
                 str(checkout),
@@ -124,19 +148,7 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
         if changed:
             run(["git", "config", "user.name", "Codex"], cwd=checkout)
             run(["git", "config", "user.email", "codex@qdev.run"], cwd=checkout)
-            run(
-                [
-                    "git",
-                    "add",
-                    "--force",
-                    "AGENTS.md",
-                    ".github/QDEV_RUNNERS.md",
-                    ".github/scripts/qdev-runner-policy.py",
-                    ".github/scripts/qdev-upload-artifact.sh",
-                    ".github/workflows/qdev-runner-contract.yml",
-                ],
-                cwd=checkout,
-            )
+            run(["git", "add", "--force", "AGENTS.md", ".github"], cwd=checkout)
             run(["git", "commit", "-m", "ci: enforce centralized runner policy"], cwd=checkout)
             if not prepare_only:
                 run(["git", "push", "--set-upstream", "origin", branch], cwd=checkout)
