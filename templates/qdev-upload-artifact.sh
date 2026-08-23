@@ -2,6 +2,10 @@
 set -euo pipefail
 
 name="${1:?artifact name is required}"
+if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  printf 'invalid qdev artifact name: %s\n' "$name" >&2
+  exit 2
+fi
 shift
 files=()
 for path in "$@"; do

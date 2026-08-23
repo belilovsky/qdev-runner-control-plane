@@ -25,8 +25,11 @@ FORBIDDEN = {
     "ghcr.io": "ghcr",
     "npm.pkg.github.com": "github-packages",
 }
-SETUP_CACHE = re.compile(r"^\s*cache:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$", re.I)
-USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
+SETUP_CACHE = re.compile(
+    r"^\s*['\"]?cache['\"]?\s*:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$",
+    re.I,
+)
+USES = re.compile(r"(?:^|\s)['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
@@ -196,6 +199,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 if profiles:
                     if not profiles <= allowed_profiles:
                         violations.append(violation(path, 1, "profile-not-allowed", str(job_name)))
+                    if not {"self-hosted", "Linux", "X64"} <= set(labels):
+                        violations.append(
+                            violation(path, 1, "missing-required-runner-label", str(job_name))
+                        )
                     if not any(
                         label.startswith("qdev-job-")
                         and "github.run_id" in label

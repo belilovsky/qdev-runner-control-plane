@@ -15,12 +15,15 @@ FORBIDDEN = {
     "ghcr.io": "ghcr",
     "npm.pkg.github.com": "github-packages",
 }
-SETUP_CACHE = re.compile(r"^\s*cache:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$", re.I)
-USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
+SETUP_CACHE = re.compile(
+    r"^\s*['\"]?cache['\"]?\s*:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$",
+    re.I,
+)
+USES = re.compile(r"(?:^|\s)['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
-RUNS_ON = re.compile(r"^(\s*)runs-on:\s*(.*)$")
+RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
 DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
@@ -72,6 +75,9 @@ def workflow_violations(path: Path, root: Path, allowed_profiles: set[str]) -> l
         if selected_profiles:
             if not selected_profiles <= allowed_profiles:
                 errors.append(f"{rel}:{number}: profile-not-allowed")
+            required = ("self-hosted", "Linux", "X64")
+            if not all(re.search(rf"\b{re.escape(label)}\b", selector) for label in required):
+                errors.append(f"{rel}:{number}: missing-required-runner-label")
             if not all(
                 marker in selector
                 for marker in ("qdev-job-", "github.run_id", "github.run_attempt")

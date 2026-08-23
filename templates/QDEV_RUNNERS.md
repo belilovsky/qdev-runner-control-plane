@@ -27,6 +27,8 @@ Do not assume that Node, npm, or a specific Python version is globally present.
 ## Storage and security
 
 - Upload transient evidence through `.github/scripts/qdev-upload-artifact.sh`.
+  Artifact names must start with an ASCII letter or digit and contain only
+  letters, digits, `.`, `_`, or `-` (maximum 128 characters).
   Artifacts are addressed by repository, SHA, and job, checked with SHA-256,
   and retained according to `.github/qdev-runner.yml`.
 - Push OCI images required by CI to `registry.ci.qdev.run`; deployment images

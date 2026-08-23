@@ -79,6 +79,7 @@ def test_installer_uses_broker_scoped_artifact_identity(tmp_path: Path) -> None:
     uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
     assert "${QDEV_REPOSITORY:?}/${QDEV_HEAD_SHA:?}/${QDEV_JOB_ID:?}" in uploader
     assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}" not in uploader
+    assert "[A-Za-z0-9._-]{0,127}" in uploader
 
 
 def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> None:
@@ -165,9 +166,9 @@ def test_guard_rejects_quoted_setup_cache_and_mutable_container_action(tmp_path:
       - qdev-ci
       - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test\"
     steps:
-      - uses: actions/setup-node@11d5960a326750d5838078e36cf38b85af677262
+      - uses : actions/setup-node@v4
         with:
-          cache: \"npm\"
+          \"cache\" : \"npm\"
       - uses: docker://vendor/tool:latest
 """,
     )
@@ -175,7 +176,24 @@ def test_guard_rejects_quoted_setup_cache_and_mutable_container_action(tmp_path:
     result = run_guard(root)
     assert result.returncode == 1
     assert "github-cache" in result.stdout
+    assert "unpinned-action" in result.stdout
     assert "unpinned-container-action" in result.stdout
+
+
+def test_guard_rejects_missing_base_runner_labels(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on:
+      - qdev-ci
+      - \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test\"
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "missing-required-runner-label" in result.stdout
 
 
 def test_guard_allows_digest_pinned_container_action(tmp_path: Path) -> None:
