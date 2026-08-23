@@ -23,6 +23,7 @@ USES = re.compile(r"(?:^|\s)['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
+CONTRACT_PROFILE = re.compile(r"(?m)^\s+-\s+(qdev-ci(?:-browser|-docker)?)\s*$")
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
 DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
@@ -76,7 +77,8 @@ def workflow_violations(path: Path, root: Path, allowed_profiles: set[str]) -> l
             if not selected_profiles <= allowed_profiles:
                 errors.append(f"{rel}:{number}: profile-not-allowed")
             required = ("self-hosted", "Linux", "X64")
-            if not all(re.search(rf"\b{re.escape(label)}\b", selector) for label in required):
+            patterns = (rf"\b{re.escape(label)}\b" for label in required)
+            if not all(re.search(pattern, selector) for pattern in patterns):
                 errors.append(f"{rel}:{number}: missing-required-runner-label")
             if not all(
                 marker in selector
@@ -98,7 +100,7 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
         if not re.search(r"(?m)^github_hosted_fallback:\s*false\s*$", text):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
-        allowed_profiles = set(re.findall(r"(?m)^\s+-\s+(qdev-ci(?:-browser|-docker)?)\s*$", text))
+        allowed_profiles = set(CONTRACT_PROFILE.findall(text))
         if not allowed_profiles:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
 
