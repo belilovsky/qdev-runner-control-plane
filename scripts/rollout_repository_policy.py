@@ -101,6 +101,8 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
         run(
             [
                 "git",
+                "-c",
+                "http.version=HTTP/1.1",
                 "clone",
                 "--filter=blob:none",
                 "--sparse",
@@ -109,6 +111,11 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
                 str(checkout),
             ]
         )
+        # Persist the transport choice for lazy blob fetches triggered later by
+        # checkout/merge. GitHub occasionally cancels long-lived HTTP/2 streams
+        # in large promisor repositories, leaving an otherwise valid rollout
+        # without the managed policy commit.
+        run(["git", "config", "http.version", "HTTP/1.1"], cwd=checkout)
         run(["git", "sparse-checkout", "set", ".github"], cwd=checkout)
         run(["git", "fetch", "origin", default_branch], cwd=checkout)
         remote_branch = run(
