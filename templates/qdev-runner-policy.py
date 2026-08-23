@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+# Managed source is kept byte-identical across repositories with different
+# formatter line-length settings.
+# fmt: off
 import argparse
 import re
 from pathlib import Path
