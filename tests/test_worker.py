@@ -6,7 +6,7 @@ from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
 
 
-def test_container_command_has_no_host_socket() -> None:
+def test_container_command_has_no_host_socket_or_credentials(tmp_path: Path) -> None:
     worker = Worker(
         WorkerSettings(
             broker_url="https://worker.ci.qdev.run",
@@ -22,7 +22,7 @@ def test_container_command_has_no_host_socket() -> None:
             rootlesskit_path="/usr/bin/rootlesskit",
             buildkitd_path="/opt/buildkitd",
             buildctl_path="/opt/buildctl",
-            buildkit_root=Path("/var/lib/qdev-runner-worker/jobs"),
+            buildkit_root=tmp_path,
         )
     )
     command = worker.container_command(
@@ -46,7 +46,44 @@ def test_container_command_has_no_host_socket() -> None:
     assert "/var/run/docker.sock" not in joined
     assert "--cap-drop ALL" in joined
     assert "no-new-privileges:true" in joined
+    assert "QDEV_JIT_CONFIG" not in joined
+    assert "QDEV_ARTIFACT_TOKEN" not in joined
+    assert "--env-file" in joined
     assert command[-1] == "runner:test"
+
+
+def test_runner_environment_is_job_scoped_and_private(tmp_path: Path) -> None:
+    worker = Worker(
+        WorkerSettings(
+            broker_url="https://worker.ci.qdev.run",
+            worker_token="token",
+            worker_name="worker-1",
+            tier="primary",
+            profiles=("qdev-ci",),
+            concurrency=1,
+            poll_seconds=3,
+            container_engine="docker",
+            runner_images={"qdev-ci": "runner:test"},
+            docker_sidecar_image="docker:dind-test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=tmp_path,
+        )
+    )
+    job = {
+        "job_id": 1,
+        "repository": "belilovsky/repo",
+        "head_sha": "a" * 40,
+        "runner_name": "runner-1",
+        "jit_config": "encoded",
+        "artifact": {"base_url": "https://ci.qdev.run/artifacts", "token": "token"},
+    }
+    path = worker.write_runner_environment(job)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert "QDEV_JIT_CONFIG=encoded" in path.read_text(encoding="utf-8")
+    assert "QDEV_ARTIFACT_TOKEN=token" in path.read_text(encoding="utf-8")
 
 
 def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:

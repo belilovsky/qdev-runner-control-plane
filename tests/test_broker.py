@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from qdev_runner.broker import artifact_token, verify_signature
+from qdev_runner.broker import artifact_job_is_active, artifact_token, verify_signature
 
 
 def test_webhook_signature() -> None:
@@ -18,3 +18,17 @@ def test_artifact_token_is_scoped() -> None:
     token = artifact_token("secret", "belilovsky/repo", "abc", 1)
     assert token == artifact_token("secret", "belilovsky/repo", "abc", 1)
     assert token != artifact_token("secret", "belilovsky/repo", "abc", 2)
+
+
+def test_artifact_credentials_expire_with_job() -> None:
+    job = {
+        "job_id": 1,
+        "repository": "belilovsky/repo",
+        "head_sha": "abc",
+        "status": "running",
+    }
+    assert artifact_job_is_active(job, "belilovsky/repo", "abc", 1)
+    job["status"] = "completed"
+    assert not artifact_job_is_active(job, "belilovsky/repo", "abc", 1)
+    assert not artifact_job_is_active(job, "belilovsky/other", "abc", 1)
+    assert not artifact_job_is_active(None, "belilovsky/repo", "abc", 1)

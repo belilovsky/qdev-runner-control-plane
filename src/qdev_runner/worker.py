@@ -98,18 +98,8 @@ class Worker:
             "ALL",
             "--security-opt",
             "no-new-privileges:true",
-            "--env",
-            f"QDEV_JIT_CONFIG={job['jit_config']}",
-            "--env",
-            f"QDEV_ARTIFACT_URL={job['artifact']['base_url']}",
-            "--env",
-            f"QDEV_ARTIFACT_TOKEN={job['artifact']['token']}",
-            "--env",
-            f"QDEV_JOB_ID={job['job_id']}",
-            "--env",
-            f"QDEV_REPOSITORY={job['repository']}",
-            "--env",
-            f"QDEV_HEAD_SHA={job['head_sha']}",
+            "--env-file",
+            str(self.runner_environment_path(job)),
         ]
         if profile_name == "qdev-ci-docker":
             command.extend(
@@ -124,6 +114,31 @@ class Worker:
             )
         command.append(image)
         return command
+
+    def runner_environment_path(self, job: dict[str, Any]) -> Path:
+        return self.docker_job_root(job) / "runner.env"
+
+    def write_runner_environment(self, job: dict[str, Any]) -> Path:
+        values = {
+            "QDEV_JIT_CONFIG": job["jit_config"],
+            "QDEV_ARTIFACT_URL": job["artifact"]["base_url"],
+            "QDEV_ARTIFACT_TOKEN": job["artifact"]["token"],
+            "QDEV_JOB_ID": job["job_id"],
+            "QDEV_REPOSITORY": job["repository"],
+            "QDEV_HEAD_SHA": job["head_sha"],
+        }
+        if any("\n" in str(value) or "\r" in str(value) for value in values.values()):
+            raise RuntimeError("runner environment contains a newline")
+        job_root = self.docker_job_root(job)
+        job_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        job_root.chmod(0o700)
+        path = self.runner_environment_path(job)
+        path.write_text(
+            "".join(f"{key}={value}\n" for key, value in values.items()),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        return path
 
     def docker_job_root(self, job: dict[str, Any]) -> Path:
         safe_name = "".join(
@@ -269,9 +284,7 @@ class Worker:
                 output, _ = communicate.result()
                 return output, ""
             try:
-                response = await self.client.get(
-                    f"/internal/v1/jobs/{int(job['job_id'])}/status"
-                )
+                response = await self.client.get(f"/internal/v1/jobs/{int(job['job_id'])}/status")
                 response.raise_for_status()
                 status = str(response.json()["status"])
             except (httpx.HTTPError, KeyError, TypeError, ValueError):
@@ -286,6 +299,7 @@ class Worker:
         async with self.semaphore:
             detail = ""
             try:
+                self.write_runner_environment(job)
                 if job["profile"]["name"] == "qdev-ci-docker":
                     await self.start_docker_sidecar(job)
                 command = self.container_command(job)
@@ -297,9 +311,7 @@ class Worker:
                 )
                 timeout = int(job["profile"]["timeout_minutes"]) * 60
                 output, stop_detail = await self.wait_for_runner(process, job, timeout)
-                detail = (stop_detail + "\n" + output.decode("utf-8", errors="replace"))[
-                    -2000:
-                ]
+                detail = (stop_detail + "\n" + output.decode("utf-8", errors="replace"))[-2000:]
                 exit_code = process.returncode if process.returncode is not None else 124
             except Exception as error:
                 LOGGER.exception("runner setup failed job=%s", job["job_id"])
@@ -309,6 +321,8 @@ class Worker:
                 await self.stop_runner_container(job)
                 if job["profile"]["name"] == "qdev-ci-docker":
                     await self.stop_docker_sidecar(job)
+                else:
+                    shutil.rmtree(self.docker_job_root(job), ignore_errors=True)
             await self.client.post(
                 "/internal/v1/jobs/complete",
                 json={

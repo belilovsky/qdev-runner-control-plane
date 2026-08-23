@@ -55,6 +55,18 @@ def artifact_token(secret: str, repository: str, sha: str, job_id: int) -> str:
     return hmac.new(secret.encode(), value, hashlib.sha256).hexdigest()
 
 
+def artifact_job_is_active(
+    job: dict[str, Any] | None, repository: str, sha: str, job_id: int
+) -> bool:
+    return bool(
+        job
+        and int(job["job_id"]) == job_id
+        and str(job["repository"]) == repository
+        and str(job["head_sha"]) == sha
+        and str(job["status"]) in {"claimed", "running"}
+    )
+
+
 def _safe_segment(value: str) -> str:
     allowed = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
@@ -102,12 +114,10 @@ def create_app(
             "pending": data["jobs"].get("pending", 0),
             "active_workers": len(fresh_workers),
             "primary_available": any(
-                worker["tier"] == "primary" and worker["available"]
-                for worker in fresh_workers
+                worker["tier"] == "primary" and worker["available"] for worker in fresh_workers
             ),
             "reserve_available": any(
-                worker["tier"] == "reserve" and worker["available"]
-                for worker in fresh_workers
+                worker["tier"] == "reserve" and worker["available"] for worker in fresh_workers
             ),
         }
 
@@ -314,6 +324,9 @@ def create_app(
         full_name = f"{_safe_segment(owner)}/{_safe_segment(repo)}"
         safe_sha = _safe_segment(sha)
         safe_name = _safe_segment(name)
+        job = store.job(job_id)
+        if not artifact_job_is_active(job, full_name, safe_sha, job_id):
+            raise HTTPException(status_code=401, detail="artifact credentials expired")
         expected_token = artifact_token(settings.worker_token, full_name, safe_sha, job_id)
         if not x_qdev_artifact_token or not secrets.compare_digest(
             x_qdev_artifact_token, expected_token
