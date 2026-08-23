@@ -20,6 +20,9 @@ USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
 RUNS_ON = re.compile(r"^(\s*)runs-on:\s*(.*)$")
+DYNAMIC_DEPLOYMENT = re.compile(
+    r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$"
+)
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 
@@ -57,7 +60,11 @@ def workflow_violations(path: Path, root: Path) -> list[str]:
                 break
             selector += " " + candidate.strip()
             index += 1
-        if "${{" in selector and not QDEV_PROFILE.search(selector):
+        if (
+            "${{" in selector
+            and not QDEV_PROFILE.search(selector)
+            and not DYNAMIC_DEPLOYMENT.fullmatch(selector)
+        ):
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         if QDEV_PROFILE.search(selector) and "qdev-job-" not in selector:
             errors.append(f"{rel}:{number}: missing-unique-job-label")

@@ -119,3 +119,17 @@ def test_guard_allows_product_specific_release_label(tmp_path: Path) -> None:
     )
     load_installer().install(root)
     assert run_guard(root).returncode == 0
+
+
+def test_guard_allows_explicit_dynamic_deployment_labels(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  deploy:
+    runs-on: ${{ fromJSON(inputs.deployment_labels) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0

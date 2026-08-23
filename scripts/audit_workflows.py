@@ -25,6 +25,9 @@ SETUP_CACHE = re.compile(r"^\s*cache:\s*(?:pip|npm|yarn|pnpm)\s*$", re.I)
 USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+DYNAMIC_DEPLOYMENT = re.compile(
+    r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$"
+)
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 REQUIRED_POLICY_FILES = {
@@ -129,7 +132,12 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 labels = [runner] if isinstance(runner, str) else runner
                 labels = [str(label) for label in labels if isinstance(label, str)]
                 profiles = QDEV_PROFILES.intersection(labels)
-                if isinstance(runner, str) and "${{" in runner and not profiles:
+                if (
+                    isinstance(runner, str)
+                    and "${{" in runner
+                    and not profiles
+                    and not DYNAMIC_DEPLOYMENT.fullmatch(runner)
+                ):
                     violations.append(
                         violation(path, 1, "dynamic-runner-selector", str(job_name))
                     )
