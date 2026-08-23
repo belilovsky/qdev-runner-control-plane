@@ -25,6 +25,9 @@ dependencies.
   product-specific and are not assigned to the general pool.
 - The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
   below 4 GiB available memory or above load-15 equal to twice the CPU count.
+  Worker-specific floors can be raised with `QDEV_WORKER_MIN_FREE_GIB`,
+  `QDEV_WORKER_MAX_DISK_USED_PCT`, `QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB`,
+  `QDEV_WORKER_MAX_LOAD_PER_CPU` and `QDEV_WORKER_MAX_CPU_PSI_AVG10`.
 - Every registered repository carries the managed root `AGENTS.md` policy,
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
@@ -45,7 +48,6 @@ Register the repository in `inventory/repos.json`, install the GitHub App, and
 run `runner-smoke` on its default branch. The installer is idempotent and
 preserves repository-specific instructions outside its marked `AGENTS.md`
 section.
-
 ## Services
 
 - `https://ci.qdev.run/github/workflow-job` — signed GitHub App webhook.

@@ -65,6 +65,11 @@ class WorkerSettings:
     buildkitd_path: str
     buildctl_path: str
     buildkit_root: Path
+    min_disk_free_gib: float = 30
+    max_disk_used_pct: float = 85
+    min_memory_available_gib: float = 4
+    max_load_per_cpu: float = 2
+    max_cpu_psi_avg10: float | None = None
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
@@ -111,6 +116,17 @@ class WorkerSettings:
             buildctl_path=os.environ.get("QDEV_BUILDCTL", "/opt/qdev-buildkit/0.32.2/bin/buildctl"),
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
+            ),
+            min_disk_free_gib=float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30")),
+            max_disk_used_pct=float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85")),
+            min_memory_available_gib=float(
+                os.environ.get("QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB", "4")
+            ),
+            max_load_per_cpu=float(os.environ.get("QDEV_WORKER_MAX_LOAD_PER_CPU", "2")),
+            max_cpu_psi_avg10=(
+                float(value)
+                if (value := os.environ.get("QDEV_WORKER_MAX_CPU_PSI_AVG10", "").strip())
+                else None
             ),
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
