@@ -4,13 +4,16 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,20 +38,53 @@ REQUIRED_POLICY_FILES = {
     ".github/scripts/qdev-runner-policy.py": "missing-policy-checker",
     ".github/workflows/qdev-runner-contract.yml": "missing-policy-workflow",
 }
+_CLIENT: httpx.Client | None = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def github_client() -> httpx.Client:
+    global _CLIENT
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+            if not token:
+                token = subprocess.run(
+                    ["gh", "auth", "token"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            _CLIENT = httpx.Client(
+                base_url="https://api.github.com",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                timeout=30,
+                limits=httpx.Limits(max_connections=16, max_keepalive_connections=16),
+            )
+        return _CLIENT
 
 
 def gh_api(endpoint: str, *, attempts: int = 4) -> Any:
     last_error: subprocess.CalledProcessError | None = None
     for attempt in range(attempts):
-        completed = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True)
-        if completed.returncode == 0:
-            return json.loads(completed.stdout)
-        last_error = subprocess.CalledProcessError(
-            completed.returncode,
-            completed.args,
-            output=completed.stdout,
-            stderr=completed.stderr,
-        )
+        try:
+            response = github_client().get(endpoint)
+        except httpx.TransportError as error:
+            last_error = subprocess.CalledProcessError(1, endpoint, stderr=str(error))
+        else:
+            if response.status_code < 400:
+                return response.json()
+            last_error = subprocess.CalledProcessError(
+                response.status_code,
+                endpoint,
+                output=response.text,
+                stderr=response.text,
+            )
+            if response.status_code < 500:
+                break
         if attempt + 1 < attempts:
             time.sleep(0.5 * (2**attempt))
     assert last_error is not None
