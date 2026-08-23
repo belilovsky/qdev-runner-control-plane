@@ -44,6 +44,14 @@ previous="$(readlink -f -- "$current" 2>/dev/null || true)"
 temporary_link="$release_root/.current.$$"
 trap 'rm -f -- "$temporary_link"' EXIT
 
+# Compose's implicit service image tags are mutable. Preserve both the exact
+# image IDs and their configured tags so a failed activation can restore the
+# previous broker binary, not merely the previous compose file.
+previous_public_image="$(docker inspect qdev-runner-broker-public --format '{{.Image}}' 2>/dev/null || true)"
+previous_public_ref="$(docker inspect qdev-runner-broker-public --format '{{.Config.Image}}' 2>/dev/null || true)"
+previous_internal_image="$(docker inspect deploy-broker-internal-1 --format '{{.Image}}' 2>/dev/null || true)"
+previous_internal_ref="$(docker inspect deploy-broker-internal-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+
 activate_link() {
   local target="$1"
   ln -s -- "$target" "$temporary_link"
@@ -64,6 +72,12 @@ rollback() {
   [[ -n "$previous" && -d "$previous" ]] || return 0
   install -m 0644 -- "$previous/inventory/repos.json" /etc/qdev-runner/repos.json
   activate_link "$previous"
+  if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then
+    docker image tag "$previous_public_image" "$previous_public_ref"
+  fi
+  if [[ -n "$previous_internal_image" && -n "$previous_internal_ref" ]]; then
+    docker image tag "$previous_internal_image" "$previous_internal_ref"
+  fi
   docker compose -p deploy -f "$previous/deploy/compose.yml" \
     up -d --no-build --no-deps broker-public broker-internal
 }

@@ -13,6 +13,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "mv -Tf" in script
     assert "rollback" in script
     assert "free < 41943040" in script
+    assert "previous_public_image" in script
+    assert "previous_internal_image" in script
+    assert 'docker image tag "$previous_public_image"' in script
+    assert 'docker image tag "$previous_internal_image"' in script
 
 
 def test_controller_rollback_reuses_existing_images() -> None:
