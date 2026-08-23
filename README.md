@@ -21,6 +21,26 @@ dependencies.
   product-specific and are not assigned to the general pool.
 - The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
   below 4 GiB available memory or above load-15 equal to twice the CPU count.
+- Every registered repository carries the managed root `AGENTS.md` policy,
+  `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
+  agents must install this starter bundle instead of creating a standalone
+  runner or a GitHub-hosted fallback.
+
+## Repository onboarding
+
+Start from `templates/qdev-runner.yml` and `templates/runner-smoke.yml`, then
+install the managed policy into the repository checkout:
+
+```bash
+python3 scripts/apply_repository_policy.py /path/to/checkout
+python3 /path/to/checkout/.github/scripts/qdev-runner-policy.py \
+  --root /path/to/checkout
+```
+
+Register the repository in `inventory/repos.json`, install the GitHub App, and
+run `runner-smoke` on its default branch. The installer is idempotent and
+preserves repository-specific instructions outside its marked `AGENTS.md`
+section.
 
 ## Services
 

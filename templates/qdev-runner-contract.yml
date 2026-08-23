@@ -1,0 +1,33 @@
+name: QDev runner contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/**"
+      - "AGENTS.md"
+  push:
+    paths:
+      - ".github/**"
+      - "AGENTS.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qdev-runner-contract:
+    name: qdev-runner-contract
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-contract
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate QDev runner contract
+        run: python3 .github/scripts/qdev-runner-policy.py --root .

@@ -25,6 +25,14 @@ SETUP_CACHE = re.compile(r"^\s*cache:\s*(?:pip|npm|yarn|pnpm)\s*$", re.I)
 USES = re.compile(r"\buses:\s*['\"]?([^\s'\"#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+MANAGED_START = "<!-- qdev-runner-policy:start -->"
+MANAGED_END = "<!-- qdev-runner-policy:end -->"
+REQUIRED_POLICY_FILES = {
+    "AGENTS.md": "missing-agent-policy",
+    ".github/QDEV_RUNNERS.md": "missing-runner-documentation",
+    ".github/scripts/qdev-runner-policy.py": "missing-policy-checker",
+    ".github/workflows/qdev-runner-contract.yml": "missing-policy-workflow",
+}
 
 
 def gh_api(endpoint: str) -> Any:
@@ -71,6 +79,16 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         violations.append(
             violation(contract_path, 1, "invalid-contract-profiles", ",".join(allowed_profiles))
         )
+    for required_path, kind in REQUIRED_POLICY_FILES.items():
+        try:
+            required_text = content_text(full_name, required_path, ref)
+        except subprocess.CalledProcessError:
+            violations.append(violation(required_path, 1, kind))
+            continue
+        if required_path == "AGENTS.md" and (
+            MANAGED_START not in required_text or MANAGED_END not in required_text
+        ):
+            violations.append(violation(required_path, 1, "invalid-agent-policy"))
     try:
         paths = workflow_paths(full_name, ref)
     except subprocess.CalledProcessError:
@@ -111,6 +129,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 labels = [runner] if isinstance(runner, str) else runner
                 labels = [str(label) for label in labels if isinstance(label, str)]
                 profiles = QDEV_PROFILES.intersection(labels)
+                if isinstance(runner, str) and "${{" in runner and not profiles:
+                    violations.append(
+                        violation(path, 1, "dynamic-runner-selector", str(job_name))
+                    )
                 if profiles:
                     if not profiles <= allowed_profiles:
                         violations.append(
