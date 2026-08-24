@@ -16,8 +16,8 @@ ACTION = re.compile(
     r"@(?P<ref>[^\s#]+)(?P<suffix>\s*(?:#.*)?)$"
 )
 SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-GIT = shutil.which("git")
-if GIT is None:
+GIT: str = shutil.which("git") or ""
+if not GIT:
     raise RuntimeError("git executable is required")
 
 
@@ -29,7 +29,7 @@ def resolve(repository: str, ref: str) -> str:
         capture_output=True,
         text=True,
     )
-    candidates = {
+    candidates: dict[str, str] = {
         remote_ref: commit
         for line in completed.stdout.splitlines()
         for commit, remote_ref in [line.split(maxsplit=1)]
