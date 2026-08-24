@@ -7,10 +7,10 @@ from qdev_runner.models import QueuedJob
 from qdev_runner.store import Store
 
 
-def job(delivery: str = "delivery-1") -> QueuedJob:
+def job(delivery: str = "delivery-1", job_id: int = 100) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
-        job_id=100,
+        job_id=job_id,
         run_id=200,
         repository="belilovsky/private-repo",
         repository_id=1,
@@ -62,9 +62,12 @@ def test_runner_exit_before_pickup_requeues_active_job(tmp_path: Path) -> None:
 def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
+    store.enqueue(job("delivery-2", 101))
     store.claim("worker-1", ("qdev-ci",))
     store.requeue(100, "temporary GitHub error")
-    assert store.claim("worker-2", ("qdev-ci",)) is not None
+    claimed = store.claim("worker-2", ("qdev-ci",))
+    assert claimed is not None
+    assert claimed["job_id"] == 101
 
 
 def test_primary_heartbeat_blocks_reserve_and_renews_job(tmp_path: Path) -> None:

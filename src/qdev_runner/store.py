@@ -160,25 +160,28 @@ class Store:
         return updated.rowcount == 1
 
     def requeue_active(self, job_id: int, reason: str) -> bool:
+        now = time.time()
         with self.connect() as connection:
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=?
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
         return updated.rowcount == 1
 
     def requeue(self, job_id: int, reason: str) -> None:
+        now = time.time()
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=? WHERE job_id=? AND status='claimed'
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
+                WHERE job_id=? AND status='claimed'
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
 
     def complete_from_webhook(self, job_id: int, conclusion: str) -> None:
