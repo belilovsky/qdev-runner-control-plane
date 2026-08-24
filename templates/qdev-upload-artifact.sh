@@ -9,7 +9,7 @@ fi
 shift
 files=()
 for path in "$@"; do
-  if [[ -e "$path" ]]; then
+  if [[ -e "$path" || -L "$path" ]]; then
     files+=("$path")
   fi
 done
@@ -24,7 +24,9 @@ fi
 
 archive="$(mktemp "${RUNNER_TEMP:-/tmp}/qdev-artifact.XXXXXX.tar.gz")"
 trap 'rm -f -- "$archive"' EXIT
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf "$archive" -- "${files[@]}"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+  --exclude="$archive" --exclude="${archive#/}" \
+  -czf "$archive" -- "${files[@]}"
 digest="$(sha256sum "$archive" | awk '{print $1}')"
 curl --fail --silent --show-error --request PUT \
   --header "X-QDev-Artifact-Token: ${QDEV_ARTIFACT_TOKEN:?}" \

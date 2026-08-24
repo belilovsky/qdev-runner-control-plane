@@ -290,7 +290,7 @@ def test_guard_rejects_undeclared_self_hosted_runner(tmp_path: Path) -> None:
     assert "unapproved-runner-profile" in result.stdout
 
 
-def test_guard_allows_explicit_dynamic_deployment_labels(tmp_path: Path) -> None:
+def test_guard_rejects_unconstrained_dynamic_deployment_labels(tmp_path: Path) -> None:
     root = repository(
         tmp_path,
         """jobs:
@@ -301,4 +301,110 @@ def test_guard_allows_explicit_dynamic_deployment_labels(tmp_path: Path) -> None
 """,
     )
     load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "dynamic-runner-selector" in result.stdout
+
+
+def test_guard_ignores_commented_profile_and_parses_only_contract_profile_block(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        "schema_version: qdev-runner-v1\n"
+        "profiles:\n  - qdev-ci\n"
+        "notes:\n  - qdev-ci-browser\n"
+        "github_hosted_fallback: false\n",
+        encoding="utf-8",
+    )
+    (root / ".github/workflows/ci.yml").write_text(
+        GOOD_WORKFLOW + "    # qdev-ci-browser is documentation only\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
     assert run_guard(root).returncode == 0
+
+
+def test_guard_rejects_flow_style_action_cache_and_github_packages(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        GOOD_WORKFLOW
+        + "      - { uses: actions/setup-node@v4, with: { cache: npm } }\n"
+        + "      - run: dotnet nuget add source https://nuget.pkg.github.com/acme/index.json\n",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "unpinned-action" in result.stdout
+    assert "github-cache" in result.stdout
+    assert "github-packages" in result.stdout
+
+
+def test_guard_rejects_multiple_profiles_unknown_selector_and_duplicate_label(
+    tmp_path: Path,
+) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  first:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-ci-browser
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-same"
+  second:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-same"
+  unknown:
+    runs-on: mystery-runner
+""",
+    )
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        "schema_version: qdev-runner-v1\nprofiles:\n  - qdev-ci\n  - qdev-ci-browser\n"
+        "github_hosted_fallback: false\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "multiple-runner-profiles" in result.stdout
+    assert "duplicate-unique-job-label" in result.stdout
+    assert "unapproved-runner-profile" in result.stdout
+
+
+def test_guard_recursively_checks_local_composite_actions(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        GOOD_WORKFLOW + "      - uses: ./.github/actions/local\n",
+    )
+    action = root / ".github/actions/local/action.yml"
+    action.parent.mkdir(parents=True)
+    action.write_text(
+        "runs:\n  using: composite\n  steps:\n"
+        "    - { uses: vendor/example@v1 }\n"
+        "    - run: docker pull containers.pkg.github.com/acme/image:latest\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "unpinned-action" in result.stdout
+    assert "github-packages" in result.stdout
+
+
+def test_uploader_accepts_dangling_symlink_and_excludes_its_own_archive(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
+    assert '[[ -e "$path" || -L "$path" ]]' in uploader
+    assert '--exclude="$archive"' in uploader

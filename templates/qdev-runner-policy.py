@@ -17,21 +17,100 @@ FORBIDDEN = {
     "actions/upload-artifact@": "github-artifact",
     "actions/download-artifact@": "github-artifact",
     "ghcr.io": "ghcr",
-    "npm.pkg.github.com": "github-packages",
+    "pkg.github.com": "github-packages",
 }
 SETUP_CACHE = re.compile(
-    r"^\s*['\"]?cache['\"]?\s*:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1\s*(?:#.*)?$",
+    r"(?:^|[\s,{])['\"]?cache['\"]?\s*:\s*(['\"]?)(?:pip|npm|yarn|pnpm)\1(?:\s|[,}]|$)",
     re.I,
 )
-USES = re.compile(r"(?:^|\s)['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\"#]+)")
+USES = re.compile(r"(?:^|[\s,{])['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\",}#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
-CONTRACT_PROFILE = re.compile(r"(?m)^\s+-\s+(qdev-ci(?:-browser|-docker)?)\s*$")
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
-DYNAMIC_DEPLOYMENT = re.compile(r"^\s*\$\{\{\s*fromJSON\(inputs\.deployment_labels\)\s*\}\}\s*$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
+
+
+def strip_yaml_comment(line: str) -> str:
+    """Remove an actual YAML comment while preserving hashes inside quotes."""
+    single = False
+    double = False
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and double:
+            escaped = True
+            continue
+        if char == "'" and not double:
+            single = not single
+            continue
+        if char == '"' and not single:
+            double = not double
+            continue
+        if char == "#" and not single and not double and (
+            index == 0 or line[index - 1].isspace()
+        ):
+            return line[:index].rstrip()
+    return line
+
+
+def contract_list(text: str, key: str) -> list[str]:
+    """Read a top-level YAML list without accepting similarly named nested data."""
+    lines = text.splitlines()
+    values: list[str] = []
+    in_block = False
+    for raw in lines:
+        line = strip_yaml_comment(raw)
+        if not line.strip():
+            continue
+        if not in_block:
+            if re.fullmatch(rf"{re.escape(key)}\s*:\s*", line):
+                in_block = True
+            continue
+        if line == line.lstrip():
+            break
+        match = re.fullmatch(r"\s+-\s+([A-Za-z0-9_.-]+)\s*", line)
+        if match:
+            values.append(match.group(1))
+    return values
+
+
+def action_violations(path: Path, root: Path, visited: set[Path]) -> list[str]:
+    """Check external pins and forbidden services in a local composite action tree."""
+    path = path.resolve()
+    if path in visited or not path.is_file():
+        return []
+    visited.add(path)
+    rel = path.relative_to(root).as_posix()
+    errors: list[str] = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = strip_yaml_comment(raw)
+        if not line.strip():
+            continue
+        for marker, kind in FORBIDDEN.items():
+            if marker.lower() in line.lower():
+                errors.append(f"{rel}:{number}: {kind}")
+        if SETUP_CACHE.search(line):
+            errors.append(f"{rel}:{number}: github-cache")
+        action = USES.search(line)
+        if not action:
+            continue
+        reference = action.group(1)
+        if reference.startswith("./"):
+            candidate = root / reference[2:]
+            for name in ("action.yml", "action.yaml"):
+                errors.extend(action_violations(candidate / name, root, visited))
+        elif reference.startswith("docker://"):
+            if not PINNED_CONTAINER.fullmatch(reference):
+                errors.append(f"{rel}:{number}: unpinned-container-action {reference}")
+        else:
+            revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
+            if not PINNED_SHA.fullmatch(revision):
+                errors.append(f"{rel}:{number}: unpinned-action {reference}")
+    return errors
 
 
 def workflow_violations(
@@ -42,17 +121,19 @@ def workflow_violations(
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
+    lines = [strip_yaml_comment(line) for line in text.splitlines()]
     errors: list[str] = []
+    unique_labels: dict[str, int] = {}
+    visited_actions: set[Path] = set()
     for number, line in enumerate(lines, 1):
-        if line.lstrip().startswith("#"):
+        if not line.strip():
             continue
         if HOSTED.search(line):
             errors.append(f"{rel}:{number}: hosted-runner")
         for marker, kind in FORBIDDEN.items():
             if marker.lower() in line.lower():
                 errors.append(f"{rel}:{number}: {kind}")
-        if SETUP_CACHE.match(line):
+        if SETUP_CACHE.search(line):
             errors.append(f"{rel}:{number}: github-cache")
         action = USES.search(line)
         if action:
@@ -60,7 +141,11 @@ def workflow_violations(
             if reference.startswith("docker://"):
                 if not PINNED_CONTAINER.fullmatch(reference):
                     errors.append(f"{rel}:{number}: unpinned-container-action {reference}")
-            elif not reference.startswith("./"):
+            elif reference.startswith("./"):
+                candidate = root / reference[2:]
+                for name in ("action.yml", "action.yaml"):
+                    errors.extend(action_violations(candidate / name, root, visited_actions))
+            else:
                 revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
                 if not PINNED_SHA.fullmatch(revision):
                     errors.append(f"{rel}:{number}: unpinned-action {reference}")
@@ -77,14 +162,12 @@ def workflow_violations(
                 break
             selector += " " + candidate.strip()
             index += 1
-        if (
-            "${{" in selector
-            and not QDEV_PROFILE.search(selector)
-            and not DYNAMIC_DEPLOYMENT.fullmatch(selector)
-        ):
+        if "${{" in selector and not QDEV_PROFILE.search(selector):
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         selected_profiles = set(QDEV_PROFILE.findall(selector))
         if selected_profiles:
+            if len(selected_profiles) != 1:
+                errors.append(f"{rel}:{number}: multiple-runner-profiles")
             if not selected_profiles <= allowed_profiles:
                 errors.append(f"{rel}:{number}: profile-not-allowed")
             required = ("self-hosted", "Linux", "X64")
@@ -96,10 +179,19 @@ def workflow_violations(
                 for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
             ):
                 errors.append(f"{rel}:{number}: missing-unique-job-label")
-        elif "self-hosted" in selector and not (
-            any(re.search(rf"\b{re.escape(label)}\b", selector) for label in release_runners)
-        ):
-            errors.append(f"{rel}:{number}: unapproved-runner-profile")
+            label_match = re.search(r"qdev-job-[^\s,\]\}'\"]+", selector)
+            if label_match:
+                label = label_match.group(0)
+                if label in unique_labels:
+                    errors.append(f"{rel}:{number}: duplicate-unique-job-label")
+                else:
+                    unique_labels[label] = number
+        elif "${{" not in selector:
+            approved_release = any(
+                re.search(rf"\b{re.escape(label)}\b", selector) for label in release_runners
+            )
+            if not approved_release:
+                errors.append(f"{rel}:{number}: unapproved-runner-profile")
     return errors
 
 
@@ -116,19 +208,14 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
         if not re.search(r"(?m)^github_hosted_fallback:\s*false\s*$", text):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
-        allowed_profiles = set(CONTRACT_PROFILE.findall(text))
+        allowed_profiles = set(contract_list(text, "profiles"))
+        allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
         if not allowed_profiles:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
         release_match = re.search(r"(?m)^release_runner:\s*([^\s#]+)", text)
         if release_match and release_match.group(1).lower() != "null":
             release_runners.add(release_match.group(1))
-        release_block = re.search(
-            r"(?ms)^release_runners:\s*\n((?:[ \t]+-[^\n]+\n?)+)", text
-        )
-        if release_block:
-            release_runners.update(
-                re.findall(r"(?m)^\s+-\s+([A-Za-z0-9_.-]+)\s*$", release_block.group(1))
-            )
+        release_runners.update(contract_list(text, "release_runners"))
 
     agents = root / "AGENTS.md"
     agents_text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
