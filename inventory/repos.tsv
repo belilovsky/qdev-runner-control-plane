@@ -39,7 +39,7 @@ belilovsky/nginx-confs	true	master	qdev-ci	1	1	0	0	0
 belilovsky/npa-collector	true	feat/npa-collector-mvp	qdev-ci	2	1	0	0	0
 belilovsky/ortcom-kz	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	4	3	5	0	2
 belilovsky/osint-hub	true	codex/osint-hub-foundation	qdev-ci,qdev-ci-browser,qdev-ci-docker	2	6	0	0	0
-belilovsky/papa-ryadom	true	main	qdev-ci	4	1	0	0	0
+belilovsky/papa-ryadom	true	app	qdev-ci,qdev-ci-browser,qdev-ci-docker	7	0	0	0	0
 belilovsky/papa-tips	true	main	qdev-ci	1	0	0	0	0
 belilovsky/photo-finder	true	main	qdev-ci,qdev-ci-docker	4	5	0	0	0
 belilovsky/platform-monitor	true	main	qdev-ci	2	1	0	0	0
