@@ -32,6 +32,8 @@ UNIQUE_JOB_LABEL = re.compile(
     r"\$\{\{\s*github\.run_attempt\s*\}\}-[^\s,\]\"']+"
 )
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
+FLOW_RUNS_ON = re.compile(r"(?:^|[{,])\s*['\"]?runs-on['\"]?\s*:\s*(.*)$")
+FORK_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 
@@ -82,6 +84,53 @@ def contract_list(text: str, key: str) -> list[str]:
     return values
 
 
+def has_pull_request_trigger(lines: list[str]) -> bool:
+    """Recognize block and flow forms of a top-level pull_request trigger."""
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"['\"]?on['\"]?\s*:\s*(.*)", line)
+        if not match:
+            continue
+        value = match.group(1)
+        if re.search(r"\bpull_request\b", value):
+            return True
+        for candidate in lines[index + 1 :]:
+            if candidate.strip() and candidate == candidate.lstrip():
+                break
+            if re.search(r"\bpull_request\b", candidate):
+                return True
+        return False
+    return False
+
+
+def job_blocks(lines: list[str]) -> list[tuple[int, str]]:
+    """Return top-level job blocks as normalized text with their start line."""
+    jobs_index: int | None = None
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"jobs\s*:\s*", line):
+            jobs_index = index
+            break
+    if jobs_index is None:
+        return []
+    blocks: list[tuple[int, str]] = []
+    start: int | None = None
+    collected: list[str] = []
+    for index in range(jobs_index + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and line == line.lstrip():
+            break
+        is_job = bool(re.match(r"^  ['\"]?[A-Za-z0-9_.-]+['\"]?\s*:\s*", line))
+        if is_job:
+            if start is not None:
+                blocks.append((start + 1, " ".join(collected)))
+            start = index
+            collected = [line.strip()]
+        elif start is not None:
+            collected.append(line.strip())
+    if start is not None:
+        blocks.append((start + 1, " ".join(collected)))
+    return blocks
+
+
 def action_violations(path: Path, root: Path, visited: set[Path]) -> list[str]:
     """Check external pins and forbidden services in a local composite action tree."""
     path = path.resolve()
@@ -129,6 +178,10 @@ def workflow_violations(
     errors: list[str] = []
     unique_labels: dict[str, int] = {}
     visited_actions: set[Path] = set()
+    if has_pull_request_trigger(lines):
+        for job_line, block in job_blocks(lines):
+            if QDEV_PROFILE.search(block) and FORK_REPOSITORY_GUARD not in block:
+                errors.append(f"{rel}:{job_line}: unguarded-public-fork-job")
     for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -155,17 +208,22 @@ def workflow_violations(
                     errors.append(f"{rel}:{number}: unpinned-action {reference}")
 
         match = RUNS_ON.match(line)
-        if not match:
+        flow_match = None if match else FLOW_RUNS_ON.search(line)
+        if not match and not flow_match:
             continue
-        indent = len(match.group(1))
-        selector = match.group(2)
-        index = number
-        while index < len(lines):
-            candidate = lines[index]
-            if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= indent:
-                break
-            selector += " " + candidate.strip()
-            index += 1
+        if match:
+            indent = len(match.group(1))
+            selector = match.group(2)
+            index = number
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= indent:
+                    break
+                selector += " " + candidate.strip()
+                index += 1
+        else:
+            assert flow_match is not None
+            selector = flow_match.group(1)
         if "${{" in selector and not QDEV_PROFILE.search(selector):
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         selected_profiles = set(QDEV_PROFILE.findall(selector))
@@ -178,13 +236,14 @@ def workflow_violations(
             patterns = (rf"\b{re.escape(label)}\b" for label in required)
             if not all(re.search(pattern, selector) for pattern in patterns):
                 errors.append(f"{rel}:{number}: missing-required-runner-label")
-            if not all(
+            has_unique_components = all(
                 marker in selector
                 for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
-            ):
-                errors.append(f"{rel}:{number}: missing-unique-job-label")
+            )
             label_match = UNIQUE_JOB_LABEL.search(selector)
-            if label_match:
+            if not has_unique_components or not label_match:
+                errors.append(f"{rel}:{number}: missing-unique-job-label")
+            else:
                 label = label_match.group(0)
                 if label in unique_labels:
                     errors.append(f"{rel}:{number}: duplicate-unique-job-label")

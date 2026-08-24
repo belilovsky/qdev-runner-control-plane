@@ -157,6 +157,81 @@ def test_guard_rejects_static_or_incomplete_job_labels(tmp_path: Path) -> None:
     assert result.stdout.count("missing-unique-job-label") == 2
 
 
+def test_guard_rejects_malformed_unique_job_label_order(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_attempt }}-${{ github.run_id }}-test"
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "missing-unique-job-label" in result.stdout
+
+
+def test_guard_rejects_flow_style_runner_selector(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  deploy: {runs-on: production-runner, steps: [{run: echo ok}]}
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "unapproved-runner-profile" in result.stdout
+
+
+def test_guard_rejects_unguarded_pull_request_job(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """on:
+  pull_request:
+jobs:
+  test:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test"
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "unguarded-public-fork-job" in result.stdout
+
+
+def test_guard_allows_same_repository_pull_request_job(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """on:
+  pull_request:
+jobs:
+  test:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test"
+""",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
 def test_guard_enforces_contract_profiles(tmp_path: Path) -> None:
     root = repository(
         tmp_path,

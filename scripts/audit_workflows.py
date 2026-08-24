@@ -33,6 +33,11 @@ USES = re.compile(r"(?:^|[\s,{])['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\",}#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+UNIQUE_JOB_LABEL = re.compile(
+    r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
+    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^\s,\]\"']+"
+)
+FORK_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
 REQUIRED_POLICY_FILES = {
@@ -262,6 +267,14 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                             violation(path, line_number, "unpinned-action", reference)
                         )
         jobs = document.get("jobs", {})
+        triggers = document.get("on", document.get(True, {}))
+        pull_request_triggered = (
+            triggers == "pull_request"
+            or isinstance(triggers, list)
+            and "pull_request" in triggers
+            or isinstance(triggers, dict)
+            and "pull_request" in triggers
+        )
         if isinstance(jobs, dict):
             unique_labels: dict[str, str] = {}
             for job_name, job in jobs.items():
@@ -278,6 +291,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 if isinstance(runner, str) and "${{" in runner and not profiles:
                     violations.append(violation(path, 1, "dynamic-runner-selector", str(job_name)))
                 if profiles:
+                    condition = str(job.get("if", ""))
+                    if pull_request_triggered and FORK_REPOSITORY_GUARD not in condition:
+                        violations.append(
+                            violation(path, 1, "unguarded-public-fork-job", str(job_name))
+                        )
                     if len(profiles) != 1:
                         violations.append(
                             violation(path, 1, "multiple-runner-profiles", str(job_name))
@@ -288,12 +306,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                         violations.append(
                             violation(path, 1, "missing-required-runner-label", str(job_name))
                         )
-                    if not any(
-                        label.startswith("qdev-job-")
-                        and "github.run_id" in label
-                        and "github.run_attempt" in label
-                        for label in labels
-                    ):
+                    if not any(UNIQUE_JOB_LABEL.fullmatch(label) for label in labels):
                         violations.append(
                             violation(path, 1, "missing-unique-job-label", str(job_name))
                         )
