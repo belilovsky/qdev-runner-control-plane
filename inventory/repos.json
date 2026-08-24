@@ -971,16 +971,42 @@
       "full_name": "belilovsky/papa-ryadom",
       "private": true,
       "archived": false,
-      "default_branch": "main",
+      "default_branch": "app",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 4,
+      "workflow_count": 7,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "1cf0dd02b29a1f836e52e5f2fa23edb048ad520a",
-          "hosted_selectors": 1,
+          "sha": "b39bb8ea4be01c32c7ff8e945e2a08fed81b67a5",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "bc78773e933d810d50d9a3c279195bd88fda5412",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/release-image.yml",
+          "sha": "863be91f128818aa751ef2248b641e1687b52add",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/release-seo-hotfix.yml",
+          "sha": "7c74840f84315b82db9f870dab43672b64f9d322",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
