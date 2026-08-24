@@ -113,6 +113,17 @@ branch. Run `runner-smoke` on each resulting default SHA and record repository,
 SHA, run ID, queue time, and runner name. Deployment workflows and dedicated
 release labels are never dispatched as part of this validation.
 
+After a wave is merged, dispatch and record only the smoke workflow in bounded
+batches:
+
+```bash
+.venv/bin/python scripts/run_smoke_rollout.py --apply --batch-size 15 \
+  --output runner-smoke-receipt.json
+```
+
+The script resolves each repository's current default SHA before dispatch and
+fails unless every recorded `runner-smoke` job completes successfully.
+
 ## Local verification
 
 ```bash
