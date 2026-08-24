@@ -27,6 +27,10 @@ USES = re.compile(r"(?:^|[\s,{])['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\",}#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
+UNIQUE_JOB_LABEL = re.compile(
+    r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
+    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^\s,\]\"']+"
+)
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
@@ -179,7 +183,7 @@ def workflow_violations(
                 for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
             ):
                 errors.append(f"{rel}:{number}: missing-unique-job-label")
-            label_match = re.search(r"qdev-job-[^\s,\]\}'\"]+", selector)
+            label_match = UNIQUE_JOB_LABEL.search(selector)
             if label_match:
                 label = label_match.group(0)
                 if label in unique_labels:
