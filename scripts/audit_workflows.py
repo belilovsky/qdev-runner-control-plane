@@ -267,6 +267,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             for job_name, job in jobs.items():
                 if not isinstance(job, dict):
                     continue
+                # A reusable-workflow call is itself pinned by the action scan
+                # above and deliberately has no local runner selector.
+                if "uses" in job and "runs-on" not in job:
+                    continue
                 runner = job.get("runs-on", [])
                 labels = [runner] if isinstance(runner, str) else runner
                 labels = [str(label) for label in labels if isinstance(label, str)]
