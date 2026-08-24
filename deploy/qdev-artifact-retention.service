@@ -3,7 +3,6 @@ Description=Delete expired QDev CI artifacts
 
 [Service]
 Type=oneshot
-ExecStart=/opt/qdev-runner-control-plane/deploy/artifact-retention.sh
+ExecStart=/opt/qdev-runner-control-plane/current/deploy/artifact-retention.sh
 Nice=10
 IOSchedulingClass=idle
-
