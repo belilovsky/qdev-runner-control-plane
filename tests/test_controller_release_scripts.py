@@ -12,7 +12,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "systemctl" not in script
     assert "mv -Tf" in script
     assert "rollback" in script
-    assert "free < 31457280" in script
+    assert "QDEV_CONTROLLER_MIN_FREE_GIB:-30" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85" in script
+    assert "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert "min_free_gib * 1048576" in script
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script
