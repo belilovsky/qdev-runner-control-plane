@@ -1,9 +1,9 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-08-23T10:20:41.925708+00:00",
+  "generated_at": "2026-08-25T08:46:06.952091+00:00",
   "owner": "belilovsky",
-  "active_repository_count": 91,
-  "runner_repository_count": 87,
+  "active_repository_count": 96,
+  "runner_repository_count": 92,
   "repositories": [
     {
       "id": 1309880938,
@@ -14,8 +14,25 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
-      "workflow_files": []
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
     },
     {
       "id": 985872688,
@@ -27,20 +44,36 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/python-tests.yml",
-          "sha": "75c3bead4eaeba60dd89fbef188131c2cf0e461d",
-          "hosted_selectors": 3,
+          "sha": "a6d142242a40a534e9cd9e4ea83cc2a5f8355cd6",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 4,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/release-sbom.yml",
-          "sha": "840791c6ac2bbb489c03f361ff11aeb838c1834c",
-          "hosted_selectors": 1,
+          "sha": "3fef6f5e4fae345398b9e609256f28225087ed44",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -56,12 +89,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -77,11 +126,27 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "f27fb2da942888cbdae34c8bec7292132b85f580",
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -98,22 +163,38 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "ae59c0b55fa525011dd1e50ed70b8f0c986a5007",
+          "sha": "94dc9ac19fd1f44b20198b6774feb2aa37711801",
           "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/publish-packages.yml",
-          "sha": "e7c5659a810ae2e83dcce0716408015a3b7ce2b1",
+          "sha": "69e52dcd98e882a4a761294fb3f70f6536f78746",
           "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "030b82115bde85b6d935e4e1d07a65c9b0ea80d1",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -125,15 +206,29 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci",
-        "qdev-ci-docker"
+        "qdev-ci"
       ],
-      "release_runner": "cmnt-bank-league-deploy",
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "97d17ad55a2b605385d305d87d569e2d7ea634e2",
+          "sha": "79ab68283336bca515c385af95a496ef009bbf72",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -152,19 +247,35 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/live-quality.yml",
-          "sha": "7af2133f0fdeeaaf1887e45e92d6384f5d3b5bde",
+          "sha": "6e8ad511f709d42e25b6385faf8d63e9d1fa24e2",
           "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "c73dbcace8547b55ff9d80df3e192f65c96607f2",
+          "sha": "6eaa41b64fd0b54ef176b34017351f90f34fd3d3",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "030b82115bde85b6d935e4e1d07a65c9b0ea80d1",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -181,12 +292,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -202,12 +329,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -224,14 +367,30 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "00554435c7799c25b254b85deef396a4169d5304",
-          "hosted_selectors": 2,
+          "sha": "3d68551411ca656db667b068f86cebdf81ac1f8d",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 3,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -245,12 +404,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/advisory-validation.yml",
-          "sha": "c6e7ba3a625852cc4dcb0427642dea6f91b1e185",
-          "hosted_selectors": 1,
+          "sha": "9e5a508452f3b9de9bb5979bf1f68c5992d08680",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -268,11 +443,11 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/README.md",
-          "sha": "6cb164e7d4188255ac241a4a953a19cae55ecb83",
+          "sha": "45f23e204b6f8dc68fbf44ed17ef405b4d8e2f6e",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -280,18 +455,34 @@
         },
         {
           "path": ".github/workflows/avds-upstream-drift.yml",
-          "sha": "4ba9bd836938c50262012b285d06ea52a35ad12d",
-          "hosted_selectors": 1,
+          "sha": "f0be6d71c97c155b6aba5d524cc34de0deb3dd93",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "ce4c6cab708aa55d70b32da4da2ff621751a260f",
-          "hosted_selectors": 2,
+          "sha": "f65241b3092b276a7fc208892f360745fd5935a4",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -305,12 +496,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "298f3112989a7ba627b890ff9f1ab6b26f1eede7",
-          "hosted_selectors": 1,
+          "sha": "63a4057d75882b945ca5018346b8bf98a53752a1",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -326,12 +533,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/contract-gate.yml",
-          "sha": "bec85f8d02b6cdd8cff1ae51b993d2e2fd202e7f",
-          "hosted_selectors": 1,
+          "sha": "0ece2e89d52f91b212c3fbce36c109c8abb5f5cf",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -349,15 +572,23 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/main.yml",
-          "sha": "32f7cd8e1689841e46bafce376e42a2008f7ac49",
-          "hosted_selectors": 9,
-          "cache_refs": 4,
-          "artifact_refs": 4,
-          "ghcr_refs": 4
+          "sha": "c497d860f9177191b234d44ab3d13865eb3e006f",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         }
       ]
     },
@@ -370,11 +601,56 @@
       "profiles": [
         "qdev-ci"
       ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1344085329,
+      "full_name": "belilovsky/disarm",
+      "private": false,
+      "archived": false,
+      "default_branch": "master",
+      "profiles": [
+        "qdev-ci"
+      ],
       "workflow_count": 1,
       "workflow_files": [
         {
-          "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "path": ".github/workflows/release-evidence.yml",
+          "sha": "a34f3f8d9fa25db54da14fec66729d872dd54904",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/source-quality.yml",
+          "sha": "66cb7bc754c984d2681cb47123ab60914924755e",
           "hosted_selectors": 1,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -392,28 +668,36 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/gdelt-daily.yml",
-          "sha": "e7863f4ea9bf53719a3bb2acc186249d6a206c0b",
-          "hosted_selectors": 1,
+          "sha": "3d74bdc0c463fc1021891e78d1ef215c64adb5a6",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/test-and-deploy.yml",
-          "sha": "847d6f0e5351ebe78b6732e7e2ed18729bc0c0f3",
-          "hosted_selectors": 5,
+          "sha": "7a268f15d511d834691051444f8d93d88f3b9dbc",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 3,
-          "ghcr_refs": 3
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/verify-qazgeo-full.yml",
-          "sha": "8804091731c2dba8767bc5f747fca36b3efb0a15",
-          "hosted_selectors": 1,
+          "sha": "6a68c77c220e453bbd7b0e091e92df2086aedbe2",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -427,39 +711,54 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci",
-        "qdev-ci-docker"
+        "qdev-ci"
       ],
-      "workflow_count": 5,
+      "workflow_count": 7,
       "workflow_files": [
         {
           "path": ".github/workflows/ci-node.yml",
-          "sha": "ec3da05eadb727d67dfa8e6a9fbbb61b3e35f564",
-          "hosted_selectors": 5,
+          "sha": "a4d42746d01d5d3e16206800330868d0db6f383e",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/ci-python.yml",
-          "sha": "d676aa886b24eb76952dec81f7dabb9f9e424f16",
-          "hosted_selectors": 4,
-          "cache_refs": 3,
+          "sha": "f55d9c97fa3e28d87b5ed47df546ad106ac7149d",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/ci-static.yml",
-          "sha": "2eedb0533a84ce28511edd4224151c79bdea7d27",
-          "hosted_selectors": 2,
+          "sha": "f2a786ae60b2d462217a08ae96886204cc07d33b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/quality-v3.yml",
-          "sha": "ca55510089396b1297aff2997d19a7996f07f24c",
-          "hosted_selectors": 1,
+          "sha": "6ee967f3e7e99aa25c5abef81961a8efd8e339fb",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -475,12 +774,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -497,14 +812,22 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
-          "path": ".github/workflows/verify.yml",
-          "sha": "70e4b17fd07efcaba8f690e152a61ff9efc9a668",
-          "hosted_selectors": 1,
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "da187621b7999f3adfea873193356348fe2c3ac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -518,12 +841,29 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
-      "workflow_files": []
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
     },
     {
-      "id": 1243905644,
-      "full_name": "belilovsky/grant-radar",
+      "id": 1341123019,
+      "full_name": "belilovsky/gg-echolot",
       "private": true,
       "archived": false,
       "default_branch": "main",
@@ -534,8 +874,45 @@
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "ae5112af5f5ba4bb92918e3a48d84d52a58542dd",
+          "sha": "3ec4cf5f78d33691be13ddae47acb4e453f5f4cb",
           "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1243905644,
+      "full_name": "belilovsky/grant-radar",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "5c90415587b1aebc7b5679517975eb79da36cf98",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -553,14 +930,22 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
-          "path": ".github/workflows/verify.yml",
-          "sha": "932b6bb042d2ba6fcf18470abe1110d2fff1eb6a",
-          "hosted_selectors": 3,
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "8e557fe0c82fe1860b7eb1ea5a731a67d41d7f17",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -575,14 +960,22 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/qz-site-checks.yml",
-          "sha": "019a80ff48d534464bbc51a4adf61a688b3ca3b9",
-          "hosted_selectors": 2,
+          "sha": "a2e582f7890fb1e0f990bd137bb9e08920a64519",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -597,12 +990,28 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "3081c7302e43bed145a4aec21809b4e6bbd76d1d",
-          "hosted_selectors": 1,
+          "sha": "5d88672c929429f05816004cafa55eefa0f8cb3b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -619,12 +1028,28 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "5901f2932ce9c2dd6638bf319b77f2c1487adaf7",
-          "hosted_selectors": 1,
+          "sha": "1dd68d958111664976638f3adf76d9022e309dd2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "a439b40ecf3720d12b9d40f0b2c638cd5c02415d",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -641,24 +1066,39 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "ipos-release",
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "ab64864659bf9d317ad7fa195f9180ce1b0aa623",
-          "hosted_selectors": 2,
+          "sha": "331c9e0cebe5f22f667aa8c764bb511ba10d07be",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/release.yml",
-          "sha": "08278efa055c928873f4011649e97e22226bcbfb",
-          "hosted_selectors": 1,
+          "sha": "0ea1be2ee1decdbc2a78c37162ae46d783e750a2",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
-          "ghcr_refs": 4
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         }
       ]
     },
@@ -671,12 +1111,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "657f01b23619ca1adc218844e43a345736bc2a8a",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "a174affb0287eb19489837373fb03cfa9e127e59",
-          "hosted_selectors": 2,
+          "sha": "89727cc2948f5f332f2685a25d15bcdea3c8345d",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -693,14 +1149,22 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "8b668a18319d7f3d7cf81bd645081041819daef0",
+          "sha": "98fdac85cefdf38c0204edb28f04cc0dccf49b7a",
           "hosted_selectors": 1,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -714,12 +1178,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "cbb84e731cc08f4d2113ddd3130122b414ccbe2b",
-          "hosted_selectors": 2,
+          "sha": "5eda7eb3c7e63821cfb806a3a11ebfbf4ea02d57",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -735,11 +1215,19 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/monitoring.yml",
-          "sha": "2b754c48a5fae00eb0292ba272b9cbb0c9c386b3",
+          "sha": "ff03e297b4e99fdbb2fd514edbe1f0ffcb4f1418",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -747,7 +1235,15 @@
         },
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "55591936c2ba6e0d7aee74b60d0070e0f5b40750",
+          "sha": "4de104118c5a3ec1abc9846b9c7439e66e8f8bba",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -765,15 +1261,23 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "9770755748bcd42d28bff5ac4a26d20a4f1f7f48",
-          "hosted_selectors": 2,
+          "sha": "4a7fa125b355bca9742731b1e00830c6047e87fb",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 1,
           "ghcr_refs": 2
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         }
       ]
     },
@@ -786,8 +1290,25 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
-      "workflow_files": []
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
     },
     {
       "id": 1203801372,
@@ -798,11 +1319,11 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/deploy-monitor.yml",
-          "sha": "9d94421d369033b1633734d4ea3d0e030ab7c81a",
+          "sha": "673f71a9c57823cd64c692cac72239b491c8d115",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -810,7 +1331,15 @@
         },
         {
           "path": ".github/workflows/deploy.yml",
-          "sha": "d778694b42abe1c4b389e4f88be7e7085194f1aa",
+          "sha": "d495e9166cb7b7648619024fe9aa8d61cb0e02ff",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -818,8 +1347,8 @@
         },
         {
           "path": ".github/workflows/verify.yml",
-          "sha": "c91d45f611f7084410558e367b20d37db305afc0",
-          "hosted_selectors": 1,
+          "sha": "e00ac4f3ac98abb3ee414e5cee524c693fe259c8",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -836,12 +1365,28 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "1ddd9736f7e61ac020b69e0124e8d8c68f7eda6c",
-          "hosted_selectors": 2,
+          "sha": "b739b3e50fd92c18fdba2c7e4ebaa43e026fc6de",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -857,12 +1402,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -878,12 +1439,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "674379bf21748013f494084605b20d4821aefac2",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -899,12 +1476,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "40a910e45e9f4d1c95fc54bcc88b8177ce57686e",
-          "hosted_selectors": 1,
+          "sha": "fb49596f7c0c24165f06b2429726cfa24b2631ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -922,12 +1515,11 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "release_runner": "ortcom-deploy",
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "b5624f33dd139d736ed2b700cce21cbf008aca8e",
+          "sha": "69b34e2fd1b2e534d8bbd839217fd30fabae17ee",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 3,
@@ -954,12 +1546,28 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "911419db9b0d9650199ab6441d2af49c350a9ea8",
-          "hosted_selectors": 6,
+          "sha": "e1eacf50a9f1c292f1a039dbcd83a8aee3e7871e",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "7138668da84a9894aa9b395189c4146374a9221d",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -981,7 +1589,7 @@
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "b39bb8ea4be01c32c7ff8e945e2a08fed81b67a5",
+          "sha": "a90ee22d3efd44ebf1a3aeb02d76e93057b19b43",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -997,7 +1605,7 @@
         },
         {
           "path": ".github/workflows/release-image.yml",
-          "sha": "863be91f128818aa751ef2248b641e1687b52add",
+          "sha": "b7e408980a50314c42721ee4dd377b559b53b5a0",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1005,7 +1613,7 @@
         },
         {
           "path": ".github/workflows/release-seo-hotfix.yml",
-          "sha": "7c74840f84315b82db9f870dab43672b64f9d322",
+          "sha": "8e56d836b64d2accc041213f775a3010aeb45d92",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1022,8 +1630,25 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
-      "workflow_files": []
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
     },
     {
       "id": 1203946225,
@@ -1035,29 +1660,44 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "photo-finder-deploy",
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "8aed3d94e2563252f6904a66bb560d63ae3ba15c",
-          "hosted_selectors": 1,
+          "sha": "39ed043c6b20d4fc920446cb5e4518ed69448070",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/deploy.yml",
-          "sha": "67884f91089b43a7428a5bc8ac224e64f4cfc920",
-          "hosted_selectors": 3,
+          "sha": "c1c85d0aae45ad50d25e12478e39c512ec89dc76",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "876218dda17310bafd330349f9b8fc1a867b0d89",
-          "hosted_selectors": 1,
+          "sha": "73230429698933c5a82616fc8317d65752f60505",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1071,14 +1711,23 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
+          "sha": "6504f80803447acc64c7d5d9359f47b518c97062",
           "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "2df2e35c9daa8ce6671077d09c535cc647b7a8e7",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1095,12 +1744,11 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "release_runner": "qdev-platform-ci",
-      "workflow_count": 9,
+      "workflow_count": 11,
       "workflow_files": [
         {
           "path": ".github/workflows/daily-scan.yml",
-          "sha": "38022575b50dbe3e72775c5bdf959388aabdcadf",
+          "sha": "3a33ce7ef76ffaa77db1e7880a8500631619c83f",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1108,7 +1756,7 @@
         },
         {
           "path": ".github/workflows/deploy-platform.yml",
-          "sha": "b10e6de03646011179aba815b147e8eb66fcc8f5",
+          "sha": "523e02dc68365e4a718034d4fa0531191f8c5a72",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1116,7 +1764,7 @@
         },
         {
           "path": ".github/workflows/deploy-wm-surface.yml",
-          "sha": "04b3aeb0bdd629a7e39190cd8cea63a91958d6d9",
+          "sha": "18267d811bbe4932a8f46780b52a954ece7fb6ec",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1124,15 +1772,31 @@
         },
         {
           "path": ".github/workflows/discover-qazstack.yml",
-          "sha": "1d543320cd7d378164294e574faa5d3f7bf75451",
-          "hosted_selectors": 1,
+          "sha": "8f4070ff5a8d86134f22c064188e3ac1b8c67a46",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/project-idea-radar-github-discovery.yml",
-          "sha": "be866243dc0c6f58c0185913f6f3fe44fb695262",
+          "sha": "5cb7419d274b444d38f898c92647fbb4a5de78e4",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "cf21068b1f4d27af6383cb30e0b72ec2c1aa89bf",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1140,7 +1804,7 @@
         },
         {
           "path": ".github/workflows/sync-docmost.yml",
-          "sha": "a98492a66e5f6503a31b7b6007d10c2781974179",
+          "sha": "f31099ff2eef194cf828ed46900823f07cde1877",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1148,7 +1812,7 @@
         },
         {
           "path": ".github/workflows/validate.yml",
-          "sha": "e3212e722d9e0609a5fe345c39fd64713abb0da4",
+          "sha": "0a441bd3c770b2a65d3e3de87fc81ecc3f38b7f5",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1165,12 +1829,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "ff9a215846c6640afc17bbfb09990aa8b1930c40",
-          "hosted_selectors": 1,
+          "sha": "ea6e6554caa00b47ddfd5e6ae711b8cb89aaf8ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1184,14 +1864,23 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "a785622e437215519d9e045bcccdedc08ddda3f4",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1207,19 +1896,27 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 3,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci-self-hosted.yml",
-          "sha": "30ea7e24d1d04f8d2efec7602faf5f7a17052dbd",
+          "sha": "c7fdc5d3063ea5223ccb5cc740f9306d300add79",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
-          "path": ".github/workflows/ci.yml",
-          "sha": "a0f3102612aff7a0044b66bee63827fe11838cb0",
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1237,21 +1934,20 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "pssr",
-      "workflow_count": 5,
+      "workflow_count": 7,
       "workflow_files": [
         {
           "path": ".github/workflows/ci-self-hosted.yml",
-          "sha": "2d739734063a6c3820a59cd09f1c7c6e53c9e78f",
-          "hosted_selectors": 1,
+          "sha": "81a9a16c26f6d751aab24b9c0603a8cf2478ba95",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "495d9e9f430e27624f95fe576caca1d6dc4ce65a",
-          "hosted_selectors": 4,
+          "sha": "da7b8d34ff55dfebfe1ec2daf0d8e096571ff6f6",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1259,6 +1955,22 @@
         {
           "path": ".github/workflows/deploy-cockpit-ui.yml",
           "sha": "39b226f68608d8fd3d76658bdde2c1a4409f8f84",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1275,12 +1987,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "4231899ebc6652ce9204d0fccc50c0f0ce2e4c29",
-          "hosted_selectors": 1,
+          "sha": "2369c627c66fe0e647f5f5c07df4b03f0b4b5580",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1296,11 +2024,27 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "693d3cf101eea336ba71c87b987a244d0203a0a9",
+          "sha": "51eacfff1719dc254e615093f9479447a4628d1b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1317,11 +2061,48 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "0b7ba3e11e2933edcb7b70a85701ca9c0e1b5508",
+          "sha": "02c780b33825c09d04ed8930d39ca9f8ceaf9244",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1344068100,
+      "full_name": "belilovsky/qamqor-care-site",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "20504f6527b22ef0f1e348480526d4bf42070a76",
           "hosted_selectors": 1,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1340,12 +2121,28 @@
         "qdev-ci-browser",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "5228536d2af5aaf90d59d38ad550e2737079eee2",
-          "hosted_selectors": 6,
+          "sha": "7fd8b0d3f9178bcdd09752d84041dd7e06ee2c29",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-docker-smoke.yml",
+          "sha": "e706b8b9a47cf548028d2036ff85e67706bd87cf",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "a03696fd245503bde360069eb3b6c6b183b2ec5d",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1361,14 +2158,30 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "a26f7a90e981a3fa6e5d85f7e574e1591f4b6c23",
-          "hosted_selectors": 1,
+          "sha": "5f9ce179a3857e895f05994f35aba9860783892e",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -1382,22 +2195,30 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "3ce913f407ea51f41153964987546520428a0298",
-          "hosted_selectors": 1,
+          "sha": "79112010f11a1636956beaf4bd97ecf3362d0604",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/public-contract-monitor.yml",
-          "sha": "c6e78a520f83521b2f2fc843c1c688e832b6efcc",
-          "hosted_selectors": 1,
+          "sha": "4344fdf0a676f97633bfea15a8265dc05a1f56d4",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -1411,12 +2232,112 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "eeae16f1e092a421953d8dc7917f84338c3f7bd3",
-          "hosted_selectors": 1,
+          "sha": "512fe8eff21a14985b7c9560a9f87a208d298809",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1330071094,
+      "full_name": "belilovsky/qaz-support",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser"
+      ],
+      "workflow_count": 3,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "030b82115bde85b6d935e4e1d07a65c9b0ea80d1",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/verify.yml",
+          "sha": "a086d744ed58d36ba7096125ec89a4b713b86016",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1225689075,
+      "full_name": "belilovsky/qazagents",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 5,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "7147d68c325816d7f9a93673066e3efe1fdab73b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/lint-agents.yml",
+          "sha": "c55b159a87c7ecbdce169ec84aa9b4067f090953",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "c74ebbd98e52aaed9b6ebefdcb64585a32fed2fb",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1432,7 +2353,7 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/quality.yml",
@@ -1453,58 +2374,6 @@
       ]
     },
     {
-      "id": 1330071094,
-      "full_name": "belilovsky/qaz-support",
-      "private": true,
-      "archived": false,
-      "default_branch": "main",
-      "profiles": [
-        "qdev-ci",
-        "qdev-ci-browser"
-      ],
-      "workflow_count": 1,
-      "workflow_files": [
-        {
-          "path": ".github/workflows/verify.yml",
-          "sha": "c0087b00ee1649a02f680c3ec02a3acde54b53cb",
-          "hosted_selectors": 1,
-          "cache_refs": 0,
-          "artifact_refs": 0,
-          "ghcr_refs": 0
-        }
-      ]
-    },
-    {
-      "id": 1225689075,
-      "full_name": "belilovsky/qazagents",
-      "private": true,
-      "archived": false,
-      "default_branch": "main",
-      "profiles": [
-        "qdev-ci",
-        "qdev-ci-docker"
-      ],
-      "workflow_count": 3,
-      "workflow_files": [
-        {
-          "path": ".github/workflows/ci.yml",
-          "sha": "a17e736566f9aad1056488439ea0d67945942ce5",
-          "hosted_selectors": 1,
-          "cache_refs": 0,
-          "artifact_refs": 1,
-          "ghcr_refs": 0
-        },
-        {
-          "path": ".github/workflows/lint-agents.yml",
-          "sha": "bbf5b4f3ba78ea8d7627c653201d05f27bcfaa46",
-          "hosted_selectors": 1,
-          "cache_refs": 0,
-          "artifact_refs": 0,
-          "ghcr_refs": 0
-        }
-      ]
-    },
-    {
       "id": 1206670519,
       "full_name": "belilovsky/qazcompute",
       "private": true,
@@ -1514,15 +2383,54 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "28a19089f1244ebefb4de9bb8895a2b7f6ab15b5",
+          "sha": "bc01fabecf693ecd0e41975ab08ed1aa76c10f6a",
           "hosted_selectors": 0,
-          "cache_refs": 1,
+          "cache_refs": 0,
           "artifact_refs": 0,
-          "ghcr_refs": 1
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1344090030,
+      "full_name": "belilovsky/qazfin",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "07ef95c05c10c4a8cd54889c9f03d1d85bb0766b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         }
       ]
     },
@@ -1536,15 +2444,31 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "429648374cfb0a60e4fd2132b1c2bae4b43483da",
+          "sha": "3cf96e458600fbc1821e59c9ba6b6798a9e97abe",
           "hosted_selectors": 0,
-          "cache_refs": 1,
+          "cache_refs": 0,
           "artifact_refs": 0,
-          "ghcr_refs": 1
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
         }
       ]
     },
@@ -1558,12 +2482,28 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/advisory-validation.yml",
-          "sha": "68a096797af803ace69235b1a564866da84b9f01",
-          "hosted_selectors": 1,
+          "sha": "fcff1c92e1be881139b8c868fd01fd41ec323ba6",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1579,19 +2519,35 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/scientific-foundations.yml",
-          "sha": "98748760a098aa40d353fe1c109f00c2db4b834e",
+          "sha": "097ef8ee0783da8126a1a2e84cf8b24595a951bd",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1606,13 +2562,22 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "5e608e1cdcff654580de8fa26a9b9b6a070851c0",
+          "sha": "2a4568156596300745710c33a266c5a0c7aafd36",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1629,12 +2594,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/python-tests.yml",
-          "sha": "b708386314d93b15281a4a1d82a7b2f3d1cf2572",
-          "hosted_selectors": 1,
+          "sha": "3e5b2ba09a3aae435a8ae9138bfe0f592396a851",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1650,7 +2631,7 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/qazlost-checks.yml",
@@ -1671,11 +2652,11 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/advisory-validation.yml",
-          "sha": "86ba3debd63e725fa55a8e6d735389c9e08fb1b1",
+          "sha": "b76d6811c8d1cefe26e642bae54842a07c2519e8",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1683,7 +2664,23 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "0f757d002e0912c70b1b1195cda6c8f9bd5d514b",
+          "sha": "5bedf2ba399b7c33a94567f3a695e2a0a9b35160",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1700,12 +2697,27 @@
       "profiles": [
         "qdev-ci"
       ],
-      "release_runner": "qazpolit-release",
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "ffaaac93b4ff3575b0876d8396473359f5e93f40",
+          "sha": "abcb4958ad2e973833dee0104e7ecfc7bcd06e28",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1723,11 +2735,27 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "e00c5c5d857173e6434b9a9c23677c118a6661bd",
+          "sha": "e1e101020639a813398809e5ba7e1dd95bed2c08",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "030b82115bde85b6d935e4e1d07a65c9b0ea80d1",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1744,11 +2772,19 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "42570f90f29fef052352acd08d9e5e3e26b5a494",
+          "sha": "50f238bc07029961d6c199961c99c34cbb91aee0",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1765,8 +2801,7 @@
       "profiles": [
         "qdev-ci"
       ],
-      "release_runner": "qazstack-release",
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
@@ -1795,12 +2830,57 @@
       "profiles": [
         "qdev-ci"
       ],
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1345648574,
+      "full_name": "belilovsky/qdev-guardian",
+      "private": true,
+      "archived": false,
+      "default_branch": "main",
+      "profiles": [
+        "qdev-ci"
+      ],
       "workflow_count": 2,
       "workflow_files": [
         {
-          "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "path": ".github/workflows/ci.yml",
+          "sha": "48e0d78227c121dcb1b12c16d29fd81d1db3bc86",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1816,12 +2896,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "3540d52ecb2960a0ce51909113f6760653f86e90",
-          "hosted_selectors": 1,
+          "sha": "424d24b07bc54e322ba97f63d2b6749241066879",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1838,12 +2934,28 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "5d4ab795cd5736fa775a8151b09b526fb9791199",
-          "hosted_selectors": 1,
+          "sha": "60f60565c46d53121d15e76b4eef7dded6d29566",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1860,20 +2972,36 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "b2473e6df2eb3617c694f4eb99eb518d2cc12a3e",
-          "hosted_selectors": 1,
+          "sha": "8e6b6f5c37ae03f7f1cc6120ec845f2b73ef2bd4",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/deploy.yml",
-          "sha": "a271bc3721f59eedab81e426d92eade5575c3e29",
-          "hosted_selectors": 1,
+          "sha": "6761fbf995c9d09237fabc8e7b395f6d1306ffd6",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1889,11 +3017,19 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "306832dfdffd803349e78827912313941eb48791",
+          "sha": "4527a812e4b3ccda1c35e32ba5271b64d0cc46b4",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1910,12 +3046,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -1932,14 +3084,30 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "dbe2bae1047770b993e655bffe7bd663e9d10c7a",
-          "hosted_selectors": 3,
+          "sha": "d117b597f75d5a8df5450efd127d317307c5ca8a",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -1954,12 +3122,11 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "sgeo-deploy",
-      "workflow_count": 5,
+      "workflow_count": 8,
       "workflow_files": [
         {
           "path": ".github/workflows/benchmark-cron.yml",
-          "sha": "5a2ac709f05b35161f6e3a1bf25c793a207718ab",
+          "sha": "8e713363e5674772cc33c8b80251c7cf82af80fc",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1967,7 +3134,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "aab28713e06c05297e6b10971a19e3a8b1135dfa",
+          "sha": "90b3bedcef38fe08a0e410cdb2afab3a535984b4",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1975,7 +3142,23 @@
         },
         {
           "path": ".github/workflows/deploy.yml",
-          "sha": "554797c7d08626756691a5e0844fe9970f6fef3c",
+          "sha": "e52cfb98a05b01ef9e235ba1911e399bade94bb8",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -1983,7 +3166,7 @@
         },
         {
           "path": ".github/workflows/selftest.yml",
-          "sha": "26c45169b902b90546fdc0c460aa3a416dfe6fc5",
+          "sha": "709fc6f80e36673cb727561fac1b3d62dcdad4c5",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2001,29 +3184,44 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "shelter-deploy",
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/android.yml",
-          "sha": "efc372e2533d3273a491f914a06d28e25bdb89d0",
-          "hosted_selectors": 1,
+          "sha": "b2fee03ab841cad883ecd537f5bc5591aad5bdbb",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/deploy.yml",
-          "sha": "a553e98c09987966b217ea5d01074091293ff09f",
-          "hosted_selectors": 1,
+          "sha": "5d86da4a9f18bf40c70d3a8fd981b4857cb033da",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
         },
         {
           "path": ".github/workflows/lint.yml",
-          "sha": "f73b65cd27d3ff59cc992459f18174b5a9cfadb0",
-          "hosted_selectors": 1,
+          "sha": "627725aad7bccc0d1b296d20ccb10f911ca5d5fd",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -2039,12 +3237,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -2060,12 +3274,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -2082,14 +3312,30 @@
         "qdev-ci",
         "qdev-ci-browser"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "24ee7f40edd76d58fcbb1cd6428dcc3bc71f547b",
-          "hosted_selectors": 1,
+          "sha": "d63e53ecd4d143d4fecbf4b063fb344dbc823cd6",
+          "hosted_selectors": 0,
           "cache_refs": 0,
-          "artifact_refs": 1,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
           "ghcr_refs": 0
         }
       ]
@@ -2103,12 +3349,28 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 1,
+      "workflow_count": 3,
       "workflow_files": [
         {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/verify.yml",
-          "sha": "27709824d72199eab363de50c1d8d93b75ca664d",
-          "hosted_selectors": 1,
+          "sha": "c7a8eea04a91ccc93a6821464dd647db707d6e0b",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -2124,12 +3386,19 @@
       "profiles": [
         "qdev-ci"
       ],
-      "release_runner": "tokaev-android-release",
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
         {
           "path": ".github/workflows/android-release.yml",
-          "sha": "77d8f5363460c6e30861058df6d3d822272676a5",
+          "sha": "c1904d2fa8e7f1a34a68c51631c979c60846c398",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2137,8 +3406,16 @@
         },
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "4792b5bf7833b5e8823484bf2551e933b525a5c2",
-          "hosted_selectors": 1,
+          "sha": "4a9e7b524f5dd6e11a5b1ff1e664ba1c930ff5ea",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
@@ -2154,8 +3431,17 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
-      "workflow_files": []
+      "workflow_count": 4,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "sha": "ece54a06cf082618be33e8e2ac99987d359a2274",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
     },
     {
       "id": 1201958270,
@@ -2167,13 +3453,28 @@
         "qdev-ci",
         "qdev-ci-docker"
       ],
-      "release_runner": "vps-pipelines-deploy",
-      "workflow_count": 2,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/deploy_geo.yml",
-          "sha": "92423956194556d5242ae284307ead27d88b0cd3",
-          "hosted_selectors": 1,
+          "sha": "54e049d986fb0d01d8d1bcb138040a3eaf5c433b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qdev-runner-contract.yml",
+          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
