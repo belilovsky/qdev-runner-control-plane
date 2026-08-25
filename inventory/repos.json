@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-08-25T08:46:06.952091+00:00",
+  "generated_at": "2026-08-25T08:50:20.850164+00:00",
   "owner": "belilovsky",
   "active_repository_count": 96,
   "runner_repository_count": 92,
@@ -2867,11 +2867,11 @@
       "profiles": [
         "qdev-ci"
       ],
-      "workflow_count": 2,
+      "workflow_count": 3,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "48e0d78227c121dcb1b12c16d29fd81d1db3bc86",
+          "sha": "1c22a76a5fb0727c371c34ba96a7d595005250d2",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2880,6 +2880,14 @@
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
           "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/runner-smoke.yml",
+          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
