@@ -31,11 +31,33 @@ disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
 memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
+no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85}"
+min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-30}"
+min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
+max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
+for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_per_cpu"; do
+  [[ "$value" =~ ^[0-9]+$ ]] || {
+    printf 'controller capacity overrides must be non-negative integers\n' >&2
+    exit 64
+  }
+done
+if [[ "$no_build" != true ]] && {
+  [[ "$max_disk_used_pct" != 85 ]] || [[ "$min_free_gib" != 30 ]] ||
+    [[ "$min_memory_gib" != 4 ]] || [[ "$max_load_per_cpu" != 2 ]]
+}; then
+  printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true\n' >&2
+  exit 64
+fi
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" 'BEGIN {
-    if (used > 85 || free < 31457280 || mem < 4194304 || load15 > (2 * cpus)) exit 1
+  -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
+  -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
+  -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
+    if (used > max_used || free < (min_free_gib * 1048576) ||
+        mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
   }' || {
-    printf 'capacity gate rejected controller activation\n' >&2
+    printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
+      "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
     exit 75
   }
 
@@ -62,7 +84,7 @@ install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
-if [[ "${QDEV_CONTROLLER_NO_BUILD:-false}" == true ]]; then
+if [[ "$no_build" == true ]]; then
   compose_action=(up -d --no-build --no-deps broker-public broker-internal)
 else
   compose_action=(up -d --build --no-deps broker-public broker-internal)

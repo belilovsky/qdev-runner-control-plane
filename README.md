@@ -88,6 +88,13 @@ the registry, remove Compose or Docker objects, or touch product containers.
 If either Compose or the public health check fails, the script restores the
 previous release and its inventory.
 
+For an inventory-only revision that reuses the already verified broker images,
+the owner may make a bounded capacity override together with
+`QDEV_CONTROLLER_NO_BUILD=true`. The defaults remain 85% disk use, 30 GiB free
+disk, 4 GiB available memory and load-15 at two times CPU count. Override only
+the measured failing floor, keep the previous immutable release available and
+record the live health receipt.
+
 To select a previously staged revision without rebuilding its cached images:
 
 ```bash
