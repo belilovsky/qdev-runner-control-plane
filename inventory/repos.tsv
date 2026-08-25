@@ -9,7 +9,7 @@ belilovsky/cmnt-web	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	6	0	0	0	0
 belilovsky/com-platform	true	main	qdev-ci	4	0	0	0	0
 belilovsky/comm-strat	true	main	qdev-ci	4	0	0	0	0
 belilovsky/commstrat-standalone	true	main	qdev-ci,qdev-ci-docker	6	0	0	0	0
-belilovsky/constitution-rag	true	main	qdev-ci	3	0	0	0	0
+belilovsky/constitution-rag	true	main	qdev-ci,qdev-ci-docker	3	0	0	0	0
 belilovsky/constitution_my	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	5	0	0	0	0
 belilovsky/contr-control	true	main	qdev-ci	3	0	0	0	0
 belilovsky/contr-influence	true	main	qdev-ci	3	0	0	0	0
