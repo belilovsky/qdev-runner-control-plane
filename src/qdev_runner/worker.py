@@ -55,15 +55,20 @@ class Worker:
 
     async def heartbeat(self) -> None:
         capacity = self.capacity()
+        active_jobs = len(self.active_job_ids)
         await self.client.post(
             "/internal/v1/workers/heartbeat",
             json={
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
                 "profiles": self.settings.profiles,
-                "active_jobs": len(self.active_job_ids),
+                "active_jobs": active_jobs,
                 "active_job_ids": sorted(self.active_job_ids),
-                "detail": capacity.__dict__,
+                "detail": capacity.__dict__
+                | {
+                    "concurrency": self.settings.concurrency,
+                    "slots_available": max(0, self.settings.concurrency - active_jobs),
+                },
             },
         )
 

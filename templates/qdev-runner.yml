@@ -1,4 +1,6 @@
-schema_version: qdev-runner-v1
+schema_version: qdev-runner-v2
+execution_mode: github-hosted-primary
+self_hosted_recovery: true
 profiles:
   - qdev-ci
 trusted_events:
@@ -11,6 +13,4 @@ resources:
   memory_mb: 3072
   disk_mb: 12288
 artifact_policy: qdev-artifact-v1
-github_hosted_fallback: false
 release_runner: null
-

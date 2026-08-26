@@ -12,6 +12,18 @@ def _required(name: str) -> str:
     return value
 
 
+def _worker_identity() -> tuple[str, str]:
+    worker_name = _required("QDEV_WORKER_NAME")
+    tier = os.environ.get("QDEV_WORKER_TIER", "primary").strip().lower()
+    if tier not in {"primary", "reserve"}:
+        raise RuntimeError("QDEV_WORKER_TIER must be primary or reserve")
+    if not worker_name.endswith(f"-{tier}"):
+        raise RuntimeError(
+            f"QDEV_WORKER_NAME must end with -{tier} when QDEV_WORKER_TIER={tier}"
+        )
+    return worker_name, tier
+
+
 @dataclass(frozen=True)
 class BrokerSettings:
     app_id: str
@@ -76,11 +88,12 @@ class WorkerSettings:
 
     @classmethod
     def from_env(cls) -> WorkerSettings:
+        worker_name, tier = _worker_identity()
         return cls(
             broker_url=_required("QDEV_BROKER_URL").rstrip("/"),
             worker_token=_required("QDEV_WORKER_TOKEN"),
-            worker_name=_required("QDEV_WORKER_NAME"),
-            tier=os.environ.get("QDEV_WORKER_TIER", "primary").strip().lower(),
+            worker_name=worker_name,
+            tier=tier,
             profiles=tuple(
                 part.strip()
                 for part in os.environ.get(

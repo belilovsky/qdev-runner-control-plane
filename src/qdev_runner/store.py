@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS workers (
 """
 
 
+def _worker_concurrency(detail: dict[str, Any]) -> int:
+    try:
+        return max(1, int(detail.get("concurrency", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,25 +167,28 @@ class Store:
         return updated.rowcount == 1
 
     def requeue_active(self, job_id: int, reason: str) -> bool:
+        now = time.time()
         with self.connect() as connection:
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=?
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
         return updated.rowcount == 1
 
     def requeue(self, job_id: int, reason: str) -> None:
+        now = time.time()
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=? WHERE job_id=? AND status='claimed'
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
+                WHERE job_id=? AND status='claimed'
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
 
     def complete_from_webhook(self, job_id: int, conclusion: str) -> None:
@@ -236,14 +246,17 @@ class Store:
                 )
             connection.execute("COMMIT")
 
-    def has_fresh_tier(self, tier: str, max_age_seconds: int) -> bool:
+    def has_available_tier_slot(self, tier: str, max_age_seconds: int) -> bool:
         cutoff = time.time() - max_age_seconds
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT last_seen, detail_json FROM workers WHERE last_seen>=?", (cutoff,)
+                "SELECT active_jobs, last_seen, detail_json FROM workers WHERE last_seen>=?",
+                (cutoff,),
             ).fetchall()
         return any(
-            detail.get("tier") == tier and detail.get("allowed", True) is True
+            detail.get("tier") == tier
+            and detail.get("allowed", True) is True
+            and int(row["active_jobs"]) < _worker_concurrency(detail)
             for row in rows
             for detail in (json.loads(row["detail_json"]),)
         )
@@ -278,11 +291,18 @@ class Store:
                 "SELECT name, profiles_json, active_jobs, last_seen, detail_json FROM workers"
             ).fetchall():
                 detail = json.loads(row["detail_json"])
+                concurrency = _worker_concurrency(detail)
+                active_jobs = int(row["active_jobs"])
+                slots_available = max(0, concurrency - active_jobs)
+                capacity_allowed = detail.get("allowed", True) is True
                 workers.append(
                     dict(row)
                     | {
                         "tier": detail.get("tier", "unknown"),
-                        "available": detail.get("allowed", True) is True,
+                        "capacity_allowed": capacity_allowed,
+                        "concurrency": concurrency,
+                        "slots_available": slots_available,
+                        "available": capacity_allowed and slots_available > 0,
                     }
                 )
         return {"jobs": counts, "workers": workers, "now": time.time()}

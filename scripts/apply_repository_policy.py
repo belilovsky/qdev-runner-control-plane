@@ -31,11 +31,17 @@ def install(checkout: Path) -> list[Path]:
     contract = checkout / ".github/qdev-runner.yml"
     if not contract.is_file():
         raise SystemExit(f"missing existing runner contract: {contract}")
+    contract_text = contract.read_text(encoding="utf-8")
+    contract_workflow = (
+        "qdev-runner-contract-v1.yml"
+        if "schema_version: qdev-runner-v1" in contract_text
+        else "qdev-runner-contract.yml"
+    )
 
     targets = {
         checkout / ".github/QDEV_RUNNERS.md": TEMPLATES / "QDEV_RUNNERS.md",
         checkout / ".github/workflows/qdev-runner-contract.yml": TEMPLATES
-        / "qdev-runner-contract.yml",
+        / contract_workflow,
         checkout / ".github/scripts/qdev-runner-policy.py": TEMPLATES
         / "qdev-runner-policy.py",
         checkout / ".github/scripts/qdev-upload-artifact.sh": TEMPLATES

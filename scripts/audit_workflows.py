@@ -200,8 +200,14 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         contract = yaml.safe_load(content_text(full_name, contract_path, ref)) or {}
     except subprocess.CalledProcessError:
         violations.append(violation(contract_path, 1, "missing-contract"))
-    if contract and contract.get("schema_version") != "qdev-runner-v1":
+    contract_version = str(contract.get("schema_version") or "")
+    if contract and contract_version not in {"qdev-runner-v1", "qdev-runner-v2"}:
         violations.append(violation(contract_path, 1, "invalid-contract-version"))
+    allow_hosted = contract_version == "qdev-runner-v2"
+    if allow_hosted and contract.get("execution_mode") != "github-hosted-primary":
+        violations.append(violation(contract_path, 1, "invalid-execution-mode"))
+    if allow_hosted and contract.get("self_hosted_recovery") is not True:
+        violations.append(violation(contract_path, 1, "self-hosted-recovery-not-enabled"))
     allowed_profiles = set(contract.get("profiles", []))
     release_runners = {
         value
@@ -241,7 +247,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             line = strip_yaml_comment(raw)
             if not line.strip():
                 continue
-            if HOSTED.search(line):
+            if not allow_hosted and HOSTED.search(line):
                 violations.append(violation(path, line_number, "hosted-runner"))
             for marker, kind in FORBIDDEN.items():
                 if marker in line:
@@ -321,7 +327,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                             unique_labels[label] = str(job_name)
                 elif not (isinstance(runner, str) and "${{" in runner) and not (
                     release_runners.intersection(labels)
-                ):
+                ) and not (allow_hosted and any(HOSTED.fullmatch(label) for label in labels)):
                     violations.append(
                         violation(path, 1, "unapproved-runner-profile", str(job_name))
                     )

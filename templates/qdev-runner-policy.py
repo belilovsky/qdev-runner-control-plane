@@ -12,6 +12,9 @@ import re
 from pathlib import Path
 
 HOSTED = re.compile(r"\b(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)\b", re.I)
+HOSTED_SELECTOR = re.compile(
+    r"\s*['\"]?(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)['\"]?\s*", re.I
+)
 FORBIDDEN = {
     "actions/cache@": "github-cache",
     "actions/upload-artifact@": "github-artifact",
@@ -171,6 +174,7 @@ def workflow_violations(
     root: Path,
     allowed_profiles: set[str],
     release_runners: set[str],
+    allow_hosted: bool,
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
     text = path.read_text(encoding="utf-8")
@@ -185,7 +189,7 @@ def workflow_violations(
     for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
-        if HOSTED.search(line):
+        if not allow_hosted and HOSTED.search(line):
             errors.append(f"{rel}:{number}: hosted-runner")
         for marker, kind in FORBIDDEN.items():
             if marker.lower() in line.lower():
@@ -250,10 +254,11 @@ def workflow_violations(
                 else:
                     unique_labels[label] = number
         elif "${{" not in selector:
+            approved_hosted = allow_hosted and bool(HOSTED_SELECTOR.fullmatch(selector))
             approved_release = any(
                 re.search(rf"\b{re.escape(label)}\b", selector) for label in release_runners
             )
-            if not approved_release:
+            if not approved_hosted and not approved_release:
                 errors.append(f"{rel}:{number}: unapproved-runner-profile")
     return errors
 
@@ -262,15 +267,27 @@ def check_repository(root: Path) -> list[str]:
     errors: list[str] = []
     allowed_profiles: set[str] = set()
     release_runners: set[str] = set()
+    allow_hosted = False
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
     else:
         text = contract.read_text(encoding="utf-8")
-        if not re.search(r"(?m)^schema_version:\s*qdev-runner-v1\s*$", text):
+        version_match = re.search(r"(?m)^schema_version:\s*(qdev-runner-v[12])\s*$", text)
+        if not version_match:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
-        if not re.search(r"(?m)^github_hosted_fallback:\s*false\s*$", text):
+        version = version_match.group(1) if version_match else ""
+        allow_hosted = version == "qdev-runner-v2"
+        if version == "qdev-runner-v1" and not re.search(
+            r"(?m)^github_hosted_fallback:\s*false\s*$", text
+        ):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
+        if allow_hosted and not re.search(
+            r"(?m)^execution_mode:\s*github-hosted-primary\s*$", text
+        ):
+            errors.append(".github/qdev-runner.yml:1: invalid-execution-mode")
+        if allow_hosted and not re.search(r"(?m)^self_hosted_recovery:\s*true\s*$", text):
+            errors.append(".github/qdev-runner.yml:1: self-hosted-recovery-not-enabled")
         allowed_profiles = set(contract_list(text, "profiles"))
         allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
         if not allowed_profiles:
@@ -292,7 +309,9 @@ def check_repository(root: Path) -> list[str]:
         errors.append(".github/workflows:1: missing-workflow-directory")
         return errors
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
-        errors.extend(workflow_violations(path, root, allowed_profiles, release_runners))
+        errors.extend(
+            workflow_violations(path, root, allowed_profiles, release_runners, allow_hosted)
+        )
     return errors
 
 

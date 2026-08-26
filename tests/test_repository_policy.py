@@ -29,6 +29,18 @@ def repository(tmp_path: Path, workflow: str) -> Path:
     return root
 
 
+def hosted_repository(tmp_path: Path, workflow: str) -> Path:
+    root = repository(tmp_path, workflow)
+    (root / ".github/qdev-runner.yml").write_text(
+        "schema_version: qdev-runner-v2\n"
+        "execution_mode: github-hosted-primary\n"
+        "self_hosted_recovery: true\n"
+        "profiles:\n  - qdev-ci\n",
+        encoding="utf-8",
+    )
+    return root
+
+
 GOOD_WORKFLOW = """jobs:
   test:
     runs-on:
@@ -113,6 +125,29 @@ def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> N
     assert result.returncode == 1
     for marker in ("hosted-runner", "github-cache", "github-artifact", "ghcr", "unpinned-action"):
         assert marker in result.stdout
+
+
+def test_v2_allows_hosted_primary_and_self_hosted_recovery(tmp_path: Path) -> None:
+    root = hosted_repository(
+        tmp_path,
+        """jobs:
+  primary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+  recovery:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
 
 
 def test_guard_ignores_commented_action_reference(tmp_path: Path) -> None:
