@@ -98,11 +98,12 @@ sudo scripts/activate_controller_release.sh \
 
 Activation requires at least 30 GiB free disk, less than 85% disk use, at
 least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
-atomically changes `current`, refreshes the repository inventory, and recreates
-only `broker-public` and `broker-internal`. It does not restart a worker, stop
-the registry, remove Compose or Docker objects, or touch product containers.
-If either Compose or the public health check fails, the script restores the
-previous release and its inventory.
+atomically changes `current`, refreshes the repository inventory and runner
+profiles, and recreates only `broker-public` and `broker-internal`. The prior
+profile file is restored together with the previous release if activation
+fails. It does not restart a worker, stop the registry, remove Compose or Docker
+objects, or touch product containers. If either Compose or the public health
+check fails, the script restores the previous release and its configuration.
 
 For an inventory-only revision that reuses the already verified broker images,
 the owner may make a bounded capacity override together with

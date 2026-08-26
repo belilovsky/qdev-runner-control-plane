@@ -24,6 +24,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy-broker-internal-1" not in script
     assert 'docker image tag "$previous_public_image"' in script
     assert 'docker image tag "$previous_internal_image"' in script
+    assert "config/profiles.yml" in script
+    assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
+    assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
 
 
 def test_controller_rollback_reuses_existing_images() -> None:

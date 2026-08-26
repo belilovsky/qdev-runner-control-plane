@@ -19,7 +19,11 @@ case "$release" in
     exit 64
     ;;
 esac
-for required in deploy/compose.yml inventory/repos.json deploy/Dockerfile.broker; do
+for required in \
+  deploy/compose.yml \
+  inventory/repos.json \
+  config/profiles.yml \
+  deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
     exit 66
@@ -64,7 +68,13 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
 current="$release_root/current"
 previous="$(readlink -f -- "$current" 2>/dev/null || true)"
 temporary_link="$release_root/.current.$$"
-trap 'rm -f -- "$temporary_link"' EXIT
+profiles_backup="$(mktemp /tmp/qdev-runner-profiles.XXXXXX)"
+profiles_were_present=false
+if [[ -f /etc/qdev-runner/profiles.yml ]]; then
+  install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
+  profiles_were_present=true
+fi
+trap 'rm -f -- "$temporary_link" "$profiles_backup"' EXIT
 
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
@@ -81,6 +91,7 @@ activate_link() {
 }
 
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
+install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -93,6 +104,11 @@ fi
 rollback() {
   [[ -n "$previous" && -d "$previous" ]] || return 0
   install -m 0644 -- "$previous/inventory/repos.json" /etc/qdev-runner/repos.json
+  if [[ "$profiles_were_present" == true ]]; then
+    install -m 0644 -- "$profiles_backup" /etc/qdev-runner/profiles.yml
+  else
+    rm -f -- /etc/qdev-runner/profiles.yml
+  fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then
     docker image tag "$previous_public_image" "$previous_public_ref"
