@@ -25,8 +25,11 @@ it still depends on GitHub orchestration and the GitHub API.
   private registry only inside its disposable container.
   This uses the dedicated `qdev-runner` registry account; the existing `qdev`
   account is not rotated or exposed to jobs.
-- Public fork pull requests are rejected. Dedicated release labels remain
-  product-specific and are not assigned to the general pool.
+- Public repositories may use the recovery pool only for pull requests whose
+  head repository ID equals the allowlisted base repository ID. Public fork
+  pull requests and missing head-repository provenance are rejected. Dedicated
+  release labels remain product-specific and are not assigned to the general
+  pool.
 - The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
   below 4 GiB available memory or above load-15 equal to twice the CPU count.
   Worker-specific floors can be raised with `QDEV_WORKER_MIN_FREE_GIB`,
