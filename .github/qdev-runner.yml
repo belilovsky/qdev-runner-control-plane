@@ -1,0 +1,15 @@
+schema_version: qdev-runner-v2
+execution_mode: github-hosted-primary
+self_hosted_recovery: true
+profiles:
+  - qdev-ci
+trusted_events:
+  - push
+  - workflow_dispatch
+  - pull_request_internal
+resources:
+  cpu: 1
+  memory_mb: 3072
+  disk_mb: 12288
+artifact_policy: qdev-artifact-v1
+release_runner: null
