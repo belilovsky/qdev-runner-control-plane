@@ -10,6 +10,7 @@ User=qdev-runner
 Group=qdev-runner
 EnvironmentFile=/etc/qdev-runner/worker.env
 Environment=DOCKER_HOST=unix:///run/user/9021/docker.sock
+ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit
 ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
 Restart=always
 RestartSec=5

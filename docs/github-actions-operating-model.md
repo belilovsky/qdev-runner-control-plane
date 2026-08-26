@@ -63,9 +63,9 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
 
 - Never restart a worker while it reports an active job.
 - Acquire the worker gate with a stable incident/release owner before drain.
-  Resume through the same gate owner only; direct marker removal is not an
-  accepted release path. The default-deny run permit prevents another task
-  from bypassing an owned pause by deleting the legacy marker.
+  Resume through the same gate owner only. The unit validates the permit owner,
+  enabled state, and referenced passing audit on every start; direct marker
+  removal or an empty permit file is not an accepted release path.
 - Worker names end in their tier (`-primary` or `-reserve`); startup rejects a
   mismatch.
 - Matrix jobs include `${{ strategy.job-index }}` in their `qdev-job-*` label;

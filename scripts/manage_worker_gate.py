@@ -140,6 +140,42 @@ def validate_runtime_receipt(path: Path, *, max_age_seconds: int = 900) -> dict[
     return payload
 
 
+def validate_permit(paths: GatePaths) -> dict[str, Any]:
+    if not paths.state.exists() or not paths.permit.exists():
+        raise RuntimeError("worker gate state or permit is absent")
+    if paths.marker.exists():
+        raise RuntimeError("worker pause marker is present")
+
+    try:
+        state = read_json(paths.state)
+        permit = read_json(paths.permit)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("worker gate state or permit is invalid") from error
+    if state.get("schema") != "qdev-runner-worker-gate-v1":
+        raise RuntimeError("unexpected worker gate state schema")
+    if permit.get("schema") != "qdev-runner-worker-permit-v1":
+        raise RuntimeError("unexpected worker permit schema")
+    if state.get("status") != "enabled":
+        raise RuntimeError("worker gate state is not enabled")
+
+    owner = state.get("owner")
+    if not owner or permit.get("owner") != owner:
+        raise RuntimeError("worker permit owner does not match gate state")
+    runtime_receipt = state.get("runtime_receipt")
+    if not runtime_receipt or permit.get("runtime_receipt") != runtime_receipt:
+        raise RuntimeError("worker permit runtime receipt does not match gate state")
+
+    try:
+        audit = read_json(Path(str(runtime_receipt)))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("worker runtime receipt is invalid") from error
+    if audit.get("schema") != "qdev-runner-worker-runtime-audit-v1":
+        raise RuntimeError("unexpected worker runtime receipt schema")
+    if audit.get("status") != "passed" or audit.get("errors"):
+        raise RuntimeError("worker runtime audit did not pass")
+    return state
+
+
 def release(
     paths: GatePaths,
     *,
@@ -199,6 +235,7 @@ def parse_args() -> argparse.Namespace:
     release_parser.add_argument("--runtime-receipt", type=Path, required=True)
     release_parser.add_argument("--max-age-seconds", type=int, default=900)
 
+    subparsers.add_parser("validate-permit")
     subparsers.add_parser("status")
     return parser.parse_args()
 
@@ -225,6 +262,9 @@ def main() -> int:
             max_age_seconds=args.max_age_seconds,
         )
         print(f"worker_gate=enabled receipt={receipt}")
+    elif args.action == "validate-permit":
+        state = validate_permit(paths)
+        print(f"worker_gate_permit=valid owner={state['owner']}")
     else:
         if paths.state.exists():
             print(paths.state.read_text(encoding="utf-8"), end="")

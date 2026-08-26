@@ -130,7 +130,9 @@ python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
 Workers use a default-deny, owner-bound execution gate. Provisioning does not
 create the run permit. Acquire the gate before maintenance, then release it
 with the same owner and a fresh passing runtime-audit receipt; never resume by
-deleting the compatibility pause marker directly.
+deleting the compatibility pause marker directly. The service validates the
+permit owner, enabled gate state, and referenced passing audit before every
+start, so creating an empty permit file cannot bypass the gate.
 
 A green heartbeat is only broker/capacity evidence. Recovery closes only when
 the same-SHA GitHub canary leaves `queued`, reports the expected runner name,

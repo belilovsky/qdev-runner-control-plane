@@ -76,6 +76,7 @@ def test_gate_is_owner_bound_and_runtime_audit_gated(tmp_path: Path) -> None:
     assert gate_paths.permit.exists()
     assert not gate_paths.marker.exists()
     assert MODULE.read_json(gate_paths.state)["status"] == "enabled"
+    assert MODULE.validate_permit(gate_paths)["owner"] == "INC-1"
     assert commands[-1] == ["systemctl", "start", "qdev-runner-worker.service"]
 
 
@@ -92,8 +93,40 @@ def test_gate_refuses_implicit_owner_takeover(tmp_path: Path) -> None:
         )
 
 
+def test_gate_rejects_forged_empty_permit(tmp_path: Path) -> None:
+    gate_paths = paths(tmp_path)
+    MODULE.acquire(gate_paths, owner="INC-1", reason="maintenance", runner=lambda _: None)
+    gate_paths.permit.write_text("", encoding="utf-8")
+    gate_paths.marker.unlink()
+
+    with pytest.raises(RuntimeError, match="state or permit is invalid"):
+        MODULE.validate_permit(gate_paths)
+
+
+def test_gate_rejects_permit_owner_drift(tmp_path: Path) -> None:
+    gate_paths = paths(tmp_path)
+    MODULE.acquire(gate_paths, owner="INC-1", reason="maintenance", runner=lambda _: None)
+    MODULE.release(
+        gate_paths,
+        owner="INC-1",
+        reason="verified",
+        runtime_receipt=passing_runtime_receipt(tmp_path),
+        runner=lambda _: None,
+    )
+    permit = MODULE.read_json(gate_paths.permit)
+    permit["owner"] = "INC-2"
+    MODULE.write_json(gate_paths.permit, permit)
+
+    with pytest.raises(RuntimeError, match="owner does not match"):
+        MODULE.validate_permit(gate_paths)
+
+
 def test_worker_service_is_default_deny_and_drains_without_timeout() -> None:
     service = (ROOT / "deploy/qdev-runner-worker.service").read_text(encoding="utf-8")
 
     assert "ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled" in service
+    assert (
+        "ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit"
+        in service
+    )
     assert "TimeoutStopSec=infinity" in service
