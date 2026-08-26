@@ -7,15 +7,17 @@ from qdev_runner.models import QueuedJob
 from qdev_runner.store import Store
 
 
-def job(delivery: str = "delivery-1") -> QueuedJob:
+def job(
+    delivery: str = "delivery-1", job_id: int = 100, profile: str = "qdev-ci"
+) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
-        job_id=100,
+        job_id=job_id,
         run_id=200,
         repository="belilovsky/private-repo",
         repository_id=1,
         installation_id=300,
-        labels=("self-hosted", "Linux", "X64", "qdev-ci"),
+        labels=("self-hosted", "Linux", "X64", profile),
         head_sha="a" * 40,
         head_branch="main",
         payload={},
@@ -36,6 +38,83 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     assert claimed is not None
     assert claimed["job_id"] == 100
     assert store.claim("worker-2", ("qdev-ci",)) is None
+
+
+def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(profile="qdev-ci-docker"))
+    store.enqueue(job("delivery-2", 101, "qdev-ci"))
+
+    claimed = store.claim(
+        "primary-1",
+        ("qdev-ci-docker", "qdev-ci"),
+        disk_free_gib=45,
+        min_disk_free_gib=30,
+        profile_disk_mb={"qdev-ci": 12288, "qdev-ci-docker": 20480},
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 101
+
+
+def test_reserve_claims_profile_that_primary_cannot_fit(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(profile="qdev-ci-docker"))
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci-docker",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 45,
+            "min_disk_free_gib": 30,
+        },
+    )
+
+    claimed = store.claim(
+        "reserve-1",
+        ("qdev-ci-docker",),
+        tier="reserve",
+        disk_free_gib=60,
+        min_disk_free_gib=30,
+        profile_disk_mb={"qdev-ci-docker": 20480},
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
+
+
+def test_reserve_waits_when_primary_has_profile_headroom(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(profile="qdev-ci-docker"))
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci-docker",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 55,
+            "min_disk_free_gib": 30,
+        },
+    )
+
+    assert (
+        store.claim(
+            "reserve-1",
+            ("qdev-ci-docker",),
+            tier="reserve",
+            disk_free_gib=60,
+            min_disk_free_gib=30,
+            profile_disk_mb={"qdev-ci-docker": 20480},
+        )
+        is None
+    )
 
 
 def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path) -> None:
@@ -62,18 +141,39 @@ def test_runner_exit_before_pickup_requeues_active_job(tmp_path: Path) -> None:
 def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
+    store.enqueue(job("delivery-2", 101))
     store.claim("worker-1", ("qdev-ci",))
     store.requeue(100, "temporary GitHub error")
-    assert store.claim("worker-2", ("qdev-ci",)) is not None
+    claimed = store.claim("worker-2", ("qdev-ci",))
+    assert claimed is not None
+    assert claimed["job_id"] == 101
 
 
-def test_primary_heartbeat_blocks_reserve_and_renews_job(tmp_path: Path) -> None:
+def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
-    store.heartbeat("primary-1", ("qdev-ci",), 1, (100,), {"tier": "primary"})
-    assert store.has_fresh_tier("primary", 90)
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        1,
+        (100,),
+        {"tier": "primary", "concurrency": 1},
+    )
+    assert not store.has_available_tier_slot("primary", 90)
     assert store.recover_stale_jobs(300) == 0
+
+
+def test_idle_primary_blocks_reserve(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        0,
+        (),
+        {"tier": "primary", "concurrency": 1},
+    )
+    assert store.has_available_tier_slot("primary", 90)
 
 
 def test_capacity_blocked_primary_does_not_block_reserve(tmp_path: Path) -> None:
@@ -85,9 +185,26 @@ def test_capacity_blocked_primary_does_not_block_reserve(tmp_path: Path) -> None
         (),
         {"tier": "primary", "allowed": False, "blockers": ["load_15"]},
     )
-    assert not store.has_fresh_tier("primary", 90)
+    assert not store.has_available_tier_slot("primary", 90)
     worker = store.health()["workers"][0]
     assert worker["available"] is False
+    assert worker["capacity_allowed"] is False
+
+
+def test_health_distinguishes_capacity_from_free_slots(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        1,
+        (),
+        {"tier": "primary", "allowed": True, "concurrency": 2},
+    )
+    worker = store.health()["workers"][0]
+    assert worker["capacity_allowed"] is True
+    assert worker["concurrency"] == 2
+    assert worker["slots_available"] == 1
+    assert worker["available"] is True
 
 
 def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:

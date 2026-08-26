@@ -1,13 +1,17 @@
 # QDev runner control plane
 
-This repository is the single control plane for ephemeral self-hosted GitHub
-Actions runners used by the active `belilovsky` repositories. GitHub-hosted
-compute, GitHub cache/artifact storage and GHCR are not availability
-dependencies.
+This repository is the recovery control plane for ephemeral self-hosted GitHub
+Actions runners used by the active `belilovsky` repositories. Paid
+GitHub-hosted compute is the normal execution path. The QDev pool is the
+explicit recovery path when hosted compute or its billing lane is unavailable;
+it still depends on GitHub orchestration and the GitHub API.
 
 ## Contract
 
-- Repository jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
+- A v2 repository contract declares `github-hosted-primary` and keeps a
+  separately dispatchable self-hosted recovery workflow. Legacy v1 contracts
+  remain valid until their repository is deliberately migrated.
+- Recovery jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
   `qdev-ci-docker` together with `self-hosted`, `Linux`, `X64`.
 - A queued `workflow_job` webhook is accepted only for a repository in
   `inventory/repos.json` and a profile allowed by `.github/qdev-runner.yml`.
@@ -31,7 +35,10 @@ dependencies.
 - Every registered repository carries the managed root `AGENTS.md` policy,
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
-  runner or a GitHub-hosted fallback.
+  runner or silently changing execution lanes.
+
+The operating model, failure taxonomy, recovery sequence, and evidence
+contract are in `docs/github-actions-operating-model.md`.
 
 ## Repository onboarding
 
@@ -110,6 +117,31 @@ QDEV_PUSH_IMAGES=true scripts/build_runner_images.sh
 
 Record the three resulting registry digests in rollout evidence. Do not reuse
 a mutable image from an unverified build.
+
+Before removing a worker pause after any image cleanup, run the local executor
+audit as a trusted administrator with the worker's rootless Docker environment.
+It fails if the configured tier/name identity is inconsistent or an enabled
+profile's immutable runner/sidecar image is absent:
+
+```bash
+python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
+```
+
+Workers use a default-deny, owner-bound execution gate. Provisioning does not
+create the run permit. Acquire the gate before maintenance, then release it
+with the same owner and a fresh passing runtime-audit receipt; never resume by
+deleting the compatibility pause marker directly. The service validates the
+permit owner, enabled gate state, and referenced passing audit before every
+start, so creating an empty permit file cannot bypass the gate.
+
+Worker provisioning archives the exact obsolete
+`qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not
+recreate that compatibility permit: the executable owner/audit validator is
+the only accepted start boundary.
+
+A green heartbeat is only broker/capacity evidence. Recovery closes only when
+the same-SHA GitHub canary leaves `queued`, reports the expected runner name,
+and succeeds.
 
 ## Portfolio rollout
 

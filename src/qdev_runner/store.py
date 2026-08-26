@@ -46,6 +46,26 @@ CREATE TABLE IF NOT EXISTS workers (
 """
 
 
+def _worker_concurrency(detail: dict[str, Any]) -> int:
+    try:
+        return max(1, int(detail.get("concurrency", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _disk_headroom_allowed(
+    detail: dict[str, Any], profile_disk_mb: int | None
+) -> bool:
+    if profile_disk_mb is None:
+        return True
+    try:
+        disk_free_gib = float(detail["disk_free_gib"])
+        min_disk_free_gib = float(detail.get("min_disk_free_gib", 30))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return disk_free_gib >= min_disk_free_gib + profile_disk_mb / 1024
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +112,47 @@ class Store:
             )
             return cursor.rowcount == 1
 
-    def claim(self, worker_name: str, profiles: tuple[str, ...]) -> dict[str, Any] | None:
+    def _has_available_tier_slot(
+        self,
+        connection: sqlite3.Connection,
+        tier: str,
+        cutoff: float,
+        *,
+        profile: str | None = None,
+        profile_disk_mb: int | None = None,
+    ) -> bool:
+        rows = connection.execute(
+            """
+            SELECT profiles_json, active_jobs, last_seen, detail_json
+            FROM workers WHERE last_seen>=?
+            """,
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            detail = json.loads(row["detail_json"])
+            worker_profiles = {str(item).lower() for item in json.loads(row["profiles_json"])}
+            if profile is not None and profile.lower() not in worker_profiles:
+                continue
+            if (
+                detail.get("tier") == tier
+                and detail.get("allowed", True) is True
+                and int(row["active_jobs"]) < _worker_concurrency(detail)
+                and _disk_headroom_allowed(detail, profile_disk_mb)
+            ):
+                return True
+        return False
+
+    def claim(
+        self,
+        worker_name: str,
+        profiles: tuple[str, ...],
+        *,
+        tier: str = "primary",
+        disk_free_gib: float | None = None,
+        min_disk_free_gib: float | None = None,
+        profile_disk_mb: dict[str, int] | None = None,
+        primary_max_age_seconds: int = 90,
+    ) -> dict[str, Any] | None:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -100,32 +160,62 @@ class Store:
                 "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at LIMIT 100"
             ).fetchall()
             selected = None
+            selected_profile = None
             for row in rows:
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
-                if any(profile.lower() in labels for profile in profiles):
-                    selected = row
-                    break
+                matching_profile = next(
+                    (profile for profile in profiles if profile.lower() in labels), None
+                )
+                if matching_profile is None:
+                    continue
+                required_disk_mb = (
+                    profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None
+                )
+                if profile_disk_mb is not None and required_disk_mb is None:
+                    continue
+                if (
+                    disk_free_gib is not None
+                    and min_disk_free_gib is not None
+                    and not _disk_headroom_allowed(
+                        {
+                            "disk_free_gib": disk_free_gib,
+                            "min_disk_free_gib": min_disk_free_gib,
+                        },
+                        required_disk_mb,
+                    )
+                ):
+                    continue
+                if tier == "reserve" and self._has_available_tier_slot(
+                    connection,
+                    "primary",
+                    now - primary_max_age_seconds,
+                    profile=matching_profile,
+                    profile_disk_mb=required_disk_mb,
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                selected = row
+                selected_profile = matching_profile
+                break
             if selected is None:
                 connection.execute("COMMIT")
                 return None
-            profile = next(
-                profile
-                for profile in profiles
-                if profile.lower()
-                in {label.lower() for label in json.loads(selected["labels_json"])}
-            )
+            assert selected_profile is not None
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='claimed', worker_name=?, profile=?, claimed_at=?,
                     updated_at=?, attempts=attempts+1
                 WHERE job_id=? AND status='pending'
                 """,
-                (worker_name, profile, now, now, selected["job_id"]),
+                (worker_name, selected_profile, now, now, selected["job_id"]),
             )
             connection.execute("COMMIT")
             if updated.rowcount != 1:
                 return None
-            return dict(selected) | {"worker_name": worker_name, "profile": profile}
+            return dict(selected) | {
+                "worker_name": worker_name,
+                "profile": selected_profile,
+            }
 
     def set_status(self, job_id: int, status: str, result: str = "") -> None:
         now = time.time()
@@ -160,25 +250,28 @@ class Store:
         return updated.rowcount == 1
 
     def requeue_active(self, job_id: int, reason: str) -> bool:
+        now = time.time()
         with self.connect() as connection:
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=?
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
         return updated.rowcount == 1
 
     def requeue(self, job_id: int, reason: str) -> None:
+        now = time.time()
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result=? WHERE job_id=? AND status='claimed'
+                    claimed_at=NULL, created_at=?, updated_at=?, result=?
+                WHERE job_id=? AND status='claimed'
                 """,
-                (time.time(), reason[:4000], job_id),
+                (now, now, reason[:4000], job_id),
             )
 
     def complete_from_webhook(self, job_id: int, conclusion: str) -> None:
@@ -236,17 +329,10 @@ class Store:
                 )
             connection.execute("COMMIT")
 
-    def has_fresh_tier(self, tier: str, max_age_seconds: int) -> bool:
+    def has_available_tier_slot(self, tier: str, max_age_seconds: int) -> bool:
         cutoff = time.time() - max_age_seconds
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT last_seen, detail_json FROM workers WHERE last_seen>=?", (cutoff,)
-            ).fetchall()
-        return any(
-            detail.get("tier") == tier and detail.get("allowed", True) is True
-            for row in rows
-            for detail in (json.loads(row["detail_json"]),)
-        )
+            return self._has_available_tier_slot(connection, tier, cutoff)
 
     def recover_stale_jobs(self, worker_timeout_seconds: int) -> int:
         cutoff = time.time() - worker_timeout_seconds
@@ -278,11 +364,18 @@ class Store:
                 "SELECT name, profiles_json, active_jobs, last_seen, detail_json FROM workers"
             ).fetchall():
                 detail = json.loads(row["detail_json"])
+                concurrency = _worker_concurrency(detail)
+                active_jobs = int(row["active_jobs"])
+                slots_available = max(0, concurrency - active_jobs)
+                capacity_allowed = detail.get("allowed", True) is True
                 workers.append(
                     dict(row)
                     | {
                         "tier": detail.get("tier", "unknown"),
-                        "available": detail.get("allowed", True) is True,
+                        "capacity_allowed": capacity_allowed,
+                        "concurrency": concurrency,
+                        "slots_available": slots_available,
+                        "available": capacity_allowed and slots_available > 0,
                     }
                 )
         return {"jobs": counts, "workers": workers, "now": time.time()}

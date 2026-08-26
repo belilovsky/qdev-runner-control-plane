@@ -7,7 +7,7 @@ import logging
 import os
 import secrets
 import ssl
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -24,8 +24,10 @@ LOGGER = logging.getLogger("qdev-runner-broker")
 
 class ClaimRequest(BaseModel):
     worker_name: str
-    tier: str
+    tier: Literal["primary", "reserve"]
     profiles: list[str]
+    disk_free_gib: float = Field(ge=0)
+    min_disk_free_gib: float = Field(ge=0)
 
 
 class CompletionRequest(BaseModel):
@@ -37,9 +39,9 @@ class CompletionRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     worker_name: str
-    tier: str
+    tier: Literal["primary", "reserve"]
     profiles: list[str]
-    active_jobs: int
+    active_jobs: int = Field(ge=0)
     active_job_ids: list[int] = Field(default_factory=list)
     detail: dict[str, Any]
 
@@ -125,17 +127,21 @@ def create_app(
         fresh_workers = [
             worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
         ]
+        primary = [worker for worker in fresh_workers if worker["tier"] == "primary"]
+        reserve = [worker for worker in fresh_workers if worker["tier"] == "reserve"]
         return {
             "ok": True,
             "schema": "qdev-runner-health-v1",
             "pending": data["jobs"].get("pending", 0),
             "active_workers": len(fresh_workers),
-            "primary_available": any(
-                worker["tier"] == "primary" and worker["available"] for worker in fresh_workers
-            ),
-            "reserve_available": any(
-                worker["tier"] == "reserve" and worker["available"] for worker in fresh_workers
-            ),
+            "primary_present": bool(primary),
+            "reserve_present": bool(reserve),
+            "primary_capacity_allowed": any(worker["capacity_allowed"] for worker in primary),
+            "reserve_capacity_allowed": any(worker["capacity_allowed"] for worker in reserve),
+            "primary_slots_available": sum(worker["slots_available"] for worker in primary),
+            "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
+            "primary_available": any(worker["available"] for worker in primary),
+            "reserve_available": any(worker["available"] for worker in reserve),
         }
 
     @app.post("/github/workflow-job")
@@ -193,12 +199,15 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         require_worker(x_qdev_worker_token)
-        if request.tier not in {"primary", "reserve"}:
-            raise HTTPException(status_code=400, detail="invalid worker tier")
         store.recover_stale_jobs(worker_timeout_seconds=300)
-        if request.tier == "reserve" and store.has_fresh_tier("primary", max_age_seconds=90):
-            return Response(status_code=204)
-        claimed = store.claim(request.worker_name, tuple(request.profiles))
+        claimed = store.claim(
+            request.worker_name,
+            tuple(request.profiles),
+            tier=request.tier,
+            disk_free_gib=request.disk_free_gib,
+            min_disk_free_gib=request.min_disk_free_gib,
+            profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
+        )
         if claimed is None:
             return Response(status_code=204)
         job_id = int(claimed["job_id"])

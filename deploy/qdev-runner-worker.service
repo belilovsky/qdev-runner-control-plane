@@ -2,6 +2,7 @@
 Description=QDev ephemeral Actions runner worker
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled
 
 [Service]
 Type=simple
@@ -9,9 +10,11 @@ User=qdev-runner
 Group=qdev-runner
 EnvironmentFile=/etc/qdev-runner/worker.env
 Environment=DOCKER_HOST=unix:///run/user/9021/docker.sock
+ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit
 ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
 Restart=always
 RestartSec=5
+TimeoutStopSec=infinity
 # The worker engine is rootless. Docker-profile jobs receive a disposable
 # Docker/BuildKit sidecar whose privileged boundary remains inside that user namespace.
 NoNewPrivileges=false

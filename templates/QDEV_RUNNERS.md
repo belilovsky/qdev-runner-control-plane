@@ -1,10 +1,21 @@
-# QDev self-hosted GitHub Actions
+# QDev GitHub Actions execution
 
-This repository uses the centralized, ephemeral QDev runner pool. GitHub is
-the workflow orchestrator; paid GitHub-hosted compute, GitHub cache/artifact
-storage, GitHub Packages, and GHCR are not availability dependencies.
+Paid GitHub-hosted compute is the normal execution path. The centralized,
+ephemeral QDev runner pool is the explicit recovery path when the hosted
+compute or billing lane is unavailable. Both paths still depend on GitHub as
+the workflow orchestrator and on the GitHub API.
 
-## Required labels
+Normal jobs use a static GitHub-hosted selector:
+
+```yaml
+runs-on: ubuntu-latest
+```
+
+Do not use a dynamic selector as an implicit fallback. A queued job cannot
+reliably change pools after dispatch. Keep a separately dispatchable recovery
+workflow or reusable workflow and record which lane ran the exact SHA.
+
+## Recovery labels
 
 Every general CI job selects exactly one profile and a unique job label:
 
@@ -17,6 +28,14 @@ runs-on:
   - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test
 ```
 
+Matrix jobs must also include `${{ strategy.job-index }}` in that label. The
+run ID, attempt and job name are shared by every expansion of one matrix job;
+without the index, a JIT runner created for one job ID may accept a sibling:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test-${{ strategy.job-index }}"]
+```
+
 Use `qdev-ci` for Node, Python, and static checks, `qdev-ci-browser` for
 Playwright/Chromium, and `qdev-ci-docker` for builds using the job-scoped
 rootless Docker/BuildKit service. Never mount the host Docker socket.
@@ -24,7 +43,7 @@ rootless Docker/BuildKit service. Never mount the host Docker socket.
 Install the requested language runtime with a commit-SHA-pinned setup action.
 Do not assume that Node, npm, or a specific Python version is globally present.
 
-## Job examples
+## Recovery job examples
 
 Node:
 
@@ -102,5 +121,7 @@ Keep `.github/qdev-runner.yml`, this document, the root `AGENTS.md` policy, and
 python3 .github/scripts/qdev-runner-policy.py --root .
 ```
 
-New repositories must be registered through the canonical starter bundle in
+The required `qdev-runner-contract` check runs on GitHub-hosted compute. The
+separate `runner-smoke` workflow proves the QDev recovery path. New repositories
+must be registered through the canonical starter bundle in
 `belilovsky/qdev-runner-control-plane`; do not register a standalone runner.

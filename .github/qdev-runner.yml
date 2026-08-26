@@ -6,7 +6,6 @@ profiles:
 trusted_events:
   - push
   - workflow_dispatch
-  - schedule
   - pull_request_internal
 resources:
   cpu: 1
