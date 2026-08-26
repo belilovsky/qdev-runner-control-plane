@@ -127,6 +127,11 @@ profile's immutable runner/sidecar image is absent:
 python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
 ```
 
+Workers use a default-deny, owner-bound execution gate. Provisioning does not
+create the run permit. Acquire the gate before maintenance, then release it
+with the same owner and a fresh passing runtime-audit receipt; never resume by
+deleting the compatibility pause marker directly.
+
 A green heartbeat is only broker/capacity evidence. Recovery closes only when
 the same-SHA GitHub canary leaves `queued`, reports the expected runner name,
 and succeeds.

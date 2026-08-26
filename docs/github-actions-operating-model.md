@@ -62,6 +62,10 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
 ## Runtime changes
 
 - Never restart a worker while it reports an active job.
+- Acquire the worker gate with a stable incident/release owner before drain.
+  Resume through the same gate owner only; direct marker removal is not an
+  accepted release path. The default-deny run permit prevents another task
+  from bypassing an owned pause by deleting the legacy marker.
 - Worker names end in their tier (`-primary` or `-reserve`); startup rejects a
   mismatch.
 - Matrix jobs include `${{ strategy.job-index }}` in their `qdev-job-*` label;
@@ -87,6 +91,13 @@ python3 scripts/audit_runtime.py --output runner-runtime-receipt.json
 
 # Run locally as a trusted admin with the worker's rootless Docker environment.
 python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
+
+sudo qdev-runner-worker-gate acquire \
+  --owner QDEV-INCIDENT-ID --reason 'bounded runner maintenance'
+
+sudo qdev-runner-worker-gate release \
+  --owner QDEV-INCIDENT-ID --reason 'verified recovery canary' \
+  --runtime-receipt /var/lib/qdev-runner-worker/worker-runtime-receipt.json
 ```
 
 Use `--require-primary-slot` or `--require-reserve-slot` only for a controlled

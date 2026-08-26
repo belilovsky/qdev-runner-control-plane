@@ -83,6 +83,7 @@ install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-work
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls/worker
 install -m 0644 deploy/qdev-runner-worker.service /etc/systemd/system/qdev-runner-worker.service
+install -m 0755 scripts/manage_worker_gate.py /usr/local/sbin/qdev-runner-worker-gate
 
 runuser -u "$worker_user" -- env \
   DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
@@ -92,4 +93,6 @@ runuser -u "$worker_user" -- env \
   docker network create qdev-ci-egress >/dev/null
 
 systemctl daemon-reload
-printf 'worker provisioning complete; install worker.env and mTLS files before start\n'
+printf '%s\n' \
+  'worker provisioning complete; install worker.env and mTLS files,' \
+  'run the config-bound runtime audit, then release the owned worker gate'
