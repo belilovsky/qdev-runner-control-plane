@@ -1,0 +1,308 @@
+{
+  "schema": "qdev-fleet-incident.v1",
+  "incident_id": "QDEV-GITHUB-RUNNER-20260826",
+  "started_at": "2026-08-26T06:02:07Z",
+  "evidence_cutoff": "2026-08-26T16:39:20Z",
+  "owner_request": "Restore the GitHub Actions path, finish the shared primary/reserve runner, and encode the operating rules in the control plane and relevant skills.",
+  "user_impact": "Hosted Actions was initially blocked by billing configuration; the recovery pool then had no correctly identified reserve worker, capacity pauses, missing executor images after cleanup, and colliding matrix runner leases.",
+  "scope": {
+    "allowlist": [
+      "belilovsky/qdev-runner-control-plane",
+      "GitHub Actions hosted billing and exact-SHA checks",
+      "QDev broker and queue",
+      "controller/primary worker",
+      "reserve worker",
+      "configured rootless executor image keep-sets",
+      "qdev-full-devops and qdev-fleet-resilience skills"
+    ],
+    "exclusions": [
+      "product deployment or application-data mutation",
+      "broad Docker pruning",
+      "unrelated shared-host containers and volumes",
+      "provider credentials and runner tokens"
+    ]
+  },
+  "before": {
+    "observed_at": "2026-08-26T06:02:07Z",
+    "hosted_lane": "Actions budget was not usable until the paid budget was configured.",
+    "broker": "qdev-runner-health-v1 exposed presence as availability and did not report concurrency or free slots.",
+    "workers": "Both workers identified as primary, so no reserve tier existed; capacity work subsequently paused both units.",
+    "executor": "Cleanup temporarily removed an immutable runner digest while health still reported the reserve worker as available.",
+    "workflow_policy": "Matrix expansions shared one qdev-job lease label, allowing a JIT runner requested for one provider job ID to accept a sibling."
+  },
+  "timeline": [
+    {
+      "at": "2026-08-26T06:11:08Z",
+      "actor": "GitHub billing and hosted Actions",
+      "target": "normal hosted execution lane",
+      "action": "Configured a 50 USD monthly Actions budget with stop-usage enabled and reran one known failed run once.",
+      "authorization": "Owner requested completion through the provider payment boundary.",
+      "expected": "A paid hosted job starts and completes without repeated retries.",
+      "observed": "qaz-six-previews run 32936424819 attempt 2, job 98079940925, concluded success; paid spend was still 0 USD at verification.",
+      "rollback": "The provider budget can be reduced or disabled independently of the self-hosted recovery pool."
+    },
+    {
+      "at": "2026-08-26T06:47:58Z",
+      "actor": "runner recovery",
+      "target": "reserve worker identity",
+      "action": "Changed the stopped worker tier from primary to reserve and retained a timestamped environment backup.",
+      "authorization": "Owner requested completion of the shared runner recovery.",
+      "expected": "One primary and one reserve identity without changing worker data.",
+      "observed": "The reserve environment reports mail-qdev-reserve with tier reserve; startup identity validation was added.",
+      "rollback": "Restore the timestamped worker.env backup while the unit is stopped."
+    },
+    {
+      "at": "2026-08-26T06:50:33Z",
+      "actor": "runner recovery",
+      "target": "control-plane source",
+      "action": "Committed slot-aware reserve arbitration, worker concurrency/slot heartbeats, strict tier identity, FIFO-tail transient requeue, and v2 hosted-primary/recovery contracts.",
+      "authorization": "Owner requested a finished custom runner and a systematized GitHub operating model.",
+      "expected": "Reserve may claim when primary has no free slot; health separates presence, capacity and availability.",
+      "observed": "Commit e50a85a passed source tests and was pushed on the recovery branch.",
+      "rollback": "Retain controller release ba4a72f and the pre-change worker packages/configuration."
+    },
+    {
+      "at": "2026-08-26T07:03:12Z",
+      "actor": "capacity cleanup and runner recovery",
+      "target": "reserve executor keep-set",
+      "action": "Rejected a heartbeat-only recovery after provider jobs stayed queued and broker rows recorded missing immutable runner image errors.",
+      "authorization": "Recovery requires provider-visible executor proof and safe exact cleanup.",
+      "expected": "Configured images remain materialized across cleanup.",
+      "observed": "Four broker jobs failed with Docker image-not-found for the configured runner digest; the pause was restored and images were rebuilt from trusted OCI sources.",
+      "rollback": "Keep the worker paused and restore the previous OCI export before accepting new jobs."
+    },
+    {
+      "at": "2026-08-26T07:11:12Z",
+      "actor": "runner recovery",
+      "target": "worker pre-unpause gate",
+      "action": "Added a configuration-bound audit for every enabled runner and sidecar image.",
+      "authorization": "Owner requested durable prevention in the runner and skills.",
+      "expected": "Missing executor images fail recovery before a worker is unpaused.",
+      "observed": "Commit e777fec added the audit and tests; both worker keep-sets later passed it.",
+      "rollback": "The audit is additive; revert the commit without changing runtime images."
+    },
+    {
+      "at": "2026-08-26T07:21:13Z",
+      "actor": "GitHub and reserve worker",
+      "target": "provider-visible reserve execution",
+      "action": "Executed a real exact-SHA job after restoring the general runner image.",
+      "authorization": "A same-SHA canary is required before recovery closure.",
+      "expected": "The provider job leaves queued, reports the expected ephemeral runner and succeeds.",
+      "observed": "echo-sounder- job 98093524191 ran on qdev-echo-sounder--98093524191 for SHA 65490c4366e5d8c7eaa4d07925c363114b772d85 and concluded success.",
+      "rollback": "Pause and drain the reserve worker if provider execution regresses."
+    },
+    {
+      "at": "2026-08-26T07:24:26Z",
+      "actor": "runner recovery",
+      "target": "matrix JIT lease contract",
+      "action": "Diagnosed a runner requested for one matrix job ID executing its sibling because both expansions shared a lease label; required strategy.job-index and updated the rewriter and guards.",
+      "authorization": "The owner requested the GitHub/runner failure history to be systematized.",
+      "expected": "Each matrix expansion has an exclusive JIT runner lease.",
+      "observed": "Commit 6a68d16 added policy enforcement and tests; 81 source tests passed.",
+      "rollback": "Revert the policy commit; no provider or runtime state is mutated by the guard itself."
+    },
+    {
+      "at": "2026-08-26T07:37:46Z",
+      "actor": "GitHub-hosted Actions",
+      "target": "control-plane pull request 5",
+      "action": "Ran the repository's new hosted CI and runner-contract workflows on the exact PR SHA.",
+      "authorization": "Paid GitHub-hosted CI is the declared normal lane.",
+      "expected": "Normal hosted checks succeed independently of the self-hosted recovery pool.",
+      "observed": "CI run 32943660098 and contract runs 32943659267 and 32943660056 succeeded on c1f319af2ce75fcec4477070ed14acb26868d6a5.",
+      "rollback": "Revert the CI onboarding commit without changing live workers."
+    },
+    {
+      "at": "2026-08-26T09:09:57Z",
+      "actor": "runner recovery",
+      "target": "primary and reserve pause ownership",
+      "action": "Replaced unowned file toggles with an owner-bound persistent gate, atomic state and action receipts after unrelated rollout tasks repeatedly removed pause markers and recreated permits.",
+      "authorization": "The owner requested a durable recovery runner rather than another one-off restart.",
+      "expected": "Only the incident owner can release a paused worker, and release requires a fresh passing runtime audit.",
+      "observed": "Commit 95ac46e added acquire/release ownership and receipts; both live workers are owned by QDEV-GHA-RUNNER-20260826 and remain paused during capacity verification.",
+      "rollback": "Timestamped service, helper, environment and package backups are retained on both hosts."
+    },
+    {
+      "at": "2026-08-26T09:33:43Z",
+      "actor": "runner recovery",
+      "target": "profile-aware capacity admission",
+      "action": "Bound broker claims to worker free disk, the configured retained-space floor and each profile's declared disk budget.",
+      "authorization": "Shared-host recovery must not claim work that consumes the safety floor.",
+      "expected": "An undersized primary neither claims the job nor blocks an adequately sized reserve.",
+      "observed": "Commit 406cc68 added atomic store admission and tests for qdev-ci, browser and Docker profile budgets.",
+      "rollback": "Revert the controller commit; worker files and queued provider jobs remain unchanged."
+    },
+    {
+      "at": "2026-08-26T09:58:42Z",
+      "actor": "runner recovery",
+      "target": "systemd worker start boundary",
+      "action": "Added a privileged ExecCondition that validates the permit schema, owner, enabled gate state and referenced passing runtime audit before every worker start.",
+      "authorization": "An empty permit recreated by another deployment task had bypassed the earlier existence-only systemd condition.",
+      "expected": "Touched, empty, forged, stale or owner-mismatched permits cannot start a worker.",
+      "observed": "Commit 89d996f passed 89 tests; hosted CI run 32955864590 and contract run 32955864758 succeeded on the exact SHA.",
+      "rollback": "Restore the timestamped pre-89d unit, helper and wheel while the owned gate is paused."
+    },
+    {
+      "at": "2026-08-26T10:01:34Z",
+      "actor": "runner recovery",
+      "target": "reserve worker package",
+      "action": "Installed the exact 89d996f wheel, unit, gate helper and config-bound audit while the unit was inactive.",
+      "authorization": "The capacity owner explicitly allowed a worker-package update while inactive and prohibited rootless-data mutation.",
+      "expected": "The final worker code is present without opening intake or modifying rootless runner data.",
+      "observed": "All artifact hashes matched, four configured images passed audit, permit validation rejected the paused state, and the service remained inactive with TimeoutStopSec=infinity.",
+      "rollback": "Reserve backup /opt/qdev-runner-worker/backups/before-89d996feae07955d2552c5f0a24a81d3eecc7ee8-20260826T100134Z is retained."
+    },
+    {
+      "at": "2026-08-26T11:07:15Z",
+      "actor": "runner recovery",
+      "target": "primary worker package and controller candidate",
+      "action": "Installed and audited the exact 89d996f worker package under the inactive owner freeze, then staged the byte-verified controller archive without activation.",
+      "authorization": "Package-only rollout was authorized while cleanup remained owner-isolated; controller activation remains capacity-gated.",
+      "expected": "Both workers and the staged controller share one source identity while live broker behavior remains unchanged until final release.",
+      "observed": "Primary receipt 20260826T110551Z records four passing images, ExecCondition, absent permit, present marker and inactive service; current controller remains ba4a72f and staged archive SHA-256 is 6fd5d0a650cfde09a4459b496a156f51190734479c4f3e189de4a58046748eb7.",
+      "rollback": "Primary backup /opt/qdev-runner-worker/backups/before-89d996feae07955d2552c5f0a24a81d3eecc7ee8-20260826T110551Z and controller ba4a72f are retained."
+    },
+    {
+      "at": "2026-08-26T11:11:23Z",
+      "actor": "parallel product release tasks and runner recovery",
+      "target": "primary owner gate",
+      "action": "Contained two post-rollout ownership races: an empty compatibility permit was rejected by ExecCondition, then product tasks force-transferred or reused an observed owner ID and supplied valid audits to open intake. Installed a separate reversible incident lock and drained the last accepted job without termination.",
+      "authorization": "Product deployment authorization does not transfer ownership of the shared runner recovery gate; active jobs must drain with TimeoutStopSec=infinity.",
+      "expected": "Invalid permits fail before ExecStart, valid but uncoordinated releases are re-contained, accepted jobs complete, and no further starts occur until the incident owner removes the separate lock.",
+      "observed": "The empty permit failed with systemd result exec-condition. GitHub jobs 98155143236, 98155127219 and 98155143315 then completed success on exact Platform-Portal SHA 4050decec5fb339c49710a6b6dba16b11b47ed20 and expected ephemeral runner names; the worker became inactive at 11:14:25Z with permit absent, marker present, RefuseManualStart=yes and the incident lock present on both tiers.",
+      "rollback": "Remove only the incident-owned lock and drop-in after the strict capacity receipts and immediately before the controlled release; the ordinary owner gate remains the lasting control."
+    },
+    {
+      "at": "2026-08-26T13:18:19Z",
+      "actor": "QazFund release task and runner recovery",
+      "target": "primary and reserve incident ownership",
+      "action": "Re-contained a later cross-task release that removed both incident locks, transferred both gates to QDEV-GHA-QAZFUND-20260826-01 and opened normal intake while pressure and disk gates were failing. Restored the incident-owned condition on both tiers, reclaimed ownership, preserved active jobs through infinite-timeout drain, and made only the two exact incident lock files immutable during containment.",
+      "authorization": "The runner incident owner was explicitly instructed not to transfer ownership, reorder the queue or start workers while other work was active; exact lock hardening is reversible and limited to that incident boundary.",
+      "expected": "No new job is claimed after the current jobs, active provider work terminates normally, and further product tasks cannot delete the incident condition accidentally.",
+      "observed": "Acquire receipts 20260826T131810Z on primary and 20260826T131819Z on reserve record forced recovery from QDEV-GHA-QAZFUND-20260826-01. Reserve job 98113344607 reached provider failure and drained at 13:19:35Z; primary job 98119852075 reached provider success and drained at 13:21:24Z. Both services are inactive. The failure is retained as consumer outcome, not called a runner canary. At 13:24:49Z primary free space was 15,484,510,208 bytes with CPU PSI avg10 79.53, so reopening remained rejected.",
+      "rollback": "Before the controlled incident release, clear immutable only on the two recorded incident files, archive them to the rollout backup, reload systemd, and leave the normal owner gate and 89d996f ExecCondition in place."
+    },
+    {
+      "at": "2026-08-26T15:13:09Z",
+      "actor": "runner recovery",
+      "target": "unmanaged repository-specific runner on reserve",
+      "action": "Allowed the already accepted Platform contract job to complete, then stopped and disabled the standalone actions.runner service and installed a dedicated manual-start guard while retaining its runner data.",
+      "authorization": "The owner requested all GitHub execution paths to be found and the custom shared runner to become the controlled recovery path.",
+      "expected": "A repository-specific service cannot bypass the broker gate during a future capacity incident.",
+      "observed": "Platform job 32984290481 completed success before drain. Receipt 20260826T151309Z-retire-direct-platform-runner.json records the exact guarded service and disabled marker; the shared reserve worker remained inactive.",
+      "rollback": "Remove only the dedicated guard and disabled marker, then enable the retained service if the portfolio explicitly restores that direct lane."
+    },
+    {
+      "at": "2026-08-26T16:14:15Z",
+      "actor": "capacity recovery",
+      "target": "primary and reserve admission",
+      "action": "Completed a post-cleanup primary quiet window and repeated the reserve window across periodic workload cycles without weakening its strict CPU PSI or swap thresholds.",
+      "authorization": "Both tiers had to remain protected until exact free-space, health and 15-minute pressure receipts were available.",
+      "expected": "Each eligible tier keeps at least 30 GiB free, zero swap-I/O delta and CPU PSI avg10 below 20 for the full interval.",
+      "observed": "Primary receipt 20260826T161816Z later passed 31 samples over 900.097 seconds with PSI max 19.95, free min 35,426,471,936 bytes and swap 0/0. Reserve receipt 20260826T161139Z failed on sample 5 at PSI 32.90 during a repeatable Shadowbroker combined refresh; 20260826T161415Z records every temporary control restored and the reserve left locked.",
+      "rollback": "Primary Echo maintenance units were restored after canary. Reserve retained its pause marker, incident lock and absent permit."
+    },
+    {
+      "at": "2026-08-26T16:36:28Z",
+      "actor": "runner recovery and GitHub Actions",
+      "target": "controller cutover and primary provider canary",
+      "action": "Built and activated exact controller 89d996f, ran a fresh config-bound four-image audit, archived the incident controls and obsolete existence-only rollout-permit drop-in, released the primary through the owner-bound gate, and observed the first natural FIFO runner-contract job.",
+      "authorization": "The owner required a fresh runtime receipt, executable pre-start validation, same-SHA provider canary and safe gate release without queue reordering.",
+      "expected": "The provider job leaves queued, names the expected ephemeral runner and succeeds while the exact controller and worker package are active.",
+      "observed": "belilovsky/qaz-support run 32950262068, job 98119852328, exact SHA 50f8451dc17a5f6daea95e215792b1385fc71df9 ran on qdev-qaz-support-98119852328 and concluded success at 16:36:28Z. Receipt 20260826T163628Z-primary-provider-canary.json binds controller, capacity, audit, gate and provider evidence. Primary continued normal FIFO processing; reserve remained closed.",
+      "rollback": "Controller ba4a72f, worker package backups and the archived incident/legacy drop-ins remain available. Reacquire the owner gate before any primary rollback."
+    }
+  ],
+  "affected_lanes": [
+    {
+      "name": "hosted billing",
+      "evidence_source": "GitHub billing settings and hosted workflow runs",
+      "observed_at": "2026-08-26T07:37:46Z",
+      "state": "recovered",
+      "causal_parent": null
+    },
+    {
+      "name": "provider queue",
+      "evidence_source": "GitHub run and job APIs",
+      "observed_at": "2026-08-26T16:36:28Z",
+      "state": "recovered",
+      "causal_parent": "webhook/broker"
+    },
+    {
+      "name": "webhook/broker",
+      "evidence_source": "broker database, health endpoint and source release",
+      "observed_at": "2026-08-26T16:37:07Z",
+      "state": "recovered",
+      "causal_parent": "primary and reserve worker arbitration"
+    },
+    {
+      "name": "primary worker",
+      "evidence_source": "systemd state, capacity gate and image receipt",
+      "observed_at": "2026-08-26T16:37:07Z",
+      "state": "recovered",
+      "causal_parent": "host capacity"
+    },
+    {
+      "name": "reserve worker",
+      "evidence_source": "systemd state, tier identity, image receipt and capacity-blocked receipt 20260826T161415Z",
+      "observed_at": "2026-08-26T16:14:15Z",
+      "state": "blocked",
+      "causal_parent": "primary and reserve worker arbitration"
+    },
+    {
+      "name": "executor images",
+      "evidence_source": "qdev-runner-worker-runtime-audit-v1 receipts",
+      "observed_at": "2026-08-26T07:32:00Z",
+      "state": "recovered",
+      "causal_parent": "capacity cleanup"
+    },
+    {
+      "name": "workflow policy",
+      "evidence_source": "control-plane tests and hosted runner-contract checks",
+      "observed_at": "2026-08-26T07:37:46Z",
+      "state": "recovered",
+      "causal_parent": "matrix lease collision"
+    }
+  ],
+  "verification": {
+    "status": "partial_pass",
+    "checks": [
+      "source: Ruff, mypy and 89 pytest tests pass",
+      "skills: both skill validators and manifest hash checks pass",
+      "hosted: CI run 32955864590 and runner-contract run 32955864758 succeeded on exact PR SHA 89d996f",
+      "reserve: provider job 98093524191 succeeded with the expected runner name",
+      "runtime: exact 89d996f controller and worker packages are active on primary; all four configured images passed a fresh config-bound audit",
+      "capacity: primary post-build receipt passed 31 samples over 900.097 seconds with PSI max 19.95, free min 35,426,471,936 bytes and swap delta zero",
+      "provider: qaz-support run 32950262068 job 98119852328 succeeded on exact SHA 50f8451dc17a5f6daea95e215792b1385fc71df9 and runner qdev-qaz-support-98119852328",
+      "blocked reserve: repeated strict window failed at CPU PSI avg10 32.90; all temporary controls were restored and the tier remains locked"
+    ]
+  },
+  "rollback": {
+    "target": "controller release ba4a72f19300eb4c81c1a3b6ab319683cf6cedb3 plus timestamped worker package/configuration backups",
+    "state": "ready"
+  },
+  "status": "blocked",
+  "blocked": [
+    {
+      "lane": "reserve worker",
+      "owner": "shared-host capacity owner",
+      "dependency": "repeatable CPU pressure from the Shadowbroker combined scheduled refresh on the busy reserve host",
+      "next_action": "provide workload scheduler drain, CPU expansion or equivalent isolation, then rerun the strict 15-minute window and a reserve canary",
+      "required_proof": "15 minutes with CPU PSI avg10 below 20, zero swap-I/O delta, at least 30 GiB free, green runtime health and a provider-visible reserve exact-SHA success"
+    }
+  ],
+  "result_receipt": {
+    "task": "Restore and systematize GitHub Actions and the QDev recovery runner.",
+    "outcome": "Hosted CI and the exact 89d996f recovery control plane are operational. Primary is open and processing the preserved FIFO queue; reserve is independently fail-closed on its strict pressure criterion.",
+    "verified_checks": [
+      "GitHub-hosted CI and runner-contract checks passed",
+      "slot-aware and matrix-lease tests passed",
+      "configured worker image keep-sets passed the local audit",
+      "primary post-build 15-minute capacity receipt passed",
+      "primary exact-SHA provider canary passed on the expected ephemeral runner",
+      "Echo maintenance controls were restored and local/public health returned 200"
+    ],
+    "freshness": "Evidence captured through 2026-08-26T16:39:20Z.",
+    "limitations": "Reserve remains closed because a repeatable combined application refresh exceeded the strict CPU PSI threshold; no reserve recovery or two-tier availability is claimed.",
+    "next_action": "Normal dependent work may continue through primary in FIFO order. Keep reserve locked until its resource-isolation owner supplies a passing strict window and reserve canary."
+  }
+}

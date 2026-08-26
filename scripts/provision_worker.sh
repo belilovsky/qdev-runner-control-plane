@@ -85,6 +85,27 @@ install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls/wor
 install -m 0644 deploy/qdev-runner-worker.service /etc/systemd/system/qdev-runner-worker.service
 install -m 0755 scripts/manage_worker_gate.py /usr/local/sbin/qdev-runner-worker-gate
 
+# The owner-bound gate supersedes the earlier existence-only rollout permit.
+# Preserve, rather than delete, those exact legacy controls so an upgrade cannot
+# leave an otherwise valid release permanently skipped or tempt an operator to
+# manufacture an empty compatibility permit.
+legacy_gate_paths=(
+  /etc/systemd/system/qdev-runner-worker.service.d/zzzzzzz-runner-rollout-lock.conf
+  /etc/qdev/qdev-runner-worker.rollout-permit
+)
+legacy_gate_backup=""
+for legacy_path in "${legacy_gate_paths[@]}"; do
+  [[ -e "$legacy_path" ]] || continue
+  if [[ -z "$legacy_gate_backup" ]]; then
+    legacy_gate_backup="${install_root}/backups/legacy-gate-$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -o root -g root -m 0700 "$legacy_gate_backup"
+  fi
+  mv -- "$legacy_path" "$legacy_gate_backup/"
+done
+if [[ -n "$legacy_gate_backup" ]]; then
+  printf 'legacy worker gate controls archived at %s\n' "$legacy_gate_backup"
+fi
+
 runuser -u "$worker_user" -- env \
   DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
   docker network inspect qdev-ci-egress >/dev/null 2>&1 || \

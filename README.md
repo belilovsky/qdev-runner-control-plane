@@ -134,6 +134,11 @@ deleting the compatibility pause marker directly. The service validates the
 permit owner, enabled gate state, and referenced passing audit before every
 start, so creating an empty permit file cannot bypass the gate.
 
+Worker provisioning archives the exact obsolete
+`qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not
+recreate that compatibility permit: the executable owner/audit validator is
+the only accepted start boundary.
+
 A green heartbeat is only broker/capacity evidence. Recovery closes only when
 the same-SHA GitHub canary leaves `queued`, reports the expected runner name,
 and succeeds.

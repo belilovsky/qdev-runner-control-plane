@@ -83,6 +83,20 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
 - Do not accept a broker heartbeat or an internal `complete` callback as a
   canary. The GitHub job itself must leave `queued`, name the expected runner,
   and complete successfully on the exact SHA.
+- Inventory every executable Actions lane, including repository-specific
+  `actions.runner.*` services and direct/GitHub-hosted deployment workflows.
+  A standalone runner can bypass the broker gate and invalidate a capacity
+  window even while both shared workers are paused. Drain its active job, then
+  retire it with an explicit service guard and retained runner data.
+- A capacity receipt covers a full declared interval, not an instant snapshot.
+  Include periodic application cycles, swap-in and swap-out deltas, free space,
+  effective gates and runtime health. Diagnostic scans are load too: stop
+  self-created inventory processes before the window and use each application's
+  native maintenance/drain control for recurring producers.
+- Read all effective systemd conditions immediately before start. When the
+  owner-bound gate replaces a known existence-only rollout permit, archive the
+  exact legacy drop-in and permit through the provisioned migration; never
+  satisfy the obsolete condition by creating an empty file.
 - Requeued transient jobs move to the FIFO tail so one failing job cannot
   starve the queue.
 
