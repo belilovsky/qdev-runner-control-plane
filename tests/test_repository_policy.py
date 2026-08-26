@@ -211,6 +211,51 @@ def test_guard_rejects_malformed_unique_job_label_order(tmp_path: Path) -> None:
     assert "missing-unique-job-label" in result.stdout
 
 
+def test_guard_requires_matrix_index_in_unique_job_label(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  lint:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint"
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+""",
+    )
+    load_installer().install(root)
+
+    result = run_guard(root)
+
+    assert result.returncode == 1
+    assert "matrix-job-label-not-unique" in result.stdout
+
+
+def test_guard_accepts_matrix_index_in_unique_job_label(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        """jobs:
+  lint:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint-${{ strategy.job-index }}"
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+""",
+    )
+    load_installer().install(root)
+
+    assert run_guard(root).returncode == 0
+
+
 def test_guard_rejects_flow_style_runner_selector(tmp_path: Path) -> None:
     root = repository(
         tmp_path,

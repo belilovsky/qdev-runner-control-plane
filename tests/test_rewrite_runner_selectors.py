@@ -41,3 +41,25 @@ def test_preserves_product_runner_unless_job_is_selected() -> None:
     )
     assert "qdev-ci" in converted
     assert "product-release" not in converted
+
+
+def test_matrix_job_gets_strategy_index_in_runner_lease() -> None:
+    source = """jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+"""
+
+    rewritten = MODULE.rewrite(
+        source,
+        docker_jobs=[],
+        browser_jobs=[],
+        convert_jobs=[],
+    )
+
+    assert (
+        'qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint-'
+        '${{ strategy.job-index }}' in rewritten
+    )

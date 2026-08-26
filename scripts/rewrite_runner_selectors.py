@@ -13,6 +13,27 @@ HOSTED = re.compile(r"(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)", re.I)
 QDEV = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
 
 
+def matrix_jobs(text: str) -> set[str]:
+    current_job = ""
+    in_strategy = False
+    selected: set[str] = set()
+    for line in text.splitlines():
+        job = JOB.match(line)
+        if job:
+            current_job = job.group("name")
+            in_strategy = False
+            continue
+        if not current_job or not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        key = line.strip().split(":", 1)[0]
+        if indent == 4:
+            in_strategy = key == "strategy"
+        elif in_strategy and indent >= 6 and key == "matrix":
+            selected.add(current_job)
+    return selected
+
+
 def _matches(patterns: list[re.Pattern[str]], value: str) -> bool:
     return any(pattern.search(value) for pattern in patterns)
 
@@ -25,6 +46,7 @@ def rewrite(
     convert_jobs: list[re.Pattern[str]],
 ) -> str:
     current_job = ""
+    matrix = matrix_jobs(text)
     output: list[str] = []
     for line in text.splitlines(keepends=True):
         job = JOB.match(line.rstrip("\r\n"))
@@ -48,9 +70,13 @@ def rewrite(
         else:
             profile = "qdev-ci"
         job_label = current_job.lower().replace("_", "-")
+        matrix_label = (
+            "-${{ strategy.job-index }}" if current_job in matrix else ""
+        )
         replacement = (
             f'{selector.group("indent")}runs-on: [self-hosted, Linux, X64, {profile}, '
-            f'"qdev-job-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{job_label}"]\n'
+            f'"qdev-job-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-'
+            f'{job_label}{matrix_label}"]\n'
         )
         output.append(replacement)
     return "".join(output)

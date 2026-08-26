@@ -32,8 +32,9 @@ PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
 UNIQUE_JOB_LABEL = re.compile(
     r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
-    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^\s,\]\"']+"
+    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^,\]\"']+"
 )
+MATRIX_JOB_INDEX = re.compile(r"\$\{\{\s*strategy\.job-index\s*\}\}")
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
 FLOW_RUNS_ON = re.compile(r"(?:^|[{,])\s*['\"]?runs-on['\"]?\s*:\s*(.*)$")
 FORK_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
@@ -182,10 +183,20 @@ def workflow_violations(
     errors: list[str] = []
     unique_labels: dict[str, int] = {}
     visited_actions: set[Path] = set()
+    blocks = job_blocks(lines)
     if has_pull_request_trigger(lines):
-        for job_line, block in job_blocks(lines):
+        for job_line, block in blocks:
             if QDEV_PROFILE.search(block) and FORK_REPOSITORY_GUARD not in block:
                 errors.append(f"{rel}:{job_line}: unguarded-public-fork-job")
+    for job_line, block in blocks:
+        if not QDEV_PROFILE.search(block) or not re.search(r"\bstrategy\s*:\s+matrix\s*:", block):
+            continue
+        runs_on = re.search(
+            r"\bruns-on\s*:\s*(.*?)(?:\s+(?:timeout-minutes|strategy|steps|permissions|needs|if|env)\s*:|$)",
+            block,
+        )
+        if runs_on is None or MATRIX_JOB_INDEX.search(runs_on.group(1)) is None:
+            errors.append(f"{rel}:{job_line}: matrix-job-label-not-unique")
     for number, line in enumerate(lines, 1):
         if not line.strip():
             continue

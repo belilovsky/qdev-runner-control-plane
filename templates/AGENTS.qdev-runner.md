@@ -6,7 +6,8 @@
   path; do not implement a silent dynamic selector fallback.
 - A recovery job selects one approved profile (`qdev-ci`, `qdev-ci-browser`, or
   `qdev-ci-docker`) together with `self-hosted`, `Linux`, `X64`, and a
-  job-unique `qdev-job-*` label.
+  job-unique `qdev-job-*` label. Matrix jobs also include
+  `${{ strategy.job-index }}` so each expansion has a distinct runner lease.
 - Treat `.github/qdev-runner.yml` as the machine-readable source of truth. Do
   not create a repository-specific runner or change execution mode without
   migrating the contract and its smoke evidence.

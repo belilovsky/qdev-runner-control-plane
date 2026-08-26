@@ -64,6 +64,9 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
 - Never restart a worker while it reports an active job.
 - Worker names end in their tier (`-primary` or `-reserve`); startup rejects a
   mismatch.
+- Matrix jobs include `${{ strategy.job-index }}` in their `qdev-job-*` label;
+  run ID, attempt and job name alone collide across matrix expansions and can
+  bind a JIT runner to the wrong provider job ID.
 - Reserve stands down only while a fresh, capacity-allowed primary slot is
   free. A merely present or busy primary does not block reserve.
 - Preserve the previous controller release and host configuration before a

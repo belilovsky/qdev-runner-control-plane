@@ -35,8 +35,9 @@ PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
 QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
 UNIQUE_JOB_LABEL = re.compile(
     r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
-    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^\s,\]\"']+"
+    r"\$\{\{\s*github\.run_attempt\s*\}\}-[^,\]\"']+"
 )
+MATRIX_JOB_INDEX = re.compile(r"\$\{\{\s*strategy\.job-index\s*\}\}")
 FORK_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
@@ -312,9 +313,24 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                         violations.append(
                             violation(path, 1, "missing-required-runner-label", str(job_name))
                         )
-                    if not any(UNIQUE_JOB_LABEL.fullmatch(label) for label in labels):
+                    unique_label = next(
+                        (label for label in labels if UNIQUE_JOB_LABEL.fullmatch(label)), None
+                    )
+                    if unique_label is None:
                         violations.append(
                             violation(path, 1, "missing-unique-job-label", str(job_name))
+                        )
+                    strategy = job.get("strategy")
+                    if (
+                        isinstance(strategy, dict)
+                        and strategy.get("matrix") is not None
+                        and (
+                            unique_label is None
+                            or MATRIX_JOB_INDEX.search(unique_label) is None
+                        )
+                    ):
+                        violations.append(
+                            violation(path, 1, "matrix-job-label-not-unique", str(job_name))
                         )
                     for label in labels:
                         if not label.startswith("qdev-job-"):

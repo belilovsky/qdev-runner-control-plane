@@ -28,6 +28,14 @@ runs-on:
   - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test
 ```
 
+Matrix jobs must also include `${{ strategy.job-index }}` in that label. The
+run ID, attempt and job name are shared by every expansion of one matrix job;
+without the index, a JIT runner created for one job ID may accept a sibling:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test-${{ strategy.job-index }}"]
+```
+
 Use `qdev-ci` for Node, Python, and static checks, `qdev-ci-browser` for
 Playwright/Chromium, and `qdev-ci-docker` for builds using the job-scoped
 rootless Docker/BuildKit service. Never mount the host Docker socket.
