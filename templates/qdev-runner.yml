@@ -14,3 +14,6 @@ resources:
   disk_mb: 12288
 artifact_policy: qdev-artifact-v1
 release_runner: null
+# Protected deploy/release workflows that may use ghcr.io for immutable
+# product images. Keep CI, cache, and evidence workflows out of this list.
+release_registry_workflows: []

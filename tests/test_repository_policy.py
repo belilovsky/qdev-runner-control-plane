@@ -41,6 +41,16 @@ def hosted_repository(tmp_path: Path, workflow: str) -> Path:
     return root
 
 
+def declare_release_registry_workflow(root: Path, name: str = "deploy.yml") -> None:
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "release_registry_workflows:\n"
+        + f"  - {name}\n",
+        encoding="utf-8",
+    )
+
+
 GOOD_WORKFLOW = """jobs:
   test:
     runs-on:
@@ -148,6 +158,141 @@ def test_v2_allows_hosted_primary_and_self_hosted_recovery(tmp_path: Path) -> No
     )
     load_installer().install(root)
     assert run_guard(root).returncode == 0
+
+
+def test_v2_allows_ghcr_only_in_declared_non_pr_release_workflow(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+    (root / ".github/workflows/deploy.yml").write_text(
+        """on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker build -t ghcr.io/example/product:${{ github.sha }} .
+      - run: docker push ghcr.io/example/product:${{ github.sha }}
+""",
+        encoding="utf-8",
+    )
+    declare_release_registry_workflow(root)
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_v2_rejects_ghcr_in_undeclared_ci_workflow(tmp_path: Path) -> None:
+    root = hosted_repository(
+        tmp_path,
+        """jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker pull ghcr.io/example/product:${{ github.sha }}
+""",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "ghcr" in result.stdout
+
+
+def test_release_registry_workflow_rejects_pull_request_trigger(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/deploy.yml").write_text(
+        """on:
+  pull_request:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker pull ghcr.io/example/product:${{ github.sha }}
+""",
+        encoding="utf-8",
+    )
+    declare_release_registry_workflow(root)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "release-registry-workflow-pull-request" in result.stdout
+
+
+def test_release_registry_workflow_does_not_exempt_cache_or_artifacts(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/deploy.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker pull ghcr.io/example/product:${{ github.sha }}
+      - uses: actions/cache@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+""",
+        encoding="utf-8",
+    )
+    declare_release_registry_workflow(root)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "github-cache" in result.stdout
+    assert "ghcr" not in result.stdout
+
+
+def test_release_registry_workflow_applies_to_its_local_composite_actions(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/deploy.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/release
+""",
+        encoding="utf-8",
+    )
+    action = root / ".github/actions/release/action.yml"
+    action.parent.mkdir(parents=True)
+    action.write_text(
+        """runs:
+  using: composite
+  steps:
+    - run: docker pull ghcr.io/example/product:${{ github.sha }}
+      shell: bash
+""",
+        encoding="utf-8",
+    )
+    declare_release_registry_workflow(root)
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_release_registry_workflow_requires_v2_and_existing_file(
+    tmp_path: Path,
+) -> None:
+    v1 = repository(tmp_path, GOOD_WORKFLOW)
+    declare_release_registry_workflow(v1, "missing.yml")
+    load_installer().install(v1)
+    result = run_guard(v1)
+    assert result.returncode == 1
+    assert "release-registry-requires-v2" in result.stdout
+    assert "release-registry-workflow-missing missing.yml" in result.stdout
 
 
 def test_guard_ignores_commented_action_reference(tmp_path: Path) -> None:
