@@ -68,17 +68,20 @@ class Worker:
                 | {
                     "concurrency": self.settings.concurrency,
                     "slots_available": max(0, self.settings.concurrency - active_jobs),
+                    "min_disk_free_gib": self.settings.min_disk_free_gib,
                 },
             },
         )
 
-    async def claim(self) -> dict[str, Any] | None:
+    async def claim(self, capacity: Capacity) -> dict[str, Any] | None:
         response = await self.client.post(
             "/internal/v1/jobs/claim",
             json={
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
                 "profiles": self.settings.profiles,
+                "disk_free_gib": capacity.disk_free_gib,
+                "min_disk_free_gib": self.settings.min_disk_free_gib,
             },
         )
         if response.status_code == 204:
@@ -369,7 +372,7 @@ class Worker:
                 await self.heartbeat()
                 capacity = self.capacity()
                 if capacity.allowed and len(self.tasks) < self.settings.concurrency:
-                    job = await self.claim()
+                    job = await self.claim(capacity)
                     if job:
                         job_id = int(job["job_id"])
                         self.active_job_ids.add(job_id)

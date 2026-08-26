@@ -72,7 +72,9 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   run ID, attempt and job name alone collide across matrix expansions and can
   bind a JIT runner to the wrong provider job ID.
 - Reserve stands down only while a fresh, capacity-allowed primary slot is
-  free. A merely present or busy primary does not block reserve.
+  free for the exact pending profile. Claim admission preserves the configured
+  free-space floor plus that profile's declared disk budget; a merely present,
+  busy, or undersized primary does not block reserve.
 - Preserve the previous controller release and host configuration before a
   bounded activation. Do not broad-prune shared Docker data.
 - A runner-image cleanup allowlist is configuration-bound. Inspect every image

@@ -26,6 +26,8 @@ class ClaimRequest(BaseModel):
     worker_name: str
     tier: Literal["primary", "reserve"]
     profiles: list[str]
+    disk_free_gib: float = Field(ge=0)
+    min_disk_free_gib: float = Field(ge=0)
 
 
 class CompletionRequest(BaseModel):
@@ -198,11 +200,14 @@ def create_app(
     ) -> dict[str, Any] | Response:
         require_worker(x_qdev_worker_token)
         store.recover_stale_jobs(worker_timeout_seconds=300)
-        if request.tier == "reserve" and store.has_available_tier_slot(
-            "primary", max_age_seconds=90
-        ):
-            return Response(status_code=204)
-        claimed = store.claim(request.worker_name, tuple(request.profiles))
+        claimed = store.claim(
+            request.worker_name,
+            tuple(request.profiles),
+            tier=request.tier,
+            disk_free_gib=request.disk_free_gib,
+            min_disk_free_gib=request.min_disk_free_gib,
+            profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
+        )
         if claimed is None:
             return Response(status_code=204)
         job_id = int(claimed["job_id"])
