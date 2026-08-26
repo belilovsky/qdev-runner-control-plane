@@ -118,6 +118,19 @@ QDEV_PUSH_IMAGES=true scripts/build_runner_images.sh
 Record the three resulting registry digests in rollout evidence. Do not reuse
 a mutable image from an unverified build.
 
+Before removing a worker pause after any image cleanup, run the local executor
+audit as the worker account with its rootless Docker environment. It fails if
+the configured tier/name identity is inconsistent or an enabled profile's
+immutable runner/sidecar image is absent:
+
+```bash
+python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
+```
+
+A green heartbeat is only broker/capacity evidence. Recovery closes only when
+the same-SHA GitHub canary leaves `queued`, reports the expected runner name,
+and succeeds.
+
 ## Portfolio rollout
 
 Use `scripts/rollout_repository_policy.py` from isolated temporary clones and

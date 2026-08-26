@@ -27,6 +27,7 @@ Record each lane independently; do not infer a green lane from another one.
 | webhook/broker | signed delivery accepted, pending count, database state |
 | primary worker | fresh heartbeat, capacity gate, concurrency, free slots |
 | reserve worker | fresh heartbeat, correct `reserve` tier, capacity gate, free slots |
+| executor images | every configured immutable runner and sidecar digest exists on the worker |
 | artifacts/registry | endpoint health, scoped credentials, retention state |
 | required check | context name and conclusion bound to the exact SHA |
 | release | deployed SHA/release, runtime health, public smoke, rollback target |
@@ -42,7 +43,10 @@ same distinction applies to reserve.
 2. For a billing/provider failure, verify payment and a positive Actions
    budget. Rerun one known job once. Do not loop retries.
 3. Audit `https://ci.qdev.run/health`. Both tiers must be present and pass
-   capacity. A pending queue with a busy primary must be claimable by reserve.
+   capacity. On each worker, run `scripts/audit_worker_runtime.py` as the
+   worker account before removing a pause marker. A heartbeat is not executor
+   proof: every configured immutable runner and sidecar image must exist. A
+   pending queue with a busy primary must be claimable by reserve.
 4. Dispatch only the repository's reviewed recovery workflow on the same SHA.
    Public fork code never runs on the recovery pool.
 5. Record run ID, job ID, SHA, runner name, queue time, conclusion, and the
@@ -63,6 +67,12 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   free. A merely present or busy primary does not block reserve.
 - Preserve the previous controller release and host configuration before a
   bounded activation. Do not broad-prune shared Docker data.
+- A runner-image cleanup allowlist is configuration-bound. Inspect every image
+  referenced by the enabled worker profiles before unpausing; missing cached
+  digests are restored from the trusted registry or last-known-good export.
+- Do not accept a broker heartbeat or an internal `complete` callback as a
+  canary. The GitHub job itself must leave `queued`, name the expected runner,
+  and complete successfully on the exact SHA.
 - Requeued transient jobs move to the FIFO tail so one failing job cannot
   starve the queue.
 
@@ -70,6 +80,9 @@ Run the public-safe audit before and after recovery:
 
 ```bash
 python3 scripts/audit_runtime.py --output runner-runtime-receipt.json
+
+# Run locally on each worker as the worker account with its Docker environment.
+python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
 ```
 
 Use `--require-primary-slot` or `--require-reserve-slot` only for a controlled
