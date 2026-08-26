@@ -32,6 +32,37 @@ def test_public_fork_is_rejected(policy_files: tuple[Path, Path]) -> None:
         )
 
 
+def test_same_repository_public_pull_request_is_allowed(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    policy = Policy(inventory, profiles)
+    selected = policy.profile_for_labels(
+        "belilovsky/public-repo", ["self-hosted", "Linux", "X64", "qdev-ci"]
+    )
+    policy.authorize_run(
+        "belilovsky/public-repo",
+        selected,
+        {"event": "pull_request", "pull_requests": [{"head": {"repo": {"id": 2}}}]},
+    )
+
+
+def test_public_pull_request_without_head_repository_is_rejected(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    policy = Policy(inventory, profiles)
+    selected = policy.profile_for_labels(
+        "belilovsky/public-repo", ["self-hosted", "Linux", "X64", "qdev-ci"]
+    )
+    with pytest.raises(PolicyError, match="public fork"):
+        policy.authorize_run(
+            "belilovsky/public-repo",
+            selected,
+            {"event": "pull_request", "pull_requests": []},
+        )
+
+
 def test_private_pull_request_is_allowed(policy_files: tuple[Path, Path]) -> None:
     inventory, profiles = policy_files
     policy = Policy(inventory, profiles)

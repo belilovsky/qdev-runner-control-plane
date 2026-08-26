@@ -42,12 +42,12 @@ profiles:
     labels: [self-hosted, Linux, X64, qdev-ci]
     resources: {cpu: 1, memory_mb: 3072, disk_mb: 12288, pids_limit: 512}
     timeout_minutes: 45
-    allow_public_pr: false
+    allow_public_pr: true
   qdev-ci-browser:
     labels: [self-hosted, Linux, X64, qdev-ci-browser]
     resources: {cpu: 2, memory_mb: 4096, disk_mb: 15360, pids_limit: 768}
     timeout_minutes: 60
-    allow_public_pr: false
+    allow_public_pr: true
 """.strip()
         + "\n",
         encoding="utf-8",
