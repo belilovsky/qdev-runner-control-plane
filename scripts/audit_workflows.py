@@ -150,6 +150,8 @@ def audit_local_action(
     ref: str,
     action_dir: str,
     visited: set[str],
+    *,
+    allow_ghcr: bool = False,
 ) -> list[dict[str, Any]]:
     action_dir = action_dir.removeprefix("./").rstrip("/")
     for filename in ("action.yml", "action.yaml"):
@@ -167,6 +169,8 @@ def audit_local_action(
             if not line.strip():
                 continue
             for marker, kind in FORBIDDEN.items():
+                if kind == "ghcr" and allow_ghcr:
+                    continue
                 if marker.lower() in line.lower():
                     violations.append(violation(path, line_number, kind))
             if SETUP_CACHE.search(line):
@@ -176,7 +180,15 @@ def audit_local_action(
                 continue
             reference = action.group(1)
             if reference.startswith("./"):
-                violations.extend(audit_local_action(full_name, ref, reference, visited))
+                violations.extend(
+                    audit_local_action(
+                        full_name,
+                        ref,
+                        reference,
+                        visited,
+                        allow_ghcr=allow_ghcr,
+                    )
+                )
             elif reference.startswith("docker://"):
                 if not PINNED_CONTAINER.fullmatch(reference):
                     violations.append(
@@ -215,6 +227,29 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         for value in [contract.get("release_runner"), *(contract.get("release_runners") or [])]
         if isinstance(value, str) and value
     }
+    release_registry_workflows: set[str] = set()
+    release_registry_value = contract.get("release_registry_workflows")
+    if release_registry_value is not None:
+        if isinstance(release_registry_value, list) and all(
+            isinstance(value, str) for value in release_registry_value
+        ):
+            release_registry_workflows = set(release_registry_value)
+        else:
+            violations.append(
+                violation(contract_path, 1, "invalid-release-registry-workflows")
+            )
+    if release_registry_workflows and not allow_hosted:
+        violations.append(violation(contract_path, 1, "release-registry-requires-v2"))
+    for workflow_name in sorted(release_registry_workflows):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
+            violations.append(
+                violation(
+                    contract_path,
+                    1,
+                    "invalid-release-registry-workflow",
+                    workflow_name,
+                )
+            )
     if not allowed_profiles or not allowed_profiles <= QDEV_PROFILES:
         violations.append(
             violation(contract_path, 1, "invalid-contract-profiles", ",".join(allowed_profiles))
@@ -238,11 +273,34 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             "violations": violations
             + [violation(".github/workflows", 1, "workflow-directory-unavailable")],
         }
+    available_workflows = {Path(path).name for path in paths}
+    for workflow_name in sorted(release_registry_workflows - available_workflows):
+        violations.append(
+            violation(
+                contract_path,
+                1,
+                "release-registry-workflow-missing",
+                workflow_name,
+            )
+        )
     if smoke_path not in paths:
         violations.append(violation(smoke_path, 1, "missing-runner-smoke"))
     for path in paths:
         text = content_text(full_name, path, ref)
         document = yaml.safe_load(text) or {}
+        triggers = document.get("on", document.get(True, {}))
+        pull_request_triggered = (
+            triggers == "pull_request"
+            or isinstance(triggers, list)
+            and "pull_request" in triggers
+            or isinstance(triggers, dict)
+            and "pull_request" in triggers
+        )
+        allow_ghcr = allow_hosted and Path(path).name in release_registry_workflows
+        if allow_ghcr and pull_request_triggered:
+            violations.append(
+                violation(path, 1, "release-registry-workflow-pull-request")
+            )
         visited_actions: set[str] = set()
         for line_number, raw in enumerate(text.splitlines(), start=1):
             line = strip_yaml_comment(raw)
@@ -251,6 +309,8 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             if not allow_hosted and HOSTED.search(line):
                 violations.append(violation(path, line_number, "hosted-runner"))
             for marker, kind in FORBIDDEN.items():
+                if kind == "ghcr" and allow_ghcr:
+                    continue
                 if marker in line:
                     violations.append(violation(path, line_number, kind))
             if SETUP_CACHE.search(line):
@@ -265,7 +325,13 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                         )
                 elif reference.startswith("./"):
                     violations.extend(
-                        audit_local_action(full_name, ref, reference, visited_actions)
+                        audit_local_action(
+                            full_name,
+                            ref,
+                            reference,
+                            visited_actions,
+                            allow_ghcr=allow_ghcr,
+                        )
                     )
                 else:
                     revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
@@ -274,14 +340,6 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                             violation(path, line_number, "unpinned-action", reference)
                         )
         jobs = document.get("jobs", {})
-        triggers = document.get("on", document.get(True, {}))
-        pull_request_triggered = (
-            triggers == "pull_request"
-            or isinstance(triggers, list)
-            and "pull_request" in triggers
-            or isinstance(triggers, dict)
-            and "pull_request" in triggers
-        )
         if isinstance(jobs, dict):
             unique_labels: dict[str, str] = {}
             for job_name, job in jobs.items():

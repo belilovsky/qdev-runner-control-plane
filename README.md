@@ -51,6 +51,12 @@ python3 /path/to/checkout/.github/scripts/qdev-runner-policy.py \
   --root /path/to/checkout
 ```
 
+For v2 products whose protected release workflow uses GHCR, declare the exact
+workflow filename under `release_registry_workflows` in
+`.github/qdev-runner.yml`. The exemption is limited to `ghcr.io` inside that
+non-PR release lane; caches, Actions artifacts, and GitHub Packages remain
+policy violations.
+
 Register the repository in `inventory/repos.json`, install the GitHub App, and
 run `runner-smoke` on its default branch. The installer is idempotent and
 preserves repository-specific instructions outside its marked `AGENTS.md`

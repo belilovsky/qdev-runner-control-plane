@@ -107,6 +107,13 @@ and is removed with the runner container and private env-file after the job.
   and retained according to `.github/qdev-runner.yml`.
 - Push OCI images required by CI to `registry.ci.qdev.run`; deployment images
   and rollback digests retain their product-specific release policy.
+- A v2 repository that must publish or resolve protected deployment images in
+  GHCR declares only the exact workflow filenames under
+  `release_registry_workflows` in `.github/qdev-runner.yml`. The checker permits
+  `ghcr.io` only in those declared, non-`pull_request` workflows (including
+  local composite actions reached from them). GitHub cache/artifact actions and
+  `pkg.github.com` remain forbidden there. This is a release-registry boundary,
+  not a general CI exception.
 - Public fork pull requests do not execute fork code on the general pool. They
   require an isolated no-secrets path or trusted maintainer approval.
 - Product-specific deployment labels are not general CI profiles and must keep
@@ -125,3 +132,10 @@ The required `qdev-runner-contract` check runs on GitHub-hosted compute. The
 separate `runner-smoke` workflow proves the QDev recovery path. New repositories
 must be registered through the canonical starter bundle in
 `belilovsky/qdev-runner-control-plane`; do not register a standalone runner.
+
+Example for an existing protected deploy workflow:
+
+```yaml
+release_registry_workflows:
+  - deploy.yml
+```

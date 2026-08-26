@@ -135,7 +135,13 @@ def job_blocks(lines: list[str]) -> list[tuple[int, str]]:
     return blocks
 
 
-def action_violations(path: Path, root: Path, visited: set[Path]) -> list[str]:
+def action_violations(
+    path: Path,
+    root: Path,
+    visited: set[Path],
+    *,
+    allow_ghcr: bool = False,
+) -> list[str]:
     """Check external pins and forbidden services in a local composite action tree."""
     path = path.resolve()
     if path in visited or not path.is_file():
@@ -148,6 +154,8 @@ def action_violations(path: Path, root: Path, visited: set[Path]) -> list[str]:
         if not line.strip():
             continue
         for marker, kind in FORBIDDEN.items():
+            if kind == "ghcr" and allow_ghcr:
+                continue
             if marker.lower() in line.lower():
                 errors.append(f"{rel}:{number}: {kind}")
         if SETUP_CACHE.search(line):
@@ -159,7 +167,14 @@ def action_violations(path: Path, root: Path, visited: set[Path]) -> list[str]:
         if reference.startswith("./"):
             candidate = root / reference[2:]
             for name in ("action.yml", "action.yaml"):
-                errors.extend(action_violations(candidate / name, root, visited))
+                errors.extend(
+                    action_violations(
+                        candidate / name,
+                        root,
+                        visited,
+                        allow_ghcr=allow_ghcr,
+                    )
+                )
         elif reference.startswith("docker://"):
             if not PINNED_CONTAINER.fullmatch(reference):
                 errors.append(f"{rel}:{number}: unpinned-container-action {reference}")
@@ -175,6 +190,7 @@ def workflow_violations(
     root: Path,
     allowed_profiles: set[str],
     release_runners: set[str],
+    release_registry_workflows: set[str],
     allow_hosted: bool,
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
@@ -184,6 +200,9 @@ def workflow_violations(
     unique_labels: dict[str, int] = {}
     visited_actions: set[Path] = set()
     blocks = job_blocks(lines)
+    allow_ghcr = allow_hosted and path.name in release_registry_workflows
+    if allow_ghcr and has_pull_request_trigger(lines):
+        errors.append(f"{rel}:1: release-registry-workflow-pull-request")
     if has_pull_request_trigger(lines):
         for job_line, block in blocks:
             if QDEV_PROFILE.search(block) and FORK_REPOSITORY_GUARD not in block:
@@ -203,6 +222,8 @@ def workflow_violations(
         if not allow_hosted and HOSTED.search(line):
             errors.append(f"{rel}:{number}: hosted-runner")
         for marker, kind in FORBIDDEN.items():
+            if kind == "ghcr" and allow_ghcr:
+                continue
             if marker.lower() in line.lower():
                 errors.append(f"{rel}:{number}: {kind}")
         if SETUP_CACHE.search(line):
@@ -216,7 +237,14 @@ def workflow_violations(
             elif reference.startswith("./"):
                 candidate = root / reference[2:]
                 for name in ("action.yml", "action.yaml"):
-                    errors.extend(action_violations(candidate / name, root, visited_actions))
+                    errors.extend(
+                        action_violations(
+                            candidate / name,
+                            root,
+                            visited_actions,
+                            allow_ghcr=allow_ghcr,
+                        )
+                    )
             else:
                 revision = reference.rsplit("@", 1)[-1] if "@" in reference else ""
                 if not PINNED_SHA.fullmatch(revision):
@@ -278,6 +306,7 @@ def check_repository(root: Path) -> list[str]:
     errors: list[str] = []
     allowed_profiles: set[str] = set()
     release_runners: set[str] = set()
+    release_registry_workflows: set[str] = set()
     allow_hosted = False
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
@@ -307,6 +336,15 @@ def check_repository(root: Path) -> list[str]:
         if release_match and release_match.group(1).lower() != "null":
             release_runners.add(release_match.group(1))
         release_runners.update(contract_list(text, "release_runners"))
+        release_registry_workflows.update(contract_list(text, "release_registry_workflows"))
+        if release_registry_workflows and not allow_hosted:
+            errors.append(".github/qdev-runner.yml:1: release-registry-requires-v2")
+        for workflow_name in sorted(release_registry_workflows):
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
+                errors.append(
+                    ".github/qdev-runner.yml:1: invalid-release-registry-workflow "
+                    + workflow_name
+                )
 
     agents = root / "AGENTS.md"
     agents_text = agents.read_text(encoding="utf-8") if agents.is_file() else ""
@@ -319,9 +357,24 @@ def check_repository(root: Path) -> list[str]:
     if not workflows.is_dir():
         errors.append(".github/workflows:1: missing-workflow-directory")
         return errors
+    available_workflows = {
+        path.name for path in (*workflows.glob("*.yml"), *workflows.glob("*.yaml"))
+    }
+    for workflow_name in sorted(release_registry_workflows - available_workflows):
+        errors.append(
+            ".github/qdev-runner.yml:1: release-registry-workflow-missing "
+            + workflow_name
+        )
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
         errors.extend(
-            workflow_violations(path, root, allowed_profiles, release_runners, allow_hosted)
+            workflow_violations(
+                path,
+                root,
+                allowed_profiles,
+                release_runners,
+                release_registry_workflows,
+                allow_hosted,
+            )
         )
     return errors
 
