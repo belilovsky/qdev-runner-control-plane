@@ -43,9 +43,10 @@ same distinction applies to reserve.
 2. For a billing/provider failure, verify payment and a positive Actions
    budget. Rerun one known job once. Do not loop retries.
 3. Audit `https://ci.qdev.run/health`. Both tiers must be present and pass
-   capacity. On each worker, run `scripts/audit_worker_runtime.py` as the
-   worker account before removing a pause marker. A heartbeat is not executor
-   proof: every configured immutable runner and sidecar image must exist. A
+   capacity. On each worker, run `scripts/audit_worker_runtime.py` as a trusted
+   administrator with that worker's rootless Docker environment before
+   removing a pause marker. A heartbeat is not executor proof: every
+   configured immutable runner and sidecar image must exist. A
    pending queue with a busy primary must be claimable by reserve.
 4. Dispatch only the repository's reviewed recovery workflow on the same SHA.
    Public fork code never runs on the recovery pool.
@@ -81,7 +82,7 @@ Run the public-safe audit before and after recovery:
 ```bash
 python3 scripts/audit_runtime.py --output runner-runtime-receipt.json
 
-# Run locally on each worker as the worker account with its Docker environment.
+# Run locally as a trusted admin with the worker's rootless Docker environment.
 python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
 ```
 

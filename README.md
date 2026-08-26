@@ -119,9 +119,9 @@ Record the three resulting registry digests in rollout evidence. Do not reuse
 a mutable image from an unverified build.
 
 Before removing a worker pause after any image cleanup, run the local executor
-audit as the worker account with its rootless Docker environment. It fails if
-the configured tier/name identity is inconsistent or an enabled profile's
-immutable runner/sidecar image is absent:
+audit as a trusted administrator with the worker's rootless Docker environment.
+It fails if the configured tier/name identity is inconsistent or an enabled
+profile's immutable runner/sidecar image is absent:
 
 ```bash
 python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
