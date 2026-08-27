@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -29,6 +30,40 @@ def test_enqueue_is_idempotent(tmp_path: Path) -> None:
     assert store.enqueue(job()) is True
     assert store.enqueue(job()) is False
     assert store.health()["jobs"]["pending"] == 1
+
+
+def test_store_repairs_invalid_legacy_queue_timestamp_from_workflow_payload(tmp_path: Path) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    assert store.enqueue(job()) is True
+    payload = {"workflow_job": {"created_at": "2026-08-27T13:46:59Z"}}
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET created_at=?, payload_json=? WHERE job_id=?",
+            (-1_000_000_000_000, json.dumps(payload), 100),
+        )
+
+    repaired = Store(database).job(100)
+
+    assert repaired is not None
+    assert repaired["created_at"] == 1787838419.0
+
+
+def test_store_repairs_invalid_legacy_queue_timestamp_from_updated_at(tmp_path: Path) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    assert store.enqueue(job()) is True
+    expected = time.time()
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET created_at=?, updated_at=? WHERE job_id=?",
+            (-29_999, expected, 100),
+        )
+
+    repaired = Store(database).job(100)
+
+    assert repaired is not None
+    assert repaired["created_at"] == expected
 
 
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:

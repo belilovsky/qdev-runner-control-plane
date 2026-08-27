@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .models import QueuedJob
+
+MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -66,6 +70,29 @@ def _disk_headroom_allowed(
     return disk_free_gib >= min_disk_free_gib + profile_disk_mb / 1024
 
 
+def _is_valid_queue_timestamp(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= MINIMUM_QUEUE_TIMESTAMP
+    )
+
+
+def _workflow_job_created_at(payload_json: str) -> float | None:
+    try:
+        payload = json.loads(payload_json)
+        value = payload.get("workflow_job", {}).get("created_at")
+        if not isinstance(value, str):
+            return None
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+            UTC
+        ).timestamp()
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return timestamp if _is_valid_queue_timestamp(timestamp) else None
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,6 +101,34 @@ class Store:
             connection.executescript(SCHEMA)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
+            self._repair_invalid_queue_timestamps(connection)
+
+    def _repair_invalid_queue_timestamps(self, connection: sqlite3.Connection) -> None:
+        """Restore FIFO ordering for legacy rows written with invalid timestamps.
+
+        A workflow job's immutable GitHub creation time is the preferred repair
+        source. If an older webhook lacks that field, its already-recorded
+        update time is the least surprising monotonic fallback.
+        """
+        rows = connection.execute(
+            """
+            SELECT job_id, payload_json, created_at, updated_at
+            FROM jobs
+            WHERE status IN ('pending', 'claimed', 'running')
+              AND created_at < ?
+            """,
+            (MINIMUM_QUEUE_TIMESTAMP,),
+        ).fetchall()
+        for row in rows:
+            repaired = _workflow_job_created_at(str(row["payload_json"]))
+            if repaired is None and _is_valid_queue_timestamp(row["updated_at"]):
+                repaired = float(row["updated_at"])
+            if repaired is None:
+                repaired = time.time()
+            connection.execute(
+                "UPDATE jobs SET created_at=? WHERE job_id=? AND created_at=?",
+                (repaired, row["job_id"], row["created_at"]),
+            )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
