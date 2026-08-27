@@ -2937,7 +2937,8 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
       "workflow_count": 3,
       "workflow_files": [
