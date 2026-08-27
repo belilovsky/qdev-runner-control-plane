@@ -199,6 +199,46 @@ def test_queue_key_is_immutable_after_acceptance(tmp_path: Path) -> None:
             raise AssertionError("queue key update unexpectedly succeeded")
 
 
+def test_store_repairs_null_legacy_keys_without_rewriting_accepted_values(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    assert store.enqueue(job(queued_at="2026-08-27T13:46:59Z")) is True
+    accepted = store.job(100)
+    assert accepted is not None
+    with store.connect() as connection:
+        connection.execute("DROP TRIGGER jobs_queue_key_immutable")
+        connection.execute(
+            "UPDATE jobs SET queue_time_source=NULL, required_profile=NULL WHERE job_id=100"
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER jobs_queue_key_immutable
+            BEFORE UPDATE OF github_queued_at, queue_sequence, queue_time_source,
+                required_profile ON jobs
+            FOR EACH ROW
+            WHEN NEW.github_queued_at IS NOT OLD.github_queued_at
+               OR NEW.queue_sequence IS NOT OLD.queue_sequence
+               OR NEW.queue_time_source IS NOT OLD.queue_time_source
+               OR NEW.required_profile IS NOT OLD.required_profile
+            BEGIN
+                SELECT RAISE(ABORT, 'immutable queue key');
+            END
+            """
+        )
+
+    repaired = Store(database).job(100)
+
+    assert repaired is not None
+    assert (repaired["github_queued_at"], repaired["queue_sequence"]) == (
+        accepted["github_queued_at"],
+        accepted["queue_sequence"],
+    )
+    assert repaired["queue_time_source"] == "legacy_preserved_timestamp"
+    assert repaired["required_profile"] == accepted["required_profile"]
+
+
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

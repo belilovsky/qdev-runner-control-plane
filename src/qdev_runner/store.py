@@ -228,6 +228,12 @@ class Store:
                 if name not in columns:
                     connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
+            # Early deployments installed an immutable-key trigger before
+            # their legacy rows had been initialised.  Keep the migration
+            # atomic, but replace that version before filling only NULL
+            # fields; a value that has already been accepted remains fixed.
+            connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
+
             rows = connection.execute(
                 """
                 SELECT job_id, payload_json, labels_json, profile, created_at, updated_at,
@@ -239,21 +245,28 @@ class Store:
             ).fetchall()
             recovered: list[tuple[float, sqlite3.Row, str, str]] = []
             for row in rows:
-                github_queued_at = _workflow_job_created_at(str(row["payload_json"]))
-                if github_queued_at is not None:
-                    source = "github_workflow_job_created_at"
-                elif _is_valid_queue_timestamp(row["created_at"]):
-                    github_queued_at = float(row["created_at"])
-                    source = "legacy_received_at"
-                elif _is_valid_queue_timestamp(row["updated_at"]):
-                    github_queued_at = float(row["updated_at"])
-                    source = "legacy_updated_at"
+                existing_queued_at = row["github_queued_at"]
+                if existing_queued_at is not None:
+                    github_queued_at = float(existing_queued_at)
+                    source = str(row["queue_time_source"] or "legacy_preserved_timestamp")
                 else:
-                    github_queued_at = time.time()
-                    source = "migration_now"
-                profile = str(row["profile"] or "").lower()
-                if profile not in KNOWN_PROFILES:
-                    profile = _profile_from_labels(str(row["labels_json"])) or "legacy-unclassified"
+                    github_queued_at = _workflow_job_created_at(str(row["payload_json"]))
+                    if github_queued_at is not None:
+                        source = "github_workflow_job_created_at"
+                    elif _is_valid_queue_timestamp(row["created_at"]):
+                        github_queued_at = float(row["created_at"])
+                        source = "legacy_received_at"
+                    elif _is_valid_queue_timestamp(row["updated_at"]):
+                        github_queued_at = float(row["updated_at"])
+                        source = "legacy_updated_at"
+                    else:
+                        github_queued_at = time.time()
+                        source = "migration_now"
+                profile = str(row["required_profile"] or "").lower()
+                if not profile:
+                    profile = str(row["profile"] or "").lower()
+                    if profile not in KNOWN_PROFILES:
+                        profile = _profile_from_labels(str(row["labels_json"])) or "legacy-unclassified"
                 recovered.append((github_queued_at, row, source, profile))
 
             next_sequence_row = connection.execute(
@@ -263,14 +276,26 @@ class Store:
             for github_queued_at, row, source, profile in sorted(
                 recovered, key=lambda item: (item[0], int(item[1]["job_id"]))
             ):
-                next_sequence += 1
+                assignments: list[str] = []
+                values: list[object] = []
+                if row["github_queued_at"] is None:
+                    assignments.append("github_queued_at=?")
+                    values.append(github_queued_at)
+                if row["queue_sequence"] is None:
+                    next_sequence += 1
+                    assignments.append("queue_sequence=?")
+                    values.append(next_sequence)
+                if row["queue_time_source"] is None:
+                    assignments.append("queue_time_source=?")
+                    values.append(source)
+                if row["required_profile"] is None:
+                    assignments.append("required_profile=?")
+                    values.append(profile)
+                assignments.append("retry_not_before=COALESCE(retry_not_before, 0)")
+                values.append(row["job_id"])
                 connection.execute(
-                    """
-                    UPDATE jobs SET github_queued_at=?, queue_sequence=?, queue_time_source=?,
-                        required_profile=?, retry_not_before=COALESCE(retry_not_before, 0)
-                    WHERE job_id=?
-                    """,
-                    (github_queued_at, next_sequence, source, profile, row["job_id"]),
+                    f"UPDATE jobs SET {', '.join(assignments)} WHERE job_id=?",
+                    values,
                 )
 
             connection.execute(
@@ -289,10 +314,14 @@ class Store:
                 BEFORE UPDATE OF github_queued_at, queue_sequence, queue_time_source,
                     required_profile ON jobs
                 FOR EACH ROW
-                WHEN NEW.github_queued_at IS NOT OLD.github_queued_at
-                   OR NEW.queue_sequence IS NOT OLD.queue_sequence
-                   OR NEW.queue_time_source IS NOT OLD.queue_time_source
-                   OR NEW.required_profile IS NOT OLD.required_profile
+                WHEN (OLD.github_queued_at IS NOT NULL
+                      AND NEW.github_queued_at IS NOT OLD.github_queued_at)
+                   OR (OLD.queue_sequence IS NOT NULL
+                      AND NEW.queue_sequence IS NOT OLD.queue_sequence)
+                   OR (OLD.queue_time_source IS NOT NULL
+                      AND NEW.queue_time_source IS NOT OLD.queue_time_source)
+                   OR (OLD.required_profile IS NOT NULL
+                      AND NEW.required_profile IS NOT OLD.required_profile)
                 BEGIN
                     SELECT RAISE(ABORT, 'immutable queue key');
                 END
