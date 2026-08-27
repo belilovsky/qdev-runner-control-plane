@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from qdev_runner.models import QueuedJob
-from qdev_runner.store import IMMUTABLE_QUEUE_MIGRATION, Store
+from qdev_runner.policy import PolicyError, ProjectPriorityPolicy
+from qdev_runner.store import PROJECT_PRIORITY_POLICY_AUDIT, Store
 
 
 def job(
@@ -16,12 +17,13 @@ def job(
     job_id: int = 100,
     profile: str = "qdev-ci",
     queued_at: str | None = None,
+    repository: str = "belilovsky/private-repo",
 ) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
         job_id=job_id,
         run_id=200,
-        repository="belilovsky/private-repo",
+        repository=repository,
         repository_id=1,
         installation_id=300,
         labels=("self-hosted", "Linux", "X64", profile),
@@ -32,6 +34,20 @@ def job(
         }
         if queued_at is not None
         else {},
+    )
+
+
+def manual_priority_policy() -> ProjectPriorityPolicy:
+    return ProjectPriorityPolicy.from_data(
+        {
+            "schema": "qdev-runner-project-priority-v1",
+            "policy_id": "manual-p0-test",
+            "default_priority": 100,
+            "priorities": {
+                "belilovsky/qazstack": 0,
+                "belilovsky/qazpipe": 1,
+            },
+        }
     )
 
 
@@ -135,7 +151,8 @@ def test_store_backfills_invalid_legacy_timestamp_from_signed_payload(tmp_path: 
     assert recovered["required_profile"] == "qdev-ci"
     with Store(database).connect() as connection:
         migration = connection.execute(
-            "SELECT name FROM schema_migrations WHERE name=?", (IMMUTABLE_QUEUE_MIGRATION,)
+            "SELECT name FROM schema_migrations WHERE name=?",
+            ("20260827_immutable_github_fifo_v1",),
         ).fetchone()
     assert migration is not None
 
@@ -214,6 +231,112 @@ def test_claim_uses_github_fifo_within_a_profile(tmp_path: Path) -> None:
 
     assert claimed is not None
     assert claimed["job_id"] == 101
+
+
+def test_manual_project_priority_is_audited_without_changing_queue_keys(tmp_path: Path) -> None:
+    policy = manual_priority_policy()
+    store = Store(tmp_path / "broker.db", policy)
+    assert store.enqueue(
+        job(
+            "default-earlier",
+            100,
+            queued_at="2026-08-27T13:00:00Z",
+            repository="belilovsky/private-repo",
+        )
+    )
+    assert store.enqueue(
+        job(
+            "p0-later",
+            101,
+            queued_at="2026-08-27T14:00:00Z",
+            repository="belilovsky/qazstack",
+        )
+    )
+    before = store.job(101)
+
+    claimed = store.claim("worker-1", ("qdev-ci",))
+
+    assert claimed is not None
+    assert claimed["job_id"] == 101
+    after = store.job(101)
+    assert before is not None and after is not None
+    assert (after["github_queued_at"], after["queue_sequence"]) == (
+        before["github_queued_at"],
+        before["queue_sequence"],
+    )
+    health = store.health()
+    assert health["pending_by_priority"] == {"100": 1}
+    assert health["project_priority_policy"]["policy_id"] == "manual-p0-test"
+    with store.connect() as connection:
+        audit = connection.execute(
+            """
+            SELECT policy_id, definition_json FROM project_priority_policy_audits
+            WHERE policy_sha256=?
+            """,
+            (policy.sha256,),
+        ).fetchone()
+        migration = connection.execute(
+            "SELECT name FROM schema_migrations WHERE name=?", (PROJECT_PRIORITY_POLICY_AUDIT,)
+        ).fetchone()
+    assert audit is not None
+    assert audit["policy_id"] == "manual-p0-test"
+    assert migration is not None
+
+
+def test_manual_project_priority_preserves_github_fifo_inside_tier(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db", manual_priority_policy())
+    store.enqueue(
+        job(
+            "qazpipe-earliest",
+            100,
+            queued_at="2026-08-27T12:00:00Z",
+            repository="belilovsky/qazpipe",
+        )
+    )
+    store.enqueue(
+        job(
+            "qazstack-later",
+            101,
+            queued_at="2026-08-27T14:00:00Z",
+            repository="belilovsky/qazstack",
+        )
+    )
+    store.enqueue(
+        job(
+            "qazstack-earlier",
+            102,
+            queued_at="2026-08-27T13:00:00Z",
+            repository="belilovsky/qazstack",
+        )
+    )
+
+    first = store.claim("worker-1", ("qdev-ci",))
+    second = store.claim("worker-2", ("qdev-ci",))
+    third = store.claim("worker-3", ("qdev-ci",))
+
+    assert first is not None and first["job_id"] == 102
+    assert second is not None and second["job_id"] == 101
+    assert third is not None and third["job_id"] == 100
+
+
+def test_project_priority_policy_rejects_invalid_priority() -> None:
+    with pytest.raises(PolicyError, match="non-negative integer"):
+        ProjectPriorityPolicy.from_data(
+            {
+                "schema": "qdev-runner-project-priority-v1",
+                "policy_id": "invalid",
+                "default_priority": -1,
+                "priorities": {},
+            }
+        )
+
+
+def test_project_priority_audit_is_immutable(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db", manual_priority_policy())
+    with store.connect() as connection, pytest.raises(
+        sqlite3.IntegrityError, match="project-priority policy audit is immutable"
+    ):
+        connection.execute("UPDATE project_priority_policy_audits SET policy_id='changed'")
 
 
 def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:

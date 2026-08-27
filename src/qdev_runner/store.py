@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import QueuedJob
+from .policy import ProjectPriorityPolicy
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
 QUEUE_RETRY_BASE_SECONDS = 30
@@ -19,6 +20,7 @@ SQLITE_LOCK_ATTEMPTS = 6
 SQLITE_LOCK_BACKOFF_SECONDS = 0.2
 KNOWN_PROFILES = frozenset({"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"})
 IMMUTABLE_QUEUE_MIGRATION = "20260827_immutable_github_fifo_v1"
+PROJECT_PRIORITY_POLICY_AUDIT = "20260828_manual_project_priorities_v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -63,6 +65,27 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
     applied_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_priority_policy_audits (
+    policy_sha256 TEXT PRIMARY KEY,
+    policy_id TEXT NOT NULL,
+    definition_json TEXT NOT NULL,
+    applied_at REAL NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS project_priority_policy_audit_immutable
+BEFORE UPDATE ON project_priority_policy_audits
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'project-priority policy audit is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS project_priority_policy_audit_no_delete
+BEFORE DELETE ON project_priority_policy_audits
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'project-priority policy audit is immutable');
+END;
 """
 
 
@@ -124,14 +147,62 @@ def _retry_delay(attempts: int) -> int:
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, priority_policy: ProjectPriorityPolicy | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.priority_policy = priority_policy or ProjectPriorityPolicy.from_data(
+            {
+                "schema": "qdev-runner-project-priority-v1",
+                "policy_id": "default-github-fifo",
+                "default_priority": 0,
+                "priorities": {},
+            }
+        )
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             self._migrate_immutable_queue(connection)
+            self._record_priority_policy(connection)
+
+    def _record_priority_policy(self, connection: sqlite3.Connection) -> None:
+        """Keep an append-only receipt for every release-bound priority policy."""
+        self._begin_immediate(connection)
+        try:
+            existing = connection.execute(
+                """
+                SELECT policy_id, definition_json FROM project_priority_policy_audits
+                WHERE policy_sha256=?
+                """,
+                (self.priority_policy.sha256,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO project_priority_policy_audits(
+                        policy_sha256, policy_id, definition_json, applied_at
+                    ) VALUES(?,?,?,?)
+                    """,
+                    (
+                        self.priority_policy.sha256,
+                        self.priority_policy.policy_id,
+                        self.priority_policy.definition_json,
+                        time.time(),
+                    ),
+                )
+            elif (
+                str(existing["policy_id"]) != self.priority_policy.policy_id
+                or str(existing["definition_json"]) != self.priority_policy.definition_json
+            ):
+                raise RuntimeError("project-priority policy checksum collision")
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES(?, ?)",
+                (PROJECT_PRIORITY_POLICY_AUDIT, time.time()),
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
 
     def _migrate_immutable_queue(self, connection: sqlite3.Connection) -> None:
         """Backfill immutable ordering keys from accepted webhook payloads.
@@ -374,15 +445,23 @@ class Store:
             selected = None
             selected_profile = None
             placeholders = ",".join("?" for _ in normalized_profiles)
-            # A profile has its own immutable FIFO.  This lets a dedicated light
-            # worker progress even while browser or Docker capacity is unavailable.
+            # A profile has its own immutable GitHub FIFO inside an explicit,
+            # release-audited project tier. This lets a dedicated light worker
+            # progress even while browser or Docker capacity is unavailable.
             query = """
                 SELECT * FROM jobs
                 WHERE status='pending' AND retry_not_before<=?
                   AND required_profile IN (PROFILE_BINDINGS)
                 ORDER BY github_queued_at, queue_sequence
             """.replace("PROFILE_BINDINGS", placeholders)
-            for row in connection.execute(query, (now, *normalized_profiles)):
+            candidates = connection.execute(query, (now, *normalized_profiles)).fetchall()
+            # Python's stable sort preserves GitHub FIFO for every project tier.
+            for row in sorted(
+                candidates,
+                key=lambda candidate: self.priority_policy.priority_for(
+                    str(candidate["repository"])
+                ),
+            ):
                 matching_profile = str(row["required_profile"])
                 required_disk_mb = (
                     profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None
@@ -598,6 +677,17 @@ class Store:
                 str(row["required_profile"]): int(row["count"])
                 for row in pending_rows
             }
+            pending_by_priority: dict[str, int] = {}
+            for row in connection.execute(
+                """
+                SELECT repository, COUNT(*) AS count FROM jobs
+                WHERE status='pending' GROUP BY repository
+                """
+            ).fetchall():
+                priority = str(self.priority_policy.priority_for(str(row["repository"])))
+                pending_by_priority[priority] = (
+                    pending_by_priority.get(priority, 0) + int(row["count"])
+                )
             oldest_timestamp = min(
                 (float(row["oldest"]) for row in pending_rows if row["oldest"] is not None),
                 default=None,
@@ -651,7 +741,14 @@ class Store:
                 max(0.0, now - oldest_timestamp) if oldest_timestamp is not None else None
             ),
             "pending_by_profile": pending_by_profile,
+            "pending_by_priority": pending_by_priority,
             "available_slots_by_profile": available_slots_by_profile,
             "blocked_profiles": blocked_profiles,
             "queue_schema_migration": IMMUTABLE_QUEUE_MIGRATION,
+            "project_priority_policy": {
+                "policy_id": self.priority_policy.policy_id,
+                "sha256": self.priority_policy.sha256,
+                "default_priority": self.priority_policy.default_priority,
+                "audit_migration": PROJECT_PRIORITY_POLICY_AUDIT,
+            },
         }

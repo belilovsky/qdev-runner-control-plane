@@ -2,12 +2,12 @@
 
 ## Execution lanes
 
-1. **Normal:** GitHub-hosted compute runs the required checks. Billing,
-   payment method, Actions budget, GitHub queue, and the exact-SHA check are
-   independent evidence.
-2. **Recovery:** the central QDev broker starts one ephemeral runner container
-   per job. The primary worker receives work first; the reserve worker may
-   claim when no healthy primary slot is free.
+1. **Dedicated:** the central QDev broker starts one ephemeral, rootless runner
+   container per job on the profile-compatible dedicated line. GitHub-hosted
+   fallback is not part of this contract.
+2. **Reserve:** shared production workers may claim only as an explicitly
+   enabled emergency reserve after the compatible dedicated line has no free,
+   capacity-allowed slot.
 3. **Release:** a product-specific deploy runner or native deploy helper stays
    separate from both general CI lanes and keeps its own credential gates.
 
@@ -22,7 +22,7 @@ Record each lane independently; do not infer a green lane from another one.
 | Lane | Minimum evidence |
 | --- | --- |
 | workflow | workflow file, event, selector, permissions, exact SHA |
-| hosted billing | payment status, positive Actions budget, stop-usage intent, current spend |
+| GitHub provider | webhook delivery, JIT registration and exact-SHA job status |
 | GitHub queue | run ID, job ID, status, timestamps, annotations |
 | webhook/broker | signed delivery accepted, pending count, database state |
 | primary worker | fresh heartbeat, capacity gate, concurrency, free slots |
@@ -38,26 +38,27 @@ same distinction applies to reserve.
 
 ## Recovery sequence
 
-1. Preserve the failed run and inspect its annotations. Classify workflow,
-   billing/provider, queue, broker, worker, capacity, or application failure.
-2. For a billing/provider failure, verify payment and a positive Actions
-   budget. Rerun one known job once. Do not loop retries.
-3. Audit `https://ci.qdev.run/health`. Both tiers must be present and pass
-   capacity. On each worker, run `scripts/audit_worker_runtime.py` as a trusted
-   administrator with that worker's rootless Docker environment before
-   removing a pause marker. A heartbeat is not executor proof: every
-   configured immutable runner and sidecar image must exist. A
-   pending queue with a busy primary must be claimable by reserve.
-4. Dispatch only the repository's reviewed recovery workflow on the same SHA.
-   Public fork code never runs on the recovery pool.
-5. Record run ID, job ID, SHA, runner name, queue time, conclusion, and the
+1. Preserve the provider job and inspect its annotations. Classify workflow,
+   provider, queue, broker, worker, capacity, or application failure.
+2. For a provider failure, verify signed webhook delivery, JIT registration,
+   and the exact-SHA job status. Do not replay or requeue the job.
+3. Audit `https://ci.qdev.run/health`. The compatible dedicated line must be
+   present and pass capacity. On each worker, run
+   `scripts/audit_worker_runtime.py` as a trusted administrator with that
+   worker's rootless Docker environment before removing a pause marker. A
+   heartbeat is not executor proof: every configured immutable runner and
+   sidecar image must exist.
+4. Record run ID, job ID, SHA, runner name, queue time, conclusion, and the
    broker health receipt. Resume release only from the repository's normal
    authorization boundary.
-6. Restore the normal hosted lane and verify its required check separately.
+5. Use a shared worker only through the emergency-reserve gate when no
+   compatible dedicated slot is available; return it to reserve after the
+   dedicated line is verified.
 
-There is no silent automatic fallback: GitHub assigns a job from its declared
-`runs-on` selector, so recovery uses an explicit workflow dispatch or reviewed
-reusable workflow. Recovery evidence must not be reported as a hosted check.
+There is no silent fallback: GitHub assigns the job from its declared
+`runs-on` selector, and the broker preserves the accepted job for its
+profile-compatible self-hosted line. Provider evidence must name the exact
+self-hosted runner.
 
 ## Runtime changes
 
@@ -84,7 +85,7 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   canary. The GitHub job itself must leave `queued`, name the expected runner,
   and complete successfully on the exact SHA.
 - Inventory every executable Actions lane, including repository-specific
-  `actions.runner.*` services and direct/GitHub-hosted deployment workflows.
+  `actions.runner.*` services and direct deployment workflows.
   A standalone runner can bypass the broker gate and invalidate a capacity
   window even while both shared workers are paused. Drain its active job, then
   retire it with an explicit service guard and retained runner data.
@@ -97,8 +98,8 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   owner-bound gate replaces a known existence-only rollout permit, archive the
   exact legacy drop-in and permit through the provisioned migration; never
   satisfy the obsolete condition by creating an empty file.
-- Requeued transient jobs move to the FIFO tail so one failing job cannot
-  starve the queue.
+- Transient retry uses a bounded `retry_not_before` backoff without changing a
+  job's immutable GitHub FIFO key or its approved project tier.
 
 Run the public-safe audit before and after recovery:
 
