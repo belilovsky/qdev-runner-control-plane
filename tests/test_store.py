@@ -5,6 +5,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import IMMUTABLE_QUEUE_MIGRATION, Store
 
@@ -38,6 +40,25 @@ def test_enqueue_is_idempotent(tmp_path: Path) -> None:
     assert store.enqueue(job()) is True
     assert store.enqueue(job()) is False
     assert store.health()["jobs"]["pending"] == 1
+
+
+def test_write_lock_retries_transient_sqlite_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BusyThenReadyConnection:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def execute(self, statement: str) -> None:
+            assert statement == "BEGIN IMMEDIATE"
+            self.attempts += 1
+            if self.attempts < 3:
+                raise sqlite3.OperationalError("database is locked")
+
+    connection = BusyThenReadyConnection()
+    monkeypatch.setattr("qdev_runner.store.time.sleep", lambda _: None)
+
+    Store._begin_immediate(connection)  # type: ignore[arg-type]
+
+    assert connection.attempts == 3
 
 
 def _legacy_database(path: Path) -> None:
