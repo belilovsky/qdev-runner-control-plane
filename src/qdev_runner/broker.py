@@ -145,6 +145,11 @@ def create_app(
             "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
             "primary_available": any(worker["available"] for worker in primary),
             "reserve_available": any(worker["available"] for worker in reserve),
+            "oldest_pending_age_seconds": data["oldest_pending_age_seconds"],
+            "pending_by_profile": data["pending_by_profile"],
+            "available_slots_by_profile": data["available_slots_by_profile"],
+            "blocked_profiles": data["blocked_profiles"],
+            "queue_schema_migration": data["queue_schema_migration"],
         }
 
     @app.post("/github/workflow-job")
@@ -189,7 +194,10 @@ def create_app(
                 head_branch=str(raw_job.get("head_branch") or ""),
                 payload=payload,
             )
-            policy.profile_for_labels(queued.repository, queued.labels)
+            profile = policy.profile_for_labels(queued.repository, queued.labels)
+            queued = QueuedJob(
+                **queued.__dict__, required_profile=profile.name
+            )
             store.enqueue(queued)
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected queued job: %s", error)

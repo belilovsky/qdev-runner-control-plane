@@ -38,3 +38,7 @@ class QueuedJob:
     head_sha: str
     head_branch: str
     payload: dict[str, Any]
+    # The broker derives this from the allowlisted policy before persistence.
+    # Keeping it with the accepted job makes a retry independent of labels that
+    # may change in a later GitHub delivery.
+    required_profile: str = ""
