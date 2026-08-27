@@ -76,7 +76,7 @@ belilovsky/qazshield	true	main	qdev-ci	7	0	0	0	0
 belilovsky/qazstack	true	main	qdev-ci	6	0	1	0	0
 belilovsky/qazstack-proxy	true	main	qdev-ci	4	0	0	0	0
 belilovsky/qdev-guardian	true	main	qdev-ci	3	0	0	0	0
-belilovsky/qdev-mail-platform	true	main	qdev-ci	3	0	0	0	0
+belilovsky/qdev-mail-platform	true	main	qdev-ci,qdev-ci-docker	3	0	0	0	0
 belilovsky/qdev-run-site	true	main	qdev-ci,qdev-ci-browser	3	0	0	0	0
 belilovsky/qdev-runner-control-plane	true	main	qdev-ci	3	2	0	0	0
 belilovsky/qradio	true	codex/qradio-transcript-sharing-20260803	qdev-ci,qdev-ci-docker	5	2	0	0	0
