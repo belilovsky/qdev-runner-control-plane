@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from qdev_runner.models import QueuedJob
-from qdev_runner.store import Store
+from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
 
 
 def job(
@@ -87,6 +87,29 @@ def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(
 
     assert claimed is not None
     assert claimed["job_id"] == 1000
+
+
+def test_claim_repairs_late_invalid_timestamp_without_reordering_valid_jobs(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    assert store.enqueue(job("valid", 100))
+    assert store.enqueue(job("invalid", 101))
+    payload = {"workflow_job": {"created_at": "2099-01-01T00:00:00Z"}}
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET created_at=?, payload_json=? WHERE job_id=?",
+            (MINIMUM_QUEUE_TIMESTAMP, json.dumps(payload), 101),
+        )
+
+    claimed = store.claim("worker-1", ("qdev-ci",))
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
+    repaired = store.job(101)
+    assert repaired is not None
+    assert repaired["created_at"] == 4070908800.0
 
 
 def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:

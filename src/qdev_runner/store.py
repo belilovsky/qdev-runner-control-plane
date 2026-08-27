@@ -115,7 +115,7 @@ class Store:
             SELECT job_id, payload_json, created_at, updated_at
             FROM jobs
             WHERE status IN ('pending', 'claimed', 'running')
-              AND created_at < ?
+              AND (created_at IS NULL OR created_at <= ? OR created_at != created_at)
             """,
             (MINIMUM_QUEUE_TIMESTAMP,),
         ).fetchall()
@@ -126,7 +126,8 @@ class Store:
             if repaired is None:
                 repaired = time.time()
             connection.execute(
-                "UPDATE jobs SET created_at=? WHERE job_id=? AND created_at=?",
+                "UPDATE jobs SET created_at=? WHERE job_id=? "
+                "AND (created_at IS NULL OR created_at=? OR created_at != created_at)",
                 (repaired, row["job_id"], row["created_at"]),
             )
 
@@ -211,6 +212,7 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._repair_invalid_queue_timestamps(connection)
             selected = None
             selected_profile = None
             # Do not cap this scan: a long backlog of jobs for unavailable profiles
