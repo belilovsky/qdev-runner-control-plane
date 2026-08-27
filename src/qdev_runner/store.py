@@ -261,6 +261,15 @@ class Store:
                 "SELECT COALESCE(MAX(queue_sequence), 0) AS value FROM jobs"
             ).fetchone()
             next_sequence = int(next_sequence_row["value"])
+            # A previous broker may have accepted a job before this schema was
+            # installed.  The immutability trigger deliberately rejects a
+            # normal update to those rows.  This repair runs under the same
+            # exclusive transaction as the migration, drops the trigger only
+            # while the signed/fallback keys are backfilled, then restores it
+            # before the transaction is committed.  No concurrent writer can
+            # observe a mutable queue key.
+            if recovered:
+                connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
             for github_queued_at, row, source, profile in sorted(
                 recovered, key=lambda item: (item[0], int(item[1]["job_id"]))
             ):
