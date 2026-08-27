@@ -112,6 +112,12 @@ disk, 4 GiB available memory and load-15 at two times CPU count. Override only
 the measured failing floor, keep the previous immutable release available and
 record the live health receipt.
 
+For a source release that must rebuild the broker, the same bounded override
+also requires `QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE=true`. It is an
+explicit one-release acknowledgement, not a default: set only the measured
+failing limits, retain the rollback release, and record the capacity and health
+receipts before activation. The worker service is still outside this path.
+
 To select a previously staged revision without rebuilding its cached images:
 
 ```bash

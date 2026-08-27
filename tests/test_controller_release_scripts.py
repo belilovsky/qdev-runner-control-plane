@@ -15,7 +15,11 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "rollback" in script
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-30" in script
     assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85" in script
-    assert "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
+    assert (
+        "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
+        in script
+    )
     assert "min_free_gib * 1048576" in script
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
