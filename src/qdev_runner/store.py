@@ -211,12 +211,14 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at LIMIT 100"
-            ).fetchall()
             selected = None
             selected_profile = None
-            for row in rows:
+            # Do not cap this scan: a long backlog of jobs for unavailable profiles
+            # must not starve a later job that this worker can actually run.  The
+            # status/created_at index preserves FIFO ordering for each eligible job.
+            for row in connection.execute(
+                "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at"
+            ):
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(
                     (profile for profile in profiles if profile.lower() in labels), None

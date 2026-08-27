@@ -75,6 +75,20 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     assert store.claim("worker-2", ("qdev-ci",)) is None
 
 
+def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    for index in range(101):
+        assert store.enqueue(job(f"browser-{index}", index + 1, "qdev-ci-browser"))
+    assert store.enqueue(job("eligible", 1000, "qdev-ci"))
+
+    claimed = store.claim("worker-1", ("qdev-ci",))
+
+    assert claimed is not None
+    assert claimed["job_id"] == 1000
+
+
 def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job(profile="qdev-ci-docker"))
