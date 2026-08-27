@@ -283,16 +283,27 @@ class Store:
                 )
                 """
             )
+            # Recreate the trigger on every idempotent startup migration.  An
+            # earlier release installed an unconditional trigger, which then
+            # prevented this migration from completing a legacy row that had
+            # been accepted before all queue-key columns existed.  A row whose
+            # key is incomplete is not an accepted immutable key yet; once all
+            # four values are present, every later mutation is rejected.
+            connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
             connection.execute(
                 """
-                CREATE TRIGGER IF NOT EXISTS jobs_queue_key_immutable
+                CREATE TRIGGER jobs_queue_key_immutable
                 BEFORE UPDATE OF github_queued_at, queue_sequence, queue_time_source,
                     required_profile ON jobs
                 FOR EACH ROW
-                WHEN NEW.github_queued_at IS NOT OLD.github_queued_at
+                WHEN OLD.github_queued_at IS NOT NULL
+                   AND OLD.queue_sequence IS NOT NULL
+                   AND OLD.queue_time_source IS NOT NULL
+                   AND OLD.required_profile IS NOT NULL
+                   AND (NEW.github_queued_at IS NOT OLD.github_queued_at
                    OR NEW.queue_sequence IS NOT OLD.queue_sequence
                    OR NEW.queue_time_source IS NOT OLD.queue_time_source
-                   OR NEW.required_profile IS NOT OLD.required_profile
+                   OR NEW.required_profile IS NOT OLD.required_profile)
                 BEGIN
                     SELECT RAISE(ABORT, 'immutable queue key');
                 END

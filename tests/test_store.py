@@ -199,6 +199,49 @@ def test_queue_key_is_immutable_after_acceptance(tmp_path: Path) -> None:
             raise AssertionError("queue key update unexpectedly succeeded")
 
 
+def test_startup_repairs_pretrigger_incomplete_key_then_locks_it(tmp_path: Path) -> None:
+    database = tmp_path / "broker.db"
+    Store(database).enqueue(job())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO jobs(
+                job_id, delivery_id, run_id, repository, repository_id, installation_id,
+                labels_json, head_sha, head_branch, payload_json, status, created_at,
+                updated_at, github_queued_at, queue_sequence, queue_time_source,
+                required_profile, retry_not_before, attempts
+            ) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?,0,0)
+            """,
+            (
+                101,
+                "pretrigger-incomplete-key",
+                201,
+                "belilovsky/private-repo",
+                1,
+                300,
+                json.dumps(["self-hosted", "Linux", "X64", "qdev-ci"]),
+                "b" * 40,
+                "main",
+                json.dumps({"workflow_job": {"created_at": "2026-08-27T14:00:00Z"}}),
+                time.time(),
+                time.time(),
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    repaired = Store(database).job(101)
+
+    assert repaired is not None
+    assert repaired["github_queued_at"] == 1_787_839_200.0
+    assert repaired["required_profile"] == "qdev-ci"
+    with Store(database).connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable queue key"):
+            connection.execute("UPDATE jobs SET required_profile='qdev-ci-browser' WHERE job_id=101")
+
+
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
