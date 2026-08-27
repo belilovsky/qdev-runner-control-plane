@@ -266,7 +266,10 @@ class Store:
                 if not profile:
                     profile = str(row["profile"] or "").lower()
                     if profile not in KNOWN_PROFILES:
-                        profile = _profile_from_labels(str(row["labels_json"])) or "legacy-unclassified"
+                        profile = (
+                            _profile_from_labels(str(row["labels_json"]))
+                            or "legacy-unclassified"
+                        )
                 recovered.append((github_queued_at, row, source, profile))
 
             next_sequence_row = connection.execute(
@@ -276,26 +279,21 @@ class Store:
             for github_queued_at, row, source, profile in sorted(
                 recovered, key=lambda item: (item[0], int(item[1]["job_id"]))
             ):
-                assignments: list[str] = []
-                values: list[object] = []
-                if row["github_queued_at"] is None:
-                    assignments.append("github_queued_at=?")
-                    values.append(github_queued_at)
-                if row["queue_sequence"] is None:
+                queue_sequence = row["queue_sequence"]
+                if queue_sequence is None:
                     next_sequence += 1
-                    assignments.append("queue_sequence=?")
-                    values.append(next_sequence)
-                if row["queue_time_source"] is None:
-                    assignments.append("queue_time_source=?")
-                    values.append(source)
-                if row["required_profile"] is None:
-                    assignments.append("required_profile=?")
-                    values.append(profile)
-                assignments.append("retry_not_before=COALESCE(retry_not_before, 0)")
-                values.append(row["job_id"])
+                    queue_sequence = next_sequence
                 connection.execute(
-                    f"UPDATE jobs SET {', '.join(assignments)} WHERE job_id=?",
-                    values,
+                    """
+                    UPDATE jobs SET
+                        github_queued_at=COALESCE(github_queued_at, ?),
+                        queue_sequence=COALESCE(queue_sequence, ?),
+                        queue_time_source=COALESCE(queue_time_source, ?),
+                        required_profile=COALESCE(required_profile, ?),
+                        retry_not_before=COALESCE(retry_not_before, 0)
+                    WHERE job_id=?
+                    """,
+                    (github_queued_at, queue_sequence, source, profile, row["job_id"]),
                 )
 
             connection.execute(
