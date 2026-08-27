@@ -96,9 +96,9 @@ activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
 if [[ "$no_build" == true ]]; then
-  compose_action=(up -d --no-build --no-deps broker-public broker-internal)
+  compose_action=(up -d --force-recreate --no-build --no-deps broker-public broker-internal)
 else
-  compose_action=(up -d --build --no-deps broker-public broker-internal)
+  compose_action=(up -d --force-recreate --build --no-deps broker-public broker-internal)
 fi
 
 rollback() {
@@ -117,7 +117,7 @@ rollback() {
     docker image tag "$previous_internal_image" "$previous_internal_ref"
   fi
   docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
-    up -d --no-build --no-deps broker-public broker-internal
+    up -d --force-recreate --no-build --no-deps broker-public broker-internal
 }
 
 if ! "${compose[@]}" "${compose_action[@]}"; then

@@ -8,6 +8,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
 
     assert "broker-public broker-internal" in script
     assert "--no-deps" in script
+    assert script.count("--force-recreate") == 3
     assert "compose down" not in script
     assert "systemctl" not in script
     assert "mv -Tf" in script
