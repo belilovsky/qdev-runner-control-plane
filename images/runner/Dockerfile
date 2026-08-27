@@ -28,7 +28,10 @@ ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS general
 
-FROM mcr.microsoft.com/playwright@sha256:ffc33305f7b4b04057ae4a0caa70aad4fde87454fb403a1a22e7f931707dfcf9 AS browser
+# Playwright clients installed by browser jobs must stay in lockstep with the
+# bundled Chromium revision. This is v1.62.1-noble-amd64, pinned by its OCI
+# manifest digest rather than a mutable registry tag.
+FROM mcr.microsoft.com/playwright@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac AS browser
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
 RUN apt-get update && apt-get install -y --no-install-recommends \

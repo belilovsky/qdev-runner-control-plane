@@ -15,6 +15,27 @@ def test_native_build_toolchain_is_in_general_and_browser_images() -> None:
     assert dockerfile.count("build-essential") == 2
 
 
+def test_browser_image_pins_the_playwright_1_62_1_chromium_bundle() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+
+    assert "Playwright clients installed by browser jobs must stay in lockstep" in dockerfile
+    assert (
+        "mcr.microsoft.com/playwright@sha256:"
+        "c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac"
+    ) in dockerfile
+
+
+def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
+    settings = (ROOT / "src/qdev_runner/settings.py").read_text(encoding="utf-8")
+    builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
+    worker_audit = (ROOT / "scripts/audit_worker_runtime.py").read_text(encoding="utf-8")
+
+    release = "2.336.0-r2"
+    assert f'QDEV_RUNNER_VERSION:-{release}' in builder
+    assert settings.count(f":{release}") == 3
+    assert worker_audit.count(f":{release}") == 3
+
+
 def test_docker_profile_has_compose_plugin() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 

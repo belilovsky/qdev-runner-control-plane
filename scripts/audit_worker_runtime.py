@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_IMAGES = {
-    "QDEV_RUNNER_IMAGE": "registry.ci.qdev.run/qdev/actions-runner:2.336.0",
+    "QDEV_RUNNER_IMAGE": "registry.ci.qdev.run/qdev/actions-runner:2.336.0-r2",
     "QDEV_RUNNER_BROWSER_IMAGE": (
-        "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0"
+        "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0-r2"
     ),
     "QDEV_RUNNER_DOCKER_IMAGE": (
-        "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0"
+        "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2"
     ),
     "QDEV_DOCKER_SIDECAR_IMAGE": (
         "docker.io/library/docker@sha256:"
