@@ -61,6 +61,7 @@ class Worker:
             json={
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
+                "claim_scope_id": self.settings.claim_scope_id,
                 "profiles": self.settings.profiles,
                 "active_jobs": active_jobs,
                 "active_job_ids": sorted(self.active_job_ids),
@@ -79,6 +80,7 @@ class Worker:
             json={
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
+                "claim_scope_id": self.settings.claim_scope_id,
                 "profiles": self.settings.profiles,
                 "disk_free_gib": capacity.disk_free_gib,
                 "min_disk_free_gib": self.settings.min_disk_free_gib,

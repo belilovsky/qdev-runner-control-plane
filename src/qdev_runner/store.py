@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .claim_scope import ClaimScope
 from .models import QueuedJob
 from .policy import ProjectPriorityPolicy
 
@@ -436,6 +437,7 @@ class Store:
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
         primary_max_age_seconds: int = 90,
+        claim_scope: ClaimScope | None = None,
     ) -> dict[str, Any] | None:
         now = time.time()
         normalized_profiles = tuple(profile.lower() for profile in profiles)
@@ -462,7 +464,14 @@ class Store:
                     str(candidate["repository"])
                 ),
             ):
-                matching_profile = str(row["required_profile"])
+                matching_profile = str(row["required_profile"]).lower()
+                if claim_scope is not None and not claim_scope.permits(
+                    int(row["job_id"]),
+                    str(row["repository"]),
+                    str(row["head_sha"]),
+                    matching_profile,
+                ):
+                    continue
                 required_disk_mb = (
                     profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None
                 )

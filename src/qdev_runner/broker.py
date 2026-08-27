@@ -13,6 +13,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from .claim_scope import ClaimScopeError, resolve_claim_scope
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
 from .policy import Policy, PolicyError, ProjectPriorityPolicy
@@ -25,6 +26,7 @@ LOGGER = logging.getLogger("qdev-runner-broker")
 class ClaimRequest(BaseModel):
     worker_name: str
     tier: Literal["primary", "reserve"]
+    claim_scope_id: str | None = None
     profiles: list[str]
     disk_free_gib: float = Field(ge=0)
     min_disk_free_gib: float = Field(ge=0)
@@ -43,6 +45,7 @@ class HeartbeatRequest(BaseModel):
     profiles: list[str]
     active_jobs: int = Field(ge=0)
     active_job_ids: list[int] = Field(default_factory=list)
+    claim_scope_id: str | None = None
     detail: dict[str, Any]
 
 
@@ -216,6 +219,17 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         require_worker(x_qdev_worker_token)
+        try:
+            claim_scope = resolve_claim_scope(
+                settings.claim_scopes_path,
+                request.claim_scope_id,
+                request.worker_name,
+                request.tier,
+                tuple(request.profiles),
+            )
+        except ClaimScopeError as error:
+            LOGGER.warning("rejected claim scope for worker=%s: %s", request.worker_name, error)
+            raise HTTPException(status_code=403, detail="claim scope rejected") from error
         store.recover_stale_jobs(worker_timeout_seconds=300)
         claimed = store.claim(
             request.worker_name,
@@ -224,6 +238,7 @@ def create_app(
             disk_free_gib=request.disk_free_gib,
             min_disk_free_gib=request.min_disk_free_gib,
             profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
+            claim_scope=claim_scope,
         )
         if claimed is None:
             return Response(status_code=204)
@@ -231,6 +246,11 @@ def create_app(
         try:
             labels = tuple(json.loads(claimed["labels_json"]))
             profile = policy.profile_for_labels(claimed["repository"], labels)
+            if claim_scope is not None and not claim_scope.permits(
+                job_id, claimed["repository"], claimed["head_sha"], profile.name
+            ):
+                store.requeue(job_id, "claim scope no longer permits this job")
+                raise HTTPException(status_code=403, detail="claim scope rejected")
             run = github.workflow_run(
                 int(claimed["installation_id"]), claimed["repository"], int(claimed["run_id"])
             )
