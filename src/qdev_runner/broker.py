@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 import ssl
+from dataclasses import replace
 from typing import Any, Literal
 
 import uvicorn
@@ -201,9 +202,7 @@ def create_app(
                 payload=payload,
             )
             profile = policy.profile_for_labels(queued.repository, queued.labels)
-            queued = QueuedJob(
-                **queued.__dict__, required_profile=profile.name
-            )
+            queued = replace(queued, required_profile=profile.name)
             store.enqueue(queued)
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected queued job: %s", error)

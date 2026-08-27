@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 from qdev_runner.broker import (
     artifact_job_is_active,
     artifact_token,
     completed_run_conclusion,
+    create_app,
     registry_credentials,
     verify_signature,
 )
 from qdev_runner.settings import BrokerSettings
+from qdev_runner.store import Store
 
 
 def test_webhook_signature() -> None:
@@ -70,3 +75,50 @@ def test_completed_parent_run_is_terminal_even_when_job_api_stays_queued() -> No
     )
     assert completed_run_conclusion({"status": "completed", "conclusion": None}) == "unknown"
     assert completed_run_conclusion({"status": "in_progress", "conclusion": None}) is None
+
+
+def test_queued_webhook_persists_derived_profile_once(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    settings = BrokerSettings(
+        app_id="1",
+        app_private_key_path=tmp_path / "app.pem",
+        webhook_secret="webhook",
+        worker_token="worker",
+        inventory_path=root / "inventory" / "repos.json",
+        profiles_path=root / "config" / "profiles.yml",
+        project_priority_path=root / "config" / "project-priority.json",
+        database_path=tmp_path / "broker.db",
+        artifact_root=tmp_path / "artifacts",
+    )
+    store = Store(settings.database_path)
+    app = create_app(settings, store=store)
+    payload = {
+        "action": "queued",
+        "installation": {"id": 1},
+        "repository": {"id": 1206670519, "full_name": "belilovsky/qazcompute"},
+        "workflow_job": {
+            "id": 42,
+            "run_id": 24,
+            "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
+            "head_sha": "a" * 40,
+            "head_branch": "main",
+        },
+    }
+    body = json.dumps(payload).encode()
+    signature = "sha256=" + hmac.new(b"webhook", body, hashlib.sha256).hexdigest()
+
+    response = TestClient(app).post(
+        "/github/workflow-job",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": signature,
+            "X-GitHub-Delivery": "delivery-42",
+            "X-GitHub-Event": "workflow_job",
+        },
+    )
+
+    assert response.status_code == 202
+    assert store.job_status(42) == "pending"
+    with store.connect() as connection:
+        row = connection.execute("SELECT required_profile FROM jobs WHERE job_id=42").fetchone()
+    assert row["required_profile"] == "qdev-ci"
