@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 from qdev_runner.models import QueuedJob
-from qdev_runner.store import Store
+from qdev_runner.store import IMMUTABLE_QUEUE_MIGRATION, Store
 
 
 def job(
-    delivery: str = "delivery-1", job_id: int = 100, profile: str = "qdev-ci"
+    delivery: str = "delivery-1",
+    job_id: int = 100,
+    profile: str = "qdev-ci",
+    queued_at: str | None = None,
 ) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
@@ -21,7 +25,11 @@ def job(
         labels=("self-hosted", "Linux", "X64", profile),
         head_sha="a" * 40,
         head_branch="main",
-        payload={},
+        payload={
+            "workflow_job": {"created_at": queued_at}
+        }
+        if queued_at is not None
+        else {},
     )
 
 
@@ -32,38 +40,125 @@ def test_enqueue_is_idempotent(tmp_path: Path) -> None:
     assert store.health()["jobs"]["pending"] == 1
 
 
-def test_store_repairs_invalid_legacy_queue_timestamp_from_workflow_payload(tmp_path: Path) -> None:
+def _legacy_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE jobs (
+                job_id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL UNIQUE,
+                run_id INTEGER NOT NULL, repository TEXT NOT NULL,
+                repository_id INTEGER NOT NULL, installation_id INTEGER NOT NULL,
+                labels_json TEXT NOT NULL, head_sha TEXT NOT NULL,
+                head_branch TEXT NOT NULL, payload_json TEXT NOT NULL,
+                status TEXT NOT NULL, worker_name TEXT, profile TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                claimed_at REAL, completed_at REAL, result TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+
+
+def _insert_legacy_job(
+    path: Path,
+    *,
+    job_id: int,
+    created_at: float,
+    updated_at: float,
+    payload: dict[str, object],
+) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO jobs(
+                job_id, delivery_id, run_id, repository, repository_id, installation_id,
+                labels_json, head_sha, head_branch, payload_json, status, created_at,
+                updated_at, attempts
+            ) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,0)
+            """,
+            (
+                job_id,
+                f"legacy-{job_id}",
+                200,
+                "belilovsky/private-repo",
+                1,
+                300,
+                json.dumps(["self-hosted", "Linux", "X64", "qdev-ci"]),
+                "a" * 40,
+                "main",
+                json.dumps(payload),
+                created_at,
+                updated_at,
+            ),
+        )
+
+
+def test_store_backfills_invalid_legacy_timestamp_from_signed_payload(tmp_path: Path) -> None:
     database = tmp_path / "broker.db"
-    store = Store(database)
-    assert store.enqueue(job()) is True
+    _legacy_database(database)
     payload = {"workflow_job": {"created_at": "2026-08-27T13:46:59Z"}}
-    with store.connect() as connection:
-        connection.execute(
-            "UPDATE jobs SET created_at=?, payload_json=? WHERE job_id=?",
-            (-1_000_000_000_000, json.dumps(payload), 100),
-        )
+    _insert_legacy_job(
+        database,
+        job_id=100,
+        created_at=-1_000_000_000_000,
+        updated_at=0,
+        payload=payload,
+    )
 
-    repaired = Store(database).job(100)
+    recovered = Store(database).job(100)
 
-    assert repaired is not None
-    assert repaired["created_at"] == 1787838419.0
+    assert recovered is not None
+    assert recovered["created_at"] == -1_000_000_000_000
+    assert recovered["github_queued_at"] == 1787838419.0
+    assert recovered["queue_time_source"] == "github_workflow_job_created_at"
+    assert recovered["required_profile"] == "qdev-ci"
+    with Store(database).connect() as connection:
+        migration = connection.execute(
+            "SELECT name FROM schema_migrations WHERE name=?", (IMMUTABLE_QUEUE_MIGRATION,)
+        ).fetchone()
+    assert migration is not None
 
 
-def test_store_repairs_invalid_legacy_queue_timestamp_from_updated_at(tmp_path: Path) -> None:
+def test_store_marks_legacy_fallback_and_accepts_minimum_timestamp(tmp_path: Path) -> None:
     database = tmp_path / "broker.db"
+    _legacy_database(database)
+    expected = 1_700_000_000.0
+    _insert_legacy_job(
+        database,
+        job_id=100,
+        created_at=-29_999,
+        updated_at=expected,
+        payload={},
+    )
+    _insert_legacy_job(
+        database,
+        job_id=101,
+        created_at=-9e299,
+        updated_at=expected,
+        payload={"workflow_job": {"created_at": "2020-01-01T00:00:00Z"}},
+    )
+
     store = Store(database)
-    assert store.enqueue(job()) is True
-    expected = time.time()
+    fallback = store.job(100)
+    boundary = store.job(101)
+
+    assert fallback is not None and boundary is not None
+    assert fallback["github_queued_at"] == expected
+    assert fallback["queue_time_source"] == "legacy_updated_at"
+    assert boundary["github_queued_at"] == 1_577_836_800.0
+    assert boundary["queue_time_source"] == "github_workflow_job_created_at"
+
+
+def test_queue_key_is_immutable_after_acceptance(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(queued_at="2026-08-27T13:46:59Z"))
     with store.connect() as connection:
-        connection.execute(
-            "UPDATE jobs SET created_at=?, updated_at=? WHERE job_id=?",
-            (-29_999, expected, 100),
-        )
-
-    repaired = Store(database).job(100)
-
-    assert repaired is not None
-    assert repaired["created_at"] == expected
+        try:
+            connection.execute("UPDATE jobs SET github_queued_at=0 WHERE job_id=100")
+        except sqlite3.IntegrityError as error:
+            assert "immutable queue key" in str(error)
+        else:
+            raise AssertionError("queue key update unexpectedly succeeded")
 
 
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
@@ -87,6 +182,17 @@ def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(
 
     assert claimed is not None
     assert claimed["job_id"] == 1000
+
+
+def test_claim_uses_github_fifo_within_a_profile(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job("later-delivery", 100, queued_at="2026-08-27T14:00:00Z"))
+    store.enqueue(job("earlier-delivery", 101, queued_at="2026-08-27T13:00:00Z"))
+
+    claimed = store.claim("worker-1", ("qdev-ci",))
+
+    assert claimed is not None
+    assert claimed["job_id"] == 101
 
 
 def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:
@@ -184,18 +290,34 @@ def test_runner_exit_before_pickup_requeues_active_job(tmp_path: Path) -> None:
     store.set_status(100, "running")
     assert store.requeue_active(100, "runner exited before pickup") is True
     assert store.job_status(100) == "pending"
+    assert store.claim("worker-2", ("qdev-ci",)) is None
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET retry_not_before=0 WHERE job_id=100")
     assert store.claim("worker-2", ("qdev-ci",)) is not None
 
 
 def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
-    store.enqueue(job())
-    store.enqueue(job("delivery-2", 101))
+    store.enqueue(job(queued_at="2026-08-27T13:46:59Z"))
+    store.enqueue(job("delivery-2", 101, queued_at="2026-08-27T13:47:00Z"))
+    original = store.job(100)
+    assert original is not None
     store.claim("worker-1", ("qdev-ci",))
     store.requeue(100, "temporary GitHub error")
+    restored = store.job(100)
+    assert restored is not None
+    assert (restored["github_queued_at"], restored["queue_sequence"]) == (
+        original["github_queued_at"],
+        original["queue_sequence"],
+    )
     claimed = store.claim("worker-2", ("qdev-ci",))
     assert claimed is not None
     assert claimed["job_id"] == 101
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET retry_not_before=0 WHERE job_id=100")
+    retried = store.claim("worker-3", ("qdev-ci",))
+    assert retried is not None
+    assert retried["job_id"] == 100
 
 
 def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> None:
@@ -256,6 +378,27 @@ def test_health_distinguishes_capacity_from_free_slots(tmp_path: Path) -> None:
     assert worker["available"] is True
 
 
+def test_health_exposes_profile_queue_and_block_reason(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(profile="qdev-ci-browser", queued_at="2026-08-27T13:00:00Z"))
+    store.heartbeat(
+        "light-1",
+        ("qdev-ci",),
+        2,
+        (),
+        {"tier": "primary", "allowed": True, "concurrency": 2},
+    )
+
+    health = store.health()
+
+    assert health["pending_by_profile"] == {"qdev-ci-browser": 1}
+    assert health["available_slots_by_profile"] == {"qdev-ci-browser": 0}
+    assert health["blocked_profiles"] == {
+        "qdev-ci-browser": "no_fresh_compatible_worker"
+    }
+    assert health["oldest_pending_age_seconds"] is not None
+
+
 def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
@@ -263,6 +406,8 @@ def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     with store.connect() as connection:
         connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,))
     assert store.recover_stale_jobs(300) == 1
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET retry_not_before=0 WHERE job_id=100")
     assert store.claim("reserve-1", ("qdev-ci",)) is not None
 
 
