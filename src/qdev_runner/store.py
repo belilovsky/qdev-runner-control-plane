@@ -16,6 +16,8 @@ from .models import QueuedJob
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
 QUEUE_RETRY_BASE_SECONDS = 30
 QUEUE_RETRY_MAX_SECONDS = 300
+SQLITE_LOCK_ATTEMPTS = 6
+SQLITE_LOCK_BACKOFF_SECONDS = 0.2
 KNOWN_PROFILES = frozenset({"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"})
 IMMUTABLE_QUEUE_MIGRATION = "20260827_immutable_github_fifo_v1"
 
@@ -150,7 +152,7 @@ class Store:
             "required_profile": "TEXT",
             "retry_not_before": "REAL NOT NULL DEFAULT 0",
         }
-        connection.execute("BEGIN IMMEDIATE")
+        self._begin_immediate(connection)
         try:
             for name, definition in additions.items():
                 if name not in columns:
@@ -237,12 +239,43 @@ class Store:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=5000")
         try:
             yield connection
         finally:
             connection.close()
+
+    @staticmethod
+    def _begin_immediate(connection: sqlite3.Connection) -> None:
+        """Acquire SQLite's single writer lock with bounded retries.
+
+        The public and internal broker processes share this database. A
+        transient competing heartbeat must not turn a signed GitHub webhook
+        into a failed queue admission.
+        """
+        for attempt in range(SQLITE_LOCK_ATTEMPTS):
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as error:
+                locked = "locked" in str(error).lower() or "busy" in str(error).lower()
+                if not locked or attempt == SQLITE_LOCK_ATTEMPTS - 1:
+                    raise
+                time.sleep(SQLITE_LOCK_BACKOFF_SECONDS * (attempt + 1))
+
+    @contextmanager
+    def write_connection(self) -> Iterator[sqlite3.Connection]:
+        with self.connect() as connection:
+            self._begin_immediate(connection)
+            try:
+                yield connection
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+            else:
+                connection.execute("COMMIT")
 
     def enqueue(self, job: QueuedJob) -> bool:
         now = time.time()
@@ -257,8 +290,7 @@ class Store:
         if github_queued_at is None:
             github_queued_at = now
             queue_time_source = "received_at_fallback"
-        with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.write_connection() as connection:
             sequence_row = connection.execute(
                 "SELECT COALESCE(MAX(queue_sequence), 0) AS value FROM jobs"
             ).fetchone()
@@ -292,7 +324,6 @@ class Store:
                     now,
                 ),
             )
-            connection.execute("COMMIT")
             return cursor.rowcount == 1
 
     def _has_available_tier_slot(
@@ -341,8 +372,7 @@ class Store:
         normalized_profiles = tuple(profile.lower() for profile in profiles)
         if not normalized_profiles:
             return None
-        with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.write_connection() as connection:
             selected = None
             selected_profile = None
             placeholders = ",".join("?" for _ in normalized_profiles)
@@ -387,13 +417,11 @@ class Store:
                     profile=matching_profile,
                     profile_disk_mb=required_disk_mb,
                 ):
-                    connection.execute("COMMIT")
                     return None
                 selected = row
                 selected_profile = matching_profile
                 break
             if selected is None:
-                connection.execute("COMMIT")
                 return None
             assert selected_profile is not None
             updated = connection.execute(
@@ -404,7 +432,6 @@ class Store:
                 """,
                 (worker_name, selected_profile, now, now, selected["job_id"]),
             )
-            connection.execute("COMMIT")
             if updated.rowcount != 1:
                 return None
             return dict(selected) | {
@@ -415,7 +442,7 @@ class Store:
     def set_status(self, job_id: int, status: str, result: str = "") -> None:
         now = time.time()
         completed_at = now if status in {"completed", "failed", "rejected"} else None
-        with self.connect() as connection:
+        with self.write_connection() as connection:
             connection.execute(
                 "UPDATE jobs SET status=?, result=?, updated_at=?, "
                 "completed_at=COALESCE(?, completed_at) WHERE job_id=?",
@@ -434,7 +461,7 @@ class Store:
 
     def fail_if_active(self, job_id: int, result: str) -> bool:
         now = time.time()
-        with self.connect() as connection:
+        with self.write_connection() as connection:
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='failed', result=?, updated_at=?, completed_at=?
@@ -446,7 +473,7 @@ class Store:
 
     def requeue_active(self, job_id: int, reason: str) -> bool:
         now = time.time()
-        with self.connect() as connection:
+        with self.write_connection() as connection:
             row = connection.execute(
                 "SELECT attempts FROM jobs WHERE job_id=?", (job_id,)
             ).fetchone()
@@ -463,7 +490,7 @@ class Store:
 
     def requeue(self, job_id: int, reason: str) -> None:
         now = time.time()
-        with self.connect() as connection:
+        with self.write_connection() as connection:
             row = connection.execute(
                 "SELECT attempts FROM jobs WHERE job_id=?", (job_id,)
             ).fetchone()
@@ -490,8 +517,7 @@ class Store:
     ) -> None:
         now = time.time()
         worker_detail = detail | {"active_job_ids": list(active_job_ids)}
-        with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.write_connection() as connection:
             connection.execute(
                 """
                 INSERT INTO workers(name, profiles_json, active_jobs, last_seen, detail_json)
@@ -538,7 +564,6 @@ class Store:
                     """,
                     (now + QUEUE_RETRY_BASE_SECONDS, now, name, now - 30),
                 )
-            connection.execute("COMMIT")
 
     def has_available_tier_slot(self, tier: str, max_age_seconds: int) -> bool:
         cutoff = time.time() - max_age_seconds
@@ -548,7 +573,7 @@ class Store:
     def recover_stale_jobs(self, worker_timeout_seconds: int) -> int:
         cutoff = time.time() - worker_timeout_seconds
         now = time.time()
-        with self.connect() as connection:
+        with self.write_connection() as connection:
             updated = connection.execute(
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
