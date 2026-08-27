@@ -1,17 +1,16 @@
 # QDev runner control plane
 
-This repository is the recovery control plane for ephemeral self-hosted GitHub
-Actions runners used by the active `belilovsky` repositories. Paid
-GitHub-hosted compute is the normal execution path. The QDev pool is the
-explicit recovery path when hosted compute or its billing lane is unavailable;
-it still depends on GitHub orchestration and the GitHub API.
+This repository is the control plane for ephemeral self-hosted GitHub Actions
+runners used by the active `belilovsky` repositories. The QDev pool is the
+sole execution path for these recovery labels; it has no GitHub-hosted fallback
+and still depends on GitHub orchestration and the GitHub API.
 
 ## Contract
 
-- A v2 repository contract declares `github-hosted-primary` and keeps a
-  separately dispatchable self-hosted recovery workflow. Legacy v1 contracts
-  remain valid until their repository is deliberately migrated.
-- Recovery jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
+- A repository contract selects exactly one self-hosted execution profile.
+  Legacy contracts remain valid until their repository is deliberately
+  migrated.
+- Jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
   `qdev-ci-docker` together with `self-hosted`, `Linux`, `X64`.
 - A queued `workflow_job` webhook is accepted only for a repository in
   `inventory/repos.json` and a profile allowed by `.github/qdev-runner.yml`.
@@ -105,10 +104,13 @@ sudo scripts/activate_controller_release.sh \
 
 Activation requires at least 30 GiB free disk, less than 85% disk use, at
 least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
-atomically changes `current`, refreshes the repository inventory and runner
-profiles, and recreates only `broker-public` and `broker-internal`. The prior
-profile file is restored together with the previous release if activation
-fails. It does not restart a worker, stop the registry, remove Compose or Docker
+atomically changes `current`, refreshes the repository inventory, runner
+profiles, and the release-bound project-priority policy, and recreates only
+`broker-public` and `broker-internal`. The prior profile and priority-policy
+files are restored together with the previous release if activation fails. The
+policy never rewrites a job's GitHub queue keys: it only orders eligible work by
+the approved project tier, with GitHub FIFO retained inside a tier and profile.
+It does not restart a worker, stop the registry, remove Compose or Docker
 objects, or touch product containers. If either Compose or the public health
 check fails, the script restores the previous release and its configuration.
 

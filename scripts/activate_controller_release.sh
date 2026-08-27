@@ -23,6 +23,7 @@ for required in \
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
+  config/project-priority.json \
   deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
@@ -79,7 +80,13 @@ if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
 fi
-trap 'rm -f -- "$temporary_link" "$profiles_backup"' EXIT
+priority_backup="$(mktemp /tmp/qdev-runner-project-priority.XXXXXX)"
+priority_was_present=false
+if [[ -f /etc/qdev-runner/project-priority.json ]]; then
+  install -m 0600 -- /etc/qdev-runner/project-priority.json "$priority_backup"
+  priority_was_present=true
+fi
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$priority_backup"' EXIT
 
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
@@ -97,6 +104,8 @@ activate_link() {
 
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
+install -m 0644 -- "$release/config/project-priority.json" \
+  /etc/qdev-runner/project-priority.json
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -113,6 +122,11 @@ rollback() {
     install -m 0644 -- "$profiles_backup" /etc/qdev-runner/profiles.yml
   else
     rm -f -- /etc/qdev-runner/profiles.yml
+  fi
+  if [[ "$priority_was_present" == true ]]; then
+    install -m 0644 -- "$priority_backup" /etc/qdev-runner/project-priority.json
+  else
+    rm -f -- /etc/qdev-runner/project-priority.json
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then

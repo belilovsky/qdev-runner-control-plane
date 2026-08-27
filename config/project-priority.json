@@ -1,0 +1,15 @@
+{
+  "schema": "qdev-runner-project-priority-v1",
+  "policy_id": "manual-p0-2026-08-28",
+  "default_priority": 100,
+  "priorities": {
+    "belilovsky/qazstack": 0,
+    "belilovsky/qazpipe": 1,
+    "belilovsky/qazlake": 2,
+    "belilovsky/qazlake-api": 3,
+    "belilovsky/qazcompute": 4,
+    "belilovsky/qazagents": 5,
+    "belilovsky/editorial": 6,
+    "belilovsky/platform-portal": 7
+  }
+}

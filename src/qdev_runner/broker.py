@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from .claim_scope import ClaimScopeError, resolve_claim_scope
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
-from .policy import Policy, PolicyError
+from .policy import Policy, PolicyError, ProjectPriorityPolicy
 from .settings import BrokerSettings
 from .store import Store
 
@@ -104,8 +104,15 @@ def create_app(
     github: GitHubAppClient | None = None,
 ) -> FastAPI:
     settings = settings or BrokerSettings.from_env()
-    store = store or Store(settings.database_path)
     policy = policy or Policy(settings.inventory_path, settings.profiles_path)
+    priority_policy = ProjectPriorityPolicy.from_file(settings.project_priority_path)
+    unknown_priorities = set(priority_policy.priorities).difference(policy.repositories)
+    if unknown_priorities:
+        raise PolicyError(
+            "project-priority policy references repositories outside the runner allowlist: "
+            + ", ".join(sorted(unknown_priorities))
+        )
+    store = store or Store(settings.database_path, priority_policy)
     github = github or GitHubAppClient(
         settings.app_id,
         settings.app_private_key_path,
@@ -147,9 +154,11 @@ def create_app(
             "reserve_available": any(worker["available"] for worker in reserve),
             "oldest_pending_age_seconds": data["oldest_pending_age_seconds"],
             "pending_by_profile": data["pending_by_profile"],
+            "pending_by_priority": data["pending_by_priority"],
             "available_slots_by_profile": data["available_slots_by_profile"],
             "blocked_profiles": data["blocked_profiles"],
             "queue_schema_migration": data["queue_schema_migration"],
+            "project_priority_policy": data["project_priority_policy"],
         }
 
     @app.post("/github/workflow-job")

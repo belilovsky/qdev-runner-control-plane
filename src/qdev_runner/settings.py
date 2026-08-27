@@ -35,6 +35,7 @@ class BrokerSettings:
     database_path: Path
     artifact_root: Path
     claim_scopes_path: Path = Path("/etc/qdev-runner/claim-scopes.json")
+    project_priority_path: Path = Path("/etc/qdev-runner/project-priority.json")
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
     registry_url: str = "registry.ci.qdev.run"
@@ -50,6 +51,12 @@ class BrokerSettings:
             worker_token=_required("QDEV_WORKER_TOKEN"),
             inventory_path=Path(os.environ.get("QDEV_INVENTORY", "/etc/qdev-runner/repos.json")),
             profiles_path=Path(os.environ.get("QDEV_PROFILES", "/etc/qdev-runner/profiles.yml")),
+            project_priority_path=Path(
+                os.environ.get(
+                    "QDEV_PROJECT_PRIORITY_POLICY",
+                    "/etc/qdev-runner/project-priority.json",
+                )
+            ),
             database_path=Path(os.environ.get("QDEV_DATABASE", "/var/lib/qdev-runner/broker.db")),
             artifact_root=Path(
                 os.environ.get("QDEV_ARTIFACT_ROOT", "/var/lib/qdev-runner/artifacts")
