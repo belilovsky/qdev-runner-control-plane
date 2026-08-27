@@ -99,6 +99,13 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   satisfy the obsolete condition by creating an empty file.
 - Requeued transient jobs move to the FIFO tail so one failing job cannot
   starve the queue.
+- A one-off temporary worker uses a short-lived `claim-scope-v1` only when a
+  narrowly bounded recovery or release needs isolation from the shared FIFO
+  queue. The broker checks the supplied scope before its atomic claim: worker
+  name, tier, exact repository and SHA, each job ID, profile, and expiry must
+  all match. Delete the scope when the declared jobs reach terminal GitHub
+  conclusions, then destroy the temporary worker. A scope is not a general
+  queue-priority mechanism and does not change ordinary worker admission.
 
 Run the public-safe audit before and after recovery:
 

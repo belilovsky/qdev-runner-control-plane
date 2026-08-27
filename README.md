@@ -39,6 +39,13 @@ it still depends on GitHub orchestration and the GitHub API.
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
   runner or silently changing execution lanes.
+- An exceptional temporary worker may be given a `claim-scope-v1` document.
+  Its scope binds one worker name and tier to a short expiry, one repository
+  and exact Git SHA, and an explicit job-ID/profile map. Once a worker supplies
+  a scope ID, a missing, expired, malformed, or mismatched scope fails closed;
+  it cannot fall back to the shared queue. Unscoped workers retain ordinary
+  FIFO behavior. Scope documents are operational secrets only insofar as they
+  describe an in-flight release and belong in `/etc/qdev-runner/`, never Git.
 
 The operating model, failure taxonomy, recovery sequence, and evidence
 contract are in `docs/github-actions-operating-model.md`.

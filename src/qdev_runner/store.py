@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .claim_scope import ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -208,6 +209,7 @@ class Store:
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
         primary_max_age_seconds: int = 90,
+        claim_scope: ClaimScope | None = None,
     ) -> dict[str, Any] | None:
         now = time.time()
         with self.connect() as connection:
@@ -226,6 +228,13 @@ class Store:
                     (profile for profile in profiles if profile.lower() in labels), None
                 )
                 if matching_profile is None:
+                    continue
+                if claim_scope is not None and not claim_scope.permits(
+                    int(row["job_id"]),
+                    str(row["repository"]),
+                    str(row["head_sha"]),
+                    matching_profile,
+                ):
                     continue
                 required_disk_mb = (
                     profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None

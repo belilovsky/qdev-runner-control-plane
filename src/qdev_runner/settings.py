@@ -34,6 +34,7 @@ class BrokerSettings:
     profiles_path: Path
     database_path: Path
     artifact_root: Path
+    claim_scopes_path: Path = Path("/etc/qdev-runner/claim-scopes.json")
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
     registry_url: str = "registry.ci.qdev.run"
@@ -52,6 +53,9 @@ class BrokerSettings:
             database_path=Path(os.environ.get("QDEV_DATABASE", "/var/lib/qdev-runner/broker.db")),
             artifact_root=Path(
                 os.environ.get("QDEV_ARTIFACT_ROOT", "/var/lib/qdev-runner/artifacts")
+            ),
+            claim_scopes_path=Path(
+                os.environ.get("QDEV_CLAIM_SCOPES", "/etc/qdev-runner/claim-scopes.json")
             ),
             github_api_url=os.environ.get("QDEV_GITHUB_API_URL", "https://api.github.com"),
             github_api_version=os.environ.get("QDEV_GITHUB_API_VERSION", "2026-03-10"),
@@ -77,6 +81,7 @@ class WorkerSettings:
     buildkitd_path: str
     buildctl_path: str
     buildkit_root: Path
+    claim_scope_id: str | None = None
     min_disk_free_gib: float = 30
     max_disk_used_pct: float = 85
     min_memory_available_gib: float = 4
@@ -130,6 +135,7 @@ class WorkerSettings:
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),
+            claim_scope_id=os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None,
             min_disk_free_gib=float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30")),
             max_disk_used_pct=float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85")),
             min_memory_available_gib=float(
