@@ -199,6 +199,49 @@ def test_queue_key_is_immutable_after_acceptance(tmp_path: Path) -> None:
             raise AssertionError("queue key update unexpectedly succeeded")
 
 
+def test_store_backfills_a_late_legacy_row_without_breaking_existing_immutability(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    store.enqueue(job(queued_at="2026-08-27T13:46:59Z"))
+
+    with store.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO jobs(
+                job_id, delivery_id, run_id, repository, repository_id, installation_id,
+                labels_json, head_sha, head_branch, payload_json, status, created_at,
+                updated_at, attempts
+            ) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,0)
+            """,
+            (
+                101,
+                "late-legacy-101",
+                200,
+                "belilovsky/private-repo",
+                1,
+                300,
+                json.dumps(["self-hosted", "Linux", "X64", "qdev-ci"]),
+                "a" * 40,
+                "main",
+                json.dumps({"workflow_job": {"created_at": "2026-08-27T14:00:00Z"}}),
+                1_700_000_000.0,
+                1_700_000_000.0,
+            ),
+        )
+
+    restarted = Store(database)
+    recovered = restarted.job(101)
+
+    assert recovered is not None
+    assert recovered["github_queued_at"] == 1787839200.0
+    assert recovered["required_profile"] == "qdev-ci"
+    with restarted.connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable queue key"):
+            connection.execute("UPDATE jobs SET queue_sequence=0 WHERE job_id=100")
+
+
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

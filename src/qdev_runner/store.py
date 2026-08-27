@@ -228,6 +228,12 @@ class Store:
                 if name not in columns:
                     connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
+            # A prior broker may have inserted a legacy row after the first
+            # migration completed.  Suspend the immutability trigger only for
+            # this transaction so that its canonical, payload-derived queue
+            # key can be backfilled; recreate it before committing.
+            connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
+
             rows = connection.execute(
                 """
                 SELECT job_id, payload_json, labels_json, profile, created_at, updated_at,
