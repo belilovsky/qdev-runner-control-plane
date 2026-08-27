@@ -107,15 +107,15 @@ class WorkerSettings:
             runner_images={
                 "qdev-ci": os.environ.get(
                     "QDEV_RUNNER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner:2.336.0",
+                    "registry.ci.qdev.run/qdev/actions-runner:2.336.0-r2",
                 ),
                 "qdev-ci-browser": os.environ.get(
                     "QDEV_RUNNER_BROWSER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0",
+                    "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0-r2",
                 ),
                 "qdev-ci-docker": os.environ.get(
                     "QDEV_RUNNER_DOCKER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0",
+                    "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2",
                 ),
             },
             docker_sidecar_image=os.environ.get(
