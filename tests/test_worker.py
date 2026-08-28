@@ -152,3 +152,48 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
         "--volumes",
         "runner-1",
     ]
+
+
+def test_compose_profile_uses_the_same_isolated_daemon_without_a_build_lane() -> None:
+    worker = Worker(
+        WorkerSettings(
+            broker_url="https://worker.ci.qdev.run",
+            worker_token="token",
+            worker_name="worker-1",
+            tier="primary",
+            profiles=("qdev-ci-compose",),
+            concurrency=1,
+            poll_seconds=3,
+            container_engine="docker",
+            runner_images={"qdev-ci-compose": "runner-docker:test"},
+            docker_sidecar_image="docker:dind-test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=Path("/var/lib/qdev-runner-worker/jobs"),
+        )
+    )
+    job = {
+        "job_id": 1,
+        "repository": "belilovsky/repo",
+        "head_sha": "a" * 40,
+        "runner_name": "runner-1",
+        "jit_config": "encoded",
+        "profile": {
+            "name": "qdev-ci-compose",
+            "cpu": 1,
+            "memory_mb": 2048,
+            "pids_limit": 512,
+            "timeout_minutes": 15,
+        },
+        "artifact": {"base_url": "https://ci.qdev.run/artifacts", "token": "token"},
+    }
+
+    runner_command = " ".join(worker.container_command(job))
+    sidecar_command = " ".join(worker.docker_sidecar_command(job))
+
+    assert "DOCKER_HOST=unix:///run/qdev-docker/docker.sock" in runner_command
+    assert "--network container:runner-1-docker" in runner_command
+    assert "/var/run/docker.sock" not in runner_command
+    assert "--privileged" in sidecar_command
+    assert "/var/run/docker.sock" not in sidecar_command

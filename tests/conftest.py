@@ -19,7 +19,7 @@ def policy_files(tmp_path: Path) -> tuple[Path, Path]:
                         "private": True,
                         "archived": False,
                         "default_branch": "main",
-                        "profiles": ["qdev-ci", "qdev-ci-browser"],
+                        "profiles": ["qdev-ci", "qdev-ci-browser", "qdev-ci-compose"],
                     },
                     {
                         "id": 2,
@@ -47,6 +47,11 @@ profiles:
     labels: [self-hosted, Linux, X64, qdev-ci-browser]
     resources: {cpu: 2, memory_mb: 4096, disk_mb: 15360, pids_limit: 768}
     timeout_minutes: 60
+    allow_public_pr: true
+  qdev-ci-compose:
+    labels: [self-hosted, Linux, X64, qdev-ci-compose]
+    resources: {cpu: 1, memory_mb: 2048, disk_mb: 4096, pids_limit: 512}
+    timeout_minutes: 15
     allow_public_pr: true
 """.strip()
         + "\n",

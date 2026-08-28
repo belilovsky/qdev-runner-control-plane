@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,87 @@ from .models import Profile, RepositoryPolicy
 
 class PolicyError(RuntimeError):
     pass
+
+
+PROJECT_PRIORITY_POLICY_SCHEMA = "qdev-runner-project-priority-v1"
+
+
+@dataclass(frozen=True)
+class ProjectPriorityPolicy:
+    """A release-bound, auditable project ordering overlay.
+
+    GitHub's signed queue timestamp and the controller sequence remain the
+    immutable ordering keys.  This policy only selects an explicit project
+    tier before that FIFO order; it must be delivered as part of a controller
+    release, never through an operational database edit.
+    """
+
+    policy_id: str
+    default_priority: int
+    priorities: dict[str, int]
+    definition_json: str
+    sha256: str
+
+    @classmethod
+    def from_file(cls, path: Path) -> ProjectPriorityPolicy:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise PolicyError(f"cannot load project-priority policy {path}: {error}") from error
+        return cls.from_data(data)
+
+    @classmethod
+    def from_data(cls, data: object) -> ProjectPriorityPolicy:
+        if not isinstance(data, dict):
+            raise PolicyError("project-priority policy must be a JSON object")
+        if data.get("schema") != PROJECT_PRIORITY_POLICY_SCHEMA:
+            raise PolicyError("unsupported project-priority policy schema")
+        policy_id = data.get("policy_id")
+        default_priority = data.get("default_priority")
+        raw_priorities = data.get("priorities")
+        if not isinstance(policy_id, str) or not policy_id.strip():
+            raise PolicyError("project-priority policy_id is required")
+        if (
+            not isinstance(default_priority, int)
+            or isinstance(default_priority, bool)
+            or default_priority < 0
+        ):
+            raise PolicyError("project-priority default_priority must be a non-negative integer")
+        if not isinstance(raw_priorities, dict):
+            raise PolicyError("project-priority priorities must be an object")
+
+        priorities: dict[str, int] = {}
+        for repository, priority in raw_priorities.items():
+            if not isinstance(repository, str) or "/" not in repository:
+                raise PolicyError("project-priority repository must be an owner/name string")
+            if (
+                not isinstance(priority, int)
+                or isinstance(priority, bool)
+                or priority < 0
+            ):
+                raise PolicyError("project-priority values must be non-negative integers")
+            normalized = repository.lower()
+            if normalized in priorities:
+                raise PolicyError(f"duplicate project-priority repository: {repository}")
+            priorities[normalized] = priority
+
+        canonical = {
+            "schema": PROJECT_PRIORITY_POLICY_SCHEMA,
+            "policy_id": policy_id.strip(),
+            "default_priority": default_priority,
+            "priorities": priorities,
+        }
+        definition_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        return cls(
+            policy_id=policy_id.strip(),
+            default_priority=default_priority,
+            priorities=priorities,
+            definition_json=definition_json,
+            sha256=sha256(definition_json.encode("utf-8")).hexdigest(),
+        )
+
+    def priority_for(self, repository: str) -> int:
+        return self.priorities.get(repository.lower(), self.default_priority)
 
 
 class Policy:

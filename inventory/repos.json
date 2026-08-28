@@ -2599,6 +2599,7 @@
       "default_branch": "main",
       "profiles": [
         "qdev-ci",
+        "qdev-ci-compose",
         "qdev-ci-docker"
       ],
       "workflow_count": 4,

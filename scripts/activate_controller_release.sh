@@ -23,6 +23,7 @@ for required in \
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
+  config/project-priority.json \
   deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
@@ -30,11 +31,6 @@ for required in \
   }
 done
 
-disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
-disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
-memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
-cpu_count="$(nproc)"
-load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
 max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85}"
@@ -58,17 +54,28 @@ if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
   exit 64
 fi
-awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
-  -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
-  -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if (used > max_used || free < (min_free_gib * 1048576) ||
-        mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
-  }' || {
-    printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
-      "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
-    exit 75
-  }
+
+check_controller_capacity() {
+  local disk_used disk_free_kib memory_kib cpu_count load_15
+  disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
+  disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+  memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
+  cpu_count="$(nproc)"
+  load_15="$(awk '{print $3}' /proc/loadavg)"
+  awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
+    -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
+    -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
+    -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
+      if (used > max_used || free < (min_free_gib * 1048576) ||
+          mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
+    }' || {
+      printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
+        "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
+      return 1
+    }
+}
+
+check_controller_capacity || exit 75
 
 current="$release_root/current"
 previous="$(readlink -f -- "$current" 2>/dev/null || true)"
@@ -79,7 +86,13 @@ if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
 fi
-trap 'rm -f -- "$temporary_link" "$profiles_backup"' EXIT
+priority_backup="$(mktemp /tmp/qdev-runner-project-priority.XXXXXX)"
+priority_was_present=false
+if [[ -f /etc/qdev-runner/project-priority.json ]]; then
+  install -m 0600 -- /etc/qdev-runner/project-priority.json "$priority_backup"
+  priority_was_present=true
+fi
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$priority_backup"' EXIT
 
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
@@ -97,14 +110,11 @@ activate_link() {
 
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
+install -m 0644 -- "$release/config/project-priority.json" \
+  /etc/qdev-runner/project-priority.json
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
-if [[ "$no_build" == true ]]; then
-  compose_action=(up -d --force-recreate --no-build --no-deps broker-public broker-internal)
-else
-  compose_action=(up -d --force-recreate --build --no-deps broker-public broker-internal)
-fi
 
 rollback() {
   [[ -n "$previous" && -d "$previous" ]] || return 0
@@ -113,6 +123,11 @@ rollback() {
     install -m 0644 -- "$profiles_backup" /etc/qdev-runner/profiles.yml
   else
     rm -f -- /etc/qdev-runner/profiles.yml
+  fi
+  if [[ "$priority_was_present" == true ]]; then
+    install -m 0644 -- "$priority_backup" /etc/qdev-runner/project-priority.json
+  else
+    rm -f -- /etc/qdev-runner/project-priority.json
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then
@@ -125,7 +140,21 @@ rollback() {
     up -d --force-recreate --no-build --no-deps broker-public broker-internal
 }
 
-if ! "${compose[@]}" "${compose_action[@]}"; then
+if [[ "$no_build" == false ]]; then
+  if ! "${compose[@]}" build broker-public broker-internal; then
+    rollback
+    exit 1
+  fi
+  # A build can create a new base image or dependency layer. Check the same
+  # declared floor again before swapping the running brokers to those tags.
+  if ! check_controller_capacity; then
+    printf 'controller build exhausted activation capacity; restoring previous release\n' >&2
+    rollback
+    exit 75
+  fi
+fi
+
+if ! "${compose[@]}" up -d --force-recreate --no-build --no-deps broker-public broker-internal; then
   rollback
   exit 1
 fi

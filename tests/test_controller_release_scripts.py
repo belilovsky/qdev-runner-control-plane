@@ -8,7 +8,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
 
     assert "broker-public broker-internal" in script
     assert "--no-deps" in script
-    assert script.count("--force-recreate") == 3
+    assert script.count("--force-recreate") == 2
     assert "compose down" not in script
     assert "systemctl" not in script
     assert "mv -Tf" in script
@@ -32,6 +32,11 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "config/profiles.yml" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
+    assert '"${compose[@]}" build broker-public broker-internal' in script
+    assert "if ! check_controller_capacity; then" in script
+    assert script.index('"${compose[@]}" build broker-public broker-internal') < script.index(
+        '"${compose[@]}" up -d --force-recreate --no-build --no-deps'
+    )
 
 
 def test_controller_rollback_reuses_existing_images() -> None:

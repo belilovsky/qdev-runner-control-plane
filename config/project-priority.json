@@ -1,0 +1,18 @@
+{
+  "schema": "qdev-runner-project-priority-v1",
+  "policy_id": "echolot-qpost-production-cutover-20260828",
+  "default_priority": 100,
+  "priorities": {
+    "belilovsky/adilet-digest-studio": 0,
+    "belilovsky/echo-sounder-": 0,
+    "belilovsky/qazcompute": 0,
+    "belilovsky/qazposter": 0,
+    "belilovsky/qazstack": 0,
+    "belilovsky/qazpipe": 1,
+    "belilovsky/qazlake": 2,
+    "belilovsky/qazlake-api": 3,
+    "belilovsky/qazagents": 5,
+    "belilovsky/editorial": 6,
+    "belilovsky/platform-portal": 7
+  }
+}

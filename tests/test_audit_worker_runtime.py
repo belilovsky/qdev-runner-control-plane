@@ -54,6 +54,25 @@ def test_audit_rejects_missing_executor_image() -> None:
     assert result["images"][0]["present"] is False
 
 
+def test_audit_compose_profile_uses_the_isolated_docker_images() -> None:
+    module = load_module()
+    values = {
+        "QDEV_WORKER_NAME": "srv-qdev-compose-primary",
+        "QDEV_WORKER_TIER": "primary",
+        "QDEV_WORKER_PROFILES": "qdev-ci-compose",
+        "QDEV_RUNNER_DOCKER_IMAGE": "sha256:buildkit",
+        "QDEV_DOCKER_SIDECAR_IMAGE": "sha256:sidecar",
+    }
+
+    result = module.evaluate(values, inspector=lambda _engine, reference: (True, reference))
+
+    assert result["errors"] == []
+    assert [image["configuration"] for image in result["images"]] == [
+        "QDEV_RUNNER_DOCKER_IMAGE",
+        "QDEV_DOCKER_SIDECAR_IMAGE",
+    ]
+
+
 def test_audit_rejects_name_tier_mismatch() -> None:
     module = load_module()
     values = {

@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 import ssl
+from dataclasses import replace
 from typing import Any, Literal
 
 import uvicorn
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field
 from .claim_scope import ClaimScopeError, resolve_claim_scope
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
-from .policy import Policy, PolicyError
+from .policy import Policy, PolicyError, ProjectPriorityPolicy
 from .settings import BrokerSettings
 from .store import Store
 
@@ -89,6 +90,11 @@ def completed_run_conclusion(run: dict[str, Any]) -> str | None:
     return str(run.get("conclusion") or "unknown")
 
 
+def assign_required_profile(queued: QueuedJob, profile_name: str) -> QueuedJob:
+    """Return the accepted job with its policy-derived execution profile."""
+    return replace(queued, required_profile=profile_name)
+
+
 def _safe_segment(value: str) -> str:
     allowed = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
@@ -104,8 +110,15 @@ def create_app(
     github: GitHubAppClient | None = None,
 ) -> FastAPI:
     settings = settings or BrokerSettings.from_env()
-    store = store or Store(settings.database_path)
     policy = policy or Policy(settings.inventory_path, settings.profiles_path)
+    priority_policy = ProjectPriorityPolicy.from_file(settings.project_priority_path)
+    unknown_priorities = set(priority_policy.priorities).difference(policy.repositories)
+    if unknown_priorities:
+        raise PolicyError(
+            "project-priority policy references repositories outside the runner allowlist: "
+            + ", ".join(sorted(unknown_priorities))
+        )
+    store = store or Store(settings.database_path, priority_policy)
     github = github or GitHubAppClient(
         settings.app_id,
         settings.app_private_key_path,
@@ -126,7 +139,9 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        data = store.health()
+        data = store.health(
+            profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()}
+        )
         fresh_workers = [
             worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
         ]
@@ -145,6 +160,13 @@ def create_app(
             "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
             "primary_available": any(worker["available"] for worker in primary),
             "reserve_available": any(worker["available"] for worker in reserve),
+            "oldest_pending_age_seconds": data["oldest_pending_age_seconds"],
+            "pending_by_profile": data["pending_by_profile"],
+            "pending_by_priority": data["pending_by_priority"],
+            "available_slots_by_profile": data["available_slots_by_profile"],
+            "blocked_profiles": data["blocked_profiles"],
+            "queue_schema_migration": data["queue_schema_migration"],
+            "project_priority_policy": data["project_priority_policy"],
         }
 
     @app.post("/github/workflow-job")
@@ -189,7 +211,8 @@ def create_app(
                 head_branch=str(raw_job.get("head_branch") or ""),
                 payload=payload,
             )
-            policy.profile_for_labels(queued.repository, queued.labels)
+            profile = policy.profile_for_labels(queued.repository, queued.labels)
+            queued = assign_required_profile(queued, profile.name)
             store.enqueue(queued)
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected queued job: %s", error)
