@@ -3,13 +3,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "qdev-runner-claim-scopes-v1"
+# ``claim-scope-v1`` is the published, short-lived broker contract.  The
+# plural name was used by the first candidate and remains readable so a
+# broker upgrade cannot accidentally disable an already provisioned scope.
+SCHEMA = "claim-scope-v1"
+LEGACY_SCHEMA = "qdev-runner-claim-scopes-v1"
+ALLOWED_REPOSITORY = "belilovsky/qazagents"
+ALLOWED_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker"})
+MAX_TTL = timedelta(minutes=15)
 _SHA256 = re.compile(r"^[0-9a-f]{40}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
+_WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 
 
 class ClaimScopeError(ValueError):
@@ -31,6 +39,7 @@ class ClaimScope:
     head_sha: str
     expires_at: datetime
     jobs: tuple[ScopedJob, ...]
+    schema: str = LEGACY_SCHEMA
 
     def permits(self, job_id: int, repository: str, head_sha: str, profile: str) -> bool:
         return (
@@ -57,7 +66,7 @@ def _parse_expiry(value: object) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _parse_scope(raw: object) -> ClaimScope:
+def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
     if not isinstance(raw, dict):
         raise ClaimScopeError("claim scope entry must be an object")
     scope_id = _required_string(raw.get("scope_id"), "scope_id")
@@ -72,8 +81,11 @@ def _parse_scope(raw: object) -> ClaimScope:
     if not _SHA256.fullmatch(head_sha):
         raise ClaimScopeError("claim scope head_sha must be a lowercase Git SHA")
     jobs_raw = raw.get("jobs")
-    if not isinstance(jobs_raw, list) or not jobs_raw:
-        raise ClaimScopeError("claim scope jobs must be a non-empty list")
+    if not isinstance(jobs_raw, list) or (schema == SCHEMA and len(jobs_raw) != 2) or (
+        schema == LEGACY_SCHEMA and not jobs_raw
+    ):
+        detail = "exactly two jobs" if schema == SCHEMA else "a non-empty list"
+        raise ClaimScopeError(f"claim scope jobs must contain {detail}")
     jobs: list[ScopedJob] = []
     for item in jobs_raw:
         if not isinstance(item, dict):
@@ -82,9 +94,20 @@ def _parse_scope(raw: object) -> ClaimScope:
         if not isinstance(job_id, int) or isinstance(job_id, bool) or job_id <= 0:
             raise ClaimScopeError("claim scope job_id must be a positive integer")
         profile = _required_string(item.get("profile"), "job profile")
+        if schema == SCHEMA and profile not in ALLOWED_PROFILES:
+            raise ClaimScopeError("claim scope job profile is not allowlisted")
         jobs.append(ScopedJob(job_id=job_id, profile=profile))
     if len({item.job_id for item in jobs}) != len(jobs):
         raise ClaimScopeError("claim scope job IDs must be unique")
+    if schema == SCHEMA and {item.profile for item in jobs} != ALLOWED_PROFILES:
+        raise ClaimScopeError("claim scope jobs must cover both expected profiles")
+    if schema == SCHEMA:
+        if not _WORKER_NAME.fullmatch(worker_name):
+            raise ClaimScopeError("claim scope worker_name contains unsafe characters")
+        if not worker_name.endswith(f"-{tier}"):
+            raise ClaimScopeError("claim scope worker_name must end with its tier")
+        if repository != ALLOWED_REPOSITORY:
+            raise ClaimScopeError("claim scope repository is not allowlisted")
     return ClaimScope(
         scope_id=scope_id,
         worker_name=worker_name,
@@ -93,6 +116,7 @@ def _parse_scope(raw: object) -> ClaimScope:
         head_sha=head_sha,
         expires_at=_parse_expiry(raw.get("expires_at")),
         jobs=tuple(jobs),
+        schema=schema,
     )
 
 
@@ -103,12 +127,13 @@ def load_claim_scopes(path: Path) -> dict[str, ClaimScope]:
         document: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ClaimScopeError("claim scope document is unreadable") from error
-    if not isinstance(document, dict) or document.get("schema") != SCHEMA:
+    if not isinstance(document, dict) or document.get("schema") not in {SCHEMA, LEGACY_SCHEMA}:
         raise ClaimScopeError("claim scope document has an unsupported schema")
     scopes_raw = document.get("scopes")
     if not isinstance(scopes_raw, list):
         raise ClaimScopeError("claim scope document scopes must be a list")
-    scopes = [_parse_scope(raw) for raw in scopes_raw]
+    schema = str(document["schema"])
+    scopes = [_parse_scope(raw, schema=schema) for raw in scopes_raw]
     if len({scope.scope_id for scope in scopes}) != len(scopes):
         raise ClaimScopeError("claim scope IDs must be unique")
     return {scope.scope_id: scope for scope in scopes}
@@ -140,9 +165,16 @@ def resolve_claim_scope(
     current = now or datetime.now(UTC)
     if scope.expires_at <= current:
         raise ClaimScopeError("claim scope has expired")
+    if scope.schema == SCHEMA and scope.expires_at > current + MAX_TTL:
+        raise ClaimScopeError("claim scope expiry exceeds the 15 minute limit")
     if scope.worker_name != worker_name or scope.tier != tier:
         raise ClaimScopeError("claim scope worker identity does not match")
-    allowed_profiles = {item.profile for item in scope.jobs}
-    if allowed_profiles != set(profiles):
+    if scope.schema == SCHEMA and (
+        set(profiles) != ALLOWED_PROFILES or len(profiles) != len(ALLOWED_PROFILES)
+    ):
         raise ClaimScopeError("claim scope profiles do not match worker profiles")
+    if scope.schema == LEGACY_SCHEMA:
+        allowed_profiles = {item.profile for item in scope.jobs}
+        if allowed_profiles != set(profiles):
+            raise ClaimScopeError("claim scope profiles do not match worker profiles")
     return scope

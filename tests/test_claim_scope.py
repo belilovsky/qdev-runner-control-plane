@@ -13,7 +13,7 @@ def write_scope(path: Path, *, expires_at: datetime, head_sha: str = "a" * 40) -
     path.write_text(
         json.dumps(
             {
-                "schema": "qdev-runner-claim-scopes-v1",
+                "schema": "claim-scope-v1",
                 "scopes": [
                     {
                         "scope_id": "maturity-20260828",
@@ -106,6 +106,114 @@ def test_scope_expiry_absence_and_malformed_document_fail_closed(tmp_path: Path)
         )
     path.write_text("not-json", encoding="utf-8")
     with pytest.raises(ClaimScopeError, match="unreadable"):
+        resolve_claim_scope(
+            path,
+            "maturity-20260828",
+            "qdev-maturity-primary",
+            "primary",
+            ("qdev-ci", "qdev-ci-docker"),
+            now=now,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("repository", "belilovsky/other", "repository is not allowlisted"),
+        ("worker_name", "../worker-primary", "worker_name contains unsafe"),
+        ("worker_name", "worker-reserve", "worker_name must end with its tier"),
+        ("head_sha", "A" * 40, "head_sha must be a lowercase"),
+    ],
+)
+def test_scope_rejects_identity_and_path_traversal(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    path = tmp_path / "claim-scopes.json"
+    now = datetime.now(UTC)
+    document = {
+        "schema": "claim-scope-v1",
+        "scopes": [
+            {
+                "scope_id": "maturity-20260828",
+                "worker_name": "qdev-maturity-primary",
+                "tier": "primary",
+                "repository": "belilovsky/qazagents",
+                "head_sha": "a" * 40,
+                "expires_at": (now + timedelta(minutes=5)).isoformat(),
+                "jobs": [
+                    {"job_id": 100, "profile": "qdev-ci"},
+                    {"job_id": 101, "profile": "qdev-ci-docker"},
+                ],
+            }
+        ],
+    }
+    document["scopes"][0][field] = value
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ClaimScopeError, match=message):
+        resolve_claim_scope(
+            path,
+            "maturity-20260828",
+            "qdev-maturity-primary",
+            "primary",
+            ("qdev-ci", "qdev-ci-docker"),
+            now=now,
+        )
+
+
+def test_scope_requires_exact_two_jobs_profiles_and_short_expiry(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    now = datetime.now(UTC)
+    document = json.loads("{}")
+
+    def write_jobs(jobs: list[dict[str, object]], expires_at: datetime) -> None:
+        document.update(
+            {
+                "schema": "claim-scope-v1",
+                "scopes": [
+                    {
+                        "scope_id": "maturity-20260828",
+                        "worker_name": "qdev-maturity-primary",
+                        "tier": "primary",
+                        "repository": "belilovsky/qazagents",
+                        "head_sha": "a" * 40,
+                        "expires_at": expires_at.isoformat(),
+                        "jobs": jobs,
+                    }
+                ],
+            }
+        )
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    write_jobs([{"job_id": 100, "profile": "qdev-ci"}], now + timedelta(minutes=5))
+    with pytest.raises(ClaimScopeError, match="exactly two"):
+        resolve_claim_scope(
+            path,
+            "maturity-20260828",
+            "qdev-maturity-primary",
+            "primary",
+            ("qdev-ci", "qdev-ci-docker"),
+            now=now,
+        )
+
+    write_jobs(
+        [{"job_id": 100, "profile": "qdev-ci"}, {"job_id": 101, "profile": "qdev-ci"}],
+        now + timedelta(minutes=5),
+    )
+    with pytest.raises(ClaimScopeError, match="cover both expected"):
+        resolve_claim_scope(
+            path,
+            "maturity-20260828",
+            "qdev-maturity-primary",
+            "primary",
+            ("qdev-ci", "qdev-ci-docker"),
+            now=now,
+        )
+
+    write_jobs(
+        [{"job_id": 100, "profile": "qdev-ci"}, {"job_id": 101, "profile": "qdev-ci-docker"}],
+        now + timedelta(minutes=16),
+    )
+    with pytest.raises(ClaimScopeError, match="15 minute"):
         resolve_claim_scope(
             path,
             "maturity-20260828",
