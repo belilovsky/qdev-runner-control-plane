@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 import ssl
+from dataclasses import replace
 from typing import Any, Literal
 
 import uvicorn
@@ -89,6 +90,11 @@ def completed_run_conclusion(run: dict[str, Any]) -> str | None:
     return str(run.get("conclusion") or "unknown")
 
 
+def assign_required_profile(queued: QueuedJob, profile_name: str) -> QueuedJob:
+    """Return the accepted job with its policy-derived execution profile."""
+    return replace(queued, required_profile=profile_name)
+
+
 def _safe_segment(value: str) -> str:
     allowed = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
@@ -133,7 +139,9 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        data = store.health()
+        data = store.health(
+            profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()}
+        )
         fresh_workers = [
             worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
         ]
@@ -204,9 +212,7 @@ def create_app(
                 payload=payload,
             )
             profile = policy.profile_for_labels(queued.repository, queued.labels)
-            queued = QueuedJob(
-                **queued.__dict__, required_profile=profile.name
-            )
+            queued = assign_required_profile(queued, profile.name)
             store.enqueue(queued)
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected queued job: %s", error)

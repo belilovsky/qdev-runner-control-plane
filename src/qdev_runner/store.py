@@ -19,7 +19,9 @@ QUEUE_RETRY_BASE_SECONDS = 30
 QUEUE_RETRY_MAX_SECONDS = 300
 SQLITE_LOCK_ATTEMPTS = 6
 SQLITE_LOCK_BACKOFF_SECONDS = 0.2
-KNOWN_PROFILES = frozenset({"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"})
+KNOWN_PROFILES = frozenset(
+    {"qdev-ci", "qdev-ci-browser", "qdev-ci-compose", "qdev-ci-docker"}
+)
 IMMUTABLE_QUEUE_MIGRATION = "20260827_immutable_github_fifo_v1"
 PROJECT_PRIORITY_POLICY_AUDIT = "20260828_manual_project_priorities_v1"
 
@@ -229,6 +231,12 @@ class Store:
                 if name not in columns:
                     connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
+            # A prior broker may have inserted a legacy row after the first
+            # migration completed. Suspend the immutability trigger only for
+            # this transaction so that its canonical, payload-derived queue
+            # key can be backfilled; recreate it before committing.
+            connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
+
             rows = connection.execute(
                 """
                 SELECT job_id, payload_json, labels_json, profile, created_at, updated_at,
@@ -261,15 +269,6 @@ class Store:
                 "SELECT COALESCE(MAX(queue_sequence), 0) AS value FROM jobs"
             ).fetchone()
             next_sequence = int(next_sequence_row["value"])
-            # A previous broker may have accepted a job before this schema was
-            # installed.  The immutability trigger deliberately rejects a
-            # normal update to those rows.  This repair runs under the same
-            # exclusive transaction as the migration, drops the trigger only
-            # while the signed/fallback keys are backfilled, then restores it
-            # before the transaction is committed.  No concurrent writer can
-            # observe a mutable queue key.
-            if recovered:
-                connection.execute("DROP TRIGGER IF EXISTS jobs_queue_key_immutable")
             for github_queued_at, row, source, profile in sorted(
                 recovered, key=lambda item: (item[0], int(item[1]["job_id"]))
             ):
@@ -294,15 +293,28 @@ class Store:
                 """
             )
             connection.execute(
+                "DROP TRIGGER IF EXISTS jobs_queue_key_immutable"
+            )
+            # Recreate the trigger on every idempotent startup migration. An
+            # earlier release installed an unconditional trigger, which then
+            # prevented this migration from completing a legacy row that had
+            # been accepted before all queue-key columns existed. A row whose
+            # key is incomplete is not an accepted immutable key yet; once all
+            # four values are present, every later mutation is rejected.
+            connection.execute(
                 """
-                CREATE TRIGGER IF NOT EXISTS jobs_queue_key_immutable
+                CREATE TRIGGER jobs_queue_key_immutable
                 BEFORE UPDATE OF github_queued_at, queue_sequence, queue_time_source,
                     required_profile ON jobs
                 FOR EACH ROW
-                WHEN NEW.github_queued_at IS NOT OLD.github_queued_at
+                WHEN OLD.github_queued_at IS NOT NULL
+                   AND OLD.queue_sequence IS NOT NULL
+                   AND OLD.queue_time_source IS NOT NULL
+                   AND OLD.required_profile IS NOT NULL
+                   AND (NEW.github_queued_at IS NOT OLD.github_queued_at
                    OR NEW.queue_sequence IS NOT OLD.queue_sequence
                    OR NEW.queue_time_source IS NOT OLD.queue_time_source
-                   OR NEW.required_profile IS NOT OLD.required_profile
+                   OR NEW.required_profile IS NOT OLD.required_profile)
                 BEGIN
                     SELECT RAISE(ABORT, 'immutable queue key');
                 END
@@ -675,7 +687,7 @@ class Store:
             )
         return updated.rowcount
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, profile_disk_mb: dict[str, int] | None = None) -> dict[str, Any]:
         now = time.time()
         with self.connect() as connection:
             counts = {
@@ -738,17 +750,24 @@ class Store:
                 for worker in fresh_workers
                 if profile in {str(item).lower() for item in json.loads(worker["profiles_json"])}
             ]
-            slots = sum(
-                int(worker["slots_available"])
-                for worker in compatible
-                if worker["capacity_allowed"]
-            )
+            profile_disk = (profile_disk_mb or {}).get(profile)
+            capacity_eligible = [
+                worker for worker in compatible if worker["capacity_allowed"]
+            ]
+            headroom_eligible = [
+                worker
+                for worker in capacity_eligible
+                if _disk_headroom_allowed(json.loads(worker["detail_json"]), profile_disk)
+            ]
+            slots = sum(int(worker["slots_available"]) for worker in headroom_eligible)
             available_slots_by_profile[profile] = slots
             if pending and slots == 0:
                 if not compatible:
                     blocked_profiles[profile] = "no_fresh_compatible_worker"
-                elif not any(worker["capacity_allowed"] for worker in compatible):
+                elif not capacity_eligible:
                     blocked_profiles[profile] = "capacity_blocked"
+                elif not headroom_eligible:
+                    blocked_profiles[profile] = "insufficient_profile_disk_headroom"
                 else:
                     blocked_profiles[profile] = "no_free_slot"
         return {

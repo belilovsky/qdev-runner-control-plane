@@ -10,7 +10,7 @@ from pathlib import Path
 JOB = re.compile(r"^  (?P<name>[A-Za-z0-9_-]+):\s*(?:#.*)?$")
 RUNS_ON = re.compile(r"^(?P<indent>\s*)runs-on:\s*(?P<value>.+?)\s*$")
 HOSTED = re.compile(r"(?:ubuntu|windows|macos)-(?:latest|\d[\w.-]*)", re.I)
-QDEV = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
+QDEV = re.compile(r"\bqdev-ci(?:-browser|-compose|-docker)?\b")
 
 
 def matrix_jobs(text: str) -> set[str]:

@@ -18,6 +18,18 @@ def test_profile_requires_complete_labels(policy_files: tuple[Path, Path]) -> No
         policy.profile_for_labels("belilovsky/private-repo", ["self-hosted", "qdev-ci"])
 
 
+def test_compose_profile_is_a_distinct_allowed_profile(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    policy = Policy(inventory, profiles)
+    selected = policy.profile_for_labels(
+        "belilovsky/private-repo", ["self-hosted", "Linux", "X64", "qdev-ci-compose"]
+    )
+    assert selected.name == "qdev-ci-compose"
+    assert selected.disk_mb == 4096
+
+
 def test_public_fork_is_rejected(policy_files: tuple[Path, Path]) -> None:
     inventory, profiles = policy_files
     policy = Policy(inventory, profiles)

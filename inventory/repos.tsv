@@ -66,7 +66,7 @@ belilovsky/qazfin	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	1	0	0	0	0
 belilovsky/qazgeo	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazinvestigate	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazknowledge	true	main	qdev-ci	5	0	0	0	0
-belilovsky/qazlake	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
+belilovsky/qazlake	true	main	qdev-ci,qdev-ci-compose,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazlake-api	true	main	qdev-ci	6	0	0	0	0
 belilovsky/qazlost	true	main	qdev-ci	4	1	0	0	0
 belilovsky/qazpipe	true	main	qdev-ci	5	0	0	0	0

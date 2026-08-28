@@ -29,6 +29,7 @@ DEFAULT_IMAGES = {
 PROFILE_IMAGES = {
     "qdev-ci": ("QDEV_RUNNER_IMAGE",),
     "qdev-ci-browser": ("QDEV_RUNNER_BROWSER_IMAGE",),
+    "qdev-ci-compose": ("QDEV_RUNNER_DOCKER_IMAGE", "QDEV_DOCKER_SIDECAR_IMAGE"),
     "qdev-ci-docker": ("QDEV_RUNNER_DOCKER_IMAGE", "QDEV_DOCKER_SIDECAR_IMAGE"),
 }
 SAFE_KEYS = {

@@ -32,7 +32,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
 
     release = "2.336.0-r2"
     assert f'QDEV_RUNNER_VERSION:-{release}' in builder
-    assert settings.count(f":{release}") == 3
+    assert settings.count(f":{release}") == 4
     assert worker_audit.count(f":{release}") == 3
 
 

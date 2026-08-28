@@ -2,7 +2,10 @@ schema_version: qdev-runner-profiles-v1
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
-    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 12288, pids_limit: 512}
+    # Lightweight lint and analysis only. The worker's independent free-space
+    # floor remains in force; this allocation permits dispatch without
+    # admitting Docker builds.
+    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 8192, pids_limit: 512}
     timeout_minutes: 45
     # Public repositories may run trusted same-repository PR branches. The
     # broker still rejects every cross-repository/fork PR by repository ID.
@@ -11,6 +14,13 @@ profiles:
     labels: [self-hosted, Linux, X64, qdev-ci-browser]
     resources: {cpu: 2.0, memory_mb: 4096, disk_mb: 15360, pids_limit: 768}
     timeout_minutes: 60
+    allow_public_pr: true
+  qdev-ci-compose:
+    labels: [self-hosted, Linux, X64, qdev-ci-compose]
+    # Configuration-only Compose checks run with an isolated daemon but do not
+    # receive registry credentials and are never advertised by the shared fleet.
+    resources: {cpu: 1.0, memory_mb: 2048, disk_mb: 4096, pids_limit: 512}
+    timeout_minutes: 15
     allow_public_pr: true
   qdev-ci-docker:
     labels: [self-hosted, Linux, X64, qdev-ci-docker]
