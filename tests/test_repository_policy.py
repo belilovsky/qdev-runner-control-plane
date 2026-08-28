@@ -95,6 +95,26 @@ def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None
     assert (root / "AGENTS.md").read_text(encoding="utf-8") == first
 
 
+def test_guard_accepts_declared_compose_profile(tmp_path: Path) -> None:
+    root = repository(
+        tmp_path,
+        "jobs:\n"
+        "  compose:\n"
+        "    runs-on: [self-hosted, Linux, X64, qdev-ci-compose, "
+        '"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-compose"]\n'
+        "    steps:\n"
+        "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n",
+    )
+    (root / ".github/qdev-runner.yml").write_text(
+        "schema_version: qdev-runner-v1\n"
+        "profiles:\n  - qdev-ci\n  - qdev-ci-compose\n"
+        "github_hosted_fallback: false\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
 def test_installer_repairs_managed_only_agents_without_heading(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     managed = (ROOT / "templates/AGENTS.qdev-runner.md").read_text(encoding="utf-8")

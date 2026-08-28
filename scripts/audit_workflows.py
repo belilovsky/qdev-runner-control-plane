@@ -32,7 +32,7 @@ SETUP_CACHE = re.compile(
 USES = re.compile(r"(?:^|[\s,{])['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\",}#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
-QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+QDEV_PROFILES = {"qdev-ci", "qdev-ci-browser", "qdev-ci-compose", "qdev-ci-docker"}
 UNIQUE_JOB_LABEL = re.compile(
     r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
     r"\$\{\{\s*github\.run_attempt\s*\}\}-[^,\]\"']+"

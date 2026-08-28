@@ -16,6 +16,7 @@ from .capacity import Capacity, measure
 from .settings import WorkerSettings
 
 LOGGER = logging.getLogger("qdev-runner-worker")
+DOCKER_SIDECAR_PROFILES = frozenset({"qdev-ci-compose", "qdev-ci-docker"})
 
 
 class Worker:
@@ -109,7 +110,7 @@ class Worker:
             "--network",
             (
                 f"container:{self.docker_sidecar_name(job)}"
-                if profile_name == "qdev-ci-docker"
+                if profile_name in DOCKER_SIDECAR_PROFILES
                 else "qdev-ci-egress"
             ),
             "--cpus",
@@ -127,7 +128,7 @@ class Worker:
             "--env-file",
             str(self.runner_environment_path(job)),
         ]
-        if profile_name == "qdev-ci-docker":
+        if profile_name in DOCKER_SIDECAR_PROFILES:
             command.extend(
                 [
                     "--mount",
@@ -335,7 +336,7 @@ class Worker:
             detail = ""
             try:
                 self.write_runner_environment(job)
-                if job["profile"]["name"] == "qdev-ci-docker":
+                if job["profile"]["name"] in DOCKER_SIDECAR_PROFILES:
                     await self.start_docker_sidecar(job)
                 command = self.container_command(job)
                 LOGGER.info("starting job=%s runner=%s", job["job_id"], job["runner_name"])
@@ -354,7 +355,7 @@ class Worker:
                 exit_code = 125
             finally:
                 await self.stop_runner_container(job)
-                if job["profile"]["name"] == "qdev-ci-docker":
+                if job["profile"]["name"] in DOCKER_SIDECAR_PROFILES:
                     await self.stop_docker_sidecar(job)
                 else:
                     shutil.rmtree(self.docker_job_root(job), ignore_errors=True)

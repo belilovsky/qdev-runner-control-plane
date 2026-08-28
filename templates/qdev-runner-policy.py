@@ -29,7 +29,7 @@ SETUP_CACHE = re.compile(
 USES = re.compile(r"(?:^|[\s,{])['\"]?uses['\"]?\s*:\s*['\"]?([^\s'\",}#]+)")
 PINNED_SHA = re.compile(r"^[0-9a-f]{40}$")
 PINNED_CONTAINER = re.compile(r"^docker://[^\s]+@sha256:[0-9a-f]{64}$", re.I)
-QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-docker)?\b")
+QDEV_PROFILE = re.compile(r"\bqdev-ci(?:-browser|-compose|-docker)?\b")
 UNIQUE_JOB_LABEL = re.compile(
     r"qdev-job-\$\{\{\s*github\.run_id\s*\}\}-"
     r"\$\{\{\s*github\.run_attempt\s*\}\}-[^,\]\"']+"
@@ -329,7 +329,7 @@ def check_repository(root: Path) -> list[str]:
         if allow_hosted and not re.search(r"(?m)^self_hosted_recovery:\s*true\s*$", text):
             errors.append(".github/qdev-runner.yml:1: self-hosted-recovery-not-enabled")
         allowed_profiles = set(contract_list(text, "profiles"))
-        allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+        allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-compose", "qdev-ci-docker"}
         if not allowed_profiles:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-profiles")
         release_match = re.search(r"(?m)^release_runner:\s*([^\s#]+)", text)

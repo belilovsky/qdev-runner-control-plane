@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+QDEV_PROFILE = re.compile(r"\b(qdev-ci(?:-browser|-compose|-docker)?)\b", re.I)
 
 
 def command(*args: str) -> str:
@@ -38,9 +40,13 @@ def inspect_repo(repo: dict[str, Any]) -> dict[str, Any] | None:
         content_data = api(f"/repos/{full_name}/contents/{entry['path']}")
         text = base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
         lowered = text.lower()
+        declared_profiles = {
+            match.group(1).lower() for match in QDEV_PROFILE.finditer(text)
+        }
+        profiles.update(declared_profiles)
         if any(marker in lowered for marker in ("playwright", "chromium", "browser")):
             profiles.add("qdev-ci-browser")
-        if any(
+        if not declared_profiles and any(
             marker in lowered
             for marker in (
                 "docker build",

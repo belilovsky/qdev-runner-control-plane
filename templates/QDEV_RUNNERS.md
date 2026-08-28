@@ -37,8 +37,9 @@ runs-on: [self-hosted, Linux, X64, qdev-ci, "qdev-job-${{ github.run_id }}-${{ g
 ```
 
 Use `qdev-ci` for Node, Python, and static checks, `qdev-ci-browser` for
-Playwright/Chromium, and `qdev-ci-docker` for builds using the job-scoped
-rootless Docker/BuildKit service. Never mount the host Docker socket.
+Playwright/Chromium, `qdev-ci-compose` only for bounded `docker compose config`
+checks, and `qdev-ci-docker` for builds using the job-scoped rootless
+Docker/BuildKit service. Never mount the host Docker socket.
 
 Install the requested language runtime with a commit-SHA-pinned setup action.
 Do not assume that Node, npm, or a specific Python version is globally present.
@@ -97,6 +98,19 @@ steps:
 The Docker profile is logged into `registry.ci.qdev.run` before the job starts.
 Its narrow registry credential exists only in the disposable runner environment
 and is removed with the runner container and private env-file after the job.
+
+Compose configuration validation:
+
+```yaml
+runs-on: [self-hosted, Linux, X64, qdev-ci-compose, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-compose"]
+steps:
+  - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+    with: {persist-credentials: false}
+  - run: docker compose -f docker-compose.yml config --quiet
+```
+
+This profile is for a short, configuration-only check. It has no private
+registry credential and must not build, pull, push, or retain images.
 
 ## Storage and security
 

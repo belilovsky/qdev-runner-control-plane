@@ -19,7 +19,9 @@ QUEUE_RETRY_BASE_SECONDS = 30
 QUEUE_RETRY_MAX_SECONDS = 300
 SQLITE_LOCK_ATTEMPTS = 6
 SQLITE_LOCK_BACKOFF_SECONDS = 0.2
-KNOWN_PROFILES = frozenset({"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"})
+KNOWN_PROFILES = frozenset(
+    {"qdev-ci", "qdev-ci-browser", "qdev-ci-compose", "qdev-ci-docker"}
+)
 IMMUTABLE_QUEUE_MIGRATION = "20260827_immutable_github_fifo_v1"
 PROJECT_PRIORITY_POLICY_AUDIT = "20260828_manual_project_priorities_v1"
 

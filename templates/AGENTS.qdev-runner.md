@@ -4,8 +4,8 @@
 - General CI uses a static GitHub-hosted runner as the normal path. Keep the
   centralized ephemeral self-hosted pool as a separately dispatchable recovery
   path; do not implement a silent dynamic selector fallback.
-- A recovery job selects one approved profile (`qdev-ci`, `qdev-ci-browser`, or
-  `qdev-ci-docker`) together with `self-hosted`, `Linux`, `X64`, and a
+- A recovery job selects one approved profile (`qdev-ci`, `qdev-ci-browser`,
+  `qdev-ci-compose`, or `qdev-ci-docker`) together with `self-hosted`, `Linux`, `X64`, and a
   job-unique `qdev-job-*` label. Matrix jobs also include
   `${{ strategy.job-index }}` so each expansion has a distinct runner lease.
 - Treat `.github/qdev-runner.yml` as the machine-readable source of truth. Do

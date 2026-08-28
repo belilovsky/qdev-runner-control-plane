@@ -15,6 +15,13 @@ profiles:
     resources: {cpu: 2.0, memory_mb: 4096, disk_mb: 15360, pids_limit: 768}
     timeout_minutes: 60
     allow_public_pr: true
+  qdev-ci-compose:
+    labels: [self-hosted, Linux, X64, qdev-ci-compose]
+    # Configuration-only Compose checks run with an isolated daemon but do not
+    # receive registry credentials and are never advertised by the shared fleet.
+    resources: {cpu: 1.0, memory_mb: 2048, disk_mb: 4096, pids_limit: 512}
+    timeout_minutes: 15
+    allow_public_pr: true
   qdev-ci-docker:
     labels: [self-hosted, Linux, X64, qdev-ci-docker]
     resources: {cpu: 2.0, memory_mb: 5120, disk_mb: 20480, pids_limit: 1024}

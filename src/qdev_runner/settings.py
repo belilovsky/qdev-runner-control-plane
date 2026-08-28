@@ -129,6 +129,10 @@ class WorkerSettings:
                     "QDEV_RUNNER_DOCKER_IMAGE",
                     "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2",
                 ),
+                "qdev-ci-compose": os.environ.get(
+                    "QDEV_RUNNER_DOCKER_IMAGE",
+                    "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2",
+                ),
             },
             docker_sidecar_image=os.environ.get(
                 "QDEV_DOCKER_SIDECAR_IMAGE",

@@ -10,8 +10,8 @@ and still depends on GitHub orchestration and the GitHub API.
 - A repository contract selects exactly one self-hosted execution profile.
   Legacy contracts remain valid until their repository is deliberately
   migrated.
-- Jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
-  `qdev-ci-docker` together with `self-hosted`, `Linux`, `X64`.
+- Jobs select exactly one of `qdev-ci`, `qdev-ci-browser`, `qdev-ci-compose`,
+  or `qdev-ci-docker` together with `self-hosted`, `Linux`, `X64`.
 - A queued `workflow_job` webhook is accepted only for a repository in
   `inventory/repos.json` and a profile allowed by `.github/qdev-runner.yml`.
 - The broker creates a JIT registration. A worker starts one rootless,
@@ -24,6 +24,11 @@ and still depends on GitHub orchestration and the GitHub API.
   private registry only inside its disposable container.
   This uses the dedicated `qdev-runner` registry account; the existing `qdev`
   account is not rotated or exposed to jobs.
+- `qdev-ci-compose` uses the same job-scoped Docker daemon only for bounded
+  Compose configuration validation. It has a 4 GiB disk allocation, no
+  registry credential, and is intentionally served only by a short-lived,
+  exact-job claim-scoped worker; it is not a build lane or a shared-worker
+  profile.
 - Public repositories may use the recovery pool only for pull requests whose
   head repository ID equals the allowlisted base repository ID. Public fork
   pull requests and missing head-repository provenance are rejected. Dedicated
