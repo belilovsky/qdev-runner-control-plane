@@ -18,6 +18,7 @@ def job(
     profile: str = "qdev-ci",
     queued_at: str | None = None,
     repository: str = "belilovsky/private-repo",
+    head_sha: str = "a" * 40,
 ) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
@@ -27,7 +28,7 @@ def job(
         repository_id=1,
         installation_id=300,
         labels=("self-hosted", "Linux", "X64", profile),
-        head_sha="a" * 40,
+        head_sha=head_sha,
         head_branch="main",
         payload={
             "workflow_job": {"created_at": queued_at}
@@ -237,9 +238,12 @@ def test_startup_repairs_pretrigger_incomplete_key_then_locks_it(tmp_path: Path)
     assert repaired is not None
     assert repaired["github_queued_at"] == 1_787_839_200.0
     assert repaired["required_profile"] == "qdev-ci"
-    with Store(database).connect() as connection:
-        with pytest.raises(sqlite3.IntegrityError, match="immutable queue key"):
-            connection.execute("UPDATE jobs SET required_profile='qdev-ci-browser' WHERE job_id=101")
+    with Store(database).connect() as connection, pytest.raises(
+        sqlite3.IntegrityError, match="immutable queue key"
+    ):
+        connection.execute(
+            "UPDATE jobs SET required_profile='qdev-ci-browser' WHERE job_id=101"
+        )
 
 
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
@@ -249,6 +253,117 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     assert claimed is not None
     assert claimed["job_id"] == 100
     assert store.claim("worker-2", ("qdev-ci",)) is None
+
+
+def test_scoped_claim_uses_allowlist_order_and_exact_identity(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    target_sha = "a" * 40
+    assert store.enqueue(
+        job(
+            "target-later",
+            101,
+            "qdev-ci",
+            queued_at="2026-08-28T12:05:00Z",
+            repository="belilovsky/qazagents",
+            head_sha=target_sha,
+        )
+    )
+    assert store.enqueue(
+        job(
+            "target-earlier",
+            102,
+            "qdev-ci",
+            queued_at="2026-08-28T12:00:00Z",
+            repository="belilovsky/qazagents",
+            head_sha=target_sha,
+        )
+    )
+    # These IDs are in the allowlist but must be excluded by repository/SHA.
+    assert store.enqueue(
+        job(
+            "foreign-repository",
+            103,
+            "qdev-ci",
+            repository="belilovsky/other",
+            head_sha=target_sha,
+        )
+    )
+    assert store.enqueue(
+        job(
+            "foreign-sha",
+            104,
+            "qdev-ci",
+            repository="belilovsky/qazagents",
+            head_sha="b" * 40,
+        )
+    )
+    assert store.enqueue(
+        job(
+            "foreign-profile",
+            105,
+            "qdev-ci-docker",
+            repository="belilovsky/qazagents",
+            head_sha=target_sha,
+        )
+    )
+
+    claimed = store.claim(
+        "qdev-recovery-primary",
+        ("qdev-ci",),
+        allowed_job_ids=(102, 101, 103, 104, 105),
+        scope_repository="belilovsky/qazagents",
+        scope_head_sha=target_sha,
+        scope_profiles=("qdev-ci",),
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 102
+    assert store.claim(
+        "another-worker",
+        ("qdev-ci",),
+        allowed_job_ids=(102, 101),
+        scope_repository="belilovsky/qazagents",
+        scope_head_sha=target_sha,
+        scope_profiles=("qdev-ci",),
+    ) is not None
+    # The second scoped worker gets the other exact ID, never a foreign row.
+    assert store.claim(
+        "third-worker",
+        ("qdev-ci",),
+        allowed_job_ids=(102, 101),
+        scope_repository="belilovsky/qazagents",
+        scope_head_sha=target_sha,
+        scope_profiles=("qdev-ci",),
+    ) is None
+
+
+def test_partial_or_broader_scope_fails_closed_without_claiming(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(repository="belilovsky/qazagents"))
+
+    assert (
+        store.claim(
+            "scoped-worker",
+            ("qdev-ci",),
+            allowed_job_ids=(100, 101),
+            scope_repository="belilovsky/qazagents",
+            scope_head_sha="a" * 40,
+            # A different request profile set is rejected by the store.
+            scope_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
+    assert store.job_status(100) == "pending"
+    assert (
+        store.claim(
+            "scoped-worker",
+            ("qdev-ci",),
+            allowed_job_ids=(100, 101),
+            scope_repository="belilovsky/qazagents",
+        )
+        is None
+    )
+    assert store.job_status(100) == "pending"
 
 
 def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(

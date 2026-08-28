@@ -42,6 +42,11 @@ and still depends on GitHub orchestration and the GitHub API.
 The operating model, failure taxonomy, recovery sequence, and evidence
 contract are in `docs/github-actions-operating-model.md`.
 
+For a bounded, exact-SHA recovery canary, use the fail-closed
+[`claim-scope-v1`](docs/claim-scope-v1.md) contract. It allowlists one worker,
+two provider job IDs and the only permitted profiles without changing the
+ordinary worker FIFO path.
+
 ## Repository onboarding
 
 Start from `templates/qdev-runner.yml` and `templates/runner-smoke.yml`, then

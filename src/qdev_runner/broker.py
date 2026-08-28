@@ -8,11 +8,12 @@ import os
 import secrets
 import ssl
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
@@ -22,13 +23,96 @@ from .store import Store
 
 LOGGER = logging.getLogger("qdev-runner-broker")
 
+CLAIM_SCOPE_SCHEMA = "claim-scope-v1"
+CLAIM_SCOPE_REPOSITORY = "belilovsky/qazagents"
+CLAIM_SCOPE_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker"})
+CLAIM_SCOPE_MAX_TTL_SECONDS = 15 * 60
+
+
+class ClaimScope(BaseModel):
+    """A short-lived, exact allowlist for a bounded CI recovery worker."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_: Literal["claim-scope-v1"] = Field(alias="schema")
+    worker_name: str = Field(
+        min_length=1,
+        max_length=63,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$",
+    )
+    repository: Literal["belilovsky/qazagents"]
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    job_ids: list[StrictInt] = Field(min_length=2, max_length=2)
+    expected_profiles: list[str] = Field(min_length=1, max_length=2)
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def validate_scope_shape(self) -> ClaimScope:
+        if len(set(self.job_ids)) != len(self.job_ids) or any(
+            job_id <= 0 for job_id in self.job_ids
+        ):
+            raise ValueError("job_ids must contain two unique positive integers")
+        if len(set(self.expected_profiles)) != len(self.expected_profiles):
+            raise ValueError("expected_profiles must not contain duplicates")
+        if any(profile not in CLAIM_SCOPE_PROFILES for profile in self.expected_profiles):
+            raise ValueError("expected_profiles contains an unsupported profile")
+        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
+            raise ValueError("expires_at must include an explicit timezone")
+        return self
+
+
+class ClaimScopeError(ValueError):
+    """A semantic scope failure which must not touch the queue."""
+
+
+def validate_claim_scope(
+    scope: ClaimScope,
+    request: ClaimRequest,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Validate time and request binding before entering the atomic claim."""
+
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    expiry = scope.expires_at.astimezone(UTC)
+    if expiry <= current:
+        raise ClaimScopeError("claim scope has expired")
+    if expiry > current + timedelta(seconds=CLAIM_SCOPE_MAX_TTL_SECONDS):
+        raise ClaimScopeError("claim scope lifetime exceeds the short-lived limit")
+    if scope.worker_name != request.worker_name:
+        raise ClaimScopeError("claim scope is bound to a different worker")
+    requested_profiles = tuple(profile.lower() for profile in request.profiles)
+    if (
+        len(requested_profiles) != len(set(requested_profiles))
+        or set(requested_profiles) != set(scope.expected_profiles)
+        or any(profile not in CLAIM_SCOPE_PROFILES for profile in requested_profiles)
+    ):
+        raise ClaimScopeError("claim scope profiles do not exactly match the request")
+
+
+def claim_scope_matches_job(job: dict[str, Any], scope: ClaimScope) -> bool:
+    """Defense-in-depth check after the store's atomic scoped selection."""
+
+    try:
+        job_id = int(job["job_id"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    profile = str(job.get("profile") or job.get("required_profile") or "").lower()
+    return (
+        job_id in scope.job_ids
+        and str(job.get("repository")) == scope.repository
+        and str(job.get("head_sha")) == scope.head_sha
+        and profile in set(scope.expected_profiles)
+    )
+
 
 class ClaimRequest(BaseModel):
-    worker_name: str
+    worker_name: str = Field(min_length=1, max_length=63)
     tier: Literal["primary", "reserve"]
-    profiles: list[str]
+    profiles: list[str] = Field(min_length=1)
     disk_free_gib: float = Field(ge=0)
     min_disk_free_gib: float = Field(ge=0)
+    scope: ClaimScope | None = None
 
 
 class CompletionRequest(BaseModel):
@@ -220,6 +304,14 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         require_worker(x_qdev_worker_token)
+        scope = request.scope
+        if request.worker_name in settings.claim_scope_workers and scope is None:
+            raise HTTPException(status_code=403, detail="claim scope is required for this worker")
+        if scope is not None:
+            try:
+                validate_claim_scope(scope, request)
+            except ClaimScopeError as error:
+                raise HTTPException(status_code=403, detail=str(error)) from error
         store.recover_stale_jobs(worker_timeout_seconds=300)
         claimed = store.claim(
             request.worker_name,
@@ -228,10 +320,21 @@ def create_app(
             disk_free_gib=request.disk_free_gib,
             min_disk_free_gib=request.min_disk_free_gib,
             profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
+            allowed_job_ids=tuple(scope.job_ids) if scope is not None else None,
+            scope_repository=scope.repository if scope is not None else None,
+            scope_head_sha=scope.head_sha if scope is not None else None,
+            scope_profiles=tuple(scope.expected_profiles) if scope is not None else None,
         )
         if claimed is None:
             return Response(status_code=204)
         job_id = int(claimed["job_id"])
+        if scope is not None and not claim_scope_matches_job(claimed, scope):
+            # The store applies the same constraints in its transaction. If
+            # anything unexpected reaches this point, do not contact GitHub
+            # and return the job to the queue instead of widening the scope.
+            store.requeue(job_id, "claim scope post-selection mismatch")
+            LOGGER.error("scoped claim rejected after selection job=%s", job_id)
+            return Response(status_code=204)
         try:
             labels = tuple(json.loads(claimed["labels_json"]))
             profile = policy.profile_for_labels(claimed["repository"], labels)

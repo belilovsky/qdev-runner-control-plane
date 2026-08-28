@@ -447,32 +447,91 @@ class Store:
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
         primary_max_age_seconds: int = 90,
+        allowed_job_ids: tuple[int, ...] | None = None,
+        scope_repository: str | None = None,
+        scope_head_sha: str | None = None,
+        scope_profiles: tuple[str, ...] | None = None,
     ) -> dict[str, Any] | None:
         now = time.time()
         normalized_profiles = tuple(profile.lower() for profile in profiles)
         if not normalized_profiles:
             return None
+        scoped = any(
+            value is not None
+            for value in (allowed_job_ids, scope_repository, scope_head_sha, scope_profiles)
+        )
+        if scoped and (
+            allowed_job_ids is None
+            or scope_repository is None
+            or scope_head_sha is None
+            or scope_profiles is None
+        ):
+            # Scope constraints are atomic: accepting only part of them would
+            # turn a malformed temporary allowlist into a broad claim.
+            return None
+        normalized_scope_profiles: tuple[str, ...] | None = None
+        normalized_job_ids: tuple[int, ...] | None = None
+        if scoped:
+            assert allowed_job_ids is not None
+            assert scope_profiles is not None
+            normalized_scope_profiles = tuple(profile.lower() for profile in scope_profiles)
+            try:
+                normalized_job_ids = tuple(int(job_id) for job_id in allowed_job_ids)
+            except (TypeError, ValueError):
+                return None
+            if (
+                not normalized_job_ids
+                or len(set(normalized_job_ids)) != len(normalized_job_ids)
+                or any(job_id <= 0 for job_id in normalized_job_ids)
+                or not normalized_scope_profiles
+                or len(set(normalized_scope_profiles)) != len(normalized_scope_profiles)
+                or set(normalized_scope_profiles) != set(normalized_profiles)
+            ):
+                return None
         with self.write_connection() as connection:
             selected = None
             selected_profile = None
-            placeholders = ",".join("?" for _ in normalized_profiles)
+            query_profiles = normalized_scope_profiles or normalized_profiles
+            placeholders = ",".join("?" for _ in query_profiles)
             # A profile has its own immutable GitHub FIFO inside an explicit,
             # release-audited project tier. This lets a dedicated light worker
             # progress even while browser or Docker capacity is unavailable.
-            query = """
-                SELECT * FROM jobs
-                WHERE status='pending' AND retry_not_before<=?
-                  AND required_profile IN (PROFILE_BINDINGS)
-                ORDER BY github_queued_at, queue_sequence
-            """.replace("PROFILE_BINDINGS", placeholders)
-            candidates = connection.execute(query, (now, *normalized_profiles)).fetchall()
+            predicates = [
+                "status='pending'",
+                "retry_not_before<=?",
+                f"required_profile IN ({placeholders})",
+            ]
+            parameters: list[object] = [now, *query_profiles]
+            if scoped:
+                assert normalized_job_ids is not None
+                id_placeholders = ",".join("?" for _ in normalized_job_ids)
+                predicates.append(f"job_id IN ({id_placeholders})")
+                parameters.extend(normalized_job_ids)
+                assert scope_repository is not None and scope_head_sha is not None
+                predicates.extend(["repository=?", "head_sha=?"])
+                parameters.extend([scope_repository, scope_head_sha])
+            # Only fixed SQL fragments and placeholder counts are interpolated;
+            # every value remains a bound SQLite parameter.
+            query = "SELECT * FROM jobs WHERE " + " AND ".join(predicates)  # noqa: S608
+            if not scoped:
+                query += " ORDER BY github_queued_at, queue_sequence"
+            candidates = connection.execute(query, tuple(parameters)).fetchall()
             # Python's stable sort preserves GitHub FIFO for every project tier.
-            for row in sorted(
-                candidates,
-                key=lambda candidate: self.priority_policy.priority_for(
-                    str(candidate["repository"])
-                ),
-            ):
+            if scoped:
+                assert normalized_job_ids is not None
+                scope_order = {job_id: index for index, job_id in enumerate(normalized_job_ids)}
+                ordered_candidates = sorted(
+                    candidates,
+                    key=lambda candidate: scope_order[int(candidate["job_id"])],
+                )
+            else:
+                ordered_candidates = sorted(
+                    candidates,
+                    key=lambda candidate: self.priority_policy.priority_for(
+                        str(candidate["repository"])
+                    ),
+                )
+            for row in ordered_candidates:
                 matching_profile = str(row["required_profile"])
                 required_disk_mb = (
                     profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -74,15 +75,26 @@ class Worker:
         )
 
     async def claim(self, capacity: Capacity) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
+            "worker_name": self.settings.worker_name,
+            "tier": self.settings.tier,
+            "profiles": self.settings.profiles,
+            "disk_free_gib": capacity.disk_free_gib,
+            "min_disk_free_gib": self.settings.min_disk_free_gib,
+        }
+        if self.settings.claim_scope_path is not None:
+            try:
+                scope_data = json.loads(
+                    self.settings.claim_scope_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise RuntimeError("claim scope file is unavailable or invalid") from error
+            if not isinstance(scope_data, dict):
+                raise RuntimeError("claim scope file must contain a JSON object")
+            payload["scope"] = scope_data
         response = await self.client.post(
             "/internal/v1/jobs/claim",
-            json={
-                "worker_name": self.settings.worker_name,
-                "tier": self.settings.tier,
-                "profiles": self.settings.profiles,
-                "disk_free_gib": capacity.disk_free_gib,
-                "min_disk_free_gib": self.settings.min_disk_free_gib,
-            },
+            json=payload,
         )
         if response.status_code == 204:
             return None

@@ -40,6 +40,7 @@ class BrokerSettings:
     registry_url: str = "registry.ci.qdev.run"
     registry_username: str = "qdev-runner"
     registry_password: str | None = None
+    claim_scope_workers: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -65,6 +66,13 @@ class BrokerSettings:
             registry_url=os.environ.get("QDEV_REGISTRY_URL", "registry.ci.qdev.run").strip(),
             registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev-runner").strip(),
             registry_password=os.environ.get("QDEV_REGISTRY_PASSWORD", "").strip() or None,
+            claim_scope_workers=tuple(
+                dict.fromkeys(
+                    worker.strip()
+                    for worker in os.environ.get("QDEV_CLAIM_SCOPE_WORKERS", "").split(",")
+                    if worker.strip()
+                )
+            ),
         )
 
 
@@ -92,6 +100,7 @@ class WorkerSettings:
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
+    claim_scope_path: Path | None = None
 
     @classmethod
     def from_env(cls) -> WorkerSettings:
@@ -151,4 +160,9 @@ class WorkerSettings:
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),
+            claim_scope_path=(
+                Path(value)
+                if (value := os.environ.get("QDEV_CLAIM_SCOPE_FILE", "").strip())
+                else None
+            ),
         )

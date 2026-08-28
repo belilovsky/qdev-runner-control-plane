@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import httpx
+import pytest
+
+from qdev_runner.capacity import Capacity
 from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
 
@@ -152,3 +157,51 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
         "--volumes",
         "runner-1",
     ]
+
+
+def _scoped_worker(scope_path: Path) -> Worker:
+    return Worker(
+        WorkerSettings(
+            broker_url="https://worker.ci.qdev.run",
+            worker_token="token",
+            worker_name="qdev-recovery-primary",
+            tier="primary",
+            profiles=("qdev-ci",),
+            concurrency=1,
+            poll_seconds=3,
+            container_engine="docker",
+            runner_images={"qdev-ci": "runner:test"},
+            docker_sidecar_image="docker:dind-test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=scope_path.parent,
+            claim_scope_path=scope_path,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_sends_scope_from_private_file_and_fails_closed(tmp_path: Path) -> None:
+    scope_path = tmp_path / "claim-scope.json"
+    scope_path.write_text(json.dumps({"schema": "claim-scope-v1"}), encoding="utf-8")
+    worker = _scoped_worker(scope_path)
+    await worker.client.aclose()
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(204, request=request)
+
+    worker.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://worker.ci.qdev.run",
+    )
+    capacity = Capacity(True, 20, 100, 8, 0.1, 0, 2, ())
+    assert await worker.claim(capacity) is None
+    assert captured["scope"] == {"schema": "claim-scope-v1"}
+
+    scope_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="JSON object"):
+        await worker.claim(capacity)
+    await worker.close()
