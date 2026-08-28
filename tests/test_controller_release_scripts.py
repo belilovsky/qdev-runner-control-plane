@@ -30,8 +30,13 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'docker image tag "$previous_public_image"' in script
     assert 'docker image tag "$previous_internal_image"' in script
     assert "config/profiles.yml" in script
-    assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
-    assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
+    assert "install_atomic()" in script
+    assert 'install -m "$mode" -- "$source" "$temporary"' in script
+    assert 'mv -f -- "$temporary" "$target"' in script
+    assert 'install_atomic "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml 0644' in script
+    assert 'install_atomic "$release/config/project-priority.json"' in script
+    assert 'install_atomic "$profiles_backup" /etc/qdev-runner/profiles.yml 0644' in script
+    assert 'install_atomic "$priority_backup" /etc/qdev-runner/project-priority.json 0644' in script
 
 
 def test_controller_rollback_reuses_existing_images() -> None:

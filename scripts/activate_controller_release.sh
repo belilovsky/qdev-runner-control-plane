@@ -102,10 +102,27 @@ activate_link() {
   mv -Tf -- "$temporary_link" "$current"
 }
 
-install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
-install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
-install -m 0644 -- "$release/config/project-priority.json" \
-  /etc/qdev-runner/project-priority.json
+install_atomic() {
+  local source="$1"
+  local target="$2"
+  local mode="$3"
+  local target_dir temporary
+  target_dir="$(dirname -- "$target")"
+  temporary="$(mktemp "$target_dir/.qdev-runner-config.XXXXXX")"
+  if ! install -m "$mode" -- "$source" "$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  mv -f -- "$temporary" "$target"
+}
+
+# The public broker can restart independently while a release is being
+# activated.  Never expose a partially written JSON/YAML document to that
+# startup path: every configuration replacement must be an atomic rename.
+install_atomic "$release/inventory/repos.json" /etc/qdev-runner/repos.json 0644
+install_atomic "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml 0644
+install_atomic "$release/config/project-priority.json" \
+  /etc/qdev-runner/project-priority.json 0644
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -117,14 +134,14 @@ fi
 
 rollback() {
   [[ -n "$previous" && -d "$previous" ]] || return 0
-  install -m 0644 -- "$previous/inventory/repos.json" /etc/qdev-runner/repos.json
+  install_atomic "$previous/inventory/repos.json" /etc/qdev-runner/repos.json 0644
   if [[ "$profiles_were_present" == true ]]; then
-    install -m 0644 -- "$profiles_backup" /etc/qdev-runner/profiles.yml
+    install_atomic "$profiles_backup" /etc/qdev-runner/profiles.yml 0644
   else
     rm -f -- /etc/qdev-runner/profiles.yml
   fi
   if [[ "$priority_was_present" == true ]]; then
-    install -m 0644 -- "$priority_backup" /etc/qdev-runner/project-priority.json
+    install_atomic "$priority_backup" /etc/qdev-runner/project-priority.json 0644
   else
     rm -f -- /etc/qdev-runner/project-priority.json
   fi
