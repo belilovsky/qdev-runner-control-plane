@@ -22,7 +22,6 @@ def job(
     repository: str = "belilovsky/private-repo",
     head_sha: str = "a" * 40,
     queued_at: str | None = None,
-    repository: str = "belilovsky/private-repo",
 ) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
