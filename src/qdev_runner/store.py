@@ -674,7 +674,7 @@ class Store:
             )
         return updated.rowcount
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, profile_disk_mb: dict[str, int] | None = None) -> dict[str, Any]:
         now = time.time()
         with self.connect() as connection:
             counts = {
@@ -737,17 +737,24 @@ class Store:
                 for worker in fresh_workers
                 if profile in {str(item).lower() for item in json.loads(worker["profiles_json"])}
             ]
-            slots = sum(
-                int(worker["slots_available"])
-                for worker in compatible
-                if worker["capacity_allowed"]
-            )
+            profile_disk = (profile_disk_mb or {}).get(profile)
+            capacity_eligible = [
+                worker for worker in compatible if worker["capacity_allowed"]
+            ]
+            headroom_eligible = [
+                worker
+                for worker in capacity_eligible
+                if _disk_headroom_allowed(json.loads(worker["detail_json"]), profile_disk)
+            ]
+            slots = sum(int(worker["slots_available"]) for worker in headroom_eligible)
             available_slots_by_profile[profile] = slots
             if pending and slots == 0:
                 if not compatible:
                     blocked_profiles[profile] = "no_fresh_compatible_worker"
-                elif not any(worker["capacity_allowed"] for worker in compatible):
+                elif not capacity_eligible:
                     blocked_profiles[profile] = "capacity_blocked"
+                elif not headroom_eligible:
+                    blocked_profiles[profile] = "insufficient_profile_disk_headroom"
                 else:
                     blocked_profiles[profile] = "no_free_slot"
         return {

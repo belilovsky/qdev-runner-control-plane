@@ -136,7 +136,9 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        data = store.health()
+        data = store.health(
+            profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()}
+        )
         fresh_workers = [
             worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
         ]

@@ -586,6 +586,34 @@ def test_health_exposes_profile_queue_and_block_reason(tmp_path: Path) -> None:
     assert health["oldest_pending_age_seconds"] is not None
 
 
+def test_health_uses_profile_disk_headroom_for_availability(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(profile="qdev-ci"))
+    store.heartbeat(
+        "light-1",
+        ("qdev-ci",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 20,
+            "min_disk_free_gib": 10,
+        },
+    )
+
+    blocked = store.health(profile_disk_mb={"qdev-ci": 12288})
+    available = store.health(profile_disk_mb={"qdev-ci": 10240})
+
+    assert blocked["available_slots_by_profile"] == {"qdev-ci": 0}
+    assert blocked["blocked_profiles"] == {
+        "qdev-ci": "insufficient_profile_disk_headroom"
+    }
+    assert available["available_slots_by_profile"] == {"qdev-ci": 1}
+    assert available["blocked_profiles"] == {}
+
+
 def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
