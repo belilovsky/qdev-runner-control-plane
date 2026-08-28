@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 import ssl
+from dataclasses import replace
 from typing import Any, Literal
 
 import uvicorn
@@ -84,6 +85,11 @@ def completed_run_conclusion(run: dict[str, Any]) -> str | None:
     if str(run.get("status") or "") != "completed":
         return None
     return str(run.get("conclusion") or "unknown")
+
+
+def assign_required_profile(queued: QueuedJob, profile_name: str) -> QueuedJob:
+    """Return the accepted job with its policy-derived execution profile."""
+    return replace(queued, required_profile=profile_name)
 
 
 def _safe_segment(value: str) -> str:
@@ -201,9 +207,7 @@ def create_app(
                 payload=payload,
             )
             profile = policy.profile_for_labels(queued.repository, queued.labels)
-            queued = QueuedJob(
-                **queued.__dict__, required_profile=profile.name
-            )
+            queued = assign_required_profile(queued, profile.name)
             store.enqueue(queued)
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected queued job: %s", error)
