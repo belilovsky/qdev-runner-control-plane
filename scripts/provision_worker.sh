@@ -80,9 +80,24 @@ python3 -m venv "${install_root}/.venv"
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-deps .
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker/jobs
+install -d -o "$worker_user" -g "$worker_user" -m 0700 /var/lib/qdev-runner-worker/lanes
+for lane in light browser docker; do
+  install -d -o "$worker_user" -g "$worker_user" -m 0700 \
+    "/var/lib/qdev-runner-worker/lanes/${lane}/jobs"
+done
+install -d -o root -g qdev-runner -m 0750 /etc/qdev-runner/workers
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o "$worker_user" -g "$worker_user" -m 0700 /etc/qdev-runner/mtls/worker
 install -m 0644 deploy/qdev-runner-worker.service /etc/systemd/system/qdev-runner-worker.service
+install -m 0644 deploy/qdev-runner-worker@.service /etc/systemd/system/qdev-runner-worker@.service
+for lane in light browser docker; do
+  install -d -o root -g root -m 0755 \
+    "/etc/systemd/system/qdev-runner-worker@${lane}.service.d"
+  install -m 0644 \
+    "deploy/qdev-runner-worker@${lane}.service.d/10-resources.conf" \
+    "/etc/systemd/system/qdev-runner-worker@${lane}.service.d/10-resources.conf"
+done
+install -m 0644 deploy/worker-lanes.env.example /etc/qdev-runner/worker-lanes.env.example
 install -m 0755 scripts/manage_worker_gate.py /usr/local/sbin/qdev-runner-worker-gate
 
 # The owner-bound gate supersedes the earlier existence-only rollout permit.
@@ -115,5 +130,5 @@ runuser -u "$worker_user" -- env \
 
 systemctl daemon-reload
 printf '%s\n' \
-  'worker provisioning complete; install worker.env and mTLS files,' \
-  'run the config-bound runtime audit, then release the owned worker gate'
+  'worker provisioning complete; configure exactly one or more named lane env files,' \
+  'audit each lane, enable its instance, then release the owned worker gate'

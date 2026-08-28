@@ -121,10 +121,14 @@ def test_gate_rejects_permit_owner_drift(tmp_path: Path) -> None:
         MODULE.validate_permit(gate_paths)
 
 
-def test_worker_service_is_default_deny_and_drains_without_timeout() -> None:
-    service = (ROOT / "deploy/qdev-runner-worker.service").read_text(encoding="utf-8")
+def test_worker_lanes_are_default_deny_and_drain_without_timeout() -> None:
+    gate = (ROOT / "deploy/qdev-runner-worker.service").read_text(encoding="utf-8")
+    service = (ROOT / "deploy/qdev-runner-worker@.service").read_text(encoding="utf-8")
 
+    assert "Description=QDev CI worker lanes gate" in gate
+    assert "ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled" in gate
     assert "ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled" in service
+    assert "ConditionPathExists=/etc/qdev-runner/workers/%i.env" in service
     assert (
         "ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit"
         in service

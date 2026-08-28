@@ -1,0 +1,37 @@
+[Unit]
+Description=QDev dedicated CI worker lane %i
+After=network-online.target qdev-runner-worker.service
+Wants=network-online.target
+PartOf=qdev-runner-worker.service
+ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled
+ConditionPathExists=/etc/qdev-runner/workers/%i.env
+
+[Service]
+Type=simple
+User=qdev-runner
+Group=qdev-runner
+EnvironmentFile=/etc/qdev-runner/worker.env
+EnvironmentFile=/etc/qdev-runner/workers/%i.env
+Environment=DOCKER_HOST=unix:///run/user/9021/docker.sock
+ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit
+ExecStart=/opt/qdev-runner-worker/.venv/bin/qdev-runner-worker
+Restart=always
+RestartSec=5
+TimeoutStopSec=infinity
+# Each executor also receives Docker --cpus, --memory, --memory-swap and
+# --pids-limit from its signed profile.  The lane cgroup protects the control
+# process; profile resource limits protect the disposable runner and sidecar.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qdev-runner-worker/lanes/%i
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CPUAccounting=true
+MemoryAccounting=true
+IOAccounting=true
+
+[Install]
+WantedBy=qdev-runner-worker.service
