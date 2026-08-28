@@ -2,7 +2,10 @@ schema_version: qdev-runner-profiles-v1
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
-    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 12288, pids_limit: 512}
+    # Lightweight lint and analysis only. The worker's independent free-space
+    # floor remains in force; this allocation permits dispatch without
+    # admitting Docker builds.
+    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 8192, pids_limit: 512}
     timeout_minutes: 45
     # Public repositories may run trusted same-repository PR branches. The
     # broker still rejects every cross-repository/fork PR by repository ID.

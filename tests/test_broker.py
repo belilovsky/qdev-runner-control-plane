@@ -7,10 +7,12 @@ from pathlib import Path
 from qdev_runner.broker import (
     artifact_job_is_active,
     artifact_token,
+    assign_required_profile,
     completed_run_conclusion,
     registry_credentials,
     verify_signature,
 )
+from qdev_runner.models import QueuedJob
 from qdev_runner.settings import BrokerSettings
 
 
@@ -70,3 +72,24 @@ def test_completed_parent_run_is_terminal_even_when_job_api_stays_queued() -> No
     )
     assert completed_run_conclusion({"status": "completed", "conclusion": None}) == "unknown"
     assert completed_run_conclusion({"status": "in_progress", "conclusion": None}) is None
+
+
+def test_policy_profile_assignment_replaces_the_dataclass_value() -> None:
+    queued = QueuedJob(
+        delivery_id="delivery",
+        job_id=1,
+        run_id=2,
+        repository="belilovsky/repo",
+        repository_id=3,
+        installation_id=4,
+        labels=("self-hosted", "qdev-ci-docker"),
+        head_sha="a" * 40,
+        head_branch="main",
+        payload={},
+    )
+
+    assigned = assign_required_profile(queued, "qdev-ci-docker")
+
+    assert queued.required_profile == ""
+    assert assigned.required_profile == "qdev-ci-docker"
+    assert assigned.job_id == queued.job_id
