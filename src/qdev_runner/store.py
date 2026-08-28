@@ -220,9 +220,20 @@ class Store:
             # Do not cap this scan: a long backlog of jobs for unavailable profiles
             # must not starve a later job that this worker can actually run.  The
             # status/created_at index preserves FIFO ordering for each eligible job.
-            for row in connection.execute(
-                "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at"
-            ):
+            pending_rows = list(
+                connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at")
+            )
+            if claim_scope is not None:
+                # A temporary scope is an explicit execution sequence.  Keep the
+                # normal queue FIFO untouched, while ensuring a scoped worker can
+                # never let queue arrival order override the signed allowlist.
+                scope_order = {
+                    item.job_id: index for index, item in enumerate(claim_scope.jobs)
+                }
+                pending_rows.sort(
+                    key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
+                )
+            for row in pending_rows:
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(
                     (profile for profile in profiles if profile.lower() in labels), None

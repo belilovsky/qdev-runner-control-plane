@@ -112,6 +112,31 @@ def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) 
     ) is None
 
 
+def test_scoped_claim_follows_allowlist_order_not_queue_arrival_order(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("second", 101, "qdev-ci-docker", repository="belilovsky/qazagents"))
+    assert store.enqueue(job("first", 100, "qdev-ci", repository="belilovsky/qazagents"))
+    scope = ClaimScope(
+        scope_id="maturity-20260828",
+        worker_name="qdev-maturity-primary",
+        tier="primary",
+        repository="belilovsky/qazagents",
+        head_sha="a" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(ScopedJob(100, "qdev-ci"), ScopedJob(101, "qdev-ci-docker")),
+    )
+
+    first = store.claim(
+        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
+    )
+    second = store.claim(
+        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
+    )
+
+    assert first is not None and first["job_id"] == 100
+    assert second is not None and second["job_id"] == 101
+
+
 def test_scoped_claim_rejects_wrong_sha_and_profile(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     assert store.enqueue(
