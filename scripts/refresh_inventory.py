@@ -83,7 +83,7 @@ def write_atomic(path: Path, value: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--owner", default="belilovsky")
-    parser.add_argument("--expected", type=int, default=93)
+    parser.add_argument("--expected", type=int, default=96)
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
