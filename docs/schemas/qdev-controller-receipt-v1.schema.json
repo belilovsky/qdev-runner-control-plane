@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-controller-receipt-v1.schema.json",
+  "title": "QDev controller receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receipt_id", "payload", "digest", "signature"],
+  "properties": {
+    "schema": {"const": "qdev-controller-receipt-v1"},
+    "receipt_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "payload": {"type": "object"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

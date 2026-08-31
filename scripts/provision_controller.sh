@@ -27,6 +27,7 @@ install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner/artifacts
+install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/operations
 install -d -o root -g root -m 0750 /var/lib/qdev-runner/registry
 install -d -o 9020 -g 9020 -m 0750 /var/log/qdev-runner
 install -m 0644 deploy/qdev-runner-broker.service /etc/systemd/system/qdev-runner-broker.service

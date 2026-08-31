@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 qdev-runner-broker = "qdev_runner.broker:main"
+qdev-runner-operator = "qdev_runner.operator:main"
 qdev-runner-worker = "qdev_runner.worker:main"
 
 [tool.setuptools.packages.find]

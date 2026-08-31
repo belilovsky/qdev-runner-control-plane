@@ -6,16 +6,28 @@ import os
 import shutil
 import signal
 import ssl
+from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 
-from .capacity import Capacity, measure
+from .capacity import Capacity, evaluate, measure, measure_raw
+from .operations import DISK_ONLY_BLOCKERS, CapacityOverrideDirective, verify_capacity_override
 from .settings import WorkerSettings
 
 LOGGER = logging.getLogger("qdev-runner-worker")
+
+
+@dataclass(frozen=True)
+class AdmissionState:
+    raw: Capacity
+    baseline: Capacity
+    effective: Capacity
+    profiles: tuple[str, ...]
+    min_disk_free_gib: float
+    directive_id: str | None = None
 
 
 class Worker:
@@ -53,37 +65,135 @@ class Worker:
             max_cpu_psi_avg10=self.settings.max_cpu_psi_avg10,
         )
 
-    async def heartbeat(self) -> None:
-        capacity = self.capacity()
-        active_jobs = len(self.active_job_ids)
-        await self.client.post(
-            "/internal/v1/workers/heartbeat",
-            json={
-                "worker_name": self.settings.worker_name,
-                "tier": self.settings.tier,
-                "claim_scope_id": self.settings.claim_scope_id,
-                "profiles": self.settings.profiles,
-                "active_jobs": active_jobs,
-                "active_job_ids": sorted(self.active_job_ids),
-                "detail": capacity.__dict__
-                | {
-                    "concurrency": self.settings.concurrency,
-                    "slots_available": max(0, self.settings.concurrency - active_jobs),
-                    "min_disk_free_gib": self.settings.min_disk_free_gib,
-                },
-            },
+    def admission_state(
+        self,
+        *,
+        raw: Capacity | None = None,
+        directive_payload: object = None,
+    ) -> AdmissionState:
+        measured = raw or measure_raw()
+        baseline = evaluate(
+            measured,
+            min_disk_free_gib=self.settings.min_disk_free_gib,
+            max_disk_used_pct=self.settings.max_disk_used_pct,
+            min_memory_available_gib=self.settings.min_memory_available_gib,
+            max_load_per_cpu=self.settings.max_load_per_cpu,
+            max_cpu_psi_avg10=self.settings.max_cpu_psi_avg10,
+        )
+        state = AdmissionState(
+            raw=measured,
+            baseline=baseline,
+            effective=baseline,
+            profiles=self.settings.profiles,
+            min_disk_free_gib=self.settings.min_disk_free_gib,
+        )
+        if not isinstance(directive_payload, dict):
+            return state
+        if not self.settings.capacity_directive_key:
+            LOGGER.warning("capacity override ignored: worker signing key is not configured")
+            return state
+        if not baseline.blockers or not set(baseline.blockers).issubset(DISK_ONLY_BLOCKERS):
+            LOGGER.warning("capacity override ignored: baseline blocker is not disk-only")
+            return state
+        try:
+            directive: CapacityOverrideDirective = verify_capacity_override(
+                directive_payload,
+                signing_key=self.settings.capacity_directive_key,
+                worker_name=self.settings.worker_name,
+                registered_profiles=self.settings.profiles,
+            )
+        except ValueError as error:
+            LOGGER.warning("capacity override ignored: %s", error)
+            return state
+        effective = evaluate(
+            measured,
+            min_disk_free_gib=directive.min_disk_free_gib,
+            max_disk_used_pct=directive.max_disk_used_pct,
+            min_memory_available_gib=self.settings.min_memory_available_gib,
+            max_load_per_cpu=self.settings.max_load_per_cpu,
+            max_cpu_psi_avg10=self.settings.max_cpu_psi_avg10,
+        )
+        return AdmissionState(
+            raw=measured,
+            baseline=baseline,
+            effective=effective,
+            profiles=directive.profiles,
+            min_disk_free_gib=directive.min_disk_free_gib,
+            directive_id=directive.operation_id,
         )
 
-    async def claim(self, capacity: Capacity) -> dict[str, Any] | None:
+    def heartbeat_payload(self, state: AdmissionState) -> dict[str, Any]:
+        active_jobs = len(self.active_job_ids)
+        return {
+            "worker_name": self.settings.worker_name,
+            "tier": self.settings.tier,
+            "claim_scope_id": self.settings.claim_scope_id,
+            "profiles": self.settings.profiles,
+            "active_jobs": active_jobs,
+            "active_job_ids": sorted(self.active_job_ids),
+            "detail": asdict(state.effective)
+            | {
+                "raw_capacity": asdict(state.raw),
+                "baseline_capacity": asdict(state.baseline),
+                "effective_capacity": asdict(state.effective),
+                "effective_profiles": list(state.profiles),
+                "capacity_directive_id": state.directive_id,
+                "concurrency": self.settings.concurrency,
+                "slots_available": max(0, self.settings.concurrency - active_jobs),
+                "min_disk_free_gib": state.min_disk_free_gib,
+            },
+        }
+
+    async def heartbeat(self) -> AdmissionState:
+        measured = measure_raw()
+        baseline_state = self.admission_state(raw=measured)
+        response = await self.client.post(
+            "/internal/v1/workers/heartbeat",
+            json=self.heartbeat_payload(baseline_state),
+        )
+        response.raise_for_status()
+        # Older controllers acknowledge heartbeats with 204 and no directive
+        # document.  Keep upgraded workers compatible during a rolling rollout;
+        # a missing or non-JSON body simply means that no override is active.
+        payload: object = None
+        if response.content:
+            try:
+                payload = response.json()
+            except ValueError:
+                LOGGER.warning("heartbeat directive response is not valid JSON; ignoring it")
+        directive_payload = payload.get("capacity_override") if isinstance(payload, dict) else None
+        effective_state = self.admission_state(
+            raw=measured,
+            directive_payload=directive_payload,
+        )
+        if effective_state.directive_id is not None:
+            follow_up = await self.client.post(
+                "/internal/v1/workers/heartbeat",
+                json=self.heartbeat_payload(effective_state),
+            )
+            follow_up.raise_for_status()
+        return effective_state
+
+    async def claim(
+        self,
+        capacity: Capacity,
+        *,
+        profiles: tuple[str, ...] | None = None,
+        min_disk_free_gib: float | None = None,
+    ) -> dict[str, Any] | None:
         response = await self.client.post(
             "/internal/v1/jobs/claim",
             json={
                 "worker_name": self.settings.worker_name,
                 "tier": self.settings.tier,
                 "claim_scope_id": self.settings.claim_scope_id,
-                "profiles": self.settings.profiles,
+                "profiles": profiles or self.settings.profiles,
                 "disk_free_gib": capacity.disk_free_gib,
-                "min_disk_free_gib": self.settings.min_disk_free_gib,
+                "min_disk_free_gib": (
+                    self.settings.min_disk_free_gib
+                    if min_disk_free_gib is None
+                    else min_disk_free_gib
+                ),
             },
         )
         if response.status_code == 204:
@@ -371,10 +481,13 @@ class Worker:
     async def run(self) -> None:
         while not self.stopping.is_set():
             try:
-                await self.heartbeat()
-                capacity = self.capacity()
-                if capacity.allowed and len(self.tasks) < self.settings.concurrency:
-                    job = await self.claim(capacity)
+                admission = await self.heartbeat()
+                if admission.effective.allowed and len(self.tasks) < self.settings.concurrency:
+                    job = await self.claim(
+                        admission.effective,
+                        profiles=admission.profiles,
+                        min_disk_free_gib=admission.min_disk_free_gib,
+                    )
                     if job:
                         job_id = int(job["job_id"])
                         self.active_job_ids.add(job_id)

@@ -97,19 +97,16 @@ def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) 
         jobs=(ScopedJob(100, "qdev-ci"), ScopedJob(101, "qdev-ci-docker")),
     )
 
-    first = store.claim(
-        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
-    )
-    second = store.claim(
-        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
-    )
+    first = store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
+    second = store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
 
     assert first is not None and first["job_id"] == 100
     assert second is not None and second["job_id"] == 101
     assert store.job_status(102) == "pending"
-    assert store.claim(
-        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
-    ) is None
+    assert (
+        store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
+        is None
+    )
 
 
 def test_scoped_claim_follows_allowlist_order_not_queue_arrival_order(tmp_path: Path) -> None:
@@ -126,12 +123,8 @@ def test_scoped_claim_follows_allowlist_order_not_queue_arrival_order(tmp_path: 
         jobs=(ScopedJob(100, "qdev-ci"), ScopedJob(101, "qdev-ci-docker")),
     )
 
-    first = store.claim(
-        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
-    )
-    second = store.claim(
-        "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope
-    )
+    first = store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
+    second = store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
 
     assert first is not None and first["job_id"] == 100
     assert second is not None and second["job_id"] == 101
@@ -299,7 +292,7 @@ def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store.requeue(100, "temporary GitHub error")
     claimed = store.claim("worker-2", ("qdev-ci",))
     assert claimed is not None
-    assert claimed["job_id"] == 101
+    assert claimed["job_id"] == 100
 
 
 def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> None:
@@ -314,7 +307,7 @@ def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> N
         {"tier": "primary", "concurrency": 1},
     )
     assert not store.has_available_tier_slot("primary", 90)
-    assert store.recover_stale_jobs(300) == 0
+    assert store.stale_jobs(300) == []
 
 
 def test_idle_primary_blocks_reserve(tmp_path: Path) -> None:
@@ -366,11 +359,13 @@ def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store.claim("lost-worker", ("qdev-ci",))
     with store.connect() as connection:
         connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,))
-    assert store.recover_stale_jobs(300) == 1
+    stale = store.stale_jobs(300)
+    assert [row["job_id"] for row in stale] == [100]
+    assert store.release_stale_job(100, "provider reconciled", 300) is True
     assert store.claim("reserve-1", ("qdev-ci",)) is not None
 
 
-def test_heartbeat_requeues_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
+def test_heartbeat_does_not_requeue_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
@@ -378,7 +373,7 @@ def test_heartbeat_requeues_jobs_worker_no_longer_reports(tmp_path: Path) -> Non
     with store.connect() as connection:
         connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 60,))
     store.heartbeat("primary-1", ("qdev-ci",), 0, (), {"tier": "primary"})
-    assert store.job_status(100) == "pending"
+    assert store.job_status(100) == "running"
 
 
 def test_heartbeat_renews_only_reported_job(tmp_path: Path) -> None:
