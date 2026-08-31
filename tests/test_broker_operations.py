@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         operator_receipt_key=RECEIPT_KEY,
         operator_directive_key=DIRECTIVE_KEY,
         operations_root=tmp_path / "operations",
+        controller_release_status_path=tmp_path / "controller-release.json",
     )
     app = create_app(
         settings,
@@ -185,6 +187,55 @@ def _heartbeat(
     )
     assert response.status_code == 200
     return response.json()
+
+
+def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
+    status_path = tmp_path / "controller-release.json"
+    status = {
+        "schema": "qdev-controller-release-status-v1",
+        "state": "active",
+        "revision": "a" * 40,
+        "release_digest": "b" * 64,
+        "activated_at": "2026-08-31T00:00:00Z",
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    client = _app(tmp_path)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["controller_release"] == status
+
+    unauthorized = client.get("/internal/v1/operations/controller-release")
+    assert unauthorized.status_code == 401
+    response = client.get(
+        "/internal/v1/operations/controller-release",
+        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+    )
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    assert receipt["payload"]["kind"] == "controller-release-audit"
+    assert receipt["payload"]["controller_release"] == status
+
+
+def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -> None:
+    status_path = tmp_path / "controller-release.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": "unknown",
+                "release_digest": "b" * 64,
+                "activated_at": "2026-08-31T09:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _app(tmp_path)
+
+    assert client.get("/health").json()["controller_release"] == {
+        "schema": "qdev-controller-release-status-v1",
+        "state": "unavailable",
+    }
 
 
 def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Path) -> None:

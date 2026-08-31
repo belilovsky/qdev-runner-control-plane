@@ -42,6 +42,7 @@ class BrokerSettings:
     operator_receipt_key: str | None = None
     operator_directive_key: str | None = None
     operations_root: Path = Path("/var/lib/qdev-runner/operations")
+    controller_release_status_path: Path = Path("/etc/qdev-runner/controller-release.json")
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -71,6 +72,12 @@ class BrokerSettings:
             ),
             operations_root=Path(
                 os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")
+            ),
+            controller_release_status_path=Path(
+                os.environ.get(
+                    "QDEV_CONTROLLER_RELEASE_STATUS",
+                    "/etc/qdev-runner/controller-release.json",
+                )
             ),
         )
 

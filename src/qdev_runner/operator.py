@@ -112,6 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("audit", help="Read a signed worker capacity snapshot")
+    commands.add_parser(
+        "release-audit", help="Read a signed controller release activation snapshot"
+    )
 
     create = commands.add_parser("override", help="Create one expiring disk-only override")
     create.add_argument("worker")
@@ -146,6 +149,12 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
     settings = OperatorSettings.from_env()
     if arguments.command == "audit":
         return controller_request(settings, method="GET", path="/internal/v1/operations/workers")
+    if arguments.command == "release-audit":
+        return controller_request(
+            settings,
+            method="GET",
+            path="/internal/v1/operations/controller-release",
+        )
     if arguments.command == "override":
         worker = _worker_name(arguments.worker)
         return controller_request(

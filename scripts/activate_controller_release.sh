@@ -12,6 +12,7 @@ fi
 
 release_root=/opt/qdev-runner-control-plane
 operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
+release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
 release="$(realpath -e -- "$1")"
@@ -32,6 +33,11 @@ for required in \
     exit 66
   }
 done
+release_status_directory="$(dirname -- "$release_status_path")"
+[[ -d "$release_status_directory" ]] || {
+  printf 'controller release status directory is missing: %s\n' "$release_status_directory" >&2
+  exit 73
+}
 
 # The broker runs rootless. Prepare its persistent operation store before any
 # container is recreated so a valid release cannot fail after the old broker
@@ -92,10 +98,16 @@ current="$release_root/current"
 previous="$(readlink -f -- "$current" 2>/dev/null || true)"
 temporary_link="$release_root/.current.$$"
 profiles_backup="$(mktemp /tmp/qdev-runner-profiles.XXXXXX)"
+release_status_backup="$(mktemp /tmp/qdev-runner-controller-release-status.XXXXXX)"
 profiles_were_present=false
+release_status_was_present=false
 if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
+fi
+if [[ -f "$release_status_path" ]]; then
+  install -m 0644 -- "$release_status_path" "$release_status_backup"
+  release_status_was_present=true
 fi
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
@@ -116,12 +128,48 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$profiles_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_status_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
   ln -s -- "$target" "$temporary_link"
   mv -Tf -- "$temporary_link" "$current"
+}
+
+release_revision="${QDEV_CONTROLLER_RELEASE_REVISION:-}"
+if [[ -z "$release_revision" ]]; then
+  release_revision="$(git -C "$release" rev-parse --verify HEAD 2>/dev/null || true)"
+fi
+if [[ ! "$release_revision" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'release must expose an exact git revision via HEAD or QDEV_CONTROLLER_RELEASE_REVISION\n' >&2
+  exit 66
+fi
+release_digest="$(
+  for release_file in \
+    "$release/deploy/compose.yml" \
+    "$release/inventory/repos.json" \
+    "$release/config/profiles.yml" \
+    "$release/deploy/Dockerfile.broker"
+  do
+    sha256sum -- "$release_file" | awk '{print $1}'
+  done | sha256sum | awk '{print $1}'
+)"
+
+write_release_status() {
+  local temporary_status
+  temporary_status="$(mktemp "$release_status_directory/.controller-release-status.XXXXXX")"
+  printf '{"schema":"qdev-controller-release-status-v1","state":"active","revision":"%s","release_digest":"%s","activated_at":"%s"}\n' \
+    "$release_revision" "$release_digest" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$temporary_status"
+  chmod 0644 "$temporary_status"
+  mv -f -- "$temporary_status" "$release_status_path"
+}
+
+restore_release_status() {
+  if [[ "$release_status_was_present" == true ]]; then
+    install -m 0644 -- "$release_status_backup" "$release_status_path"
+  else
+    rm -f -- "$release_status_path"
+  fi
 }
 
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
@@ -136,6 +184,7 @@ else
 fi
 
 rollback() {
+  restore_release_status
   [[ -n "$previous" && -d "$previous" ]] || return 0
   install -m 0644 -- "$previous/inventory/repos.json" /etc/qdev-runner/repos.json
   if [[ "$profiles_were_present" == true ]]; then
@@ -173,6 +222,13 @@ if [[ "$healthy" != true ]]; then
   exit 1
 fi
 
+if ! write_release_status; then
+  printf '%s\n' 'Controller is healthy, but the activation receipt could not be persisted; restoring the prior release.' >&2
+  rollback
+  exit 1
+fi
+
 docker inspect qdev-runner-broker-public qdev-runner-broker-internal \
   --format '{{.Name}} {{.Image}}'
 printf 'controller_release_active=%s previous=%s\n' "$release" "${previous:-none}"
+printf 'controller_release_receipt=active revision=%s digest=%s\n' "$release_revision" "$release_digest"
