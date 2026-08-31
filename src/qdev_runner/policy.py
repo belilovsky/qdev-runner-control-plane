@@ -42,6 +42,45 @@ class Policy:
                 allow_public_pr=bool(data.get("allow_public_pr", False)),
             )
 
+        self.repository_profile_disk_mb: dict[tuple[str, str], int] = {}
+        raw_overrides = profiles_data.get("repository_admission_disk_mb", {})
+        if not isinstance(raw_overrides, dict):
+            raise PolicyError("repository_admission_disk_mb must be a mapping")
+        for full_name, profile_overrides in raw_overrides.items():
+            repository_name = str(full_name).lower()
+            repository = self.repositories.get(repository_name)
+            if repository is None or repository.archived:
+                raise PolicyError(
+                    "repository admission override is not in the active allowlist: "
+                    f"{full_name}"
+                )
+            if not isinstance(profile_overrides, dict):
+                raise PolicyError(
+                    f"repository admission overrides must be a mapping: {full_name}"
+                )
+            for profile_name, raw_disk_mb in profile_overrides.items():
+                profile_key = str(profile_name)
+                profile = self.profiles.get(profile_key)
+                if profile is None or profile_key not in repository.profiles:
+                    raise PolicyError(
+                        "repository admission override selects a disallowed profile: "
+                        f"{full_name}/{profile_name}"
+                    )
+                if isinstance(raw_disk_mb, bool) or not isinstance(raw_disk_mb, int):
+                    raise PolicyError(
+                        "repository admission override must be an integer MiB value: "
+                        f"{full_name}/{profile_name}"
+                    )
+                minimum_disk_mb = min(profile.disk_mb, 12 * 1024)
+                if not minimum_disk_mb <= raw_disk_mb < profile.disk_mb:
+                    raise PolicyError(
+                        "repository admission override must be below the profile default "
+                        f"and at least {minimum_disk_mb} MiB: {full_name}/{profile_name}"
+                    )
+                self.repository_profile_disk_mb[(repository_name, profile_key.lower())] = (
+                    raw_disk_mb
+                )
+
     def repository(self, full_name: str) -> RepositoryPolicy:
         repo = self.repositories.get(full_name.lower())
         if repo is None or repo.archived:

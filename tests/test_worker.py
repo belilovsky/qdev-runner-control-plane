@@ -1,9 +1,39 @@
 from __future__ import annotations
 
+import asyncio
+import signal
 from pathlib import Path
 
+import pytest
+
+from qdev_runner.capacity import Capacity
 from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
+
+
+class FakeRunnerProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.finished = asyncio.Event()
+        self.signal_received: int | None = None
+
+    async def communicate(self) -> tuple[bytes, None]:
+        await self.finished.wait()
+        return b"runner stopped", None
+
+    def send_signal(self, received: int) -> None:
+        self.signal_received = received
+        self.returncode = -received
+        self.finished.set()
+
+    async def wait(self) -> int:
+        await self.finished.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -signal.SIGKILL
+        self.finished.set()
 
 
 def test_container_command_has_no_host_socket_or_credentials(tmp_path: Path) -> None:
@@ -152,3 +182,52 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
         "--volumes",
         "runner-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_running_job_stops_at_worker_disk_hard_floor(tmp_path: Path) -> None:
+    worker = Worker(
+        WorkerSettings(
+            broker_url="https://worker.ci.qdev.run",
+            worker_token="token",
+            worker_name="worker-1",
+            tier="primary",
+            profiles=("qdev-ci-docker",),
+            concurrency=1,
+            poll_seconds=3,
+            container_engine="docker",
+            runner_images={"qdev-ci-docker": "runner-docker:test"},
+            docker_sidecar_image="docker:dind-test",
+            rootlesskit_path="/usr/bin/rootlesskit",
+            buildkitd_path="/opt/buildkitd",
+            buildctl_path="/opt/buildctl",
+            buildkit_root=tmp_path,
+            min_disk_free_gib=6.5,
+            max_disk_used_pct=94,
+        )
+    )
+    worker.capacity = lambda: Capacity(
+        allowed=False,
+        disk_used_pct=94.1,
+        disk_free_gib=11.5,
+        memory_available_gib=8,
+        load_15=1,
+        cpu_psi_avg10=0,
+        cpus=8,
+        blockers=("disk_used_pct",),
+    )
+    process = FakeRunnerProcess()
+
+    try:
+        output, detail = await worker.wait_for_runner(
+            process,  # type: ignore[arg-type]
+            {"job_id": 123},
+            timeout=60,
+        )
+    finally:
+        await worker.close()
+
+    assert output == b"runner stopped"
+    assert process.signal_received == signal.SIGTERM
+    assert "disk hard floor reached" in detail
+    assert "maximum=94.00%" in detail

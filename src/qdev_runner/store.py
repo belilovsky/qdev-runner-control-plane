@@ -215,6 +215,7 @@ class Store:
         disk_free_gib: float | None = None,
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
+        repository_profile_disk_mb: dict[tuple[str, str], int] | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
     ) -> dict[str, Any] | None:
@@ -254,9 +255,14 @@ class Store:
                     matching_profile,
                 ):
                     continue
-                required_disk_mb = (
-                    profile_disk_mb.get(matching_profile) if profile_disk_mb is not None else None
-                )
+                required_disk_mb = None
+                if profile_disk_mb is not None:
+                    required_disk_mb = profile_disk_mb.get(matching_profile)
+                    if repository_profile_disk_mb is not None:
+                        required_disk_mb = repository_profile_disk_mb.get(
+                            (str(row["repository"]).lower(), matching_profile.lower()),
+                            required_disk_mb,
+                        )
                 if profile_disk_mb is not None and required_disk_mb is None:
                     continue
                 if (

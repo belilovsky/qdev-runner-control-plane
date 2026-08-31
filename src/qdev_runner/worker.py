@@ -306,6 +306,21 @@ class Worker:
             process.kill()
             await process.wait()
 
+    def disk_hard_floor_violation(self, capacity: Capacity) -> str:
+        if capacity.disk_used_pct >= self.settings.max_disk_used_pct:
+            return (
+                "worker disk hard floor reached: "
+                f"used={capacity.disk_used_pct:.2f}% "
+                f"maximum={self.settings.max_disk_used_pct:.2f}%"
+            )
+        if capacity.disk_free_gib < self.settings.min_disk_free_gib:
+            return (
+                "worker disk hard floor reached: "
+                f"free={capacity.disk_free_gib:.2f}GiB "
+                f"minimum={self.settings.min_disk_free_gib:.2f}GiB"
+            )
+        return ""
+
     async def wait_for_runner(
         self,
         process: asyncio.subprocess.Process,
@@ -315,12 +330,20 @@ class Worker:
         communicate = asyncio.create_task(process.communicate())
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
+            capacity_detail = self.disk_hard_floor_violation(self.capacity())
+            if capacity_detail:
+                await self.terminate_process(process)
+                output, _ = await communicate
+                return output, capacity_detail
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 await self.terminate_process(process)
                 output, _ = await communicate
                 return output, f"runner exceeded timeout={timeout}s"
-            done, _ = await asyncio.wait({communicate}, timeout=min(5, remaining))
+            done, _ = await asyncio.wait(
+                {communicate},
+                timeout=min(5, max(1, self.settings.poll_seconds), remaining),
+            )
             if communicate in done:
                 output, _ = communicate.result()
                 return output, ""

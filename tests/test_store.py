@@ -226,6 +226,56 @@ def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:
     assert claimed["job_id"] == 101
 
 
+def test_repository_disk_override_does_not_lower_other_repository_reservation(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "qazshield",
+            100,
+            "qdev-ci-docker",
+            repository="belilovsky/qazshield",
+        )
+    )
+    assert store.enqueue(
+        job(
+            "other",
+            101,
+            "qdev-ci-docker",
+            repository="belilovsky/other",
+        )
+    )
+    profile_disk_mb = {"qdev-ci-docker": 20480}
+    repository_profile_disk_mb = {
+        ("belilovsky/qazshield", "qdev-ci-docker"): 15360
+    }
+
+    claimed = store.claim(
+        "primary-1",
+        ("qdev-ci-docker",),
+        disk_free_gib=22,
+        min_disk_free_gib=6.5,
+        profile_disk_mb=profile_disk_mb,
+        repository_profile_disk_mb=repository_profile_disk_mb,
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
+    assert (
+        store.claim(
+            "primary-1",
+            ("qdev-ci-docker",),
+            disk_free_gib=22,
+            min_disk_free_gib=6.5,
+            profile_disk_mb=profile_disk_mb,
+            repository_profile_disk_mb=repository_profile_disk_mb,
+        )
+        is None
+    )
+    assert store.job_status(101) == "pending"
+
+
 def test_reserve_claims_profile_that_primary_cannot_fit(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job(profile="qdev-ci-docker"))

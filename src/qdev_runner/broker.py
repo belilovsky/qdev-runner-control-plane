@@ -346,6 +346,7 @@ def create_app(
             disk_free_gib=request.disk_free_gib,
             min_disk_free_gib=request.min_disk_free_gib,
             profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
+            repository_profile_disk_mb=policy.repository_profile_disk_mb,
             claim_scope=claim_scope,
         )
         if claimed is None:

@@ -35,6 +35,10 @@ it still depends on GitHub orchestration and the GitHub API.
   Worker-specific floors can be raised with `QDEV_WORKER_MIN_FREE_GIB`,
   `QDEV_WORKER_MAX_DISK_USED_PCT`, `QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB`,
   `QDEV_WORKER_MAX_LOAD_PER_CPU` and `QDEV_WORKER_MAX_CPU_PSI_AVG10`.
+  A source-reviewed `repository_admission_disk_mb` entry may lower only one
+  exact repository/profile reservation, never below 12 GiB. All other jobs keep
+  the profile default, and the worker rechecks its hard disk floor throughout
+  execution and terminates a job before that floor is crossed.
 - Every registered repository carries the managed root `AGENTS.md` policy,
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
