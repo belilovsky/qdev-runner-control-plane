@@ -34,3 +34,12 @@ def test_provision_capacity_override_is_explicit_and_lower_only() -> None:
     assert 'min_free="$provision_min_free_kib"' in script
     assert 'used > max_used' in script
     assert 'mem < 4194304' in script
+
+
+def test_provision_archives_a_versioned_virtualenv_link() -> None:
+    script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
+
+    assert '[[ -L "${install_root}/.venv" ]]' in script
+    assert 'backups/venv-link-$(date -u +%Y%m%dT%H%M%SZ)' in script
+    assert 'mv -- "${install_root}/.venv" "$venv_link_backup/.venv"' in script
+    assert 'python3 -m venv "${install_root}/.venv"' in script

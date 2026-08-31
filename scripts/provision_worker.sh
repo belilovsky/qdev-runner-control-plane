@@ -102,6 +102,16 @@ if [[ ! -x "${buildkit_root}/bin/buildkitd" ]]; then
 fi
 
 install -d -o root -g root -m 0755 "$install_root"
+# Older releases may have installed the active virtualenv as a relative symlink
+# into a versioned release directory. Reusing that link would mutate rollback
+# state, while python -m venv refuses to replace it. Archive only the link (not
+# its target) before creating the current, independently owned environment.
+if [[ -L "${install_root}/.venv" ]]; then
+  venv_link_backup="${install_root}/backups/venv-link-$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -o root -g root -m 0700 "$venv_link_backup"
+  mv -- "${install_root}/.venv" "$venv_link_backup/.venv"
+  printf 'previous worker virtualenv link archived at %s\n' "$venv_link_backup/.venv"
+fi
 python3 -m venv "${install_root}/.venv"
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-cache-dir \
   -r requirements.runtime.txt
