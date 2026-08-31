@@ -93,7 +93,11 @@ are reported and left unchanged.
 
 - `https://ci.qdev.run/github/workflow-job` — signed GitHub App webhook.
 - `https://ci.qdev.run/health` — public-safe broker health.
-- `https://worker.ci.qdev.run/internal/v1/*` — mTLS worker API.
+- `https://worker.ci.qdev.run/internal/v1/*` — mTLS worker API, published by
+  the source-owned `qdev-edge` release. The controller exposes only its
+  internal mTLS broker on port 9443; `scripts/issue_edge_proxy_certificate.sh`
+  creates the one-day, client-auth-only backhaul credential locally on that
+  host. It must never be copied to a worker or committed.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
 
