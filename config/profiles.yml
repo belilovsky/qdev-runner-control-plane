@@ -5,6 +5,11 @@ schema_version: qdev-runner-profiles-v1
 repository_admission_disk_mb:
   belilovsky/qazshield:
     qdev-ci-docker: 15360
+  # QazLake declares a 12 GiB bounded compose-validation workload in its
+  # canonical runner manifest. Reserve that measured scope only; the worker's
+  # independent free-space floor is still enforced before the job is claimed.
+  belilovsky/qazlake:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
