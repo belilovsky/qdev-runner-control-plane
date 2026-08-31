@@ -5,9 +5,11 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import ssl
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import uvicorn
@@ -29,6 +31,48 @@ from .settings import BrokerSettings
 from .store import Store
 
 LOGGER = logging.getLogger("qdev-runner-broker")
+_CONTROLLER_RELEASE_SCHEMA = "qdev-controller-release-status-v1"
+_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def controller_release_status(path: Path) -> dict[str, Any]:
+    """Return a deliberately non-secret activation observation for /health.
+
+    A signed operator receipt remains the authority for admission; the public
+    projection exists solely to prevent a missing activation from looking like
+    a capacity or runner failure.
+    """
+    unavailable = {
+        "schema": _CONTROLLER_RELEASE_SCHEMA,
+        "state": "unavailable",
+    }
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return unavailable
+    if not isinstance(value, dict):
+        return unavailable
+    required = {"schema", "state", "revision", "release_digest", "activated_at"}
+    if set(value) != required or value.get("schema") != _CONTROLLER_RELEASE_SCHEMA:
+        return unavailable
+    if value.get("state") != "active":
+        return unavailable
+    revision = value.get("revision")
+    release_digest = value.get("release_digest")
+    activated_at = value.get("activated_at")
+    if not isinstance(revision, str) or not _GIT_REVISION.fullmatch(revision):
+        return unavailable
+    if not isinstance(release_digest, str) or not _SHA256_DIGEST.fullmatch(release_digest):
+        return unavailable
+    if not isinstance(activated_at, str):
+        return unavailable
+    try:
+        if datetime.fromisoformat(activated_at.replace("Z", "+00:00")).tzinfo is None:
+            return unavailable
+    except ValueError:
+        return unavailable
+    return dict(value)
 
 
 class ClaimRequest(BaseModel):
@@ -395,7 +439,25 @@ def create_app(
             "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
             "primary_available": any(worker["available"] for worker in primary),
             "reserve_available": any(worker["available"] for worker in reserve),
+            "controller_release": controller_release_status(
+                settings.controller_release_status_path
+            ),
         }
+
+    @app.get("/internal/v1/operations/controller-release")
+    def operation_controller_release(
+        x_qdev_operator_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator(x_qdev_operator_token)
+        return operation_store.receipt(
+            {
+                "kind": "controller-release-audit",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "controller_release": controller_release_status(
+                    settings.controller_release_status_path
+                ),
+            }
+        )
 
     @app.get("/internal/v1/operations/workers")
     def operation_workers(

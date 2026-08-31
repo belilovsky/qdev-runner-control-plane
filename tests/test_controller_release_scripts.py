@@ -45,6 +45,21 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'stat -c %g -- "$operations_root"' in script
 
 
+def test_controller_activation_publishes_revertible_exact_release_status() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "controller-release.json" in script
+    assert "QDEV_CONTROLLER_RELEASE_REVISION" in script
+    assert "write_release_status()" in script
+    assert "restore_release_status()" in script
+    assert "controller_release_receipt=active" in script
+    assert "for release_file in" in script
+    assert 'sha256sum -- "$release_file"' in script
+    assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
+        "if ! write_release_status; then"
+    )
+
+
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 
