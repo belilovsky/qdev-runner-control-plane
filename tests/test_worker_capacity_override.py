@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -9,6 +12,44 @@ from qdev_runner.capacity import Capacity
 from qdev_runner.operations import OperationStore
 from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
+
+
+class CompletedRunnerProcess:
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, None]:
+        return b"runner completed", None
+
+    async def wait(self) -> int:
+        return self.returncode
+
+    def send_signal(self, _: int) -> None:
+        raise AssertionError("a valid signed override must not stop this runner")
+
+    def kill(self) -> None:
+        raise AssertionError("a valid signed override must not kill this runner")
+
+
+class ExpiringRunnerProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self._done = asyncio.Event()
+
+    async def communicate(self) -> tuple[bytes, None]:
+        await self._done.wait()
+        return b"runner stopped after directive expiry", None
+
+    async def wait(self) -> int:
+        await self._done.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def send_signal(self, _: int) -> None:
+        self.returncode = 143
+        self._done.set()
+
+    def kill(self) -> None:
+        raise AssertionError("a graceful expiry must not kill this runner")
 
 
 def _worker(tmp_path: Path) -> Worker:
@@ -90,7 +131,78 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.effective.allowed
         assert state.profiles == ("qdev-ci-docker",)
         assert state.min_disk_free_gib == 4.5
+        assert state.max_disk_used_pct == 95
         assert state.directive_id == directive.operation_id
+        assert state.directive_expires_at is not None
+    finally:
+        await worker.close()
+
+
+async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    store = OperationStore(
+        tmp_path / "operations",
+        worker_signing_key="worker-signing-key",
+        receipt_signing_key="receipt-signing-key",
+    )
+    directive = store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        profiles=("qdev-ci",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95,
+        owner="qdev-fleet-operations",
+        reason="bounded FIFO recovery",
+        duration_seconds=900,
+    )
+    try:
+        admission = worker.admission_state(
+            raw=_disk_blocked_raw(),
+            directive_payload=directive.model_dump(mode="json", by_alias=True),
+        )
+        assert admission.effective.allowed
+        worker.capacity = _disk_blocked_raw
+        output, detail = await worker.wait_for_runner(
+            CompletedRunnerProcess(),  # type: ignore[arg-type]
+            {"job_id": 123},
+            timeout=60,
+            admission=admission,
+        )
+        assert output == b"runner completed"
+        assert detail == ""
+    finally:
+        await worker.close()
+
+
+async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    store = OperationStore(
+        tmp_path / "operations",
+        worker_signing_key="worker-signing-key",
+        receipt_signing_key="receipt-signing-key",
+    )
+    directive = store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        profiles=("qdev-ci",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95,
+        owner="qdev-fleet-operations",
+        reason="bounded FIFO recovery",
+        duration_seconds=900,
+    )
+    try:
+        admission = worker.admission_state(
+            raw=_disk_blocked_raw(),
+            directive_payload=directive.model_dump(mode="json", by_alias=True),
+        )
+        expired = replace(admission, directive_expires_at=datetime.now(UTC))
+        output, detail = await worker.wait_for_runner(
+            ExpiringRunnerProcess(),  # type: ignore[arg-type]
+            {"job_id": 123},
+            timeout=60,
+            admission=expired,
+        )
+        assert output == b"runner stopped after directive expiry"
+        assert detail == "capacity override expired during running job"
     finally:
         await worker.close()
 
