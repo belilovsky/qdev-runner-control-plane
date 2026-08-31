@@ -60,6 +60,7 @@ class CapacityOverrideDirective(BaseModel):
     schema_name: Literal["qdev-capacity-override-v1"] = Field(alias="schema")
     operation_id: str = Field(min_length=1, max_length=128)
     worker_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    repository: str = Field(min_length=1, max_length=256)
     profiles: tuple[str, ...] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
     max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
@@ -175,6 +176,7 @@ class OperationStore:
         self,
         *,
         worker_name: str,
+        repository: str,
         profiles: tuple[str, ...],
         min_disk_free_gib: float,
         max_disk_used_pct: float,
@@ -200,6 +202,7 @@ class OperationStore:
             "schema": "qdev-capacity-override-v1",
             "operation_id": str(uuid4()),
             "worker_name": worker_name,
+            "repository": repository.strip().lower(),
             "profiles": list(dict.fromkeys(profiles)),
             "min_disk_free_gib": min_disk_free_gib,
             "max_disk_used_pct": max_disk_used_pct,

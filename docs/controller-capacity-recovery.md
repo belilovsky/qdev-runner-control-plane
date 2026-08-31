@@ -61,7 +61,7 @@ qdev-runner-operator audit > worker-audit-receipt.json
 ```
 
 An override is admitted only when the worker heartbeat is fresh, it has no
-active task, every requested profile is both registered and allowed, all
+active task, the named repository/profile is registered and allowed, all
 baseline blockers are disk-only, raw metrics are present, measured free space
 covers the requested floor plus profile headroom, disk use is below the
 requested ceiling, and no other override is active.
@@ -70,6 +70,7 @@ Create exactly one bounded override:
 
 ```bash
 qdev-runner-operator override srv1879763-light-primary \
+  --repository belilovsky/qazlake \
   --profile qdev-ci-docker \
   --min-disk-free-gib 4.5 \
   --max-disk-used-pct 95 \
@@ -80,7 +81,7 @@ qdev-runner-operator override srv1879763-light-primary \
 ```
 
 The worker receives the directive on its normal authenticated heartbeat. It
-verifies the signature, worker identity, registered profiles, hard limits and
+verifies the signature, worker identity, repository/profile scope, hard limits and
 expiry, then performs an ordinary FIFO claim. No job is dispatched by the
 operator endpoint.
 
