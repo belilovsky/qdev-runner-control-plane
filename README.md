@@ -170,9 +170,18 @@ The provisioning script keeps the 30 GiB free-space minimum by default. A
 single owner-authorized bootstrap may lower only that provisioning minimum by
 setting both `QDEV_WORKER_PROVISION_MIN_FREE_GIB` (an integer from 20 through
 30) and `QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true`. It does not
-relax the 85% disk-use, memory, or load gates, does not start the worker, and
-does not alter the runtime gate: `worker.env` must carry an equal or stricter
-runtime free-space minimum before the owner-bound execution permit is released.
+relax the 85% disk-use, memory, or load gates, and does not start the worker.
+Before the owner-bound execution permit is released, `worker.env` must carry
+the normal runtime gate or a separate, source-validated runtime override.
+
+When a scoped worker must run a profile whose explicit disk reservation cannot
+fit above the default runtime floor, its owner may make a second, independent
+runtime override. It requires all of `QDEV_CLAIM_SCOPE_ID`,
+`QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE=true`, a free-space floor from 4
+through 30 GiB, and a disk-use ceiling no higher than 90%. Memory and load
+gates cannot be relaxed. The active override is reported in the worker
+heartbeat, and the broker still requires the configured floor plus the claimed
+profile's disk reservation before assigning a job.
 
 Worker provisioning archives the exact obsolete
 `qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not

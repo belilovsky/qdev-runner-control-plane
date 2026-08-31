@@ -75,6 +75,7 @@ class Worker:
                     "concurrency": self.settings.concurrency,
                     "slots_available": max(0, self.settings.concurrency - active_jobs),
                     "min_disk_free_gib": self.settings.min_disk_free_gib,
+                    "capacity_override_active": self.settings.capacity_override_active,
                 },
             },
         )
