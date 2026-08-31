@@ -212,6 +212,7 @@ class Store:
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
         repository_profile_disk_mb: dict[tuple[str, str], int] | None = None,
+        repository: str | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
     ) -> dict[str, Any] | None:
@@ -236,6 +237,11 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             for row in pending_rows:
+                if (
+                    repository is not None
+                    and str(row["repository"]).lower() != repository.lower()
+                ):
+                    continue
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(
                     (profile for profile in profiles if profile.lower() in labels), None

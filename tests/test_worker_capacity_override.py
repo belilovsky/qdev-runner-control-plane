@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -134,6 +135,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.min_disk_free_gib == 4.5
         assert state.max_disk_used_pct == 95
         assert state.directive_id == directive.operation_id
+        assert state.directive_repository == "belilovsky/qazshield"
         assert state.directive_expires_at is not None
     finally:
         await worker.close()
@@ -275,5 +277,34 @@ async def test_worker_accepts_legacy_empty_heartbeat_response(
         state = await worker.heartbeat()
         assert state.directive_id is None
         assert state.profiles == worker.settings.profiles
+    finally:
+        await worker.close()
+
+
+async def test_worker_claim_sends_verified_capacity_binding(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+
+    async def controller(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/v1/jobs/claim"
+        payload = json.loads(request.content)
+        assert payload["profiles"] == ["qdev-ci-docker"]
+        assert payload["capacity_directive_id"] == "operation-123"
+        assert payload["capacity_repository"] == "belilovsky/qazlake"
+        return httpx.Response(status_code=204)
+
+    await worker.client.aclose()
+    worker.client = httpx.AsyncClient(
+        base_url=worker.settings.broker_url,
+        transport=httpx.MockTransport(controller),
+    )
+    try:
+        claimed = await worker.claim(
+            _allowed_raw(),
+            profiles=("qdev-ci-docker",),
+            min_disk_free_gib=4.5,
+            capacity_directive_id="operation-123",
+            capacity_repository="belilovsky/qazlake",
+        )
+        assert claimed is None
     finally:
         await worker.close()
