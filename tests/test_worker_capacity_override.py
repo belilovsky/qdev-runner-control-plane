@@ -114,6 +114,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -147,6 +148,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -182,6 +184,7 @@ async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -216,6 +219,7 @@ async def test_worker_rejects_tampered_or_non_disk_override(tmp_path: Path) -> N
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,

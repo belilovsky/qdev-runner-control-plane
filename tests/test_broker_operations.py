@@ -23,11 +23,22 @@ WORKER_NAME = "srv1879763-light-primary"
 
 def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
     inventory = tmp_path / "repos.json"
-    inventory.write_text('{"repositories": []}', encoding="utf-8")
+    inventory.write_text(
+        '{"repositories": [{"full_name": "belilovsky/qazshield", "id": 1, '
+        '"private": true, "archived": false, "default_branch": "main", '
+        '"profiles": ["qdev-ci-docker"]}, {"full_name": "belilovsky/qazlake", '
+        '"id": 2, "private": true, "archived": false, "default_branch": "main", '
+        '"profiles": ["qdev-ci-docker"]}]}',
+        encoding="utf-8",
+    )
     profiles = tmp_path / "profiles.yml"
     profiles.write_text(
         yaml.safe_dump(
             {
+                "repository_admission_disk_mb": {
+                    "belilovsky/qazshield": {"qdev-ci-docker": 15360},
+                    "belilovsky/qazlake": {"qdev-ci-docker": 12288},
+                },
                 "profiles": {
                     "qdev-ci-docker": {
                         "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
@@ -136,11 +147,13 @@ def _seed_stale_running_job(client: TestClient) -> float:
     return created_at
 
 
-def _heartbeat(client: TestClient, *, active_jobs: int = 0) -> dict[str, object]:
+def _heartbeat(
+    client: TestClient, *, active_jobs: int = 0, disk_free_gib: float = 30.0
+) -> dict[str, object]:
     raw = {
         "allowed": True,
         "disk_used_pct": 87.0,
-        "disk_free_gib": 30.0,
+        "disk_free_gib": disk_free_gib,
         "memory_available_gib": 8.0,
         "load_15": 0.5,
         "cpu_psi_avg10": 0.0,
@@ -194,6 +207,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
         json={
+            "repository": "belilovsky/qazshield",
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 90.0,
@@ -206,6 +220,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     override = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)
     operation = override["payload"]["operation"]
     assert operation["profiles"] == ["qdev-ci-docker"]
+    assert operation["repository"] == "belilovsky/qazshield"
     assert operation["min_disk_free_gib"] == 4.5
 
     directive_response = _heartbeat(client)
@@ -223,6 +238,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
         json={
+            "repository": "belilovsky/qazshield",
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 90.0,
@@ -234,6 +250,29 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "worker has an active task"
+
+
+def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, disk_free_gib=17.0)
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        json={
+            "repository": "belilovsky/qazlake",
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "pinned QazLake compose validation",
+        },
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:

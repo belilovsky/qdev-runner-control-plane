@@ -203,9 +203,9 @@ and succeeds.
 The capacity endpoint never changes a job, FIFO order, lease, label, profile or
 `runs-on`. It can issue one signed override for a fresh, idle worker only when
 the baseline blocker is disk-only and measured headroom still covers the hard
-4.5 GiB floor plus the selected profile's declared requirement. The directive
+4.5 GiB floor plus the exact repository/profile's declared requirement. The directive
 expires after at most 15 minutes and the worker verifies its signature, worker
-name, profile scope and timestamps before using it.
+name, repository/profile scope and timestamps before using it.
 
 The broker never automatically releases a claimed or running job merely
 because its worker heartbeat disappeared. Stale candidates are read-only until

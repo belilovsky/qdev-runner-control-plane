@@ -58,6 +58,7 @@ class HeartbeatRequest(BaseModel):
 
 
 class CapacityOverrideRequest(BaseModel):
+    repository: str = Field(min_length=1, max_length=256)
     profiles: list[str] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
     max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
@@ -424,6 +425,7 @@ def create_app(
         worker, audit = current_worker(worker_name)
         registered_profiles = _json_strings(worker.get("profiles_json"))
         requested_profiles = tuple(dict.fromkeys(request.profiles))
+        repository_name = request.repository.strip().lower()
         if not audit["fresh"]:
             raise HTTPException(status_code=409, detail="worker heartbeat is stale")
         if audit["active_jobs"] != 0:
@@ -432,6 +434,15 @@ def create_app(
             raise HTTPException(status_code=409, detail="requested profile is not registered")
         if not set(requested_profiles).issubset(policy.profiles):
             raise HTTPException(status_code=409, detail="requested profile is not in policy")
+        try:
+            policy.repository(repository_name)
+        except PolicyError as error:
+            raise HTTPException(status_code=409, detail="repository is not in policy") from error
+        if len(requested_profiles) != 1:
+            raise HTTPException(
+                status_code=409,
+                detail="repository-scoped capacity override requires exactly one profile",
+            )
         baseline = audit["baseline_capacity"]
         raw = audit["raw_capacity"]
         blockers = {str(value) for value in baseline.get("blockers", [])}
@@ -445,9 +456,12 @@ def create_app(
                 status_code=409,
                 detail="raw capacity evidence is incomplete",
             ) from error
-        profile_headroom_gib = (
-            max(policy.profiles[name].disk_mb for name in requested_profiles) / 1024
+        profile_name = requested_profiles[0].lower()
+        profile_disk_mb = policy.repository_profile_disk_mb.get(
+            (repository_name, profile_name),
+            policy.profiles[requested_profiles[0]].disk_mb,
         )
+        profile_headroom_gib = profile_disk_mb / 1024
         required_free_gib = request.min_disk_free_gib + profile_headroom_gib
         if disk_free_gib < required_free_gib:
             raise HTTPException(
@@ -469,6 +483,7 @@ def create_app(
             raise HTTPException(status_code=409, detail="capacity override is already active")
         directive = operation_store.create_capacity_override(
             worker_name=worker_name,
+            repository=repository_name,
             profiles=requested_profiles,
             min_disk_free_gib=request.min_disk_free_gib,
             max_disk_used_pct=request.max_disk_used_pct,
