@@ -119,6 +119,15 @@ class FakeGitHub:
             "conclusion": self.run_conclusion,
         }
 
+    def generate_jit_config(
+        self,
+        installation_id: int,
+        repository: str,
+        runner_name: str,
+        labels: tuple[str, ...],
+    ) -> str:
+        return "signed-jit-config"
+
 
 def _seed_stale_running_job(client: TestClient) -> float:
     store: Store = client.app.state.store
@@ -324,6 +333,93 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
+
+
+def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    _heartbeat(client)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="foreign",
+            job_id=100,
+            run_id=84,
+            repository="belilovsky/qazshield",
+            repository_id=1,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={},
+        )
+    )
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="target",
+            job_id=101,
+            run_id=84,
+            repository="belilovsky/qazlake",
+            repository_id=2,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={},
+        )
+    )
+    override_response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        json={
+            "repository": "belilovsky/qazlake",
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "repository-bound regression",
+        },
+    )
+    operation = verify_controller_receipt(
+        override_response.json(), receipt_key=RECEIPT_KEY
+    )["payload"]["operation"]
+    claim = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "profiles": ["qdev-ci-docker"],
+        "disk_free_gib": 20.0,
+        "min_disk_free_gib": 4.5,
+    }
+    headers = {"X-QDev-Worker-Token": WORKER_TOKEN}
+
+    missing_binding = client.post("/internal/v1/jobs/claim", headers=headers, json=claim)
+    wrong_repository = client.post(
+        "/internal/v1/jobs/claim",
+        headers=headers,
+        json=claim
+        | {
+            "capacity_directive_id": operation["operation_id"],
+            "capacity_repository": "belilovsky/qazshield",
+        },
+    )
+    accepted = client.post(
+        "/internal/v1/jobs/claim",
+        headers=headers,
+        json=claim
+        | {
+            "capacity_directive_id": operation["operation_id"],
+            "capacity_repository": "belilovsky/qazlake",
+        },
+    )
+
+    assert missing_binding.status_code == 403
+    assert missing_binding.json()["detail"] == "capacity override binding rejected"
+    assert wrong_repository.status_code == 403
+    assert wrong_repository.json()["detail"] == "capacity override binding rejected"
+    assert accepted.status_code == 200
+    assert accepted.json()["job_id"] == 101
+    assert accepted.json()["repository"] == "belilovsky/qazlake"
+    assert store.job_status(100) == "pending"
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:

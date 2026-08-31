@@ -82,6 +82,8 @@ class ClaimRequest(BaseModel):
     profiles: list[str]
     disk_free_gib: float = Field(ge=0)
     min_disk_free_gib: float = Field(ge=0)
+    capacity_directive_id: str | None = None
+    capacity_repository: str | None = None
 
 
 class CompletionRequest(BaseModel):
@@ -765,6 +767,27 @@ def create_app(
             claim_scope=claim_scope,
             client_certificate_sha256=x_qdev_client_certificate_sha256,
         )
+        active_directive = (
+            operations.active(
+                request.worker_name,
+                registered_profiles=tuple(policy.profiles),
+            )
+            if operations is not None
+            else None
+        )
+        supplied_override = bool(
+            request.capacity_directive_id or request.capacity_repository
+        )
+        if supplied_override and active_directive is None:
+            raise HTTPException(status_code=403, detail="capacity override is not active")
+        if active_directive is not None and (
+                request.capacity_directive_id != active_directive.operation_id
+                or (request.capacity_repository or "").lower()
+                != active_directive.repository.lower()
+                or tuple(request.profiles) != active_directive.profiles
+        ):
+            raise HTTPException(status_code=403, detail="capacity override binding rejected")
+        repository = active_directive.repository if active_directive is not None else None
         claimed = store.claim(
             request.worker_name,
             tuple(request.profiles),
@@ -774,6 +797,7 @@ def create_app(
             profile_disk_mb={name: profile.disk_mb for name, profile in policy.profiles.items()},
             repository_profile_disk_mb=policy.repository_profile_disk_mb,
             claim_scope=claim_scope,
+            repository=repository,
         )
         if claimed is None:
             return Response(status_code=204)

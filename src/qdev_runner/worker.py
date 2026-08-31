@@ -35,6 +35,7 @@ class AdmissionState:
     min_disk_free_gib: float
     max_disk_used_pct: float
     directive_id: str | None = None
+    directive_repository: str | None = None
     directive_expires_at: datetime | None = None
 
 
@@ -135,6 +136,7 @@ class Worker:
             min_disk_free_gib=directive.min_disk_free_gib,
             max_disk_used_pct=directive.max_disk_used_pct,
             directive_id=directive.operation_id,
+            directive_repository=directive.repository,
             directive_expires_at=parse_utc(directive.expires_at),
         )
 
@@ -154,6 +156,7 @@ class Worker:
                 "effective_capacity": asdict(state.effective),
                 "effective_profiles": list(state.profiles),
                 "capacity_directive_id": state.directive_id,
+                "capacity_directive_repository": state.directive_repository,
                 "capacity_override_active": state.directive_id is not None,
                 "concurrency": self.settings.concurrency,
                 "slots_available": max(0, self.settings.concurrency - active_jobs),
@@ -203,6 +206,8 @@ class Worker:
         *,
         profiles: tuple[str, ...] | None = None,
         min_disk_free_gib: float | None = None,
+        capacity_directive_id: str | None = None,
+        capacity_repository: str | None = None,
     ) -> dict[str, Any] | None:
         response = await self.client.post(
             "/internal/v1/jobs/claim",
@@ -217,6 +222,8 @@ class Worker:
                     if min_disk_free_gib is None
                     else min_disk_free_gib
                 ),
+                "capacity_directive_id": capacity_directive_id,
+                "capacity_repository": capacity_repository,
             },
         )
         if response.status_code == 204:
@@ -576,6 +583,8 @@ class Worker:
                         admission.effective,
                         profiles=admission.profiles,
                         min_disk_free_gib=admission.min_disk_free_gib,
+                        capacity_directive_id=admission.directive_id,
+                        capacity_repository=admission.directive_repository,
                     )
                     if job:
                         job_id = int(job["job_id"])
