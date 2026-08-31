@@ -37,9 +37,14 @@ class Worker:
         if settings.mtls_ca and settings.mtls_cert and settings.mtls_key:
             tls = ssl.create_default_context(cafile=settings.mtls_ca)
             tls.load_cert_chain(settings.mtls_cert, settings.mtls_key)
+        headers = {}
+        if settings.worker_token:
+            headers["X-QDev-Worker-Token"] = settings.worker_token
+        if settings.claim_scope_id:
+            headers["X-QDev-Claim-Scope-Id"] = settings.claim_scope_id
         self.client = httpx.AsyncClient(
             base_url=settings.broker_url,
-            headers={"X-QDev-Worker-Token": settings.worker_token},
+            headers=headers,
             timeout=45,
             verify=tls,
         )
@@ -138,6 +143,7 @@ class Worker:
                 "effective_capacity": asdict(state.effective),
                 "effective_profiles": list(state.profiles),
                 "capacity_directive_id": state.directive_id,
+                "capacity_override_active": state.directive_id is not None,
                 "concurrency": self.settings.concurrency,
                 "slots_available": max(0, self.settings.concurrency - active_jobs),
                 "min_disk_free_gib": state.min_disk_free_gib,

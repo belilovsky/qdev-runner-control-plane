@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from .claim_scope import ClaimScopeError, resolve_claim_scope
+from .claim_scope import ClaimScope, ClaimScopeError, resolve_bound_claim_scope, resolve_claim_scope
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
 from .operations import (
@@ -182,6 +182,25 @@ def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
     }
 
 
+def worker_authenticated(
+    token: str | None,
+    expected_token: str,
+    *,
+    claim_scope: ClaimScope | None = None,
+    client_certificate_sha256: str | None = None,
+) -> bool:
+    """Authenticate a worker without letting a scoped certificate fall back.
+
+    Ordinary workers retain the static-token contract.  A certificate-bound
+    scope deliberately accepts only the mTLS certificate fingerprint injected
+    by Caddy after verification; possession of the ordinary token cannot turn
+    it into a general-queue credential.
+    """
+    if claim_scope is not None and claim_scope.worker_certificate_sha256:
+        return claim_scope.certificate_matches(client_certificate_sha256)
+    return bool(token and secrets.compare_digest(token, expected_token))
+
+
 def _safe_segment(value: str) -> str:
     allowed = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
@@ -233,8 +252,18 @@ def create_app(
     app.state.github = github
     app.state.operations = operations
 
-    def require_worker(token: str | None) -> None:
-        if not token or not secrets.compare_digest(token, settings.worker_token):
+    def require_worker(
+        token: str | None,
+        *,
+        claim_scope: ClaimScope | None = None,
+        client_certificate_sha256: str | None = None,
+    ) -> None:
+        if not worker_authenticated(
+            token,
+            settings.worker_token,
+            claim_scope=claim_scope,
+            client_certificate_sha256=client_certificate_sha256,
+        ):
             raise HTTPException(status_code=401, detail="worker authentication failed")
 
     def require_operator(token: str | None) -> OperationStore:
@@ -253,6 +282,97 @@ def create_app(
         if worker is None:
             raise HTTPException(status_code=404, detail="worker not registered")
         return worker, _worker_audit(worker, float(snapshot["now"]))
+
+    def bound_scope_for_job(
+        job: dict[str, Any],
+        scope_id: str | None,
+        certificate_sha256: str | None,
+    ) -> ClaimScope | None:
+        """Validate the immutable scope-to-job binding for active callbacks."""
+        if scope_id is None:
+            if job.get("claim_scope_id") is not None:
+                raise HTTPException(status_code=403, detail="claim scope required")
+            return None
+        if str(job.get("claim_scope_id") or "") != scope_id.strip():
+            raise HTTPException(status_code=403, detail="claim scope job binding rejected")
+        try:
+            claim_scope = resolve_bound_claim_scope(
+                settings.claim_scopes_path,
+                scope_id,
+                worker_name=str(job["worker_name"]),
+                job_id=int(job["job_id"]),
+                repository=str(job["repository"]),
+                head_sha=str(job["head_sha"]),
+                profile=str(job["profile"]),
+            )
+        except ClaimScopeError as error:
+            LOGGER.warning("rejected bound claim scope for job=%s: %s", job["job_id"], error)
+            raise HTTPException(status_code=403, detail="claim scope rejected") from error
+        require_worker(
+            None,
+            claim_scope=claim_scope,
+            client_certificate_sha256=certificate_sha256,
+        )
+        return claim_scope
+
+    def bound_scope_for_heartbeat(
+        request: HeartbeatRequest, certificate_sha256: str | None
+    ) -> ClaimScope | None:
+        """Authenticate a scoped lease without extending its claim window.
+
+        Scope expiry closes admission to new jobs.  A worker may nevertheless
+        continue to heartbeat a job it claimed before expiry: every reported
+        job must still have the same immutable scope binding, exact identity,
+        profile, and certificate.  This avoids requeueing a legitimate job
+        solely because its bounded admission scope elapsed while it ran.
+        """
+        if request.active_jobs != len(set(request.active_job_ids)):
+            raise HTTPException(status_code=422, detail="active job count does not match IDs")
+        if request.claim_scope_id is None:
+            return None
+        if not request.active_job_ids:
+            try:
+                return resolve_claim_scope(
+                    settings.claim_scopes_path,
+                    request.claim_scope_id,
+                    request.worker_name,
+                    request.tier,
+                    tuple(request.profiles),
+                )
+            except ClaimScopeError as error:
+                LOGGER.warning(
+                    "rejected idle heartbeat scope for worker=%s: %s",
+                    request.worker_name,
+                    error,
+                )
+                raise HTTPException(status_code=403, detail="claim scope rejected") from error
+
+        scopes: list[ClaimScope] = []
+        for job_id in request.active_job_ids:
+            job = store.job(job_id)
+            if job is None or str(job.get("status")) not in {"claimed", "running"}:
+                raise HTTPException(status_code=403, detail="active claim scope job is absent")
+            scope = bound_scope_for_job(
+                job,
+                request.claim_scope_id,
+                certificate_sha256,
+            )
+            if scope is None:
+                raise HTTPException(status_code=403, detail="claim scope required")
+            scopes.append(scope)
+        claim_scope = scopes[0]
+        if any(scope.scope_id != claim_scope.scope_id for scope in scopes):
+            raise HTTPException(status_code=403, detail="claim scope job binding rejected")
+        if claim_scope.tier != request.tier:
+            raise HTTPException(status_code=403, detail="claim scope worker binding rejected")
+        if claim_scope.worker_name != request.worker_name:
+            raise HTTPException(status_code=403, detail="claim scope worker binding rejected")
+        expected_profiles = {job.profile for job in claim_scope.jobs}
+        if set(request.profiles) != expected_profiles or len(request.profiles) != len(
+            expected_profiles
+        ):
+            raise HTTPException(status_code=403, detail="claim scope profiles rejected")
+        return claim_scope
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -550,8 +670,8 @@ def create_app(
     def claim_job(
         request: ClaimRequest,
         x_qdev_worker_token: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
-        require_worker(x_qdev_worker_token)
         try:
             claim_scope = resolve_claim_scope(
                 settings.claim_scopes_path,
@@ -563,6 +683,11 @@ def create_app(
         except ClaimScopeError as error:
             LOGGER.warning("rejected claim scope for worker=%s: %s", request.worker_name, error)
             raise HTTPException(status_code=403, detail="claim scope rejected") from error
+        require_worker(
+            x_qdev_worker_token,
+            claim_scope=claim_scope,
+            client_certificate_sha256=x_qdev_client_certificate_sha256,
+        )
         claimed = store.claim(
             request.worker_name,
             tuple(request.profiles),
@@ -646,11 +771,20 @@ def create_app(
     def complete_job(
         request: CompletionRequest,
         x_qdev_worker_token: str | None = Header(default=None),
+        x_qdev_claim_scope_id: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> Response:
-        require_worker(x_qdev_worker_token)
         job = store.job(request.job_id)
         if job is None:
+            require_worker(x_qdev_worker_token)
             return Response(status_code=204)
+        claim_scope = bound_scope_for_job(
+            job, x_qdev_claim_scope_id, x_qdev_client_certificate_sha256
+        )
+        if claim_scope is None:
+            require_worker(x_qdev_worker_token)
+        elif str(job["worker_name"]) != request.worker_name:
+            raise HTTPException(status_code=403, detail="claim scope worker binding rejected")
         if request.runner_exit_code != 0:
             store.fail_if_active(
                 request.job_id,
@@ -689,11 +823,18 @@ def create_app(
     def job_status(
         job_id: int,
         x_qdev_worker_token: str | None = Header(default=None),
+        x_qdev_claim_scope_id: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        require_worker(x_qdev_worker_token)
         job = store.job(job_id)
         if job is None:
+            require_worker(x_qdev_worker_token)
             raise HTTPException(status_code=404, detail="job not found")
+        if (
+            bound_scope_for_job(job, x_qdev_claim_scope_id, x_qdev_client_certificate_sha256)
+            is None
+        ):
+            require_worker(x_qdev_worker_token)
         status = str(job["status"])
         if status in {"claimed", "running"}:
             try:
@@ -722,8 +863,14 @@ def create_app(
     def heartbeat(
         request: HeartbeatRequest,
         x_qdev_worker_token: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        require_worker(x_qdev_worker_token)
+        claim_scope = bound_scope_for_heartbeat(request, x_qdev_client_certificate_sha256)
+        require_worker(
+            x_qdev_worker_token,
+            claim_scope=claim_scope,
+            client_certificate_sha256=x_qdev_client_certificate_sha256,
+        )
         store.heartbeat(
             request.worker_name,
             tuple(request.profiles),

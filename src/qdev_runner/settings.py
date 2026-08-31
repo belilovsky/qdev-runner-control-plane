@@ -78,7 +78,7 @@ class BrokerSettings:
 @dataclass(frozen=True)
 class WorkerSettings:
     broker_url: str
-    worker_token: str
+    worker_token: str | None
     worker_name: str
     tier: str
     profiles: tuple[str, ...]
@@ -97,6 +97,7 @@ class WorkerSettings:
     min_memory_available_gib: float = 4
     max_load_per_cpu: float = 2
     max_cpu_psi_avg10: float | None = None
+    capacity_override_active: bool = False
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
@@ -105,9 +106,36 @@ class WorkerSettings:
     @classmethod
     def from_env(cls) -> WorkerSettings:
         worker_name, tier = _worker_identity()
+        claim_scope_id = os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None
+        worker_token = os.environ.get("QDEV_WORKER_TOKEN", "").strip() or None
+        if not worker_token and not claim_scope_id:
+            raise RuntimeError("QDEV_WORKER_TOKEN is required for an unscoped worker")
+        min_disk_free_gib = float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30"))
+        max_disk_used_pct = float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85"))
+        min_memory_available_gib = float(
+            os.environ.get("QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB", "4")
+        )
+        max_load_per_cpu = float(os.environ.get("QDEV_WORKER_MAX_LOAD_PER_CPU", "2"))
+        allow_capacity_override = (
+            os.environ.get("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE", "false").strip().lower()
+        )
+        if allow_capacity_override not in {"true", "false"}:
+            raise RuntimeError("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE must be true or false")
+        capacity_override_active = min_disk_free_gib < 30 or max_disk_used_pct > 85
+        if min_memory_available_gib < 4 or max_load_per_cpu > 2:
+            raise RuntimeError("worker memory and load gates cannot be relaxed")
+        if capacity_override_active:
+            if not claim_scope_id or allow_capacity_override != "true":
+                raise RuntimeError(
+                    "a lower worker capacity gate requires a scoped explicit override"
+                )
+            if min_disk_free_gib < 4 or max_disk_used_pct > 90:
+                raise RuntimeError("worker capacity override is outside the bounded range")
+        elif allow_capacity_override == "true":
+            raise RuntimeError("worker capacity override is not active")
         return cls(
             broker_url=_required("QDEV_BROKER_URL").rstrip("/"),
-            worker_token=_required("QDEV_WORKER_TOKEN"),
+            worker_token=worker_token,
             worker_name=worker_name,
             tier=tier,
             profiles=tuple(
@@ -146,18 +174,17 @@ class WorkerSettings:
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),
-            claim_scope_id=os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None,
-            min_disk_free_gib=float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30")),
-            max_disk_used_pct=float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85")),
-            min_memory_available_gib=float(
-                os.environ.get("QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB", "4")
-            ),
-            max_load_per_cpu=float(os.environ.get("QDEV_WORKER_MAX_LOAD_PER_CPU", "2")),
+            claim_scope_id=claim_scope_id,
+            min_disk_free_gib=min_disk_free_gib,
+            max_disk_used_pct=max_disk_used_pct,
+            min_memory_available_gib=min_memory_available_gib,
+            max_load_per_cpu=max_load_per_cpu,
             max_cpu_psi_avg10=(
                 float(value)
                 if (value := os.environ.get("QDEV_WORKER_MAX_CPU_PSI_AVG10", "").strip())
                 else None
             ),
+            capacity_override_active=capacity_override_active,
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),

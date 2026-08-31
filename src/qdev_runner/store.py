@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
         status IN ('pending','claimed','running','completed','rejected','failed')
     ),
     worker_name TEXT,
+    claim_scope_id TEXT,
     profile TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
@@ -96,6 +97,12 @@ class Store:
         self.path = path
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "claim_scope_id" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             self._repair_invalid_queue_timestamps(connection)
@@ -276,11 +283,18 @@ class Store:
             assert selected_profile is not None
             updated = connection.execute(
                 """
-                UPDATE jobs SET status='claimed', worker_name=?, profile=?, claimed_at=?,
-                    updated_at=?, attempts=attempts+1
+                UPDATE jobs SET status='claimed', worker_name=?, claim_scope_id=?, profile=?,
+                    claimed_at=?, updated_at=?, attempts=attempts+1
                 WHERE job_id=? AND status='pending'
                 """,
-                (worker_name, selected_profile, now, now, selected["job_id"]),
+                (
+                    worker_name,
+                    claim_scope.scope_id if claim_scope is not None else None,
+                    selected_profile,
+                    now,
+                    now,
+                    selected["job_id"],
+                ),
             )
             connection.execute("COMMIT")
             if updated.rowcount != 1:
@@ -327,7 +341,8 @@ class Store:
         with self.connect() as connection:
             updated = connection.execute(
                 """
-                UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                UPDATE jobs SET status='pending', worker_name=NULL,
+                    claim_scope_id=NULL, profile=NULL,
                     claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
@@ -340,7 +355,8 @@ class Store:
         with self.connect() as connection:
             connection.execute(
                 """
-                UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                UPDATE jobs SET status='pending', worker_name=NULL,
+                    claim_scope_id=NULL, profile=NULL,
                     claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status='claimed'
                 """,
@@ -410,7 +426,8 @@ class Store:
         with self.connect() as connection:
             updated = connection.execute(
                 """
-                UPDATE jobs SET status='pending', worker_name=NULL, profile=NULL,
+                UPDATE jobs SET status='pending', worker_name=NULL,
+                    claim_scope_id=NULL, profile=NULL,
                     claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running') AND updated_at<?
                   AND (worker_name IS NULL OR worker_name NOT IN (

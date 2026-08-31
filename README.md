@@ -41,7 +41,12 @@ it still depends on GitHub orchestration and the GitHub API.
   runner or silently changing execution lanes.
 - An exceptional temporary worker may be given a `claim-scope-v1` document.
   Its scope binds one worker name and tier to a short expiry, one repository
-  and exact Git SHA, and an explicit job-ID/profile map. Once a worker supplies
+  and exact Git SHA, and an explicit job-ID/profile map. Certificate-bound
+  scopes additionally pin the Caddy-verified mTLS client-certificate SHA-256;
+  the normal shared worker token is not a fallback credential for those scopes.
+  Generate the private key and CSR on the scoped VPS; the controller signs only
+  that public CSR with `scripts/issue_scoped_worker_certificate.sh` and returns
+  the public certificate fingerprint for the scope record. Once a worker supplies
   a scope ID, a missing, expired, malformed, or mismatched scope fails closed;
   it cannot fall back to the shared queue. Unscoped workers retain ordinary
   FIFO behavior. Scope documents are operational secrets only insofar as they
@@ -88,7 +93,11 @@ are reported and left unchanged.
 
 - `https://ci.qdev.run/github/workflow-job` — signed GitHub App webhook.
 - `https://ci.qdev.run/health` — public-safe broker health.
-- `https://worker.ci.qdev.run/internal/v1/*` — mTLS worker API.
+- `https://worker.ci.qdev.run/internal/v1/*` — mTLS worker API, published by
+  the source-owned `qdev-edge` release. The controller exposes only its
+  internal mTLS broker on port 9443; `scripts/issue_edge_proxy_certificate.sh`
+  creates the one-day, client-auth-only backhaul credential locally on that
+  host. It must never be copied to a worker or committed.
 - `https://worker.ci.qdev.run/internal/v1/operations/*` — mTLS operator API
   for signed audits and one expiring, disk-only capacity override.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
@@ -158,6 +167,23 @@ with the same owner and a fresh passing runtime-audit receipt; never resume by
 deleting the compatibility pause marker directly. The service validates the
 permit owner, enabled gate state, and referenced passing audit before every
 start, so creating an empty permit file cannot bypass the gate.
+
+The provisioning script keeps the 30 GiB free-space minimum by default. A
+single owner-authorized bootstrap may lower only that provisioning minimum by
+setting both `QDEV_WORKER_PROVISION_MIN_FREE_GIB` (an integer from 20 through
+30) and `QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true`. It does not
+relax the 85% disk-use, memory, or load gates, and does not start the worker.
+Before the owner-bound execution permit is released, `worker.env` must carry
+the normal runtime gate or a separate, source-validated runtime override.
+
+When a scoped worker must run a profile whose explicit disk reservation cannot
+fit above the default runtime floor, its owner may make a second, independent
+runtime override. It requires all of `QDEV_CLAIM_SCOPE_ID`,
+`QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE=true`, a free-space floor from 4
+through 30 GiB, and a disk-use ceiling no higher than 90%. Memory and load
+gates cannot be relaxed. The active override is reported in the worker
+heartbeat, and the broker still requires the configured floor plus the claimed
+profile's disk reservation before assigning a job.
 
 Worker provisioning archives the exact obsolete
 `qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not

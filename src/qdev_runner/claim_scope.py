@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ ALLOWED_REPOSITORY = "belilovsky/qazagents"
 ALLOWED_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker"})
 MAX_TTL = timedelta(minutes=15)
 _SHA256 = re.compile(r"^[0-9a-f]{40}$")
+_CERT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 
@@ -39,6 +41,7 @@ class ClaimScope:
     head_sha: str
     expires_at: datetime
     jobs: tuple[ScopedJob, ...]
+    worker_certificate_sha256: str | None = None
     schema: str = LEGACY_SCHEMA
 
     def permits(self, job_id: int, repository: str, head_sha: str, profile: str) -> bool:
@@ -46,6 +49,20 @@ class ClaimScope:
             repository == self.repository
             and head_sha == self.head_sha
             and any(item.job_id == job_id and item.profile == profile for item in self.jobs)
+        )
+
+    def certificate_matches(self, fingerprint: str | None) -> bool:
+        """Match a Caddy-provided mTLS certificate fingerprint exactly.
+
+        The field is optional for compatibility with existing scopes.  A
+        scope that includes it must be authenticated by that certificate; a
+        shared worker token is deliberately not an alternative credential.
+        """
+        normalized = (fingerprint or "").strip()
+        return bool(
+            self.worker_certificate_sha256
+            and _CERT_SHA256.fullmatch(normalized)
+            and secrets.compare_digest(self.worker_certificate_sha256, normalized)
         )
 
 
@@ -80,9 +97,21 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
     head_sha = _required_string(raw.get("head_sha"), "head_sha")
     if not _SHA256.fullmatch(head_sha):
         raise ClaimScopeError("claim scope head_sha must be a lowercase Git SHA")
+    worker_certificate_sha256_raw = raw.get("worker_certificate_sha256")
+    worker_certificate_sha256: str | None = None
+    if worker_certificate_sha256_raw is not None:
+        worker_certificate_sha256 = _required_string(
+            worker_certificate_sha256_raw, "worker_certificate_sha256"
+        )
+        if not _CERT_SHA256.fullmatch(worker_certificate_sha256):
+            raise ClaimScopeError(
+                "claim scope worker_certificate_sha256 must be a lowercase SHA-256"
+            )
     jobs_raw = raw.get("jobs")
-    if not isinstance(jobs_raw, list) or (schema == SCHEMA and len(jobs_raw) != 2) or (
-        schema == LEGACY_SCHEMA and not jobs_raw
+    if (
+        not isinstance(jobs_raw, list)
+        or (schema == SCHEMA and len(jobs_raw) != 2)
+        or (schema == LEGACY_SCHEMA and not jobs_raw)
     ):
         detail = "exactly two jobs" if schema == SCHEMA else "a non-empty list"
         raise ClaimScopeError(f"claim scope jobs must contain {detail}")
@@ -116,6 +145,7 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
         head_sha=head_sha,
         expires_at=_parse_expiry(raw.get("expires_at")),
         jobs=tuple(jobs),
+        worker_certificate_sha256=worker_certificate_sha256,
         schema=schema,
     )
 
@@ -177,4 +207,33 @@ def resolve_claim_scope(
         allowed_profiles = {item.profile for item in scope.jobs}
         if allowed_profiles != set(profiles):
             raise ClaimScopeError("claim scope profiles do not match worker profiles")
+    return scope
+
+
+def resolve_bound_claim_scope(
+    path: Path,
+    scope_id: str | None,
+    *,
+    worker_name: str,
+    job_id: int,
+    repository: str,
+    head_sha: str,
+    profile: str,
+) -> ClaimScope:
+    """Resolve the scope already bound to an active job without re-admitting it.
+
+    Expiry prevents new claims.  A job claimed while the scope was valid must
+    still be able to report status and completion; its immutable job binding
+    and certificate fingerprint remain mandatory.
+    """
+    normalized_scope_id = (scope_id or "").strip()
+    if not _SCOPE_ID.fullmatch(normalized_scope_id):
+        raise ClaimScopeError("claim scope ID contains unsafe characters")
+    scope = load_claim_scopes(path).get(normalized_scope_id)
+    if scope is None:
+        raise ClaimScopeError("claim scope is absent")
+    if scope.worker_name != worker_name:
+        raise ClaimScopeError("claim scope worker identity does not match")
+    if not scope.permits(job_id, repository, head_sha, profile):
+        raise ClaimScopeError("claim scope job binding does not match")
     return scope

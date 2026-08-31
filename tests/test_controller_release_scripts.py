@@ -53,3 +53,31 @@ def test_registry_keeps_human_account_separate_from_job_account() -> None:
 
     assert "qdev {$QDEV_REGISTRY_PASSWORD_HASH}" in caddyfile
     assert "qdev-runner {$QDEV_RUNNER_REGISTRY_PASSWORD_HASH}" in caddyfile
+
+
+def test_controller_defers_public_worker_route_to_source_owned_edge() -> None:
+    caddyfile = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
+
+    assert "worker.ci.qdev.run" not in caddyfile
+
+
+def test_edge_proxy_issuer_keeps_credential_local_and_short_lived() -> None:
+    script = (ROOT / "scripts/issue_edge_proxy_certificate.sh").read_text(encoding="utf-8")
+
+    assert "a worker credential" in script
+    assert "openssl genpkey -algorithm ED25519" in script
+    assert "-days 1" in script
+    assert "extendedKeyUsage=critical,clientAuth" in script
+    assert "refusing to overwrite existing edge proxy credential material" in script
+    assert "install -o root -g root -m 0600" in script
+
+
+def test_scoped_certificate_issuer_accepts_only_public_csr_and_short_client_certificate() -> None:
+    script = (ROOT / "scripts/issue_scoped_worker_certificate.sh").read_text(encoding="utf-8")
+
+    assert "The private key is created on the worker" in script
+    assert "openssl genrsa" not in script
+    assert "-days 1" in script
+    assert "extendedKeyUsage=critical,clientAuth" in script
+    assert '-CAkey "$ca_dir/ca-key.pem"' in script
+    assert "refusing to overwrite an existing certificate" in script

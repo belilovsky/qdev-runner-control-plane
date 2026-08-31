@@ -25,20 +25,6 @@ ci.qdev.run {
   respond 404
 }
 
-worker.ci.qdev.run {
-  tls {
-    client_auth {
-      mode require_and_verify
-      trust_pool file /etc/qdev-runner/mtls/ca.pem
-    }
-  }
-  @internal path /internal/*
-  handle @internal {
-    reverse_proxy 127.0.0.1:9020
-  }
-  respond 404
-}
-
 registry.ci.qdev.run {
   encode zstd gzip
   basic_auth {

@@ -102,6 +102,8 @@ def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) 
 
     assert first is not None and first["job_id"] == 100
     assert second is not None and second["job_id"] == 101
+    assert store.job(100)["claim_scope_id"] == scope.scope_id
+    assert store.job(101)["claim_scope_id"] == scope.scope_id
     assert store.job_status(102) == "pending"
     assert (
         store.claim("qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), claim_scope=scope)
@@ -147,6 +149,27 @@ def test_scoped_claim_rejects_wrong_sha_and_profile(tmp_path: Path) -> None:
 
     assert store.claim("qdev-maturity-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
+
+
+def test_requeue_clears_scope_binding_before_a_job_can_return_to_fifo(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job(repository="belilovsky/qazagents"))
+    scope = ClaimScope(
+        scope_id="maturity-20260828",
+        worker_name="qdev-maturity-primary",
+        tier="primary",
+        repository="belilovsky/qazagents",
+        head_sha="a" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(ScopedJob(100, "qdev-ci"),),
+    )
+
+    assert store.claim("qdev-maturity-primary", ("qdev-ci",), claim_scope=scope) is not None
+    assert store.requeue_active(100, "worker exited")
+    released = store.job(100)
+    assert released is not None
+    assert released["status"] == "pending"
+    assert released["claim_scope_id"] is None
 
 
 def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(
