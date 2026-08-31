@@ -41,7 +41,12 @@ it still depends on GitHub orchestration and the GitHub API.
   runner or silently changing execution lanes.
 - An exceptional temporary worker may be given a `claim-scope-v1` document.
   Its scope binds one worker name and tier to a short expiry, one repository
-  and exact Git SHA, and an explicit job-ID/profile map. Once a worker supplies
+  and exact Git SHA, and an explicit job-ID/profile map. Certificate-bound
+  scopes additionally pin the Caddy-verified mTLS client-certificate SHA-256;
+  the normal shared worker token is not a fallback credential for those scopes.
+  Generate the private key and CSR on the scoped VPS; the controller signs only
+  that public CSR with `scripts/issue_scoped_worker_certificate.sh` and returns
+  the public certificate fingerprint for the scope record. Once a worker supplies
   a scope ID, a missing, expired, malformed, or mismatched scope fails closed;
   it cannot fall back to the shared queue. Unscoped workers retain ordinary
   FIFO behavior. Scope documents are operational secrets only insofar as they

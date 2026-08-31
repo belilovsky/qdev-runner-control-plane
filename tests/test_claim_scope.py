@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from qdev_runner.claim_scope import ClaimScopeError, resolve_claim_scope
+from qdev_runner.claim_scope import ClaimScopeError, resolve_bound_claim_scope, resolve_claim_scope
 
 
 def write_scope(path: Path, *, expires_at: datetime, head_sha: str = "a" * 40) -> None:
@@ -227,10 +227,74 @@ def test_scope_requires_exact_two_jobs_profiles_and_short_expiry(tmp_path: Path)
 def test_unscoped_workers_preserve_existing_fifo_behavior(tmp_path: Path) -> None:
     path = tmp_path / "no-claim-scopes.json"
 
-    assert resolve_claim_scope(
+    assert (
+        resolve_claim_scope(
+            path,
+            None,
+            "ordinary-primary",
+            "primary",
+            ("qdev-ci",),
+        )
+        is None
+    )
+
+
+def test_certificate_bound_scope_requires_exact_lowercase_fingerprint(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    now = datetime.now(UTC)
+    write_scope(path, expires_at=now + timedelta(minutes=10))
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["scopes"][0]["worker_certificate_sha256"] = "a" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    scope = resolve_claim_scope(
         path,
-        None,
-        "ordinary-primary",
+        "maturity-20260828",
+        "qdev-maturity-primary",
         "primary",
-        ("qdev-ci",),
-    ) is None
+        ("qdev-ci", "qdev-ci-docker"),
+        now=now,
+    )
+    assert scope is not None
+    assert scope.certificate_matches("a" * 64)
+    assert not scope.certificate_matches("A" * 64)
+    assert not scope.certificate_matches("b" * 64)
+    bound = resolve_bound_claim_scope(
+        path,
+        "maturity-20260828",
+        worker_name="qdev-maturity-primary",
+        job_id=100,
+        repository="belilovsky/qazagents",
+        head_sha="a" * 40,
+        profile="qdev-ci",
+    )
+    assert bound.scope_id == scope.scope_id
+
+    document["scopes"][0]["worker_certificate_sha256"] = "A" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ClaimScopeError, match="lowercase SHA-256"):
+        resolve_claim_scope(
+            path,
+            "maturity-20260828",
+            "qdev-maturity-primary",
+            "primary",
+            ("qdev-ci", "qdev-ci-docker"),
+            now=now,
+        )
+
+
+def test_bound_scope_remains_verifiable_after_admission_expiry(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    write_scope(path, expires_at=datetime.now(UTC) - timedelta(seconds=1))
+
+    scope = resolve_bound_claim_scope(
+        path,
+        "maturity-20260828",
+        worker_name="qdev-maturity-primary",
+        job_id=101,
+        repository="belilovsky/qazagents",
+        head_sha="a" * 40,
+        profile="qdev-ci-docker",
+    )
+
+    assert scope.scope_id == "maturity-20260828"

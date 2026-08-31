@@ -34,7 +34,11 @@ worker.ci.qdev.run {
   }
   @internal path /internal/*
   handle @internal {
-    reverse_proxy 127.0.0.1:9020
+    reverse_proxy 127.0.0.1:9020 {
+      # Caddy overwrites this client-supplied header only after successful
+      # mTLS validation. The broker binds a scoped worker to this digest.
+      header_up X-QDev-Client-Certificate-SHA256 "{tls_client_fingerprint}"
+    }
   }
   respond 404
 }

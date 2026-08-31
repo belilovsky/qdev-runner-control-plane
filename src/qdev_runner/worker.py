@@ -25,9 +25,14 @@ class Worker:
         if settings.mtls_ca and settings.mtls_cert and settings.mtls_key:
             tls = ssl.create_default_context(cafile=settings.mtls_ca)
             tls.load_cert_chain(settings.mtls_cert, settings.mtls_key)
+        headers = {}
+        if settings.worker_token:
+            headers["X-QDev-Worker-Token"] = settings.worker_token
+        if settings.claim_scope_id:
+            headers["X-QDev-Claim-Scope-Id"] = settings.claim_scope_id
         self.client = httpx.AsyncClient(
             base_url=settings.broker_url,
-            headers={"X-QDev-Worker-Token": settings.worker_token},
+            headers=headers,
             timeout=45,
             verify=tls,
         )

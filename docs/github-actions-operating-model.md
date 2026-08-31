@@ -103,7 +103,9 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   narrowly bounded recovery or release needs isolation from the shared FIFO
   queue. The broker checks the supplied scope before its atomic claim: worker
   name, tier, exact repository and SHA, each job ID, profile, and expiry must
-  all match. Delete the scope when the declared jobs reach terminal GitHub
+  all match. A certificate-bound scope additionally accepts only the
+  Caddy-verified mTLS client certificate fingerprint, never the shared worker
+  token. Delete the scope when the declared jobs reach terminal GitHub
   conclusions, then destroy the temporary worker. A scope is not a general
   queue-priority mechanism and does not change ordinary worker admission.
 

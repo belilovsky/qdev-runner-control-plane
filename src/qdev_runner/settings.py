@@ -68,7 +68,7 @@ class BrokerSettings:
 @dataclass(frozen=True)
 class WorkerSettings:
     broker_url: str
-    worker_token: str
+    worker_token: str | None
     worker_name: str
     tier: str
     profiles: tuple[str, ...]
@@ -94,9 +94,13 @@ class WorkerSettings:
     @classmethod
     def from_env(cls) -> WorkerSettings:
         worker_name, tier = _worker_identity()
+        claim_scope_id = os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None
+        worker_token = os.environ.get("QDEV_WORKER_TOKEN", "").strip() or None
+        if not worker_token and not claim_scope_id:
+            raise RuntimeError("QDEV_WORKER_TOKEN is required for an unscoped worker")
         return cls(
             broker_url=_required("QDEV_BROKER_URL").rstrip("/"),
-            worker_token=_required("QDEV_WORKER_TOKEN"),
+            worker_token=worker_token,
             worker_name=worker_name,
             tier=tier,
             profiles=tuple(
@@ -135,7 +139,7 @@ class WorkerSettings:
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),
-            claim_scope_id=os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None,
+            claim_scope_id=claim_scope_id,
             min_disk_free_gib=float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30")),
             max_disk_used_pct=float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85")),
             min_memory_available_gib=float(
