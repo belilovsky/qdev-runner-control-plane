@@ -166,6 +166,14 @@ deleting the compatibility pause marker directly. The service validates the
 permit owner, enabled gate state, and referenced passing audit before every
 start, so creating an empty permit file cannot bypass the gate.
 
+The provisioning script keeps the 30 GiB free-space minimum by default. A
+single owner-authorized bootstrap may lower only that provisioning minimum by
+setting both `QDEV_WORKER_PROVISION_MIN_FREE_GIB` (an integer from 20 through
+30) and `QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true`. It does not
+relax the 85% disk-use, memory, or load gates, does not start the worker, and
+does not alter the runtime gate: `worker.env` must carry an equal or stricter
+runtime free-space minimum before the owner-bound execution permit is released.
+
 Worker provisioning archives the exact obsolete
 `qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not
 recreate that compatibility permit: the executable owner/audit validator is

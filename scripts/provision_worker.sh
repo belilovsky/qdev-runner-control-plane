@@ -18,12 +18,29 @@ disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
 memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
+provision_min_free_gib="${QDEV_WORKER_PROVISION_MIN_FREE_GIB:-30}"
+allow_capacity_override="${QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false}"
+
+if [[ ! "$provision_min_free_gib" =~ ^[0-9]+$ ]] || (( provision_min_free_gib < 20 || provision_min_free_gib > 30 )); then
+  printf 'QDEV_WORKER_PROVISION_MIN_FREE_GIB must be an integer from 20 to 30\n' >&2
+  exit 1
+fi
+if [[ "$allow_capacity_override" != "true" && "$allow_capacity_override" != "false" ]]; then
+  printf 'QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE must be true or false\n' >&2
+  exit 1
+fi
+if (( provision_min_free_gib != 30 )) && [[ "$allow_capacity_override" != "true" ]]; then
+  printf 'a lower provisioning free-space minimum requires QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true\n' >&2
+  exit 1
+fi
+provision_min_free_kib=$((provision_min_free_gib * 1024 * 1024))
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" 'BEGIN {
-    if (used > 85 || free < 31457280 || mem < 4194304 || load15 > (2 * cpus)) exit 1
+  -v cpus="$cpu_count" -v load15="$load_15" -v min_free="$provision_min_free_kib" 'BEGIN {
+    if (used > 85 || free < min_free || mem < 4194304 || load15 > (2 * cpus)) exit 1
   }' || {
-    printf 'capacity gate rejected worker provisioning\n' >&2
+    printf 'capacity gate rejected worker provisioning (used=%s%% free_kib=%s min_free_kib=%s memory_kib=%s cpus=%s load15=%s)\n' \
+      "$disk_used" "$disk_free_kib" "$provision_min_free_kib" "$memory_kib" "$cpu_count" "$load_15" >&2
     exit 1
   }
 
