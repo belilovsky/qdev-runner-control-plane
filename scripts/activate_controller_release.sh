@@ -11,6 +11,9 @@ if [[ "$#" -ne 1 ]]; then
 fi
 
 release_root=/opt/qdev-runner-control-plane
+operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
+runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
+runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
 release="$(realpath -e -- "$1")"
 case "$release" in
   "$release_root"/releases/*) ;;
@@ -29,6 +32,21 @@ for required in \
     exit 66
   }
 done
+
+# The broker runs rootless. Prepare its persistent operation store before any
+# container is recreated so a valid release cannot fail after the old broker
+# has already been replaced. Numeric IDs are intentional: the runtime image
+# owns this UID/GID even when the host has no matching passwd entry.
+[[ "$runtime_uid" =~ ^[0-9]+$ && "$runtime_gid" =~ ^[0-9]+$ ]] || {
+  printf 'controller runtime uid/gid must be numeric\n' >&2
+  exit 64
+}
+install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700 -- "$operations_root"
+if [[ "$(stat -c %u -- "$operations_root")" != "$runtime_uid" ||
+      "$(stat -c %g -- "$operations_root")" != "$runtime_gid" ]]; then
+  printf 'operation store ownership check failed for %s\n' "$operations_root" >&2
+  exit 73
+fi
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
@@ -79,8 +97,6 @@ if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
 fi
-trap 'rm -f -- "$temporary_link" "$profiles_backup"' EXIT
-
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
 # previous broker binary, not merely the previous compose file.
@@ -88,6 +104,19 @@ previous_public_image="$(docker inspect qdev-runner-broker-public --format '{{.I
 previous_public_ref="$(docker inspect qdev-runner-broker-public --format '{{.Config.Image}}' 2>/dev/null || true)"
 previous_internal_image="$(docker inspect qdev-runner-broker-internal --format '{{.Image}}' 2>/dev/null || true)"
 previous_internal_ref="$(docker inspect qdev-runner-broker-internal --format '{{.Config.Image}}' 2>/dev/null || true)"
+rollback_public_ref="qdev-runner-rollback-public:$$"
+rollback_internal_ref="qdev-runner-rollback-internal:$$"
+if [[ -n "$previous_public_image" ]]; then
+  docker image tag "$previous_public_image" "$rollback_public_ref"
+fi
+if [[ -n "$previous_internal_image" ]]; then
+  docker image tag "$previous_internal_image" "$rollback_internal_ref"
+fi
+
+cleanup_rollback_images() {
+  docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
+}
+trap 'rm -f -- "$temporary_link" "$profiles_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -116,10 +145,10 @@ rollback() {
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then
-    docker image tag "$previous_public_image" "$previous_public_ref"
+    docker image tag "$rollback_public_ref" "$previous_public_ref"
   fi
   if [[ -n "$previous_internal_image" && -n "$previous_internal_ref" ]]; then
-    docker image tag "$previous_internal_image" "$previous_internal_ref"
+    docker image tag "$rollback_internal_ref" "$previous_internal_ref"
   fi
   docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
     up -d --force-recreate --no-build --no-deps broker-public broker-internal

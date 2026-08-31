@@ -7,6 +7,7 @@ import shutil
 import signal
 import ssl
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -14,7 +15,12 @@ from typing import Any, cast
 import httpx
 
 from .capacity import Capacity, evaluate, measure, measure_raw
-from .operations import DISK_ONLY_BLOCKERS, CapacityOverrideDirective, verify_capacity_override
+from .operations import (
+    DISK_ONLY_BLOCKERS,
+    CapacityOverrideDirective,
+    parse_utc,
+    verify_capacity_override,
+)
 from .settings import WorkerSettings
 
 LOGGER = logging.getLogger("qdev-runner-worker")
@@ -27,7 +33,9 @@ class AdmissionState:
     effective: Capacity
     profiles: tuple[str, ...]
     min_disk_free_gib: float
+    max_disk_used_pct: float
     directive_id: str | None = None
+    directive_expires_at: datetime | None = None
 
 
 class Worker:
@@ -91,6 +99,7 @@ class Worker:
             effective=baseline,
             profiles=self.settings.profiles,
             min_disk_free_gib=self.settings.min_disk_free_gib,
+            max_disk_used_pct=self.settings.max_disk_used_pct,
         )
         if not isinstance(directive_payload, dict):
             return state
@@ -124,7 +133,9 @@ class Worker:
             effective=effective,
             profiles=directive.profiles,
             min_disk_free_gib=directive.min_disk_free_gib,
+            max_disk_used_pct=directive.max_disk_used_pct,
             directive_id=directive.operation_id,
+            directive_expires_at=parse_utc(directive.expires_at),
         )
 
     def heartbeat_payload(self, state: AdmissionState) -> dict[str, Any]:
@@ -147,6 +158,12 @@ class Worker:
                 "concurrency": self.settings.concurrency,
                 "slots_available": max(0, self.settings.concurrency - active_jobs),
                 "min_disk_free_gib": state.min_disk_free_gib,
+                "max_disk_used_pct": state.max_disk_used_pct,
+                "capacity_directive_expires_at": (
+                    state.directive_expires_at.isoformat().replace("+00:00", "Z")
+                    if state.directive_expires_at is not None
+                    else None
+                ),
             },
         }
 
@@ -416,18 +433,34 @@ class Worker:
             process.kill()
             await process.wait()
 
-    def disk_hard_floor_violation(self, capacity: Capacity) -> str:
-        if capacity.disk_used_pct >= self.settings.max_disk_used_pct:
+    def disk_hard_floor_violation(
+        self,
+        capacity: Capacity,
+        *,
+        min_disk_free_gib: float | None = None,
+        max_disk_used_pct: float | None = None,
+    ) -> str:
+        minimum = (
+            self.settings.min_disk_free_gib
+            if min_disk_free_gib is None
+            else min_disk_free_gib
+        )
+        maximum = (
+            self.settings.max_disk_used_pct
+            if max_disk_used_pct is None
+            else max_disk_used_pct
+        )
+        if capacity.disk_used_pct >= maximum:
             return (
                 "worker disk hard floor reached: "
                 f"used={capacity.disk_used_pct:.2f}% "
-                f"maximum={self.settings.max_disk_used_pct:.2f}%"
+                f"maximum={maximum:.2f}%"
             )
-        if capacity.disk_free_gib < self.settings.min_disk_free_gib:
+        if capacity.disk_free_gib < minimum:
             return (
                 "worker disk hard floor reached: "
                 f"free={capacity.disk_free_gib:.2f}GiB "
-                f"minimum={self.settings.min_disk_free_gib:.2f}GiB"
+                f"minimum={minimum:.2f}GiB"
             )
         return ""
 
@@ -436,11 +469,28 @@ class Worker:
         process: asyncio.subprocess.Process,
         job: dict[str, Any],
         timeout: int,
+        admission: AdmissionState | None = None,
     ) -> tuple[bytes, str]:
         communicate = asyncio.create_task(process.communicate())
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            capacity_detail = self.disk_hard_floor_violation(self.capacity())
+            if (
+                admission is not None
+                and admission.directive_expires_at is not None
+                and datetime.now(UTC) >= admission.directive_expires_at
+            ):
+                await self.terminate_process(process)
+                output, _ = await communicate
+                return output, "capacity override expired during running job"
+            capacity_detail = self.disk_hard_floor_violation(
+                self.capacity(),
+                min_disk_free_gib=(
+                    admission.min_disk_free_gib if admission is not None else None
+                ),
+                max_disk_used_pct=(
+                    admission.max_disk_used_pct if admission is not None else None
+                ),
+            )
             if capacity_detail:
                 await self.terminate_process(process)
                 output, _ = await communicate
@@ -469,7 +519,12 @@ class Worker:
                 output, _ = await communicate
                 return output, f"broker status={status}"
 
-    async def execute(self, job: dict[str, Any]) -> None:
+    async def execute(
+        self,
+        job: dict[str, Any],
+        *,
+        admission: AdmissionState | None = None,
+    ) -> None:
         async with self.semaphore:
             detail = ""
             try:
@@ -484,7 +539,12 @@ class Worker:
                     stderr=asyncio.subprocess.STDOUT,
                 )
                 timeout = int(job["profile"]["timeout_minutes"]) * 60
-                output, stop_detail = await self.wait_for_runner(process, job, timeout)
+                output, stop_detail = await self.wait_for_runner(
+                    process,
+                    job,
+                    timeout,
+                    admission=admission,
+                )
                 detail = (stop_detail + "\n" + output.decode("utf-8", errors="replace"))[-2000:]
                 exit_code = process.returncode if process.returncode is not None else 124
             except Exception as error:
@@ -520,7 +580,7 @@ class Worker:
                     if job:
                         job_id = int(job["job_id"])
                         self.active_job_ids.add(job_id)
-                        task = asyncio.create_task(self.execute(job))
+                        task = asyncio.create_task(self.execute(job, admission=admission))
                         self.tasks.add(task)
                         task.add_done_callback(partial(self.job_task_done, job_id=job_id))
                 await asyncio.wait_for(self.stopping.wait(), timeout=self.settings.poll_seconds)

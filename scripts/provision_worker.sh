@@ -6,6 +6,11 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if systemctl is-active --quiet qdev-runner-worker.service; then
+  printf 'refusing to provision while qdev-runner-worker.service is active\n' >&2
+  exit 75
+fi
+
 worker_uid=9021
 worker_user=qdev-runner
 install_root=/opt/qdev-runner-worker
@@ -19,28 +24,34 @@ memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 provision_min_free_gib="${QDEV_WORKER_PROVISION_MIN_FREE_GIB:-30}"
+provision_max_disk_used_pct="${QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-85}"
 allow_capacity_override="${QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false}"
 
-if [[ ! "$provision_min_free_gib" =~ ^[0-9]+$ ]] || (( provision_min_free_gib < 20 || provision_min_free_gib > 30 )); then
-  printf 'QDEV_WORKER_PROVISION_MIN_FREE_GIB must be an integer from 20 to 30\n' >&2
+if [[ ! "$provision_min_free_gib" =~ ^[0-9]+$ ]] || (( provision_min_free_gib < 5 || provision_min_free_gib > 30 )); then
+  printf 'QDEV_WORKER_PROVISION_MIN_FREE_GIB must be an integer from 5 to 30\n' >&2
+  exit 1
+fi
+if [[ ! "$provision_max_disk_used_pct" =~ ^[0-9]+$ ]] || (( provision_max_disk_used_pct < 85 || provision_max_disk_used_pct > 95 )); then
+  printf 'QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT must be an integer from 85 to 95\n' >&2
   exit 1
 fi
 if [[ "$allow_capacity_override" != "true" && "$allow_capacity_override" != "false" ]]; then
   printf 'QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE must be true or false\n' >&2
   exit 1
 fi
-if (( provision_min_free_gib != 30 )) && [[ "$allow_capacity_override" != "true" ]]; then
-  printf 'a lower provisioning free-space minimum requires QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true\n' >&2
+if (( provision_min_free_gib != 30 || provision_max_disk_used_pct != 85 )) && [[ "$allow_capacity_override" != "true" ]]; then
+  printf 'a relaxed provisioning capacity gate requires QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true\n' >&2
   exit 1
 fi
 provision_min_free_kib=$((provision_min_free_gib * 1024 * 1024))
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" -v min_free="$provision_min_free_kib" 'BEGIN {
-    if (used > 85 || free < min_free || mem < 4194304 || load15 > (2 * cpus)) exit 1
+  -v cpus="$cpu_count" -v load15="$load_15" -v min_free="$provision_min_free_kib" \
+  -v max_used="$provision_max_disk_used_pct" 'BEGIN {
+    if (used > max_used || free < min_free || mem < 4194304 || load15 > (2 * cpus)) exit 1
   }' || {
-    printf 'capacity gate rejected worker provisioning (used=%s%% free_kib=%s min_free_kib=%s memory_kib=%s cpus=%s load15=%s)\n' \
-      "$disk_used" "$disk_free_kib" "$provision_min_free_kib" "$memory_kib" "$cpu_count" "$load_15" >&2
+    printf 'capacity gate rejected worker provisioning (used=%s%% max_used=%s%% free_kib=%s min_free_kib=%s memory_kib=%s cpus=%s load15=%s)\n' \
+      "$disk_used" "$provision_max_disk_used_pct" "$disk_free_kib" "$provision_min_free_kib" "$memory_kib" "$cpu_count" "$load_15" >&2
     exit 1
   }
 
@@ -91,6 +102,16 @@ if [[ ! -x "${buildkit_root}/bin/buildkitd" ]]; then
 fi
 
 install -d -o root -g root -m 0755 "$install_root"
+# Older releases may have installed the active virtualenv as a relative symlink
+# into a versioned release directory. Reusing that link would mutate rollback
+# state, while python -m venv refuses to replace it. Archive only the link (not
+# its target) before creating the current, independently owned environment.
+if [[ -L "${install_root}/.venv" ]]; then
+  venv_link_backup="${install_root}/backups/venv-link-$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -o root -g root -m 0700 "$venv_link_backup"
+  mv -- "${install_root}/.venv" "$venv_link_backup/.venv"
+  printf 'previous worker virtualenv link archived at %s\n' "$venv_link_backup/.venv"
+fi
 python3 -m venv "${install_root}/.venv"
 "${install_root}/.venv/bin/pip" install --disable-pip-version-check --no-cache-dir \
   -r requirements.runtime.txt
