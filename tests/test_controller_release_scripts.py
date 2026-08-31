@@ -29,9 +29,20 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy-broker-internal-1" not in script
     assert 'docker image tag "$previous_public_image"' in script
     assert 'docker image tag "$previous_internal_image"' in script
+    assert 'rollback_public_ref="qdev-runner-rollback-public:$$"' in script
+    assert 'rollback_internal_ref="qdev-runner-rollback-internal:$$"' in script
+    assert 'docker image tag "$rollback_public_ref" "$previous_public_ref"' in script
+    assert 'docker image tag "$rollback_internal_ref" "$previous_internal_ref"' in script
+    assert "cleanup_rollback_images" in script
     assert "config/profiles.yml" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
+    assert 'operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"' in script
+    assert 'runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"' in script
+    assert 'runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"' in script
+    assert 'install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700' in script
+    assert 'stat -c %u -- "$operations_root"' in script
+    assert 'stat -c %g -- "$operations_root"' in script
 
 
 def test_controller_rollback_reuses_existing_images() -> None:
