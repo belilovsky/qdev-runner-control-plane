@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-capacity-override-v1.schema.json",
+  "title": "QDev capacity override directive v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_id",
+    "worker_name",
+    "profiles",
+    "min_disk_free_gib",
+    "max_disk_used_pct",
+    "owner",
+    "reason",
+    "issued_at",
+    "expires_at",
+    "status",
+    "cancelled_at",
+    "signature"
+  ],
+  "properties": {
+    "schema": {"const": "qdev-capacity-override-v1"},
+    "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "worker_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "min_disk_free_gib": {"type": "number", "minimum": 4.5},
+    "max_disk_used_pct": {"type": "number", "minimum": 0, "maximum": 95},
+    "owner": {"type": "string", "minLength": 1, "maxLength": 200},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["active", "cancelled"]},
+    "cancelled_at": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "format": "date-time"}
+      ]
+    },
+    "signature": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -59,9 +59,7 @@ def _worker_concurrency(detail: dict[str, Any]) -> int:
         return 1
 
 
-def _disk_headroom_allowed(
-    detail: dict[str, Any], profile_disk_mb: int | None
-) -> bool:
+def _disk_headroom_allowed(detail: dict[str, Any], profile_disk_mb: int | None) -> bool:
     if profile_disk_mb is None:
         return True
     try:
@@ -87,9 +85,7 @@ def _workflow_job_created_at(payload_json: str) -> float | None:
         value = payload.get("workflow_job", {}).get("created_at")
         if not isinstance(value, str):
             return None
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
-            UTC
-        ).timestamp()
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).timestamp()
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return timestamp if _is_valid_queue_timestamp(timestamp) else None
@@ -234,9 +230,7 @@ class Store:
                 # A temporary scope is an explicit execution sequence.  Keep the
                 # normal queue FIFO untouched, while ensuring a scoped worker can
                 # never let queue arrival order override the signed allowlist.
-                scope_order = {
-                    item.job_id: index for index, item in enumerate(claim_scope.jobs)
-                }
+                scope_order = {item.job_id: index for index, item in enumerate(claim_scope.jobs)}
                 pending_rows.sort(
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
@@ -349,10 +343,10 @@ class Store:
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL,
                     claim_scope_id=NULL, profile=NULL,
-                    claimed_at=NULL, created_at=?, updated_at=?, result=?
+                    claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running')
                 """,
-                (now, now, reason[:4000], job_id),
+                (now, reason[:4000], job_id),
             )
         return updated.rowcount == 1
 
@@ -363,10 +357,10 @@ class Store:
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL,
                     claim_scope_id=NULL, profile=NULL,
-                    claimed_at=NULL, created_at=?, updated_at=?, result=?
+                    claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status='claimed'
                 """,
-                (now, now, reason[:4000], job_id),
+                (now, reason[:4000], job_id),
             )
 
     def complete_from_webhook(self, job_id: int, conclusion: str) -> None:
@@ -403,27 +397,6 @@ class Store:
                     """,
                     (now, name, json.dumps(active_job_ids)),
                 )
-                connection.execute(
-                    """
-                    UPDATE jobs SET status='pending', worker_name=NULL,
-                        claim_scope_id=NULL, profile=NULL,
-                        claimed_at=NULL, updated_at=?, result='worker no longer reports job'
-                    WHERE worker_name=? AND status IN ('claimed','running')
-                      AND updated_at<?
-                      AND job_id NOT IN (SELECT value FROM json_each(?))
-                    """,
-                    (now, name, now - 30, json.dumps(active_job_ids)),
-                )
-            else:
-                connection.execute(
-                    """
-                    UPDATE jobs SET status='pending', worker_name=NULL,
-                        claim_scope_id=NULL, profile=NULL,
-                        claimed_at=NULL, updated_at=?, result='worker no longer reports job'
-                    WHERE worker_name=? AND status IN ('claimed','running') AND updated_at<?
-                    """,
-                    (now, name, now - 30),
-                )
             connection.execute("COMMIT")
 
     def has_available_tier_slot(self, tier: str, max_age_seconds: int) -> bool:
@@ -431,7 +404,23 @@ class Store:
         with self.connect() as connection:
             return self._has_available_tier_slot(connection, tier, cutoff)
 
-    def recover_stale_jobs(self, worker_timeout_seconds: int) -> int:
+    def stale_jobs(self, worker_timeout_seconds: int) -> list[dict[str, Any]]:
+        cutoff = time.time() - worker_timeout_seconds
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.*, workers.last_seen AS worker_last_seen
+                FROM jobs LEFT JOIN workers ON workers.name=jobs.worker_name
+                WHERE jobs.status IN ('claimed','running') AND jobs.updated_at<?
+                  AND (jobs.worker_name IS NULL OR workers.name IS NULL
+                       OR workers.last_seen<?)
+                ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def release_stale_job(self, job_id: int, reason: str, worker_timeout_seconds: int) -> bool:
         cutoff = time.time() - worker_timeout_seconds
         now = time.time()
         with self.connect() as connection:
@@ -439,15 +428,15 @@ class Store:
                 """
                 UPDATE jobs SET status='pending', worker_name=NULL,
                     claim_scope_id=NULL, profile=NULL,
-                    claimed_at=NULL, updated_at=?, result='worker lease expired'
-                WHERE status IN ('claimed','running') AND updated_at<?
+                    claimed_at=NULL, updated_at=?, result=?
+                WHERE job_id=? AND status IN ('claimed','running') AND updated_at<?
                   AND (worker_name IS NULL OR worker_name NOT IN (
                     SELECT name FROM workers WHERE last_seen>=?
                   ))
                 """,
-                (now, cutoff, cutoff),
+                (now, reason[:4000], job_id, cutoff, cutoff),
             )
-        return updated.rowcount
+        return updated.rowcount == 1
 
     def health(self) -> dict[str, Any]:
         with self.connect() as connection:

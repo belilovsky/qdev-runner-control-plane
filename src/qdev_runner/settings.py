@@ -18,9 +18,7 @@ def _worker_identity() -> tuple[str, str]:
     if tier not in {"primary", "reserve"}:
         raise RuntimeError("QDEV_WORKER_TIER must be primary or reserve")
     if not worker_name.endswith(f"-{tier}"):
-        raise RuntimeError(
-            f"QDEV_WORKER_NAME must end with -{tier} when QDEV_WORKER_TIER={tier}"
-        )
+        raise RuntimeError(f"QDEV_WORKER_NAME must end with -{tier} when QDEV_WORKER_TIER={tier}")
     return worker_name, tier
 
 
@@ -40,6 +38,10 @@ class BrokerSettings:
     registry_url: str = "registry.ci.qdev.run"
     registry_username: str = "qdev-runner"
     registry_password: str | None = None
+    operator_token: str | None = None
+    operator_receipt_key: str | None = None
+    operator_directive_key: str | None = None
+    operations_root: Path = Path("/var/lib/qdev-runner/operations")
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -62,6 +64,14 @@ class BrokerSettings:
             registry_url=os.environ.get("QDEV_REGISTRY_URL", "registry.ci.qdev.run").strip(),
             registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev-runner").strip(),
             registry_password=os.environ.get("QDEV_REGISTRY_PASSWORD", "").strip() or None,
+            operator_token=os.environ.get("QDEV_OPERATOR_TOKEN", "").strip() or None,
+            operator_receipt_key=(os.environ.get("QDEV_OPERATOR_RECEIPT_KEY", "").strip() or None),
+            operator_directive_key=(
+                os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
+            ),
+            operations_root=Path(
+                os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")
+            ),
         )
 
 
@@ -91,6 +101,7 @@ class WorkerSettings:
     mtls_ca: str | None = None
     mtls_cert: str | None = None
     mtls_key: str | None = None
+    capacity_directive_key: str | None = None
 
     @classmethod
     def from_env(cls) -> WorkerSettings:
@@ -177,4 +188,7 @@ class WorkerSettings:
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),
+            capacity_directive_key=(
+                os.environ.get("QDEV_CAPACITY_DIRECTIVE_KEY", "").strip() or None
+            ),
         )

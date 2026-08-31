@@ -98,6 +98,8 @@ are reported and left unchanged.
   internal mTLS broker on port 9443; `scripts/issue_edge_proxy_certificate.sh`
   creates the one-day, client-auth-only backhaul credential locally on that
   host. It must never be copied to a worker or committed.
+- `https://worker.ci.qdev.run/internal/v1/operations/*` — mTLS operator API
+  for signed audits and one expiring, disk-only capacity override.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
 
@@ -191,6 +193,36 @@ the only accepted start boundary.
 A green heartbeat is only broker/capacity evidence. Recovery closes only when
 the same-SHA GitHub canary leaves `queued`, reports the expected runner name,
 and succeeds.
+
+## Signed capacity and stale-worker recovery
+
+The capacity endpoint never changes a job, FIFO order, lease, label, profile or
+`runs-on`. It can issue one signed override for a fresh, idle worker only when
+the baseline blocker is disk-only and measured headroom still covers the hard
+4.5 GiB floor plus the selected profile's declared requirement. The directive
+expires after at most 15 minutes and the worker verifies its signature, worker
+name, profile scope and timestamps before using it.
+
+The broker never automatically releases a claimed or running job merely
+because its worker heartbeat disappeared. Stale candidates are read-only until
+an mTLS-authenticated operator reconciles the complete immutable tuple with the
+GitHub provider. A provider-active job remains untouched. A provider-completed
+job is closed locally, and only a provider-queued job may be released for an
+ordinary claim while retaining its original `created_at` and FIFO position.
+This is the sole stale-worker mutation path; it never creates or retries a
+provider run.
+
+Configure all three broker values atomically:
+
+- `QDEV_OPERATOR_TOKEN`
+- `QDEV_OPERATOR_RECEIPT_KEY`
+- `QDEV_OPERATOR_DIRECTIVE_KEY`
+
+Set the same directive key on the worker as
+`QDEV_CAPACITY_DIRECTIVE_KEY`. Keep all values in the host environment files,
+never Git. Operator calls additionally require the existing mTLS client
+identity. See `docs/controller-capacity-recovery.md` for the audited procedure,
+receipt schemas and rollback.
 
 ## Portfolio rollout
 

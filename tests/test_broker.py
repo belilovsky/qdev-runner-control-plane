@@ -203,6 +203,10 @@ def test_expired_scope_heartbeats_only_its_already_bound_job(
         )
         rejected = client.post("/internal/v1/workers/heartbeat", json=payload)
 
-    assert accepted.status_code == 204
+    assert accepted.status_code == 200
+    assert accepted.json() == {
+        "schema": "qdev-worker-directives-v1",
+        "capacity_override": None,
+    }
     assert wrong_worker.status_code == 403
     assert rejected.status_code == 401
