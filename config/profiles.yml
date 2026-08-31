@@ -1,4 +1,10 @@
 schema_version: qdev-runner-profiles-v1
+# QazShield's pinned release-image workflow has a measured bounded build scope.
+# This changes admission for that exact repository/profile only; the worker's
+# live disk floor remains enforced throughout execution.
+repository_admission_disk_mb:
+  belilovsky/qazshield:
+    qdev-ci-docker: 15360
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
