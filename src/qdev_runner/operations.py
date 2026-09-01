@@ -107,7 +107,10 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
     if expected is None:
         raise ValueError("unsupported controller receipt kind")
     if kind == "fifo-claim-scope-issued" and value.get("idempotent") is False:
-        expected = expected | {"replaced_expired_scope"}
+        expected = expected | {
+            "replaced_expired_scope",
+            "rolled_over_terminal_scope",
+        }
     if set(value) != expected:
         raise ValueError("controller receipt payload fields are invalid")
     if kind != "fifo-claim-scope-issued" and not isinstance(value.get("observed_at"), str):
