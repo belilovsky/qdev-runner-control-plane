@@ -37,6 +37,17 @@ from .operations import (
     OperationStore,
 )
 from .policy import Policy, PolicyError
+from .release_lane import (
+    HostHeartbeatRequest,
+    ReleaseAdmissionRequest,
+    ReleaseLane,
+    ReleaseLaneError,
+    ReleaseLanePolicy,
+    ReleaseStore,
+    admission_receipt,
+    validate_candidate,
+    validate_host_heartbeat,
+)
 from .settings import BrokerSettings
 from .store import Store
 
@@ -341,6 +352,7 @@ def create_app(
     app.state.policy = policy
     app.state.github = github
     app.state.operations = operations
+    release_store: ReleaseStore | None = None
 
     def require_worker(
         token: str | None,
@@ -362,6 +374,66 @@ def create_app(
         if not token or not secrets.compare_digest(token, settings.operator_token):
             raise HTTPException(status_code=401, detail="operator authentication failed")
         return operations
+
+    def release_policy() -> ReleaseLanePolicy:
+        try:
+            return ReleaseLanePolicy(settings.release_lanes_path)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503, detail="release-lane policy is unavailable"
+            ) from error
+
+    def release_state() -> ReleaseStore:
+        nonlocal release_store
+        if release_store is None:
+            try:
+                release_store = ReleaseStore(settings.release_jobs_root)
+            except OSError as error:
+                raise HTTPException(
+                    status_code=503, detail="release-lane durable state is unavailable"
+                ) from error
+            app.state.release_store = release_store
+        return release_store
+
+    def require_release_mtls(identity: str | None, expected: str) -> None:
+        if not identity or not secrets.compare_digest(identity, expected):
+            raise HTTPException(status_code=403, detail="release-lane mTLS identity required")
+
+    def stored_heartbeat(record: dict[str, Any]) -> HostHeartbeatRequest:
+        fields = {
+            "schema",
+            "release_lane",
+            "project_id",
+            "placement",
+            "state",
+            "release_lock",
+            "capacity_free_gib",
+            "active_release",
+            "rollback",
+        }
+        try:
+            return HostHeartbeatRequest.model_validate({name: record[name] for name in fields})
+        except (KeyError, ValueError) as error:
+            raise HTTPException(
+                status_code=409, detail="host-agent heartbeat is invalid"
+            ) from error
+
+    def ready_host_agent(lane: ReleaseLane) -> None:
+        state = release_state()
+        record = state.fresh_agent(lane)
+        if record is None:
+            raise HTTPException(status_code=409, detail="host-agent heartbeat is missing or stale")
+        try:
+            heartbeat = stored_heartbeat(record)
+            validate_host_heartbeat(heartbeat, lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=409, detail="host-agent preflight is not ready"
+            ) from error
+        if heartbeat.capacity_free_gib < lane.minimum_free_gib:
+            raise HTTPException(
+                status_code=409, detail="host-agent capacity is below release minimum"
+            )
 
     def current_worker(worker_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         snapshot = store.health()
@@ -482,6 +554,139 @@ def create_app(
             "controller_release": controller_release_status(
                 settings.controller_release_status_path
             ),
+        }
+
+    @app.post("/internal/v1/release-hosts/{placement}/heartbeat")
+    def release_host_heartbeat(
+        placement: str,
+        request: HostHeartbeatRequest,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        try:
+            validate_host_heartbeat(request, lane)
+            record = release_state().record_heartbeat(
+                lane, request, identity=lane.host_agent_mtls_identity
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=422, detail="host-agent heartbeat was rejected"
+            ) from error
+        return {
+            "schema": "qdev-release-host-agent-heartbeat-receipt-v1",
+            "status": "recorded",
+            "release_lane": lane.name,
+            "placement": lane.placement,
+            "received_at": record["received_at"],
+        }
+
+    @app.post("/internal/v1/releases/qaz-tours", status_code=202)
+    def admit_qaz_tours_release(
+        request: ReleaseAdmissionRequest,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane("qdev-release-qaz-tours")
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503, detail="qaz-tours release lane is unavailable"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        try:
+            validate_candidate(request, lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=422, detail="release candidate was rejected") from error
+        ready_host_agent(lane)
+        try:
+            job, _idempotent = release_state().admit(request, lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="release lane is busy") from error
+        return admission_receipt(job)
+
+    @app.get("/internal/v1/release-hosts/{placement}/jobs/next", response_model=None)
+    def next_release_host_job(
+        placement: str,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any] | Response:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        ready_host_agent(lane)
+        job = release_state().next_job(lane)
+        if job is None:
+            return Response(status_code=204)
+        return {
+            "schema": "qdev-release-host-agent-job-v1",
+            "release_id": job["release_id"],
+            "release_lane": lane.name,
+            "project_id": lane.project_id,
+            "placement": lane.placement,
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+            "artifact_ref": job["artifact_ref"],
+        }
+
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
+    def complete_release_host_job(
+        placement: str,
+        release_id: str,
+        receipt: dict[str, Any],
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        try:
+            job = release_state().complete(lane, release_id, receipt)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="runtime receipt was rejected") from error
+        return dict(job["runtime_receipt"])
+
+    @app.get("/internal/v1/releases/qaz-tours/{release_id}")
+    def qaz_tours_release_status(
+        release_id: str,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane("qdev-release-qaz-tours")
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503, detail="qaz-tours release lane is unavailable"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        job = release_state().job(lane, release_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="release receipt was not found")
+        return {
+            "schema": "qdev-controller-release-status-v1",
+            "release_id": job["release_id"],
+            "status": job["status"],
+            "release_lane": job["release_lane"],
+            "project_id": job["project_id"],
+            "placement": job["placement"],
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+            "artifact_ref": job["artifact_ref"],
+            "runtime_receipt": job.get("runtime_receipt"),
         }
 
     @app.get("/internal/v1/operations/controller-release")

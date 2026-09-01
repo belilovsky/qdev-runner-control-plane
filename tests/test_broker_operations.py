@@ -85,6 +85,26 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         ),
         encoding="utf-8",
     )
+    release_lanes = tmp_path / "release-lanes.yml"
+    release_lanes.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "qdev-release-lanes-v1",
+                "lanes": {
+                    "qdev-release-qaz-tours": {
+                        "project_id": "qaz-tours",
+                        "placement": "vps-hostinger-186",
+                        "client_mtls_identity": "qdev-release-client:qaz-tours",
+                        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+                        "minimum_free_gib": 60,
+                        "heartbeat_ttl_seconds": 90,
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -100,6 +120,8 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         operations_root=tmp_path / "operations",
         controller_release_status_path=tmp_path / "controller-release.json",
         claim_scopes_path=tmp_path / "claim-scopes.json",
+        release_lanes_path=release_lanes,
+        release_jobs_root=tmp_path / "release-jobs",
     )
     app = create_app(
         settings,
@@ -108,6 +130,159 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         github=github or object(),  # type: ignore[arg-type]
     )
     return TestClient(app)
+
+
+def _release_heartbeat() -> dict[str, Any]:
+    return {
+        "schema": "qdev-release-host-agent-heartbeat-v1",
+        "release_lane": "qdev-release-qaz-tours",
+        "project_id": "qaz-tours",
+        "placement": "vps-hostinger-186",
+        "state": "ready",
+        "release_lock": "available",
+        "capacity_free_gib": 64,
+        "active_release": {
+            "source_sha": "c" * 40,
+            "artifact_digest": "sha256:" + "c" * 64,
+            "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "c" * 64,
+        },
+        "rollback": {
+            "verified": True,
+            "source_sha": "d" * 40,
+            "artifact_digest": "sha256:" + "d" * 64,
+            "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "d" * 64,
+        },
+    }
+
+
+def _release_request(source_sha: str = "a" * 40) -> dict[str, Any]:
+    digest = "sha256:" + "b" * 64
+    artifact_ref = f"registry.ci.qdev.run/qaz-tours@{digest}"
+    return {
+        "schema": "qdev-controller-release-request-v1",
+        "release_lane": "qdev-release-qaz-tours",
+        "project_id": "qaz-tours",
+        "placement": "vps-hostinger-186",
+        "source_sha": source_sha,
+        "artifact_digest": digest,
+        "artifact_ref": artifact_ref,
+        "candidate_receipt": {
+            "schema": "qdev-release-candidate-receipt-v1",
+            "status": "passed",
+            "source_sha": source_sha,
+            "artifact_digest": digest,
+            "artifact_ref": artifact_ref,
+        },
+    }
+
+
+def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    product_headers = {"X-QDev-mTLS-Identity": "qdev-release-client:qaz-tours"}
+    host_headers = {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186"}
+
+    assert (
+        client.post("/internal/v1/releases/qaz-tours", json=_release_request()).status_code == 403
+    )
+    missing_ref = _release_request()
+    missing_ref.pop("artifact_ref")
+    assert (
+        client.post(
+            "/internal/v1/releases/qaz-tours", json=missing_ref, headers=product_headers
+        ).status_code
+        == 422
+    )
+    invalid = _release_request()
+    invalid["untrusted"] = True
+    assert (
+        client.post(
+            "/internal/v1/releases/qaz-tours", json=invalid, headers=product_headers
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=_release_heartbeat(),
+            headers=host_headers,
+        ).status_code
+        == 200
+    )
+
+    accepted = client.post(
+        "/internal/v1/releases/qaz-tours", json=_release_request(), headers=product_headers
+    )
+    assert accepted.status_code == 202
+    receipt = accepted.json()
+    assert receipt == {
+        "schema": "qdev-controller-release-receipt-v1",
+        "status": "accepted",
+        "release_id": receipt["release_id"],
+        "release_lane": "qdev-release-qaz-tours",
+        "project_id": "qaz-tours",
+        "placement": "vps-hostinger-186",
+        "source_sha": "a" * 40,
+        "artifact_digest": "sha256:" + "b" * 64,
+        "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "b" * 64,
+    }
+    assert (
+        client.post(
+            "/internal/v1/releases/qaz-tours", json=_release_request(), headers=product_headers
+        )
+    ).json() == receipt
+    assert (
+        client.post(
+            "/internal/v1/releases/qaz-tours",
+            json=_release_request("e" * 40),
+            headers=product_headers,
+        ).status_code
+        == 409
+    )
+
+    job = client.get("/internal/v1/release-hosts/vps-hostinger-186/jobs/next", headers=host_headers)
+    assert job.status_code == 200
+    assert job.json()["release_id"] == receipt["release_id"]
+    assert (
+        client.post(
+            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{receipt['release_id']}/complete",
+            json={},
+            headers=host_headers,
+        ).status_code
+        == 409
+    )
+    runtime_receipt = {
+        "schema": "qdev-controller-release-runtime-receipt-v1",
+        "status": "verified",
+        "project": "qaz-tours",
+        "release_lane": "qdev-release-qaz-tours",
+        "placement": "vps-hostinger-186",
+        "source_sha": "a" * 40,
+        "artifact_digest": "sha256:" + "b" * 64,
+        "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "b" * 64,
+        "health": "ok",
+        "readiness": {"qazgeo": "degraded"},
+        "rollback": {
+            "verified": True,
+            "source_sha": "c" * 40,
+            "artifact_digest": "sha256:" + "c" * 64,
+            "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "c" * 64,
+        },
+    }
+    completed = client.post(
+        f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{receipt['release_id']}/complete",
+        json=runtime_receipt,
+        headers=host_headers,
+    )
+    assert completed.status_code == 200
+    assert completed.json() == runtime_receipt
+    status = client.get(
+        f"/internal/v1/releases/qaz-tours/{receipt['release_id']}", headers=product_headers
+    )
+    assert status.status_code == 200
+    assert status.json()["status"] == "verified"
+    assert status.json()["runtime_receipt"] == runtime_receipt
 
 
 class FakeGitHub:
@@ -441,9 +616,12 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
         "correlation_id": "fifo-head-42",
         "duration_seconds": 900,
     }
-    assert client.post(
-        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
-    ).status_code == 200
+    assert (
+        client.post(
+            "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+        ).status_code
+        == 200
+    )
 
     store: Store = client.app.state.store
     store.set_status(42, "completed", "success")

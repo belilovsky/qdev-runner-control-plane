@@ -35,14 +35,22 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'docker image tag "$rollback_internal_ref" "$previous_internal_ref"' in script
     assert "cleanup_rollback_images" in script
     assert "config/profiles.yml" in script
+    assert "config/release-lanes.yml" in script
+    assert "scripts/qaz_tours_release_host_agent.py" in script
+    assert "deploy/qdev-release-qaz-tours.service" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
+    assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
     assert 'operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"' in script
+    assert (
+        'release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"' in script
+    )
     assert 'runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"' in script
     assert 'runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"' in script
     assert 'install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700' in script
-    assert 'stat -c %u -- "$operations_root"' in script
-    assert 'stat -c %g -- "$operations_root"' in script
+    assert 'for durable_root in "$operations_root" "$release_jobs_root"; do' in script
+    assert 'stat -c %u -- "$durable_root"' in script
+    assert 'stat -c %g -- "$durable_root"' in script
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
@@ -54,6 +62,8 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "restore_release_status()" in script
     assert "controller_release_receipt=active" in script
     assert "for release_file in" in script
+    assert '"$release/scripts/qaz_tours_release_host_agent.py"' in script
+    assert '"$release/deploy/qdev-release-qaz-tours.service"' in script
     assert 'sha256sum -- "$release_file"' in script
     assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
         "if ! write_release_status; then"

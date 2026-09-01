@@ -12,6 +12,7 @@ fi
 
 release_root=/opt/qdev-runner-control-plane
 operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
+release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"
 release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
@@ -27,6 +28,9 @@ for required in \
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
+  config/release-lanes.yml \
+  scripts/qaz_tours_release_host_agent.py \
+  deploy/qdev-release-qaz-tours.service \
   deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
@@ -47,12 +51,14 @@ release_status_directory="$(dirname -- "$release_status_path")"
   printf 'controller runtime uid/gid must be numeric\n' >&2
   exit 64
 }
-install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700 -- "$operations_root"
-if [[ "$(stat -c %u -- "$operations_root")" != "$runtime_uid" ||
-      "$(stat -c %g -- "$operations_root")" != "$runtime_gid" ]]; then
-  printf 'operation store ownership check failed for %s\n' "$operations_root" >&2
-  exit 73
-fi
+for durable_root in "$operations_root" "$release_jobs_root"; do
+  install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700 -- "$durable_root"
+  if [[ "$(stat -c %u -- "$durable_root")" != "$runtime_uid" ||
+        "$(stat -c %g -- "$durable_root")" != "$runtime_gid" ]]; then
+    printf 'controller durable-store ownership check failed for %s\n' "$durable_root" >&2
+    exit 73
+  fi
+done
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
@@ -98,12 +104,18 @@ current="$release_root/current"
 previous="$(readlink -f -- "$current" 2>/dev/null || true)"
 temporary_link="$release_root/.current.$$"
 profiles_backup="$(mktemp /tmp/qdev-runner-profiles.XXXXXX)"
+release_lanes_backup="$(mktemp /tmp/qdev-runner-release-lanes.XXXXXX)"
 release_status_backup="$(mktemp /tmp/qdev-runner-controller-release-status.XXXXXX)"
 profiles_were_present=false
+release_lanes_were_present=false
 release_status_was_present=false
 if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
+fi
+if [[ -f /etc/qdev-runner/release-lanes.yml ]]; then
+  install -m 0600 -- /etc/qdev-runner/release-lanes.yml "$release_lanes_backup"
+  release_lanes_were_present=true
 fi
 if [[ -f "$release_status_path" ]]; then
   install -m 0644 -- "$release_status_path" "$release_status_backup"
@@ -128,7 +140,7 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_status_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$release_status_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -149,6 +161,9 @@ release_digest="$(
     "$release/deploy/compose.yml" \
     "$release/inventory/repos.json" \
     "$release/config/profiles.yml" \
+    "$release/config/release-lanes.yml" \
+    "$release/scripts/qaz_tours_release_host_agent.py" \
+    "$release/deploy/qdev-release-qaz-tours.service" \
     "$release/deploy/Dockerfile.broker"
   do
     sha256sum -- "$release_file" | awk '{print $1}'
@@ -174,6 +189,7 @@ restore_release_status() {
 
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
+install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -191,6 +207,11 @@ rollback() {
     install -m 0644 -- "$profiles_backup" /etc/qdev-runner/profiles.yml
   else
     rm -f -- /etc/qdev-runner/profiles.yml
+  fi
+  if [[ "$release_lanes_were_present" == true ]]; then
+    install -m 0644 -- "$release_lanes_backup" /etc/qdev-runner/release-lanes.yml
+  else
+    rm -f -- /etc/qdev-runner/release-lanes.yml
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then

@@ -108,8 +108,35 @@ are reported and left unchanged.
   host. It must never be copied to a worker or committed.
 - `https://worker.ci.qdev.run/internal/v1/operations/*` — mTLS operator API
   for signed audits and one expiring, disk-only capacity override.
+- `https://worker.ci.qdev.run/internal/v1/releases/qaz-tours` — the separate,
+  product-specific Qaz.Tours release admission. It accepts only an exact SHA,
+  immutable artifact digest and completed candidate receipt from the enrolled
+  product client. The mTLS host agent at `vps-hostinger-186` consumes the job,
+  proves 60 GiB capacity plus a distinct verified rollback, and returns the
+  runtime receipt. It is deliberately outside the shared GitHub runner queue.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
+
+### Qaz.Tours immutable host agent
+
+`qdev-release-qaz-tours` is a controller-owned release lane for the existing
+`vps-hostinger-186` host. The controller admits only an exact source SHA plus
+`registry.ci.qdev.run/qaz-tours@sha256:…` after completed candidate CI and a
+fresh mTLS heartbeat from that host. The root-owned, one-shot host agent is
+defined by `deploy/qdev-release-qaz-tours.service`; it is not a timer and must
+be invoked by the existing controller/host-agent path.
+
+Before enrollment, QDev Fleet must place these private, root-owned files
+through the host-agent only, never source control: the configuration
+`/etc/qdev-release-agents/qaz-tours.env`; the referenced agent certificate,
+key and controller CA; and `/var/lib/qdev-release-agents/qaz-tours-state.json`
+with distinct, previously verified active and rollback release tuples.
+
+The agent refuses absent state, capacity below 60 GiB, mutable images, absent
+OCI source revision, unavailable lock and failed public health. It starts only
+the supplied immutable image with `docker compose --no-build --pull never`.
+On a failed candidate it restores and re-proves the verified rollback; it never
+creates hosts, cleans Docker state or reads runtime secret values.
 
 ## Guarded controller release
 
@@ -130,6 +157,9 @@ profile file is restored together with the previous release if activation
 fails. It does not restart a worker, stop the registry, remove Compose or Docker
 objects, or touch product containers. If either Compose or the public health
 check fails, the script restores the previous release and its configuration.
+The activation also installs the versioned `release-lanes.yml` policy and
+creates the controller-owned, mode-0700 release-job state before replacing the
+broker, so an unavailable release lane cannot be mistaken for a CI slot.
 
 For an inventory-only revision that reuses the already verified broker images,
 the owner may make a bounded capacity override together with

@@ -1,0 +1,14 @@
+schema_version: qdev-release-lanes-v1
+lanes:
+  qdev-release-qaz-tours:
+    project_id: qaz-tours
+    placement: vps-hostinger-186
+    # Caddy injects these identities only after it validates the corresponding
+    # client certificate against the controller CA; clients cannot self-assert
+    # either header through the public edge.
+    client_mtls_identity: qdev-release-client:qaz-tours
+    host_agent_mtls_identity: qdev-host-agent:vps-hostinger-186
+    # Product capacity is independent from shared CI capacity.  It reserves
+    # enough room for current, verified rollback and atomic candidate release.
+    minimum_free_gib: 60
+    heartbeat_ttl_seconds: 90
