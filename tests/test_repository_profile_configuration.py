@@ -11,3 +11,13 @@ def test_qazcompute_docker_admission_is_repository_scoped() -> None:
         ("belilovsky/qazcompute", "qdev-ci-docker")
     ] == 18 * 1024
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
+
+
+def test_mcp_servers_docker_admission_is_repository_scoped() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert policy.repository_profile_disk_mb[
+        ("belilovsky/mcp-servers", "qdev-ci-docker")
+    ] == 12 * 1024
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
