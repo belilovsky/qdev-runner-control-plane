@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from qdev_runner.claim_scope import ClaimScope, ScopedJob
+from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
 
@@ -17,18 +17,20 @@ def job(
     *,
     repository: str = "belilovsky/private-repo",
     head_sha: str = "a" * 40,
+    run_id: int = 200,
+    attempt: int = 1,
 ) -> QueuedJob:
     return QueuedJob(
         delivery_id=delivery,
         job_id=job_id,
-        run_id=200,
+        run_id=run_id,
         repository=repository,
         repository_id=1,
         installation_id=300,
         labels=("self-hosted", "Linux", "X64", profile),
         head_sha=head_sha,
         head_branch="main",
-        payload={},
+        payload={"workflow_job": {"run_attempt": attempt}},
     )
 
 
@@ -164,6 +166,77 @@ def test_scoped_claim_rejects_wrong_sha_and_profile(tmp_path: Path) -> None:
     )
 
     assert store.claim("qdev-maturity-primary", ("qdev-ci",), claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
+
+
+def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("older", 100, repository="belilovsky/qazlake", head_sha="a" * 40))
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazstack",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        tier="primary",
+        repository=None,
+        head_sha=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazstack",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+    )
+
+    assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
+def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            repository="belilovsky/qazlake",
+            head_sha="a" * 40,
+            run_id=200,
+            attempt=2,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        tier="primary",
+        repository=None,
+        head_sha=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                100,
+                "qdev-ci",
+                repository="belilovsky/qazlake",
+                run_id=200,
+                attempt=1,
+                exact_sha="a" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+    )
+
+    assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
 
 

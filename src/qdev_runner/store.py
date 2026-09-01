@@ -253,6 +253,20 @@ class Store:
                 pending_rows.sort(
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
+            profile_heads: dict[str, int] = {}
+            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+                # v2 scopes may authorize independent profiles concurrently, but
+                # may never skip the oldest pending job within any one profile.
+                # Keep this guard in the durable claim path as well as the
+                # controller endpoint: a worker must not be able to bypass FIFO
+                # by invoking the store directly.
+                for row in pending_rows:
+                    labels = {label.lower() for label in json.loads(row["labels_json"])}
+                    matching_profile = next(
+                        (profile for profile in profiles if profile.lower() in labels), None
+                    )
+                    if matching_profile is not None:
+                        profile_heads.setdefault(matching_profile.lower(), int(row["job_id"]))
             for row in pending_rows:
                 if repository is not None and str(row["repository"]).lower() != repository.lower():
                     continue
@@ -261,6 +275,12 @@ class Store:
                     (profile for profile in profiles if profile.lower() in labels), None
                 )
                 if matching_profile is None:
+                    continue
+                if (
+                    claim_scope is not None
+                    and claim_scope.schema == SCHEMA_V2
+                    and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
+                ):
                     continue
                 if claim_scope is not None and not claim_scope.permits(
                     int(row["job_id"]),
