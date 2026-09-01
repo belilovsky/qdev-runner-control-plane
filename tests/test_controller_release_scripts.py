@@ -74,6 +74,14 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert service.count("--project-name qdev-runner") == 2
 
 
+def test_controller_claim_scope_store_uses_writable_runtime_volume() -> None:
+    compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
+
+    assert compose.count("QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json") == 2
+    assert compose.count("- /var/lib/qdev-runner:/var/lib/qdev-runner") == 2
+    assert "/etc/qdev-runner/claim-scopes.json" not in compose
+
+
 def test_registry_keeps_human_account_separate_from_job_account() -> None:
     caddyfile = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
 

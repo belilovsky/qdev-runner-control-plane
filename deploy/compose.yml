@@ -11,6 +11,7 @@ services:
     environment:
       PORT: "9020"
       QDEV_LISTEN_HOST: "0.0.0.0"
+      QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
@@ -37,6 +38,7 @@ services:
       QDEV_TLS_CERT: /etc/qdev-runner/mtls/controller/controller-cert.pem
       QDEV_TLS_KEY: /etc/qdev-runner/mtls/controller/controller-key.pem
       QDEV_TLS_CLIENT_CA: /etc/qdev-runner/mtls/controller/ca.pem
+      QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
