@@ -456,6 +456,46 @@ def test_claim_scope_reconciles_provider_terminal_fifo_rows(tmp_path: Path) -> N
     assert payload["immutable_tuple"]["job_id"] == 43
 
 
+def test_claim_scope_rolls_forward_after_previous_tuple_is_terminal(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 42, "delivery-42")
+    _seed_pending_job(client, 43, "delivery-43")
+    headers = {
+        "X-QDev-Operator-Token": OPERATOR_TOKEN,
+        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+    }
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-42",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+    )
+    assert issued.status_code == 200
+    client.app.state.store.complete_from_webhook(42, "success")
+
+    advanced = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope",
+        headers=headers,
+        json=request | {"job_id": 43, "correlation_id": "fifo-head-43"},
+    )
+
+    assert advanced.status_code == 200
+    payload = verify_controller_receipt(advanced.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["rolled_over_terminal_scope"] is True
+    assert payload["replaced_expired_scope"] is False
+    assert [item["job_id"] for item in payload["claim_scope"]["jobs"]] == [42, 43]
+
+
 def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, active_jobs=1)
