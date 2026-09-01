@@ -10,6 +10,12 @@ repository_admission_disk_mb:
   # independent free-space floor is still enforced before the job is claimed.
   belilovsky/qazlake:
     qdev-ci-docker: 12288
+  # QazCompute's pinned Docker release produced 824 MiB of compressed layers,
+  # while its workflow independently requires 20 GiB of free host space before
+  # building.  Reserve 18 GiB for admission on this repository only; the
+  # controller's 4.5 GiB hard floor and the workflow preflight remain intact.
+  belilovsky/qazcompute:
+    qdev-ci-docker: 18432
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
