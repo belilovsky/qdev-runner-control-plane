@@ -52,14 +52,25 @@ class OperatorSettings:
         )
 
 
-def verify_controller_receipt(document: Mapping[str, Any], *, receipt_key: str, allow_legacy: bool = False) -> dict[str, Any]:
+def verify_controller_receipt(
+    document: Mapping[str, Any], *, receipt_key: str, allow_legacy: bool = False
+) -> dict[str, Any]:
     schema = document.get("schema")
     if schema == "qdev-controller-receipt-v1":
         if not allow_legacy:
-            raise ValueError("legacy controller receipt is legacy_unverified and cannot be enforced")
+            raise ValueError(
+                "legacy controller receipt is legacy_unverified and cannot be enforced"
+            )
         expected_fields = {"schema", "receipt_id", "payload", "digest", "signature"}
     else:
-        expected_fields = {"schema", "receipt_id", "payload", "digest", "enforcement", "signature"}
+        expected_fields = {
+            "schema",
+            "receipt_id",
+            "payload",
+            "digest",
+            "enforcement",
+            "signature",
+        }
     if set(document) != expected_fields:
         raise ValueError("invalid controller receipt fields")
     if schema not in {"qdev-controller-receipt-v1", "qdev-controller-receipt-v2"}:
