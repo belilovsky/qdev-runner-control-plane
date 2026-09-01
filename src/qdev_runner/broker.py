@@ -611,6 +611,8 @@ def create_app(
             ) from exc
         existing = scopes.get(request.scope_id)
         replaced_expired_scope = False
+        rolled_over_terminal_scope = False
+        retained_jobs: tuple[ScopedJob, ...] = ()
         if existing is not None:
             same_scope = (
                 existing.schema == SCHEMA_V2
@@ -651,6 +653,31 @@ def create_app(
                     }
                     return operation_store.receipt(payload)
                 replaced_expired_scope = True
+            elif (
+                existing.schema == SCHEMA_V2
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.expires_at > datetime.now(UTC)
+            ):
+                # A v2 scope may advance only after every earlier immutable
+                # tuple it contains has a provider-terminal local record.  This
+                # lets one enrolled worker progress through profile FIFO without
+                # widening scope, requeueing, or changing the worker binding.
+                previous = [store.job(item.job_id) for item in existing.jobs]
+                if any(
+                    item is None
+                    or str(item.get("status")) not in {"completed", "failed", "rejected"}
+                    for item in previous
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="claim scope has non-terminal immutable tuple",
+                    )
+                rolled_over_terminal_scope = True
+                retained_jobs = existing.jobs
             elif not (
                 existing.schema == SCHEMA_V2
                 and existing.worker_name == request.worker_name
@@ -667,6 +694,14 @@ def create_app(
             else:
                 replaced_expired_scope = True
 
+        scoped_job = ScopedJob(
+            job_id=job_id,
+            repository=str(candidate["repository"]),
+            exact_sha=str(candidate["head_sha"]),
+            profile=profile.name,
+            run_id=int(candidate["run_id"]),
+            attempt=attempt,
+        )
         scope = ClaimScope(
             schema=SCHEMA_V2,
             scope_id=request.scope_id,
@@ -679,16 +714,7 @@ def create_app(
             correlation_id=request.correlation_id,
             worker_certificate_sha256=certificate_sha256,
             expires_at=datetime.now(UTC) + timedelta(seconds=request.duration_seconds),
-            jobs=(
-                ScopedJob(
-                    job_id=job_id,
-                    repository=str(candidate["repository"]),
-                    exact_sha=str(candidate["head_sha"]),
-                    profile=profile.name,
-                    run_id=int(candidate["run_id"]),
-                    attempt=attempt,
-                ),
-            ),
+            jobs=retained_jobs + (scoped_job,),
         )
         try:
             upsert_claim_scope(settings.claim_scopes_path, scope)
@@ -704,6 +730,7 @@ def create_app(
             "mtls_identity": x_qdev_operator_mtls_identity,
             "idempotent": False,
             "replaced_expired_scope": replaced_expired_scope,
+            "rolled_over_terminal_scope": rolled_over_terminal_scope,
             "claim_scope": claim_scope_mapping(scope),
             "immutable_tuple": {
                 "repository": candidate["repository"],
