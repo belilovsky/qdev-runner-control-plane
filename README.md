@@ -43,9 +43,13 @@ it still depends on GitHub orchestration and the GitHub API.
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
   runner or silently changing execution lanes.
-- An exceptional temporary worker may be given a `claim-scope-v1` document.
-  Its scope binds one worker name and tier to a short expiry, one repository
-  and exact Git SHA, and an explicit job-ID/profile map. Certificate-bound
+- An exceptional temporary worker may be given a short-lived claim-scope
+  document. `claim-scope-v1` remains valid for already-issued QazAgents
+  scopes. New `claim-scope-v2` documents bind every admitted job to its exact
+  repository, workflow run, job ID, attempt, Git SHA, profile, worker and
+  expiry. For v2, the broker admits only the current FIFO head of each allowed
+  profile; a scope cannot reorder a job, substitute a SHA or change `runs-on`.
+  Certificate-bound
   scopes additionally pin the Caddy-verified mTLS client-certificate SHA-256;
   the normal shared worker token is not a fallback credential for those scopes.
   Generate the private key and CSR on the scoped VPS; the controller signs only

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from qdev_runner.claim_scope import ClaimScopeError, resolve_bound_claim_scope, resolve_claim_scope
+from qdev_runner.claim_scope import (
+    SCHEMA_V2,
+    ClaimScopeError,
+    resolve_bound_claim_scope,
+    resolve_claim_scope,
+)
 
 
 def write_scope(path: Path, *, expires_at: datetime, head_sha: str = "a" * 40) -> None:
@@ -25,6 +30,43 @@ def write_scope(path: Path, *, expires_at: datetime, head_sha: str = "a" * 40) -
                         "jobs": [
                             {"job_id": 100, "profile": "qdev-ci"},
                             {"job_id": 101, "profile": "qdev-ci-docker"},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_v2_scope(path: Path, *, expires_at: datetime) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": SCHEMA_V2,
+                "scopes": [
+                    {
+                        "scope_id": "portfolio-20260901",
+                        "worker_name": "qdev-portfolio-primary",
+                        "tier": "primary",
+                        "expires_at": expires_at.isoformat(),
+                        "jobs": [
+                            {
+                                "job_id": 100,
+                                "repository": "belilovsky/qazlake",
+                                "run_id": 200,
+                                "attempt": 1,
+                                "head_sha": "a" * 40,
+                                "profile": "qdev-ci",
+                            },
+                            {
+                                "job_id": 101,
+                                "repository": "belilovsky/qazstack",
+                                "run_id": 201,
+                                "attempt": 2,
+                                "head_sha": "b" * 40,
+                                "profile": "qdev-ci-docker",
+                            },
                         ],
                     }
                 ],
@@ -298,3 +340,69 @@ def test_bound_scope_remains_verifiable_after_admission_expiry(tmp_path: Path) -
     )
 
     assert scope.scope_id == "maturity-20260828"
+
+
+def test_v2_scope_binds_the_complete_immutable_tuple(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    now = datetime.now(UTC)
+    write_v2_scope(path, expires_at=now + timedelta(minutes=10))
+
+    scope = resolve_claim_scope(
+        path,
+        "portfolio-20260901",
+        "qdev-portfolio-primary",
+        "primary",
+        ("qdev-ci", "qdev-ci-docker"),
+        now=now,
+    )
+
+    assert scope is not None and scope.is_v2
+    assert scope.permits(
+        100,
+        "belilovsky/qazlake",
+        "a" * 40,
+        "qdev-ci",
+        run_id=200,
+        attempt=1,
+    )
+    assert not scope.permits(
+        100,
+        "belilovsky/qazlake",
+        "a" * 40,
+        "qdev-ci",
+        run_id=201,
+        attempt=1,
+    )
+    assert not scope.permits(
+        100,
+        "belilovsky/qazlake",
+        "a" * 40,
+        "qdev-ci",
+        run_id=200,
+        attempt=2,
+    )
+
+    bound = resolve_bound_claim_scope(
+        path,
+        "portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        job_id=101,
+        repository="belilovsky/qazstack",
+        head_sha="b" * 40,
+        profile="qdev-ci-docker",
+        run_id=201,
+        attempt=2,
+    )
+    assert bound.scope_id == "portfolio-20260901"
+    with pytest.raises(ClaimScopeError, match="binding"):
+        resolve_bound_claim_scope(
+            path,
+            "portfolio-20260901",
+            worker_name="qdev-portfolio-primary",
+            job_id=101,
+            repository="belilovsky/qazstack",
+            head_sha="b" * 40,
+            profile="qdev-ci-docker",
+            run_id=201,
+            attempt=1,
+        )

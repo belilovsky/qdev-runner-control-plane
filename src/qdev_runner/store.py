@@ -91,6 +91,17 @@ def _workflow_job_created_at(payload_json: str) -> float | None:
     return timestamp if _is_valid_queue_timestamp(timestamp) else None
 
 
+def _workflow_job_attempt(payload_json: str) -> int:
+    """Return the immutable GitHub workflow attempt, defaulting legacy events to one."""
+    try:
+        payload = json.loads(payload_json)
+        value = payload.get("workflow_job", {}).get("run_attempt", 1)
+        attempt = int(value)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return 1
+    return attempt if attempt > 0 else 1
+
+
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +239,7 @@ class Store:
             pending_rows = list(
                 connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at")
             )
-            if claim_scope is not None:
+            if claim_scope is not None and not claim_scope.is_v2:
                 # A temporary scope is an explicit execution sequence.  Keep the
                 # normal queue FIFO untouched, while ensuring a scoped worker can
                 # never let queue arrival order override the signed allowlist.
@@ -236,6 +247,17 @@ class Store:
                 pending_rows.sort(
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
+            profile_heads: dict[str, int] = {}
+            if claim_scope is not None and claim_scope.is_v2:
+                # v2 preserves FIFO separately for every requested profile.  A
+                # scope can authorize an exact tuple, but cannot leapfrog an
+                # older pending tuple of the same profile.
+                configured_profiles = {profile.lower() for profile in profiles}
+                for pending in pending_rows:
+                    labels = {label.lower() for label in json.loads(pending["labels_json"])}
+                    for profile in configured_profiles:
+                        if profile in labels and profile not in profile_heads:
+                            profile_heads[profile] = int(pending["job_id"])
             for row in pending_rows:
                 if (
                     repository is not None
@@ -248,13 +270,21 @@ class Store:
                 )
                 if matching_profile is None:
                     continue
-                if claim_scope is not None and not claim_scope.permits(
-                    int(row["job_id"]),
-                    str(row["repository"]),
-                    str(row["head_sha"]),
-                    matching_profile,
-                ):
-                    continue
+                if claim_scope is not None:
+                    if (
+                        claim_scope.is_v2
+                        and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
+                    ):
+                        continue
+                    if not claim_scope.permits(
+                        int(row["job_id"]),
+                        str(row["repository"]),
+                        str(row["head_sha"]),
+                        matching_profile,
+                        run_id=int(row["run_id"]),
+                        attempt=_workflow_job_attempt(str(row["payload_json"])),
+                    ):
+                        continue
                 required_disk_mb = None
                 if profile_disk_mb is not None:
                     required_disk_mb = profile_disk_mb.get(matching_profile)

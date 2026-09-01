@@ -99,11 +99,14 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   satisfy the obsolete condition by creating an empty file.
 - Requeued transient jobs move to the FIFO tail so one failing job cannot
   starve the queue.
-- A one-off temporary worker uses a short-lived `claim-scope-v1` only when a
+- A one-off temporary worker uses a short-lived claim scope only when a
   narrowly bounded recovery or release needs isolation from the shared FIFO
-  queue. The broker checks the supplied scope before its atomic claim: worker
-  name, tier, exact repository and SHA, each job ID, profile, and expiry must
-  all match. A certificate-bound scope additionally accepts only the
+  queue. Existing `claim-scope-v1` records remain valid for their issued
+  lifecycle. New `claim-scope-v2` records bind each tuple to repository, run,
+  job ID, attempt, SHA, profile, worker and expiry. Before its atomic claim the
+  broker computes the FIFO head for every scoped profile and accepts only that
+  head; a valid v2 scope therefore cannot requeue, leapfrog, change profile or
+  substitute a SHA. A certificate-bound scope additionally accepts only the
   Caddy-verified mTLS client certificate fingerprint, never the shared worker
   token. Delete the scope when the declared jobs reach terminal GitHub
   conclusions, then destroy the temporary worker. A scope is not a general

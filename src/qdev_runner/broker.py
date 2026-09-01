@@ -351,6 +351,8 @@ def create_app(
                 repository=str(job["repository"]),
                 head_sha=str(job["head_sha"]),
                 profile=str(job["profile"]),
+                run_id=int(job["run_id"]),
+                attempt=int(_stale_job_tuple(job)["attempt"]),
             )
         except ClaimScopeError as error:
             LOGGER.warning("rejected bound claim scope for job=%s: %s", job["job_id"], error)
@@ -806,7 +808,12 @@ def create_app(
             labels = tuple(json.loads(claimed["labels_json"]))
             profile = policy.profile_for_labels(claimed["repository"], labels)
             if claim_scope is not None and not claim_scope.permits(
-                job_id, claimed["repository"], claimed["head_sha"], profile.name
+                job_id,
+                claimed["repository"],
+                claimed["head_sha"],
+                profile.name,
+                run_id=int(claimed["run_id"]),
+                attempt=int(_stale_job_tuple(claimed)["attempt"]),
             ):
                 store.requeue(job_id, "claim scope no longer permits this job")
                 raise HTTPException(status_code=403, detail="claim scope rejected")
