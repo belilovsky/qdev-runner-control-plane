@@ -459,6 +459,70 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
     assert [item["job_id"] for item in payload["claim_scope"]["jobs"]] == [42, 43]
 
 
+def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 42, "delivery-42")
+    headers = {
+        "X-QDev-Operator-Token": OPERATOR_TOKEN,
+        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+    }
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "recover-legacy-binding",
+        "duration_seconds": 900,
+    }
+    scope_path = tmp_path / "claim-scopes.json"
+    scope_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-runner-claim-scopes-v2",
+                "scopes": [
+                    {
+                        "schema": "claim-scope-v2",
+                        "scope_id": "srv1879763-primary",
+                        "worker_name": WORKER_NAME,
+                        "tier": "primary",
+                        "repository": "belilovsky/example",
+                        "head_sha": "a" * 40,
+                        "host": "srv1879763-light-primary",
+                        "runner": "qdev-ci-docker",
+                        "correlation_id": "legacy",
+                        "expires_at": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+                        "jobs": [
+                            {
+                                "job_id": 42,
+                                "repository": "belilovsky/example",
+                                "exact_sha": "a" * 40,
+                                "profile": "qdev-ci-docker",
+                                "run_id": 84000000042,
+                                "attempt": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=headers,
+        json=request,
+    )
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["rebound_legacy_scope"] is True
+    assert payload["claim_scope"]["worker_certificate_sha256"] == "c" * 64
+
+
 def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, active_jobs=1)
