@@ -612,6 +612,7 @@ def create_app(
         existing = scopes.get(request.scope_id)
         replaced_expired_scope = False
         rolled_over_terminal_scope = False
+        rebound_legacy_scope = False
         retained_jobs: tuple[ScopedJob, ...] = ()
         if existing is not None:
             same_scope = (
@@ -653,6 +654,29 @@ def create_app(
                     }
                     return operation_store.receipt(payload)
                 replaced_expired_scope = True
+            elif (
+                # A legacy v2 document issued before certificate binding was
+                # enforced cannot be claimed: the worker-side claim endpoint
+                # intentionally requires the mTLS digest.  It is safe to
+                # replace only when it already permits this *same* immutable
+                # tuple and retains every non-certificate binding field.
+                # This is not a FIFO advance or a profile/runner swap.
+                existing.schema == SCHEMA_V2
+                and existing.worker_certificate_sha256 is None
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.permits(
+                    job_id=job_id,
+                    repository=str(candidate["repository"]),
+                    head_sha=str(candidate["head_sha"]),
+                    profile=profile.name,
+                    run_id=int(candidate["run_id"]),
+                    attempt=attempt,
+                )
+            ):
+                rebound_legacy_scope = True
             elif (
                 existing.schema == SCHEMA_V2
                 and existing.worker_name == request.worker_name
@@ -731,6 +755,7 @@ def create_app(
             "idempotent": False,
             "replaced_expired_scope": replaced_expired_scope,
             "rolled_over_terminal_scope": rolled_over_terminal_scope,
+            "rebound_legacy_scope": rebound_legacy_scope,
             "claim_scope": claim_scope_mapping(scope),
             "immutable_tuple": {
                 "repository": candidate["repository"],
