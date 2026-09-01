@@ -373,6 +373,34 @@ def create_app(
             raise HTTPException(status_code=404, detail="worker not registered")
         return worker, _worker_audit(worker, float(snapshot["now"]))
 
+    def reconcile_terminal_pending_job(row: dict[str, Any]) -> bool:
+        """Close a pending row only when GitHub confirms its run is terminal.
+
+        A missed terminal webhook must not pin every later claim-scope request
+        behind a provider-completed FIFO row.  Fail closed on provider errors or
+        immutable tuple drift; live queued/in-progress work keeps its position.
+        """
+
+        if not hasattr(github, "workflow_run"):
+            return False
+        try:
+            remote_run = github.workflow_run(
+                int(row["installation_id"]), str(row["repository"]), int(row["run_id"])
+            )
+        except GitHubError:
+            return False
+        if (
+            int(remote_run.get("id") or 0) != int(row["run_id"])
+            or str(remote_run.get("head_sha") or "") != str(row["head_sha"])
+            or int(remote_run.get("run_attempt") or 0) != (_job_attempt(row) or 0)
+        ):
+            return False
+        conclusion = completed_run_conclusion(remote_run)
+        if conclusion is None:
+            return False
+        store.complete_from_webhook(int(row["job_id"]), conclusion)
+        return True
+
     def bound_scope_for_job(
         job: dict[str, Any],
         scope_id: str | None,
@@ -594,6 +622,11 @@ def create_app(
             except PolicyError:
                 continue
             if queued_profile.name == profile.name:
+                if int(queued["job_id"]) == job_id:
+                    profile_queue.append(queued)
+                    break
+                if reconcile_terminal_pending_job(queued):
+                    continue
                 profile_queue.append(queued)
         if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")

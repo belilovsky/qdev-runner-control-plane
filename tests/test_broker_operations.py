@@ -421,6 +421,41 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
     assert refreshed_payload["replaced_expired_scope"] is True
 
 
+def test_claim_scope_reconciles_provider_terminal_fifo_rows(tmp_path: Path) -> None:
+    client = _app(
+        tmp_path,
+        github=FakeGitHub(run_status="completed", run_conclusion="success"),
+    )
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 42, "delivery-42")
+    _seed_pending_job(client, 43, "delivery-43")
+    headers = {
+        "X-QDev-Operator-Token": OPERATOR_TOKEN,
+        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+    }
+    request = {
+        "job_id": 43,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-43-after-reconciliation",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope", headers=headers, json=request
+    )
+
+    assert issued.status_code == 200
+    assert client.app.state.store.job_status(42) == "completed"
+    assert client.app.state.store.job_status(43) == "pending"
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 43
+
+
 def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, active_jobs=1)
