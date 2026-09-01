@@ -52,7 +52,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "archived": False,
                         "default_branch": "main",
                         "profiles": ["qdev-ci-docker"],
-                    }
+                    },
                 ]
             }
         ),
@@ -79,7 +79,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "timeout_minutes": 90,
                         "allow_public_pr": True,
                     }
-                }
+                },
             },
             sort_keys=True,
         ),
@@ -234,20 +234,23 @@ def _heartbeat(
 
 def _seed_pending_job(client: TestClient, job_id: int, delivery_id: str) -> None:
     store: Store = client.app.state.store
-    assert store.enqueue(
-        QueuedJob(
-            delivery_id=delivery_id,
-            job_id=job_id,
-            run_id=84000000000 + job_id,
-            repository="belilovsky/example",
-            repository_id=1,
-            installation_id=2,
-            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
-            head_sha="a" * 40,
-            head_branch="main",
-            payload={"workflow_job": {"run_attempt": 1}},
+    assert (
+        store.enqueue(
+            QueuedJob(
+                delivery_id=delivery_id,
+                job_id=job_id,
+                run_id=84000000000 + job_id,
+                repository="belilovsky/example",
+                repository_id=1,
+                installation_id=2,
+                labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+                head_sha="a" * 40,
+                head_branch="main",
+                payload={"workflow_job": {"run_attempt": 1}},
+            )
         )
-    ) is True
+        is True
+    )
 
 
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
@@ -363,7 +366,9 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
         "duration_seconds": 900,
     }
 
-    issued = client.post("/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request)
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+    )
     assert issued.status_code == 200
     receipt = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)
     payload = receipt["payload"]
@@ -380,13 +385,21 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
         "host": "srv1879763-light-primary",
     }
 
-    repeated = client.post("/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request)
+    repeated = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+    )
     assert repeated.status_code == 200
-    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)["payload"]
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
     assert repeated_payload["idempotent"] is True
 
     tail_request = request | {"job_id": 43, "correlation_id": "fifo-tail-43"}
-    tail = client.post("/internal/v1/operations/jobs/43/claim-scope", headers=headers, json=tail_request)
+    tail = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope",
+        headers=headers,
+        json=tail_request,
+    )
     assert tail.status_code == 409
     assert tail.json()["detail"] == "job is not the FIFO head for its profile"
 
@@ -401,7 +414,9 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
         json=refreshed_request,
     )
     assert refreshed.status_code == 200
-    refreshed_payload = verify_controller_receipt(refreshed.json(), receipt_key=RECEIPT_KEY)["payload"]
+    refreshed_payload = verify_controller_receipt(refreshed.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
     assert refreshed_payload["idempotent"] is False
     assert refreshed_payload["replaced_expired_scope"] is True
 
@@ -496,9 +511,9 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             "reason": "repository-bound regression",
         },
     )
-    operation = verify_controller_receipt(
-        override_response.json(), receipt_key=RECEIPT_KEY
-    )["payload"]["operation"]
+    operation = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]["operation"]
     claim = {
         "worker_name": WORKER_NAME,
         "tier": "primary",

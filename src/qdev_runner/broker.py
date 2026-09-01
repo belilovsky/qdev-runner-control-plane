@@ -448,9 +448,9 @@ def create_app(
         if claim_scope.schema == SCHEMA_V2:
             profiles_match = expected_profiles.issubset(requested_profiles)
         else:
-            profiles_match = requested_profiles == expected_profiles and len(request.profiles) == len(
-                expected_profiles
-            )
+            profiles_match = requested_profiles == expected_profiles and len(
+                request.profiles
+            ) == len(expected_profiles)
         if not profiles_match:
             raise HTTPException(status_code=403, detail="claim scope profiles rejected")
         return claim_scope
@@ -532,14 +532,23 @@ def create_app(
         if request.job_id != job_id:
             raise HTTPException(status_code=422, detail="path and payload job_id must match")
         if x_qdev_operator_mtls_identity != "qdev-fleet-operations":
-            raise HTTPException(status_code=403, detail="qdev-fleet-operations mTLS identity required")
+            raise HTTPException(
+                status_code=403,
+                detail="qdev-fleet-operations mTLS identity required",
+            )
         certificate_sha256 = request.worker_certificate_sha256.lower()
         if not _SHA256_DIGEST.fullmatch(certificate_sha256):
-            raise HTTPException(status_code=422, detail="worker_certificate_sha256 must be a SHA-256 digest")
+            raise HTTPException(
+                status_code=422,
+                detail="worker_certificate_sha256 must be a SHA-256 digest",
+            )
 
         worker, audit = current_worker(request.worker_name)
         if audit.get("tier") != request.tier:
-            raise HTTPException(status_code=409, detail="worker tier does not match requested scope")
+            raise HTTPException(
+                status_code=409,
+                detail="worker tier does not match requested scope",
+            )
         if not audit.get("fresh"):
             raise HTTPException(status_code=409, detail="worker heartbeat is stale")
         if int(audit.get("active_jobs") or 0) != 0:
@@ -549,7 +558,10 @@ def create_app(
         if not audit.get("capacity_allowed"):
             raise HTTPException(status_code=409, detail="worker capacity admission is closed")
         if audit.get("configured_claim_scope_id") != request.scope_id:
-            raise HTTPException(status_code=409, detail="worker is not enrolled for requested claim scope")
+            raise HTTPException(
+                status_code=409,
+                detail="worker is not enrolled for requested claim scope",
+            )
 
         candidate = store.job(job_id)
         if candidate is None:
@@ -565,7 +577,10 @@ def create_app(
         if profile.name not in audit.get("profiles", []):
             raise HTTPException(status_code=409, detail="worker is not registered for job profile")
         if profile.name not in audit.get("admission", {}).get("profiles", []):
-            raise HTTPException(status_code=409, detail="profile admission is not confirmed for worker")
+            raise HTTPException(
+                status_code=409,
+                detail="profile admission is not confirmed for worker",
+            )
 
         profile_queue: list[dict[str, Any]] = []
         for queued in store.pending_jobs():
@@ -587,7 +602,10 @@ def create_app(
         try:
             scopes = load_claim_scopes(settings.claim_scopes_path)
         except ClaimScopeError as exc:
-            raise HTTPException(status_code=503, detail=f"claim scope configuration unavailable: {exc}") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=f"claim scope configuration unavailable: {exc}",
+            ) from exc
         existing = scopes.get(request.scope_id)
         replaced_expired_scope = False
         if existing is not None:
@@ -639,7 +657,10 @@ def create_app(
                 and existing.worker_certificate_sha256 == certificate_sha256
                 and existing.expires_at <= datetime.now(UTC)
             ):
-                raise HTTPException(status_code=409, detail="claim scope ID is already bound to another tuple")
+                raise HTTPException(
+                    status_code=409,
+                    detail="claim scope ID is already bound to another tuple",
+                )
             else:
                 replaced_expired_scope = True
 
@@ -669,7 +690,10 @@ def create_app(
         try:
             upsert_claim_scope(settings.claim_scopes_path, scope)
         except ClaimScopeError as exc:
-            raise HTTPException(status_code=503, detail=f"claim scope configuration unavailable: {exc}") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=f"claim scope configuration unavailable: {exc}",
+            ) from exc
 
         payload = {
             "kind": "fifo-claim-scope-issued",
@@ -988,16 +1012,13 @@ def create_app(
             if operations is not None
             else None
         )
-        supplied_override = bool(
-            request.capacity_directive_id or request.capacity_repository
-        )
+        supplied_override = bool(request.capacity_directive_id or request.capacity_repository)
         if supplied_override and active_directive is None:
             raise HTTPException(status_code=403, detail="capacity override is not active")
         if active_directive is not None and (
-                request.capacity_directive_id != active_directive.operation_id
-                or (request.capacity_repository or "").lower()
-                != active_directive.repository.lower()
-                or tuple(request.profiles) != active_directive.profiles
+            request.capacity_directive_id != active_directive.operation_id
+            or (request.capacity_repository or "").lower() != active_directive.repository.lower()
+            or tuple(request.profiles) != active_directive.profiles
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
         repository = active_directive.repository if active_directive is not None else None

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import ClaimScope, SCHEMA_V2
+from .claim_scope import SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -114,8 +114,7 @@ class Store:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
             }
             if "claim_scope_id" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
@@ -242,7 +241,9 @@ class Store:
             # must not starve a later job that this worker can actually run.  The
             # status/created_at index preserves FIFO ordering for each eligible job.
             pending_rows = list(
-                connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id")
+                connection.execute(
+                    "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id"
+                )
             )
             if claim_scope is not None and claim_scope.schema != SCHEMA_V2:
                 # A temporary scope is an explicit execution sequence.  Keep the
@@ -253,10 +254,7 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             for row in pending_rows:
-                if (
-                    repository is not None
-                    and str(row["repository"]).lower() != repository.lower()
-                ):
+                if repository is not None and str(row["repository"]).lower() != repository.lower():
                     continue
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(
