@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import ClaimScope
+from .claim_scope import ClaimScope, SCHEMA_V2
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -89,6 +89,22 @@ def _workflow_job_created_at(payload_json: str) -> float | None:
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return timestamp if _is_valid_queue_timestamp(timestamp) else None
+
+
+def _workflow_job_attempt(payload_json: str) -> int | None:
+    """Read the provider's immutable run attempt without inventing a default.
+
+    A v2 scope binds a concrete provider attempt.  Treating a missing value as
+    attempt one would let an old scope claim a later provider retry, so callers
+    fail closed when GitHub did not send the field.
+    """
+    try:
+        payload = json.loads(payload_json)
+        value = payload.get("workflow_job", {}).get("run_attempt")
+        attempt = int(value)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return attempt if attempt > 0 else None
 
 
 class Store:
@@ -226,9 +242,9 @@ class Store:
             # must not starve a later job that this worker can actually run.  The
             # status/created_at index preserves FIFO ordering for each eligible job.
             pending_rows = list(
-                connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at")
+                connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id")
             )
-            if claim_scope is not None:
+            if claim_scope is not None and claim_scope.schema != SCHEMA_V2:
                 # A temporary scope is an explicit execution sequence.  Keep the
                 # normal queue FIFO untouched, while ensuring a scoped worker can
                 # never let queue arrival order override the signed allowlist.
@@ -253,6 +269,8 @@ class Store:
                     str(row["repository"]),
                     str(row["head_sha"]),
                     matching_profile,
+                    run_id=int(row["run_id"]),
+                    attempt=_workflow_job_attempt(str(row["payload_json"])),
                 ):
                     continue
                 required_disk_mb = None
@@ -335,6 +353,14 @@ class Store:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         return dict(row) if row is not None else None
+
+    def pending_jobs(self) -> list[dict[str, Any]]:
+        """Return the durable FIFO projection without changing a job state."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def fail_if_active(self, job_id: int, result: str) -> bool:
         now = time.time()
