@@ -155,6 +155,7 @@ class Worker:
                 "baseline_capacity": asdict(state.baseline),
                 "effective_capacity": asdict(state.effective),
                 "effective_profiles": list(state.profiles),
+                "configured_claim_scope_id": self.settings.claim_scope_id,
                 "capacity_directive_id": state.directive_id,
                 "capacity_directive_repository": state.directive_repository,
                 "capacity_override_active": state.directive_id is not None,
