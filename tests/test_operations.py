@@ -10,6 +10,8 @@ from qdev_runner.operations import (
     HARD_MAX_DISK_USED_PCT,
     HARD_MIN_FREE_GIB,
     OperationStore,
+    payload_digest,
+    sign_payload,
     verify_capacity_override,
 )
 from qdev_runner.operator import validate_receipt_file, verify_controller_receipt
@@ -122,10 +124,10 @@ def test_controller_receipt_is_deterministic_and_tamper_evident(
     operation_store: OperationStore, tmp_path: Path
 ) -> None:
     payload = {
-        "action": "worker_capacity_audit",
-        "worker": "srv1879763-light-primary",
+        "kind": "worker-audit",
         "observed_at": "2026-08-31T08:00:00Z",
-        "admission": False,
+        "workers": [],
+        "pending": 0,
     }
     first = operation_store.receipt(payload)
     second = operation_store.receipt(payload)
@@ -137,9 +139,41 @@ def test_controller_receipt_is_deterministic_and_tamper_evident(
     assert validate_receipt_file(path, receipt_key="receipt-signing-key") == first
     with pytest.raises(ValueError, match="digest"):
         verify_controller_receipt(
-            first | {"payload": payload | {"admission": True}},
+            first | {"payload": payload | {"pending": 1}},
             receipt_key="receipt-signing-key",
         )
+
+
+def test_controller_receipt_v1_is_legacy_unverified_and_v2_rejects_unknown_payload(
+    operation_store: OperationStore,
+) -> None:
+    payload = {
+        "kind": "worker-audit",
+        "observed_at": "2026-08-31T08:00:00Z",
+        "workers": [],
+        "pending": 0,
+    }
+    with pytest.raises(ValueError, match="fields"):
+        operation_store.receipt(payload | {"unexpected": True})
+
+    digest = payload_digest(payload)
+    legacy_unsigned = {
+        "schema": "qdev-controller-receipt-v1",
+        "receipt_id": digest,
+        "payload": payload,
+        "digest": digest,
+    }
+    legacy = legacy_unsigned | {
+        "signature": sign_payload(legacy_unsigned, "receipt-signing-key")
+    }
+    with pytest.raises(ValueError, match="legacy_unverified"):
+        verify_controller_receipt(legacy, receipt_key="receipt-signing-key")
+    assert (
+        verify_controller_receipt(
+            legacy, receipt_key="receipt-signing-key", allow_legacy=True
+        )
+        == legacy
+    )
 
 
 def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -> None:
