@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from .operations import payload_digest, sign_payload
+from .operations import payload_digest, sign_payload, validate_controller_receipt_payload
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -52,15 +52,36 @@ class OperatorSettings:
         )
 
 
-def verify_controller_receipt(document: Mapping[str, Any], *, receipt_key: str) -> dict[str, Any]:
-    expected_fields = {"schema", "receipt_id", "payload", "digest", "signature"}
+def verify_controller_receipt(
+    document: Mapping[str, Any], *, receipt_key: str, allow_legacy: bool = False
+) -> dict[str, Any]:
+    schema = document.get("schema")
+    if schema == "qdev-controller-receipt-v1":
+        if not allow_legacy:
+            raise ValueError(
+                "legacy controller receipt is legacy_unverified and cannot be enforced"
+            )
+        expected_fields = {"schema", "receipt_id", "payload", "digest", "signature"}
+    else:
+        expected_fields = {
+            "schema",
+            "receipt_id",
+            "payload",
+            "digest",
+            "enforcement",
+            "signature",
+        }
     if set(document) != expected_fields:
         raise ValueError("invalid controller receipt fields")
-    if document.get("schema") != "qdev-controller-receipt-v1":
+    if schema not in {"qdev-controller-receipt-v1", "qdev-controller-receipt-v2"}:
         raise ValueError("invalid controller receipt schema")
+    if schema == "qdev-controller-receipt-v2" and document.get("enforcement") != "enforced":
+        raise ValueError("controller receipt is not enforced")
     payload = document.get("payload")
     if not isinstance(payload, dict):
         raise ValueError("invalid controller receipt payload")
+    if schema == "qdev-controller-receipt-v2":
+        validate_controller_receipt_payload(payload)
     digest = payload_digest(payload)
     if document.get("digest") != digest or document.get("receipt_id") != digest:
         raise ValueError("invalid controller receipt digest")
@@ -70,6 +91,8 @@ def verify_controller_receipt(document: Mapping[str, Any], *, receipt_key: str) 
         "payload": payload,
         "digest": document["digest"],
     }
+    if schema == "qdev-controller-receipt-v2":
+        unsigned["enforcement"] = document["enforcement"]
     signature = document.get("signature")
     if not isinstance(signature, str) or not hmac.compare_digest(
         signature, sign_payload(unsigned, receipt_key)

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import ClaimScope
+from .claim_scope import SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -91,15 +91,20 @@ def _workflow_job_created_at(payload_json: str) -> float | None:
     return timestamp if _is_valid_queue_timestamp(timestamp) else None
 
 
-def _workflow_job_attempt(payload_json: str) -> int:
-    """Return the immutable GitHub workflow attempt, defaulting legacy events to one."""
+def _workflow_job_attempt(payload_json: str) -> int | None:
+    """Read the provider's immutable run attempt without inventing a default.
+
+    A v2 scope binds a concrete provider attempt.  Treating a missing value as
+    attempt one would let an old scope claim a later provider retry, so callers
+    fail closed when GitHub did not send the field.
+    """
     try:
         payload = json.loads(payload_json)
-        value = payload.get("workflow_job", {}).get("run_attempt", 1)
+        value = payload.get("workflow_job", {}).get("run_attempt")
         attempt = int(value)
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-        return 1
-    return attempt if attempt > 0 else 1
+        return None
+    return attempt if attempt > 0 else None
 
 
 class Store:
@@ -109,8 +114,7 @@ class Store:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
             }
             if "claim_scope_id" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
@@ -237,9 +241,11 @@ class Store:
             # must not starve a later job that this worker can actually run.  The
             # status/created_at index preserves FIFO ordering for each eligible job.
             pending_rows = list(
-                connection.execute("SELECT * FROM jobs WHERE status='pending' ORDER BY created_at")
+                connection.execute(
+                    "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id"
+                )
             )
-            if claim_scope is not None and not claim_scope.is_v2:
+            if claim_scope is not None and claim_scope.schema != SCHEMA_V2:
                 # A temporary scope is an explicit execution sequence.  Keep the
                 # normal queue FIFO untouched, while ensuring a scoped worker can
                 # never let queue arrival order override the signed allowlist.
@@ -248,21 +254,21 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             profile_heads: dict[str, int] = {}
-            if claim_scope is not None and claim_scope.is_v2:
-                # v2 preserves FIFO separately for every requested profile.  A
-                # scope can authorize an exact tuple, but cannot leapfrog an
-                # older pending tuple of the same profile.
-                configured_profiles = {profile.lower() for profile in profiles}
-                for pending in pending_rows:
-                    labels = {label.lower() for label in json.loads(pending["labels_json"])}
-                    for profile in configured_profiles:
-                        if profile in labels and profile not in profile_heads:
-                            profile_heads[profile] = int(pending["job_id"])
+            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+                # v2 scopes may authorize independent profiles concurrently, but
+                # may never skip the oldest pending job within any one profile.
+                # Keep this guard in the durable claim path as well as the
+                # controller endpoint: a worker must not be able to bypass FIFO
+                # by invoking the store directly.
+                for row in pending_rows:
+                    labels = {label.lower() for label in json.loads(row["labels_json"])}
+                    matching_profile = next(
+                        (profile for profile in profiles if profile.lower() in labels), None
+                    )
+                    if matching_profile is not None:
+                        profile_heads.setdefault(matching_profile.lower(), int(row["job_id"]))
             for row in pending_rows:
-                if (
-                    repository is not None
-                    and str(row["repository"]).lower() != repository.lower()
-                ):
+                if repository is not None and str(row["repository"]).lower() != repository.lower():
                     continue
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(
@@ -270,21 +276,21 @@ class Store:
                 )
                 if matching_profile is None:
                     continue
-                if claim_scope is not None:
-                    if (
-                        claim_scope.is_v2
-                        and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
-                    ):
-                        continue
-                    if not claim_scope.permits(
-                        int(row["job_id"]),
-                        str(row["repository"]),
-                        str(row["head_sha"]),
-                        matching_profile,
-                        run_id=int(row["run_id"]),
-                        attempt=_workflow_job_attempt(str(row["payload_json"])),
-                    ):
-                        continue
+                if (
+                    claim_scope is not None
+                    and claim_scope.schema == SCHEMA_V2
+                    and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
+                ):
+                    continue
+                if claim_scope is not None and not claim_scope.permits(
+                    int(row["job_id"]),
+                    str(row["repository"]),
+                    str(row["head_sha"]),
+                    matching_profile,
+                    run_id=int(row["run_id"]),
+                    attempt=_workflow_job_attempt(str(row["payload_json"])),
+                ):
+                    continue
                 required_disk_mb = None
                 if profile_disk_mb is not None:
                     required_disk_mb = profile_disk_mb.get(matching_profile)
@@ -365,6 +371,14 @@ class Store:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         return dict(row) if row is not None else None
+
+    def pending_jobs(self) -> list[dict[str, Any]]:
+        """Return the durable FIFO projection without changing a job state."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def fail_if_active(self, job_id: int, result: str) -> bool:
         now = time.time()

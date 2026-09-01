@@ -16,6 +16,13 @@ repository_admission_disk_mb:
   # controller's 4.5 GiB hard floor and the workflow preflight remain intact.
   belilovsky/qazcompute:
     qdev-ci-docker: 18432
+  # MCP Servers uses this lane for isolated registry access while its current
+  # workflow runs bounded Python service checks rather than an OCI build. Its
+  # successful exact-SHA history completes without a Docker-layer expansion,
+  # so keep the documented 12 GiB repository minimum while preserving the
+  # worker's independent hard free-space floor.
+  belilovsky/mcp-servers:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]

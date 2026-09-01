@@ -54,6 +54,110 @@ def sign_payload(payload: Mapping[str, Any], key: str) -> str:
     return hmac.new(key.encode("utf-8"), _canonical(payload), hashlib.sha256).hexdigest()
 
 
+_RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
+    "controller-release-audit": {"kind", "observed_at", "controller_release"},
+    "worker-audit": {"kind", "observed_at", "workers", "pending"},
+    "fifo-claim-scope-issued": {
+        "kind",
+        "operator_session",
+        "mtls_identity",
+        "idempotent",
+        "claim_scope",
+        "immutable_tuple",
+        "worker",
+    },
+    "capacity-override-created": {
+        "kind",
+        "observed_at",
+        "worker_audit",
+        "operation",
+        "required_free_gib",
+    },
+    "capacity-override-cancelled": {"kind", "observed_at", "worker_audit", "operation"},
+    "stale-job-audit": {
+        "kind",
+        "observed_at",
+        "worker_timeout_seconds",
+        "provider_reconciliation_required",
+        "candidates",
+    },
+    "stale-job-recovery": {
+        "kind",
+        "observed_at",
+        "owner",
+        "reason",
+        "immutable_job",
+        "provider",
+        "action",
+        "fifo_preserved",
+    },
+}
+
+
+def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the v2 discriminator before a controller receipt is signed.
+
+    Nested controller records are themselves schema-owned by the broker. This
+    boundary deliberately fixes each receipt kind and its complete top-level
+    payload so an arbitrary signed object can never become enforced evidence.
+    """
+    value = dict(payload)
+    kind = str(value.get("kind"))
+    expected = _RECEIPT_PAYLOAD_FIELDS.get(kind)
+    if expected is None:
+        raise ValueError("unsupported controller receipt kind")
+    if kind == "fifo-claim-scope-issued" and value.get("idempotent") is False:
+        expected = expected | {"replaced_expired_scope"}
+    if set(value) != expected:
+        raise ValueError("controller receipt payload fields are invalid")
+    if kind != "fifo-claim-scope-issued" and not isinstance(value.get("observed_at"), str):
+        raise ValueError("controller receipt observed_at is invalid")
+    if kind == "controller-release-audit" and not isinstance(value["controller_release"], dict):
+        raise ValueError("controller release payload is invalid")
+    if kind == "worker-audit" and (
+        not isinstance(value["workers"], list)
+        or not isinstance(value["pending"], int)
+        or value["pending"] < 0
+    ):
+        raise ValueError("worker audit payload is invalid")
+    if kind == "fifo-claim-scope-issued" and (
+        value["operator_session"] != "verified"
+        or not isinstance(value["mtls_identity"], str)
+        or not isinstance(value["idempotent"], bool)
+        or not isinstance(value["claim_scope"], dict)
+        or not isinstance(value["immutable_tuple"], dict)
+        or not isinstance(value["worker"], dict)
+    ):
+        raise ValueError("claim-scope payload is invalid")
+    if kind.startswith("capacity-override") and not isinstance(value["worker_audit"], dict):
+        raise ValueError("capacity override payload is invalid")
+    if kind == "capacity-override-created" and (
+        not isinstance(value["operation"], dict)
+        or not isinstance(value["required_free_gib"], (int, float))
+    ):
+        raise ValueError("capacity override creation payload is invalid")
+    if kind == "capacity-override-cancelled" and not (
+        isinstance(value["operation"], dict) or value["operation"] is None
+    ):
+        raise ValueError("capacity override cancellation payload is invalid")
+    if kind == "stale-job-audit" and (
+        not isinstance(value["worker_timeout_seconds"], int)
+        or not isinstance(value["provider_reconciliation_required"], bool)
+        or not isinstance(value["candidates"], list)
+    ):
+        raise ValueError("stale-job audit payload is invalid")
+    if kind == "stale-job-recovery" and (
+        not isinstance(value["immutable_job"], dict)
+        or not isinstance(value["provider"], dict)
+        or not isinstance(value["owner"], str)
+        or not isinstance(value["reason"], str)
+        or not isinstance(value["action"], str)
+        or value["fifo_preserved"] is not True
+    ):
+        raise ValueError("stale-job recovery payload is invalid")
+    return value
+
+
 class CapacityOverrideDirective(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -247,11 +351,13 @@ class OperationStore:
         return cancelled
 
     def receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        digest = payload_digest(payload)
+        checked_payload = validate_controller_receipt_payload(payload)
+        digest = payload_digest(checked_payload)
         unsigned: dict[str, Any] = {
-            "schema": "qdev-controller-receipt-v1",
+            "schema": "qdev-controller-receipt-v2",
             "receipt_id": digest,
-            "payload": dict(payload),
+            "payload": checked_payload,
             "digest": digest,
+            "enforcement": "enforced",
         }
         return unsigned | {"signature": sign_payload(unsigned, self.receipt_signing_key)}

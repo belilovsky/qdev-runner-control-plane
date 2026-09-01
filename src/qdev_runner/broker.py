@@ -8,7 +8,7 @@ import os
 import re
 import secrets
 import ssl
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,7 +16,17 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from .claim_scope import ClaimScope, ClaimScopeError, resolve_bound_claim_scope, resolve_claim_scope
+from .claim_scope import (
+    SCHEMA_V2,
+    ClaimScope,
+    ClaimScopeError,
+    ScopedJob,
+    claim_scope_mapping,
+    load_claim_scopes,
+    resolve_bound_claim_scope,
+    resolve_claim_scope,
+    upsert_claim_scope,
+)
 from .github import GitHubAppClient, GitHubError
 from .models import QueuedJob
 from .operations import (
@@ -113,6 +123,20 @@ class CapacityOverrideRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class ControllerClaimRequest(BaseModel):
+    """One bounded controller admission for the current FIFO head."""
+
+    job_id: int = Field(gt=0)
+    worker_name: str = Field(min_length=3, max_length=128)
+    tier: Literal["primary", "reserve"]
+    scope_id: str = Field(min_length=3, max_length=128)
+    host: str = Field(min_length=1, max_length=255)
+    runner: str = Field(min_length=1, max_length=255)
+    worker_certificate_sha256: str = Field(min_length=64, max_length=64)
+    correlation_id: str = Field(min_length=1, max_length=255)
+    duration_seconds: int = Field(default=900, ge=60, le=900)
+
+
 class StaleJobRecoveryRequest(BaseModel):
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
     owner: str = Field(min_length=1, max_length=200)
@@ -203,6 +227,24 @@ def _stale_job_tuple(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _job_attempt(row: dict[str, Any]) -> int | None:
+    """Return an explicitly supplied provider run attempt, if present.
+
+    Scope v2 intentionally never assumes attempt one: a provider retry is a
+    different immutable tuple and needs a fresh signed scope.
+    """
+    payload = _json_object(row.get("payload_json"))
+    workflow_job = _json_object(payload.get("workflow_job"))
+    attempt_raw = workflow_job.get("run_attempt")
+    if isinstance(attempt_raw, bool) or not isinstance(attempt_raw, (int, str)):
+        return None
+    try:
+        attempt = int(attempt_raw)
+    except (TypeError, ValueError):
+        return None
+    return attempt if attempt > 0 else None
+
+
 def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
     detail = _json_object(worker.get("detail_json"))
     raw = _json_object(detail.get("raw_capacity"))
@@ -221,6 +263,7 @@ def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
         "baseline_capacity": baseline,
         "effective_capacity": effective,
         "capacity_allowed": worker.get("capacity_allowed") is True,
+        "configured_claim_scope_id": detail.get("configured_claim_scope_id"),
         "admission": {
             "allowed": worker.get("capacity_allowed") is True,
             "directive_id": detail.get("capacity_directive_id"),
@@ -352,7 +395,7 @@ def create_app(
                 head_sha=str(job["head_sha"]),
                 profile=str(job["profile"]),
                 run_id=int(job["run_id"]),
-                attempt=int(_stale_job_tuple(job)["attempt"]),
+                attempt=_job_attempt(job),
             )
         except ClaimScopeError as error:
             LOGGER.warning("rejected bound claim scope for job=%s: %s", job["job_id"], error)
@@ -377,24 +420,11 @@ def create_app(
         """
         if request.active_jobs != len(set(request.active_job_ids)):
             raise HTTPException(status_code=422, detail="active job count does not match IDs")
-        if request.claim_scope_id is None:
+        # An idle worker authenticates with its enrolled worker credential.  Its
+        # configured scope is a target for the next controller-issued FIFO
+        # admission, not proof that a now-expired scope should be renewed.
+        if request.claim_scope_id is None or not request.active_job_ids:
             return None
-        if not request.active_job_ids:
-            try:
-                return resolve_claim_scope(
-                    settings.claim_scopes_path,
-                    request.claim_scope_id,
-                    request.worker_name,
-                    request.tier,
-                    tuple(request.profiles),
-                )
-            except ClaimScopeError as error:
-                LOGGER.warning(
-                    "rejected idle heartbeat scope for worker=%s: %s",
-                    request.worker_name,
-                    error,
-                )
-                raise HTTPException(status_code=403, detail="claim scope rejected") from error
 
         scopes: list[ClaimScope] = []
         for job_id in request.active_job_ids:
@@ -417,9 +447,14 @@ def create_app(
         if claim_scope.worker_name != request.worker_name:
             raise HTTPException(status_code=403, detail="claim scope worker binding rejected")
         expected_profiles = {job.profile for job in claim_scope.jobs}
-        if set(request.profiles) != expected_profiles or len(request.profiles) != len(
-            expected_profiles
-        ):
+        requested_profiles = set(request.profiles)
+        if claim_scope.schema == SCHEMA_V2:
+            profiles_match = expected_profiles.issubset(requested_profiles)
+        else:
+            profiles_match = requested_profiles == expected_profiles and len(
+                request.profiles
+            ) == len(expected_profiles)
+        if not profiles_match:
             raise HTTPException(status_code=403, detail="claim scope profiles rejected")
         return claim_scope
 
@@ -478,6 +513,209 @@ def create_app(
                 _worker_audit(worker, float(snapshot["now"])) for worker in snapshot["workers"]
             ],
             "pending": int(snapshot["jobs"].get("pending", 0)),
+        }
+        return operation_store.receipt(payload)
+
+    @app.post("/internal/v1/operations/jobs/{job_id}/claim-scope")
+    def issue_fifo_claim_scope(
+        job_id: int,
+        request: ControllerClaimRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Issue one idempotent v2 scope for the current compatible FIFO head.
+
+        Scope issuance is deliberately separate from broker claiming: the
+        enrolled worker resolves it through its ordinary claim path and claims
+        the existing provider job.  This preserves exact-SHA FIFO and avoids a
+        direct broker mutation from the operator endpoint.
+        """
+
+        operation_store = require_operator(x_qdev_operator_token)
+        if request.job_id != job_id:
+            raise HTTPException(status_code=422, detail="path and payload job_id must match")
+        if x_qdev_operator_mtls_identity != "qdev-fleet-operations":
+            raise HTTPException(
+                status_code=403,
+                detail="qdev-fleet-operations mTLS identity required",
+            )
+        certificate_sha256 = request.worker_certificate_sha256.lower()
+        if not _SHA256_DIGEST.fullmatch(certificate_sha256):
+            raise HTTPException(
+                status_code=422,
+                detail="worker_certificate_sha256 must be a SHA-256 digest",
+            )
+
+        worker, audit = current_worker(request.worker_name)
+        if audit.get("tier") != request.tier:
+            raise HTTPException(
+                status_code=409,
+                detail="worker tier does not match requested scope",
+            )
+        if not audit.get("fresh"):
+            raise HTTPException(status_code=409, detail="worker heartbeat is stale")
+        if int(audit.get("active_jobs") or 0) != 0:
+            raise HTTPException(status_code=409, detail="worker still has active jobs")
+        if int(audit.get("slots_available") or 0) < 1:
+            raise HTTPException(status_code=409, detail="worker has no available slot")
+        if not audit.get("capacity_allowed"):
+            raise HTTPException(status_code=409, detail="worker capacity admission is closed")
+        if audit.get("configured_claim_scope_id") != request.scope_id:
+            raise HTTPException(
+                status_code=409,
+                detail="worker is not enrolled for requested claim scope",
+            )
+
+        candidate = store.job(job_id)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if candidate.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="job is not pending")
+
+        labels = _json_strings(candidate["labels_json"])
+        try:
+            profile = policy.profile_for_labels(str(candidate["repository"]), labels)
+        except PolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if profile.name not in audit.get("profiles", []):
+            raise HTTPException(status_code=409, detail="worker is not registered for job profile")
+        if profile.name not in audit.get("admission", {}).get("profiles", []):
+            raise HTTPException(
+                status_code=409,
+                detail="profile admission is not confirmed for worker",
+            )
+
+        profile_queue: list[dict[str, Any]] = []
+        for queued in store.pending_jobs():
+            try:
+                queued_profile = policy.profile_for_labels(
+                    str(queued["repository"]), _json_strings(queued["labels_json"])
+                )
+            except PolicyError:
+                continue
+            if queued_profile.name == profile.name:
+                profile_queue.append(queued)
+        if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
+            raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
+
+        attempt = _job_attempt(candidate)
+        if attempt is None:
+            raise HTTPException(status_code=409, detail="provider attempt is unavailable")
+
+        try:
+            scopes = load_claim_scopes(settings.claim_scopes_path)
+        except ClaimScopeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"claim scope configuration unavailable: {exc}",
+            ) from exc
+        existing = scopes.get(request.scope_id)
+        replaced_expired_scope = False
+        if existing is not None:
+            same_scope = (
+                existing.schema == SCHEMA_V2
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.correlation_id == request.correlation_id
+                and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.permits(
+                    job_id=job_id,
+                    repository=str(candidate["repository"]),
+                    head_sha=str(candidate["head_sha"]),
+                    profile=profile.name,
+                    run_id=int(candidate["run_id"]),
+                    attempt=attempt,
+                )
+            )
+            if same_scope:
+                if existing.expires_at > datetime.now(UTC):
+                    payload = {
+                        "kind": "fifo-claim-scope-issued",
+                        "operator_session": "verified",
+                        "mtls_identity": x_qdev_operator_mtls_identity,
+                        "idempotent": True,
+                        "claim_scope": claim_scope_mapping(existing),
+                        "immutable_tuple": {
+                            "repository": candidate["repository"],
+                            "run_id": candidate["run_id"],
+                            "job_id": job_id,
+                            "attempt": attempt,
+                            "exact_sha": candidate["head_sha"],
+                            "profile": profile.name,
+                            "runner": request.runner,
+                            "host": request.host,
+                        },
+                        "worker": audit,
+                    }
+                    return operation_store.receipt(payload)
+                replaced_expired_scope = True
+            elif not (
+                existing.schema == SCHEMA_V2
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.expires_at <= datetime.now(UTC)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="claim scope ID is already bound to another tuple",
+                )
+            else:
+                replaced_expired_scope = True
+
+        scope = ClaimScope(
+            schema=SCHEMA_V2,
+            scope_id=request.scope_id,
+            worker_name=request.worker_name,
+            tier=request.tier,
+            repository=str(candidate["repository"]),
+            head_sha=str(candidate["head_sha"]),
+            host=request.host,
+            runner=request.runner,
+            correlation_id=request.correlation_id,
+            worker_certificate_sha256=certificate_sha256,
+            expires_at=datetime.now(UTC) + timedelta(seconds=request.duration_seconds),
+            jobs=(
+                ScopedJob(
+                    job_id=job_id,
+                    repository=str(candidate["repository"]),
+                    exact_sha=str(candidate["head_sha"]),
+                    profile=profile.name,
+                    run_id=int(candidate["run_id"]),
+                    attempt=attempt,
+                ),
+            ),
+        )
+        try:
+            upsert_claim_scope(settings.claim_scopes_path, scope)
+        except ClaimScopeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"claim scope configuration unavailable: {exc}",
+            ) from exc
+
+        payload = {
+            "kind": "fifo-claim-scope-issued",
+            "operator_session": "verified",
+            "mtls_identity": x_qdev_operator_mtls_identity,
+            "idempotent": False,
+            "replaced_expired_scope": replaced_expired_scope,
+            "claim_scope": claim_scope_mapping(scope),
+            "immutable_tuple": {
+                "repository": candidate["repository"],
+                "run_id": candidate["run_id"],
+                "job_id": job_id,
+                "attempt": attempt,
+                "exact_sha": candidate["head_sha"],
+                "profile": profile.name,
+                "runner": request.runner,
+                "host": request.host,
+            },
+            "worker": audit,
         }
         return operation_store.receipt(payload)
 
@@ -777,16 +1015,13 @@ def create_app(
             if operations is not None
             else None
         )
-        supplied_override = bool(
-            request.capacity_directive_id or request.capacity_repository
-        )
+        supplied_override = bool(request.capacity_directive_id or request.capacity_repository)
         if supplied_override and active_directive is None:
             raise HTTPException(status_code=403, detail="capacity override is not active")
         if active_directive is not None and (
-                request.capacity_directive_id != active_directive.operation_id
-                or (request.capacity_repository or "").lower()
-                != active_directive.repository.lower()
-                or tuple(request.profiles) != active_directive.profiles
+            request.capacity_directive_id != active_directive.operation_id
+            or (request.capacity_repository or "").lower() != active_directive.repository.lower()
+            or tuple(request.profiles) != active_directive.profiles
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
         repository = active_directive.repository if active_directive is not None else None
@@ -813,9 +1048,13 @@ def create_app(
                 claimed["head_sha"],
                 profile.name,
                 run_id=int(claimed["run_id"]),
-                attempt=int(_stale_job_tuple(claimed)["attempt"]),
+                attempt=_job_attempt(claimed),
             ):
-                store.requeue(job_id, "claim scope no longer permits this job")
+                # Store.claim() already enforces the same immutable binding.
+                # If a concurrent invariant violation is ever observed, retain
+                # an auditable terminal record instead of silently requeueing
+                # and changing FIFO position.
+                store.set_status(job_id, "rejected", "claim scope binding invariant violation")
                 raise HTTPException(status_code=403, detail="claim scope rejected")
             run = github.workflow_run(
                 int(claimed["installation_id"]), claimed["repository"], int(claimed["run_id"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,36 @@ WORKER_NAME = "srv1879763-light-primary"
 def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
     inventory = tmp_path / "repos.json"
     inventory.write_text(
-        '{"repositories": [{"full_name": "belilovsky/qazshield", "id": 1, '
-        '"private": true, "archived": false, "default_branch": "main", '
-        '"profiles": ["qdev-ci-docker"]}, {"full_name": "belilovsky/qazlake", '
-        '"id": 2, "private": true, "archived": false, "default_branch": "main", '
-        '"profiles": ["qdev-ci-docker"]}]}',
+        json.dumps(
+            {
+                "repositories": [
+                    {
+                        "id": 1,
+                        "full_name": "belilovsky/qazshield",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
+                    {
+                        "id": 2,
+                        "full_name": "belilovsky/qazlake",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
+                    {
+                        "id": 3,
+                        "full_name": "belilovsky/example",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     profiles = tmp_path / "profiles.yml"
@@ -39,6 +65,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                 "repository_admission_disk_mb": {
                     "belilovsky/qazshield": {"qdev-ci-docker": 15360},
                     "belilovsky/qazlake": {"qdev-ci-docker": 12288},
+                    "belilovsky/example": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
                     "qdev-ci-docker": {
@@ -52,7 +79,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "timeout_minutes": 90,
                         "allow_public_pr": True,
                     }
-                }
+                },
             },
             sort_keys=True,
         ),
@@ -72,6 +99,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         operator_directive_key=DIRECTIVE_KEY,
         operations_root=tmp_path / "operations",
         controller_release_status_path=tmp_path / "controller-release.json",
+        claim_scopes_path=tmp_path / "claim-scopes.json",
     )
     app = create_app(
         settings,
@@ -159,7 +187,12 @@ def _seed_stale_running_job(client: TestClient) -> float:
 
 
 def _heartbeat(
-    client: TestClient, *, active_jobs: int = 0, disk_free_gib: float = 30.0
+    client: TestClient,
+    *,
+    active_jobs: int = 0,
+    disk_free_gib: float = 30.0,
+    admitted: bool = False,
+    scope_id: str | None = None,
 ) -> dict[str, object]:
     raw = {
         "allowed": True,
@@ -171,7 +204,7 @@ def _heartbeat(
         "cpus": 8,
         "blockers": [],
     }
-    baseline = raw | {"allowed": False, "blockers": ["disk_used_pct"]}
+    baseline = raw if admitted else raw | {"allowed": False, "blockers": ["disk_used_pct"]}
     response = client.post(
         "/internal/v1/workers/heartbeat",
         headers={"X-QDev-Worker-Token": WORKER_TOKEN},
@@ -186,8 +219,9 @@ def _heartbeat(
                 "raw_capacity": raw,
                 "baseline_capacity": baseline,
                 "effective_capacity": baseline,
-                "effective_profiles": [],
+                "effective_profiles": ["qdev-ci-docker"] if admitted else [],
                 "capacity_directive_id": None,
+                "configured_claim_scope_id": scope_id,
                 "concurrency": 1,
                 "slots_available": 0 if active_jobs else 1,
                 "min_disk_free_gib": 30.0,
@@ -196,6 +230,27 @@ def _heartbeat(
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _seed_pending_job(client: TestClient, job_id: int, delivery_id: str) -> None:
+    store: Store = client.app.state.store
+    assert (
+        store.enqueue(
+            QueuedJob(
+                delivery_id=delivery_id,
+                job_id=job_id,
+                run_id=84000000000 + job_id,
+                repository="belilovsky/example",
+                repository_id=1,
+                installation_id=2,
+                labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+                head_sha="a" * 40,
+                head_branch="main",
+                payload={"workflow_job": {"run_attempt": 1}},
+            )
+        )
+        is True
+    )
 
 
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
@@ -290,6 +345,82 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert directive["signature"] == operation["signature"]
 
 
+def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 42, "delivery-42")
+    _seed_pending_job(client, 43, "delivery-43")
+    headers = {
+        "X-QDev-Operator-Token": OPERATOR_TOKEN,
+        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+    }
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-42",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+    )
+    assert issued.status_code == 200
+    receipt = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)
+    payload = receipt["payload"]
+    assert payload["kind"] == "fifo-claim-scope-issued"
+    assert payload["idempotent"] is False
+    assert payload["immutable_tuple"] == {
+        "repository": "belilovsky/example",
+        "run_id": 84000000042,
+        "job_id": 42,
+        "attempt": 1,
+        "exact_sha": "a" * 40,
+        "profile": "qdev-ci-docker",
+        "runner": "qdev-ci-docker",
+        "host": "srv1879763-light-primary",
+    }
+
+    repeated = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope", headers=headers, json=request
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+    tail_request = request | {"job_id": 43, "correlation_id": "fifo-tail-43"}
+    tail = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope",
+        headers=headers,
+        json=tail_request,
+    )
+    assert tail.status_code == 409
+    assert tail.json()["detail"] == "job is not the FIFO head for its profile"
+
+    scope_path = tmp_path / "claim-scopes.json"
+    document = json.loads(scope_path.read_text(encoding="utf-8"))
+    document["scopes"][0]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    scope_path.write_text(json.dumps(document), encoding="utf-8")
+    refreshed_request = request | {"correlation_id": "fifo-head-42-refresh"}
+    refreshed = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=headers,
+        json=refreshed_request,
+    )
+    assert refreshed.status_code == 200
+    refreshed_payload = verify_controller_receipt(refreshed.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert refreshed_payload["idempotent"] is False
+    assert refreshed_payload["replaced_expired_scope"] is True
+
+
 def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, active_jobs=1)
@@ -380,9 +511,9 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             "reason": "repository-bound regression",
         },
     )
-    operation = verify_controller_receipt(
-        override_response.json(), receipt_key=RECEIPT_KEY
-    )["payload"]["operation"]
+    operation = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]["operation"]
     claim = {
         "worker_name": WORKER_NAME,
         "tier": "primary",

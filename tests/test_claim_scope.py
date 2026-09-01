@@ -8,9 +8,13 @@ import pytest
 
 from qdev_runner.claim_scope import (
     SCHEMA_V2,
+    ClaimScope,
     ClaimScopeError,
+    ScopedJob,
+    load_claim_scopes,
     resolve_bound_claim_scope,
     resolve_claim_scope,
+    upsert_claim_scope,
 )
 
 
@@ -30,43 +34,6 @@ def write_scope(path: Path, *, expires_at: datetime, head_sha: str = "a" * 40) -
                         "jobs": [
                             {"job_id": 100, "profile": "qdev-ci"},
                             {"job_id": 101, "profile": "qdev-ci-docker"},
-                        ],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def write_v2_scope(path: Path, *, expires_at: datetime) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "schema": SCHEMA_V2,
-                "scopes": [
-                    {
-                        "scope_id": "portfolio-20260901",
-                        "worker_name": "qdev-portfolio-primary",
-                        "tier": "primary",
-                        "expires_at": expires_at.isoformat(),
-                        "jobs": [
-                            {
-                                "job_id": 100,
-                                "repository": "belilovsky/qazlake",
-                                "run_id": 200,
-                                "attempt": 1,
-                                "head_sha": "a" * 40,
-                                "profile": "qdev-ci",
-                            },
-                            {
-                                "job_id": 101,
-                                "repository": "belilovsky/qazstack",
-                                "run_id": 201,
-                                "attempt": 2,
-                                "head_sha": "b" * 40,
-                                "profile": "qdev-ci-docker",
-                            },
                         ],
                     }
                 ],
@@ -342,67 +309,182 @@ def test_bound_scope_remains_verifiable_after_admission_expiry(tmp_path: Path) -
     assert scope.scope_id == "maturity-20260828"
 
 
-def test_v2_scope_binds_the_complete_immutable_tuple(tmp_path: Path) -> None:
-    path = tmp_path / "claim-scopes.json"
+def test_v2_scope_binds_the_complete_provider_tuple(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes-v2.json"
     now = datetime.now(UTC)
-    write_v2_scope(path, expires_at=now + timedelta(minutes=10))
+    document = {
+        "schema": "claim-scope-v2",
+        "scopes": [
+            {
+                "scope_id": "portfolio-canary-01",
+                "worker_name": "qdev-portfolio-primary",
+                "tier": "primary",
+                "host": "controller-host-01",
+                "runner": "qdev-portfolio-primary",
+                "correlation_id": "corr-portfolio-canary-01",
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "jobs": [
+                    {
+                        "repository": "belilovsky/avds",
+                        "run_id": 33311126489,
+                        "job_id": 99269988940,
+                        "attempt": 1,
+                        "exact_sha": "b" * 40,
+                        "profile": "qdev-ci-docker",
+                    }
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
 
     scope = resolve_claim_scope(
         path,
-        "portfolio-20260901",
+        "portfolio-canary-01",
         "qdev-portfolio-primary",
         "primary",
         ("qdev-ci", "qdev-ci-docker"),
         now=now,
     )
 
-    assert scope is not None and scope.is_v2
+    assert scope is not None
     assert scope.permits(
-        100,
-        "belilovsky/qazlake",
-        "a" * 40,
-        "qdev-ci",
-        run_id=200,
+        99269988940,
+        "belilovsky/avds",
+        "b" * 40,
+        "qdev-ci-docker",
+        run_id=33311126489,
         attempt=1,
     )
     assert not scope.permits(
-        100,
-        "belilovsky/qazlake",
-        "a" * 40,
-        "qdev-ci",
-        run_id=201,
-        attempt=1,
-    )
-    assert not scope.permits(
-        100,
-        "belilovsky/qazlake",
-        "a" * 40,
-        "qdev-ci",
-        run_id=200,
+        99269988940,
+        "belilovsky/avds",
+        "b" * 40,
+        "qdev-ci-docker",
+        run_id=33311126489,
         attempt=2,
     )
-
+    assert not scope.permits(
+        99269988940,
+        "belilovsky/avds",
+        "c" * 40,
+        "qdev-ci-docker",
+        run_id=33311126489,
+        attempt=1,
+    )
     bound = resolve_bound_claim_scope(
         path,
-        "portfolio-20260901",
+        "portfolio-canary-01",
         worker_name="qdev-portfolio-primary",
-        job_id=101,
-        repository="belilovsky/qazstack",
+        job_id=99269988940,
+        repository="belilovsky/avds",
         head_sha="b" * 40,
         profile="qdev-ci-docker",
-        run_id=201,
-        attempt=2,
+        run_id=33311126489,
+        attempt=1,
     )
-    assert bound.scope_id == "portfolio-20260901"
-    with pytest.raises(ClaimScopeError, match="binding"):
-        resolve_bound_claim_scope(
+    assert bound.host == "controller-host-01"
+
+
+def test_v2_scope_rejects_missing_or_duplicate_immutable_tuple(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes-v2.json"
+    now = datetime.now(UTC)
+    document = {
+        "schema": "claim-scope-v2",
+        "scopes": [
+            {
+                "scope_id": "portfolio-canary-02",
+                "worker_name": "qdev-portfolio-primary",
+                "tier": "primary",
+                "host": "controller-host-01",
+                "runner": "qdev-portfolio-primary",
+                "correlation_id": "corr-portfolio-canary-02",
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "jobs": [
+                    {
+                        "repository": "belilovsky/avds",
+                        "run_id": 33311126489,
+                        "job_id": 99269988940,
+                        "attempt": 1,
+                        "exact_sha": "b" * 40,
+                        "profile": "qdev-ci-docker",
+                    },
+                    {
+                        "repository": "belilovsky/avds",
+                        "run_id": 33311126489,
+                        "job_id": 99269988940,
+                        "attempt": 1,
+                        "exact_sha": "b" * 40,
+                        "profile": "qdev-ci-docker",
+                    },
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ClaimScopeError, match="job IDs must be unique"):
+        resolve_claim_scope(
             path,
-            "portfolio-20260901",
-            worker_name="qdev-portfolio-primary",
-            job_id=101,
-            repository="belilovsky/qazstack",
-            head_sha="b" * 40,
-            profile="qdev-ci-docker",
-            run_id=201,
-            attempt=1,
+            "portfolio-canary-02",
+            "qdev-portfolio-primary",
+            "primary",
+            ("qdev-ci-docker",),
+            now=now,
         )
+
+
+def test_upsert_v2_scope_preserves_legacy_scope_and_exact_binding(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    now = datetime.now(UTC)
+    write_scope(path, expires_at=now + timedelta(minutes=10))
+    scope = ClaimScope(
+        scope_id="portfolio-primary",
+        worker_name="qdev-maturity-primary",
+        tier="primary",
+        repository="belilovsky/example",
+        head_sha="b" * 40,
+        expires_at=now + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                job_id=222,
+                profile="qdev-ci-docker",
+                repository="belilovsky/example",
+                run_id=71,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        worker_certificate_sha256="c" * 64,
+        schema=SCHEMA_V2,
+        host="srv1879763-light-primary",
+        runner="qdev-runner-01",
+        correlation_id="correlation-1",
+    )
+
+    upsert_claim_scope(path, scope)
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["schema"] == "qdev-runner-claim-scopes-v2"
+    assert set(load_claim_scopes(path)) == {"maturity-20260828", "portfolio-primary"}
+    legacy = resolve_claim_scope(
+        path,
+        "maturity-20260828",
+        "qdev-maturity-primary",
+        "primary",
+        ("qdev-ci", "qdev-ci-docker"),
+        now=now,
+    )
+    assert legacy is not None
+    bound = resolve_bound_claim_scope(
+        path,
+        "portfolio-primary",
+        worker_name="qdev-maturity-primary",
+        job_id=222,
+        repository="belilovsky/example",
+        head_sha="b" * 40,
+        profile="qdev-ci-docker",
+        run_id=71,
+        attempt=1,
+    )
+    assert bound.runner == "qdev-runner-01"
