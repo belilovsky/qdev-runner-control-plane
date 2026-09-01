@@ -168,16 +168,16 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
         host = _required_string(raw.get("host"), "host")
         runner = _required_string(raw.get("runner"), "runner")
         correlation_id = _required_string(raw.get("correlation_id"), "correlation_id")
-        jobs = [_parse_v2_job(item) for item in jobs_raw]
-        if len({item.job_id for item in jobs}) != len(jobs):
+        v2_jobs = [_parse_v2_job(item) for item in jobs_raw]
+        if len({item.job_id for item in v2_jobs}) != len(v2_jobs):
             raise ClaimScopeError("claim scope job IDs must be unique")
         immutable_tuples = {
             (item.repository, item.run_id, item.job_id, item.attempt, item.exact_sha, item.profile)
-            for item in jobs
+            for item in v2_jobs
         }
-        if len(immutable_tuples) != len(jobs):
+        if len(immutable_tuples) != len(v2_jobs):
             raise ClaimScopeError("claim scope immutable job tuples must be unique")
-        first = jobs[0]
+        first = v2_jobs[0]
         assert first.repository is not None and first.exact_sha is not None
         return ClaimScope(
             scope_id=scope_id,
@@ -186,7 +186,7 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
             repository=first.repository,
             head_sha=first.exact_sha,
             expires_at=_parse_expiry(raw.get("expires_at")),
-            jobs=tuple(jobs),
+            jobs=tuple(v2_jobs),
             worker_certificate_sha256=_parse_certificate(raw),
             schema=schema,
             host=host,
@@ -390,8 +390,6 @@ def resolve_bound_claim_scope(
         raise ClaimScopeError("claim scope is absent")
     if scope.worker_name != worker_name:
         raise ClaimScopeError("claim scope worker identity does not match")
-    if not scope.permits(
-        job_id, repository, head_sha, profile, run_id=run_id, attempt=attempt
-    ):
+    if not scope.permits(job_id, repository, head_sha, profile, run_id=run_id, attempt=attempt):
         raise ClaimScopeError("claim scope job binding does not match")
     return scope

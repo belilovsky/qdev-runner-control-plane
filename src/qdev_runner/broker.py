@@ -235,8 +235,11 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     """
     payload = _json_object(row.get("payload_json"))
     workflow_job = _json_object(payload.get("workflow_job"))
+    attempt_raw = workflow_job.get("run_attempt")
+    if isinstance(attempt_raw, bool) or not isinstance(attempt_raw, (int, str)):
+        return None
     try:
-        attempt = int(workflow_job.get("run_attempt"))
+        attempt = int(attempt_raw)
     except (TypeError, ValueError):
         return None
     return attempt if attempt > 0 else None
