@@ -35,8 +35,12 @@ def hosted_repository(tmp_path: Path, workflow: str) -> Path:
         "schema_version: qdev-runner-v2\n"
         "execution_mode: github-hosted-primary\n"
         "self_hosted_recovery: true\n"
+        "recovery_workflows:\n  - runner-smoke.yml\n"
         "profiles:\n  - qdev-ci\n",
         encoding="utf-8",
+    )
+    (root / ".github/workflows/runner-smoke.yml").write_text(
+        "on:\n  workflow_dispatch:\njobs: {}\n", encoding="utf-8"
     )
     return root
 
@@ -145,6 +149,12 @@ def test_v2_allows_hosted_primary_and_self_hosted_recovery(tmp_path: Path) -> No
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+    (root / ".github/workflows/runner-smoke.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
   recovery:
     runs-on:
       - self-hosted
@@ -155,9 +165,31 @@ def test_v2_allows_hosted_primary_and_self_hosted_recovery(tmp_path: Path) -> No
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 """,
+        encoding="utf-8",
     )
     load_installer().install(root)
     assert run_guard(root).returncode == 0
+
+
+def test_v2_rejects_self_hosted_job_outside_declared_recovery_workflow(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "self-hosted-runner-outside-recovery" in result.stdout
+
+
+def test_v2_rejects_automatic_declared_recovery_workflow(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/runner-smoke.yml").write_text(
+        "on:\n  schedule:\n    - cron: '0 * * * *'\njobs: {}\n", encoding="utf-8"
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "recovery-workflow-not-manual-only" in result.stdout
 
 
 def test_v2_allows_ghcr_only_in_declared_non_pr_release_workflow(

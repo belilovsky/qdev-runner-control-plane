@@ -4,8 +4,9 @@ Paid GitHub-hosted compute is the normal lane for this repository. `CI / verify`
 and `QDev runner contract / qdev-runner-contract` are provider checks and must
 be evaluated on the exact pull-request SHA.
 
-The self-hosted pool is an explicit recovery lane. Dispatch
-`.github/workflows/runner-smoke.yml` manually only after controller, worker,
+The self-hosted pool is an explicit recovery lane. Only workflows listed in
+`recovery_workflows` may select a QDev self-hosted profile, and each must be
+manual-only. Dispatch `.github/workflows/runner-smoke.yml` only after controller, worker,
 capacity, executor-image and pause-owner gates pass. A successful recovery run
 does not substitute for the hosted checks.
 

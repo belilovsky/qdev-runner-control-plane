@@ -16,7 +16,7 @@ def load_auditor() -> ModuleType:
     return module
 
 
-def audit(deploy_workflow: str) -> dict[str, object]:
+def audit(deploy_workflow: str, ci_workflow: str = "jobs: {}\n") -> dict[str, object]:
     module = load_auditor()
     paths = [
         ".github/workflows/ci.yml",
@@ -29,6 +29,7 @@ def audit(deploy_workflow: str) -> dict[str, object]:
             "schema_version: qdev-runner-v2\n"
             "execution_mode: github-hosted-primary\n"
             "self_hosted_recovery: true\n"
+            "recovery_workflows:\n  - runner-smoke.yml\n"
             "profiles:\n  - qdev-ci\n"
             "release_registry_workflows:\n  - deploy.yml\n"
         ),
@@ -39,10 +40,10 @@ def audit(deploy_workflow: str) -> dict[str, object]:
         ),
         ".github/QDEV_RUNNERS.md": "managed\n",
         ".github/scripts/qdev-runner-policy.py": "managed\n",
-        ".github/workflows/ci.yml": "jobs: {}\n",
+        ".github/workflows/ci.yml": ci_workflow,
         ".github/workflows/deploy.yml": deploy_workflow,
         ".github/workflows/qdev-runner-contract.yml": "jobs: {}\n",
-        ".github/workflows/runner-smoke.yml": "jobs: {}\n",
+        ".github/workflows/runner-smoke.yml": "on:\n  workflow_dispatch:\njobs: {}\n",
     }
 
     def content_text(_full_name: str, path: str, _ref: str) -> str:
@@ -87,3 +88,26 @@ jobs:
     )
     kinds = {item["kind"] for item in result["violations"]}
     assert kinds == {"release-registry-workflow-pull-request", "github-cache"}
+
+
+def test_fleet_audit_rejects_self_hosted_job_outside_recovery() -> None:
+    result = audit(
+        """on:
+  workflow_dispatch:
+jobs: {}
+""",
+        """on:
+  pull_request:
+jobs:
+  test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test
+""",
+    )
+    kinds = {item["kind"] for item in result["violations"]}
+    assert kinds == {"self-hosted-runner-outside-recovery"}

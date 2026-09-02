@@ -128,8 +128,10 @@ Keep `.github/qdev-runner.yml`, this document, the root `AGENTS.md` policy, and
 python3 .github/scripts/qdev-runner-policy.py --root .
 ```
 
-The required `qdev-runner-contract` check runs on GitHub-hosted compute. The
-separate `runner-smoke` workflow proves the QDev recovery path. New repositories
+The required `qdev-runner-contract` check runs on GitHub-hosted compute. QDev
+self-hosted profiles may appear only in filenames declared under
+`recovery_workflows`, and those workflows must be manual-only. The separate
+`runner-smoke` workflow proves the QDev recovery path. New repositories
 must be registered through the canonical starter bundle in
 `belilovsky/qdev-runner-control-plane`; do not register a standalone runner.
 

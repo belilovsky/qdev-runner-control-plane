@@ -145,6 +145,17 @@ def violation(path: str, line: int, kind: str, detail: str = "") -> dict[str, An
     return result
 
 
+def is_manual_only_workflow(triggers: object) -> bool:
+    """Return true only for an explicit workflow_dispatch-only trigger."""
+    if triggers == "workflow_dispatch":
+        return True
+    if isinstance(triggers, list):
+        return set(triggers) == {"workflow_dispatch"}
+    if isinstance(triggers, dict):
+        return set(triggers) == {"workflow_dispatch"}
+    return False
+
+
 def audit_local_action(
     full_name: str,
     ref: str,
@@ -238,6 +249,19 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             violations.append(
                 violation(contract_path, 1, "invalid-release-registry-workflows")
             )
+    recovery_workflows: set[str] = set()
+    recovery_value = contract.get("recovery_workflows")
+    if recovery_value is not None:
+        if isinstance(recovery_value, list) and all(
+            isinstance(value, str) for value in recovery_value
+        ):
+            recovery_workflows = set(recovery_value)
+        else:
+            violations.append(violation(contract_path, 1, "invalid-recovery-workflows"))
+    if allow_hosted and not recovery_workflows:
+        violations.append(violation(contract_path, 1, "missing-recovery-workflows"))
+    if recovery_workflows and not allow_hosted:
+        violations.append(violation(contract_path, 1, "recovery-workflows-requires-v2"))
     if release_registry_workflows and not allow_hosted:
         violations.append(violation(contract_path, 1, "release-registry-requires-v2"))
     for workflow_name in sorted(release_registry_workflows):
@@ -249,6 +273,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                     "invalid-release-registry-workflow",
                     workflow_name,
                 )
+            )
+    for workflow_name in sorted(recovery_workflows):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
+            violations.append(
+                violation(contract_path, 1, "invalid-recovery-workflow", workflow_name)
             )
     if not allowed_profiles or not allowed_profiles <= QDEV_PROFILES:
         violations.append(
@@ -283,6 +312,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 workflow_name,
             )
         )
+    for workflow_name in sorted(recovery_workflows - available_workflows):
+        violations.append(
+            violation(contract_path, 1, "recovery-workflow-missing", workflow_name)
+        )
     if smoke_path not in paths:
         violations.append(violation(smoke_path, 1, "missing-runner-smoke"))
     for path in paths:
@@ -297,6 +330,9 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             and "pull_request" in triggers
         )
         allow_ghcr = allow_hosted and Path(path).name in release_registry_workflows
+        is_recovery_workflow = allow_hosted and Path(path).name in recovery_workflows
+        if is_recovery_workflow and not is_manual_only_workflow(triggers):
+            violations.append(violation(path, 1, "recovery-workflow-not-manual-only"))
         if allow_ghcr and pull_request_triggered:
             violations.append(
                 violation(path, 1, "release-registry-workflow-pull-request")
@@ -356,6 +392,10 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 if isinstance(runner, str) and "${{" in runner and not profiles:
                     violations.append(violation(path, 1, "dynamic-runner-selector", str(job_name)))
                 if profiles:
+                    if allow_hosted and not is_recovery_workflow:
+                        violations.append(
+                            violation(path, 1, "self-hosted-runner-outside-recovery", str(job_name))
+                        )
                     condition = str(job.get("if", ""))
                     if pull_request_triggered and FORK_REPOSITORY_GUARD not in condition:
                         violations.append(
