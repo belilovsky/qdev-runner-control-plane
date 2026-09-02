@@ -23,6 +23,13 @@ repository_admission_disk_mb:
   # worker's independent hard free-space floor.
   belilovsky/mcp-servers:
     qdev-ci-docker: 12288
+  # Adilet Digest Studio declares a 12 GiB bounded Docker verification scope
+  # in its exact-SHA runner manifest.  Reserve that source-owned minimum for
+  # admission only; the worker's independent 4 GiB free-space floor still
+  # applies throughout execution and the default Docker profile stays 20 GiB
+  # for every other repository.
+  belilovsky/adilet-digest-studio:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
