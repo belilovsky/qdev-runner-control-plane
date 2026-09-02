@@ -96,6 +96,52 @@ def controller_release_status(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
+def profile_admission_health(
+    *,
+    pending_jobs: list[dict[str, Any]],
+    fresh_workers: list[dict[str, Any]],
+    policy: Policy,
+) -> dict[str, dict[str, int | str]]:
+    """Project a non-secret, profile-specific admission summary.
+
+    Aggregate worker capacity cannot show whether a queued job's required
+    profile can be claimed. The summary deliberately contains only profile
+    names and counts, and does not participate in admission.
+    """
+    pending_by_profile: dict[str, int] = {}
+    for job in pending_jobs:
+        try:
+            profile = policy.profile_for_labels(
+                str(job["repository"]), _json_strings(job["labels_json"])
+            )
+        except (KeyError, PolicyError):
+            # Keep health observational. Invalid durable rows are handled by
+            # the normal broker validation and reconciliation paths.
+            continue
+        pending_by_profile[profile.name] = pending_by_profile.get(profile.name, 0) + 1
+
+    summary: dict[str, dict[str, int | str]] = {}
+    for profile_name, pending in sorted(pending_by_profile.items()):
+        slots = {"primary": 0, "reserve": 0}
+        for worker in fresh_workers:
+            if not worker["capacity_allowed"]:
+                continue
+            profiles = {item.lower() for item in _json_strings(worker["profiles_json"])}
+            if profile_name.lower() not in profiles:
+                continue
+            tier = str(worker["tier"])
+            if tier in slots:
+                slots[tier] += int(worker["slots_available"])
+        total = slots["primary"] + slots["reserve"]
+        summary[profile_name] = {
+            "pending": pending,
+            "primary_slots_available": slots["primary"],
+            "reserve_slots_available": slots["reserve"],
+            "admission": "ready" if total else "no-fresh-eligible-worker",
+        }
+    return summary
+
+
 class ClaimRequest(BaseModel):
     worker_name: str
     tier: Literal["primary", "reserve"]
@@ -551,6 +597,11 @@ def create_app(
             "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
             "primary_available": any(worker["available"] for worker in primary),
             "reserve_available": any(worker["available"] for worker in reserve),
+            "profile_admission": profile_admission_health(
+                pending_jobs=store.pending_jobs(),
+                fresh_workers=fresh_workers,
+                policy=policy,
+            ),
             "controller_release": controller_release_status(
                 settings.controller_release_status_path
             ),
