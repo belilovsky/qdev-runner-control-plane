@@ -37,15 +37,14 @@ services:
     environment:
       PORT: "9443"
       QDEV_LISTEN_HOST: "0.0.0.0"
-      # Public and mTLS controller endpoints must share one durable scope store.
+      # Public and edge-mediated controller endpoints share one durable scope
+      # store.  Client mTLS terminates at the source-owned edge; this broker is
+      # never published on a host port and is reachable only on the internal
+      # Docker network.
       QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
-      QDEV_TLS_CERT: /etc/qdev-runner/mtls/controller/controller-cert.pem
-      QDEV_TLS_KEY: /etc/qdev-runner/mtls/controller/controller-key.pem
-      QDEV_TLS_CLIENT_CA: /etc/qdev-runner/mtls/controller/ca.pem
-      # The operator runs only within this mTLS-only controller service.  Keep
-      # its local audit path explicit so capacity receipts cannot silently
-      # degrade into unauthenticated/public health observations.
-      QDEV_CONTROLLER_URL: https://worker.ci.qdev.run:9443
+      # The operator uses the externally authenticated edge.  It must not
+      # acquire a direct path around worker certificate verification.
+      QDEV_CONTROLLER_URL: https://worker.ci.qdev.run
       QDEV_OPERATOR_MTLS_CA: /etc/qdev-runner/mtls/operator/ca.pem
       QDEV_OPERATOR_MTLS_CERT: /etc/qdev-runner/mtls/operator/operator-cert.pem
       QDEV_OPERATOR_MTLS_KEY: /etc/qdev-runner/mtls/operator/operator-key.pem
@@ -53,7 +52,8 @@ services:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
       - /var/log/qdev-runner:/var/log/qdev-runner
-    network_mode: host
+    networks:
+      - qdev_runner_internal
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -80,3 +80,6 @@ networks:
   qdev_edge:
     external: true
     name: qdev_edge
+  qdev_runner_internal:
+    name: qdev_runner_internal
+    internal: true
