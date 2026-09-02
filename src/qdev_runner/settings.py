@@ -63,6 +63,11 @@ class BrokerSettings:
     controller_release_status_path: Path = Path("/etc/qdev-runner/controller-release.json")
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     release_jobs_root: Path = Path("/var/lib/qdev-runner/release-jobs")
+    github_actions_oidc_issuer: str = "https://token.actions.githubusercontent.com"
+    github_actions_oidc_jwks_url: str = (
+        "https://token.actions.githubusercontent.com/.well-known/jwks"
+    )
+    github_actions_oidc_audience: str = "qdev-artifact-v1"
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -105,6 +110,17 @@ class BrokerSettings:
             release_jobs_root=Path(
                 os.environ.get("QDEV_RELEASE_JOBS_ROOT", "/var/lib/qdev-runner/release-jobs")
             ),
+            github_actions_oidc_issuer=os.environ.get(
+                "QDEV_GITHUB_ACTIONS_OIDC_ISSUER",
+                "https://token.actions.githubusercontent.com",
+            ).strip(),
+            github_actions_oidc_jwks_url=os.environ.get(
+                "QDEV_GITHUB_ACTIONS_OIDC_JWKS_URL",
+                "https://token.actions.githubusercontent.com/.well-known/jwks",
+            ).strip(),
+            github_actions_oidc_audience=os.environ.get(
+                "QDEV_GITHUB_ACTIONS_OIDC_AUDIENCE", "qdev-artifact-v1"
+            ).strip(),
         )
 
 
