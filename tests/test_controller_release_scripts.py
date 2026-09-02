@@ -101,6 +101,19 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert service.count("--project-name qdev-runner") == 2
 
 
+def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> None:
+    compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
+
+    internal = compose.split("  broker-internal:", 1)[1].split("  registry:", 1)[0]
+    assert "network_mode: host" not in internal
+    assert "- qdev_runner_internal" in internal
+    assert "QDEV_TLS_CERT" not in internal
+    assert "QDEV_TLS_KEY" not in internal
+    assert "QDEV_TLS_CLIENT_CA" not in internal
+    assert "qdev_runner_internal:" in compose
+    assert "internal: true" in compose
+
+
 def test_registry_keeps_human_account_separate_from_job_account() -> None:
     caddyfile = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
 
