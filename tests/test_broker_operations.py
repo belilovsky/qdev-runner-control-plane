@@ -51,7 +51,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "private": True,
                         "archived": False,
                         "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
+                        "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
                     },
                 ]
             }
@@ -70,6 +70,17 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                 "profiles": {
                     "qdev-ci-docker": {
                         "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
+                        "resources": {
+                            "cpu": 2.0,
+                            "memory_mb": 5120,
+                            "disk_mb": 20480,
+                            "pids_limit": 1024,
+                        },
+                        "timeout_minutes": 90,
+                        "allow_public_pr": True,
+                    },
+                    "qdev-ci-browser": {
+                        "labels": ["self-hosted", "Linux", "X64", "qdev-ci-browser"],
                         "resources": {
                             "cpu": 2.0,
                             "memory_mb": 5120,
@@ -453,6 +464,45 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["kind"] == "controller-release-audit"
     assert receipt["payload"]["controller_release"] == status
+
+
+def test_health_reports_profile_specific_admission_without_job_details(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="profile-health",
+            job_id=99,
+            run_id=84000000099,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", "qdev-ci-browser"),
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+    _heartbeat(client, admitted=True)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["profile_admission"] == {
+        "qdev-ci-browser": {
+            "pending": 1,
+            "primary_slots_available": 0,
+            "reserve_slots_available": 0,
+            "admission": "no-fresh-eligible-worker",
+        }
+    }
+
+    _heartbeat(client, active_jobs=1, admitted=True)
+    assert client.get("/health").json()["profile_admission"]["qdev-ci-browser"] == {
+        "pending": 1,
+        "primary_slots_available": 0,
+        "reserve_slots_available": 0,
+        "admission": "no-fresh-eligible-worker",
+    }
 
 
 def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -> None:
