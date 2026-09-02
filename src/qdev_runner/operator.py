@@ -16,12 +16,35 @@ import httpx
 from .operations import payload_digest, sign_payload, validate_controller_receipt_payload
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_ENDPOINT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+OPERATOR_MTLS_IDENTITY = "qdev-fleet-operations"
 
 
 def _worker_name(value: str) -> str:
     if not _WORKER_NAME.fullmatch(value):
         raise ValueError("invalid worker name")
     return value
+
+
+def _scope_id(value: str) -> str:
+    if not _SCOPE_ID.fullmatch(value):
+        raise ValueError("invalid claim scope ID")
+    return value
+
+
+def _endpoint_identity(value: str, *, field: str) -> str:
+    if not _ENDPOINT_IDENTITY.fullmatch(value):
+        raise ValueError(f"invalid {field}")
+    return value
+
+
+def _certificate_sha256(value: str) -> str:
+    normalized = value.lower()
+    if not _SHA256.fullmatch(normalized):
+        raise ValueError("invalid worker certificate SHA-256")
+    return normalized
 
 
 def _required(name: str) -> str:
@@ -113,10 +136,14 @@ def controller_request(
     method: str,
     path: str,
     body: Mapping[str, Any] | None = None,
+    mtls_identity: str | None = None,
 ) -> dict[str, Any]:
+    headers = {"X-QDev-Operator-Token": settings.operator_token}
+    if mtls_identity is not None:
+        headers["X-QDev-Operator-mTLS-Identity"] = mtls_identity
     with httpx.Client(
         base_url=settings.controller_url,
-        headers={"X-QDev-Operator-Token": settings.operator_token},
+        headers=headers,
         verify=_tls_context(settings),
         timeout=45,
     ) as client:
@@ -164,6 +191,20 @@ def build_parser() -> argparse.ArgumentParser:
     recover_stale.add_argument("--timeout-seconds", type=int, default=300)
     recover_stale.add_argument("--owner", required=True)
     recover_stale.add_argument("--reason", required=True)
+
+    claim_scope = commands.add_parser(
+        "claim-scope",
+        help="Issue one FIFO-bound claim scope for an enrolled worker",
+    )
+    claim_scope.add_argument("job_id", type=int)
+    claim_scope.add_argument("--worker", required=True)
+    claim_scope.add_argument("--tier", choices=("primary", "reserve"), required=True)
+    claim_scope.add_argument("--scope-id", required=True)
+    claim_scope.add_argument("--host", required=True)
+    claim_scope.add_argument("--runner", required=True)
+    claim_scope.add_argument("--worker-certificate-sha256", required=True)
+    claim_scope.add_argument("--correlation-id", required=True)
+    claim_scope.add_argument("--duration-seconds", type=int, default=900)
     return parser
 
 
@@ -220,6 +261,30 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "owner": arguments.owner,
                 "reason": arguments.reason,
             },
+        )
+    if arguments.command == "claim-scope":
+        worker = _worker_name(arguments.worker)
+        scope_id = _scope_id(arguments.scope_id)
+        host = _endpoint_identity(arguments.host, field="host")
+        runner = _endpoint_identity(arguments.runner, field="runner")
+        correlation_id = _endpoint_identity(arguments.correlation_id, field="correlation ID")
+        certificate_sha256 = _certificate_sha256(arguments.worker_certificate_sha256)
+        return controller_request(
+            settings,
+            method="POST",
+            path=f"/internal/v1/operations/jobs/{arguments.job_id}/claim-scope",
+            body={
+                "job_id": arguments.job_id,
+                "worker_name": worker,
+                "tier": arguments.tier,
+                "scope_id": scope_id,
+                "host": host,
+                "runner": runner,
+                "worker_certificate_sha256": certificate_sha256,
+                "correlation_id": correlation_id,
+                "duration_seconds": arguments.duration_seconds,
+            },
+            mtls_identity=OPERATOR_MTLS_IDENTITY,
         )
     raise AssertionError("unreachable command")
 
