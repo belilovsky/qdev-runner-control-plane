@@ -25,6 +25,7 @@ install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0755 /etc/qdev-runner
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
+install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner/artifacts
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/operations

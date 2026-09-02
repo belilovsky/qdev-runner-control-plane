@@ -29,6 +29,7 @@ for required in \
   inventory/repos.json \
   config/profiles.yml \
   config/release-lanes.yml \
+  scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   deploy/qdev-release-qaz-tours.service \
   deploy/Dockerfile.broker; do
@@ -109,6 +110,8 @@ release_status_backup="$(mktemp /tmp/qdev-runner-controller-release-status.XXXXX
 profiles_were_present=false
 release_lanes_were_present=false
 release_status_was_present=false
+operator_identity_metadata_backup="$(mktemp /tmp/qdev-runner-operator-mtls-metadata.XXXXXX)"
+operator_identity_was_present=false
 if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
   profiles_were_present=true
@@ -120,6 +123,21 @@ fi
 if [[ -f "$release_status_path" ]]; then
   install -m 0644 -- "$release_status_path" "$release_status_backup"
   release_status_was_present=true
+fi
+operator_identity_dir=/etc/qdev-runner/mtls/operator
+if [[ -d "$operator_identity_dir" && ! -L "$operator_identity_dir" ]]; then
+  operator_identity_was_present=true
+  for operator_identity_path in \
+    "$operator_identity_dir" \
+    "$operator_identity_dir/ca.pem" \
+    "$operator_identity_dir/operator-cert.pem" \
+    "$operator_identity_dir/operator-key.pem"; do
+    if [[ ! -e "$operator_identity_path" || -L "$operator_identity_path" ]]; then
+      operator_identity_was_present=false
+      break
+    fi
+    stat -c '%a %u %g %n' -- "$operator_identity_path" >> "$operator_identity_metadata_backup"
+  done
 fi
 # Compose's implicit service image tags are mutable. Preserve both the exact
 # image IDs and their configured tags so a failed activation can restore the
@@ -140,7 +158,7 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$release_status_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -162,6 +180,7 @@ release_digest="$(
     "$release/inventory/repos.json" \
     "$release/config/profiles.yml" \
     "$release/config/release-lanes.yml" \
+    "$release/scripts/provision_operator_identity.sh" \
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
     "$release/deploy/Dockerfile.broker"
@@ -187,6 +206,14 @@ restore_release_status() {
   fi
 }
 
+restore_operator_identity_metadata() {
+  [[ "$operator_identity_was_present" == true ]] || return 0
+  while read -r mode uid gid path; do
+    chown "$uid:$gid" -- "$path"
+    chmod "$mode" -- "$path"
+  done < "$operator_identity_metadata_backup"
+}
+
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
@@ -201,6 +228,7 @@ fi
 
 rollback() {
   restore_release_status
+  restore_operator_identity_metadata
   [[ -n "$previous" && -d "$previous" ]] || return 0
   install -m 0644 -- "$previous/inventory/repos.json" /etc/qdev-runner/repos.json
   if [[ "$profiles_were_present" == true ]]; then
@@ -239,6 +267,12 @@ for _ in $(seq 1 30); do
 done
 if [[ "$healthy" != true ]]; then
   printf 'broker health check failed; restoring previous release\n' >&2
+  rollback
+  exit 1
+fi
+
+if ! "$release/scripts/provision_operator_identity.sh"; then
+  printf '%s\n' 'Controller is healthy, but its operator mTLS identity is not usable; restoring the prior release.' >&2
   rollback
   exit 1
 fi
