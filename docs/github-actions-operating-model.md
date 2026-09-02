@@ -46,7 +46,9 @@ same distinction applies to reserve.
    capacity. On each worker, run `scripts/audit_worker_runtime.py` as a trusted
    administrator with that worker's rootless Docker environment before
    removing a pause marker. A heartbeat is not executor proof: every
-   configured immutable runner and sidecar image must exist. A
+   configured immutable runner and sidecar image must exist and must match the
+   signed `qdev-runner-image-release-v1` manifest installed alongside
+   `worker.env`. A
    pending queue with a busy primary must be claimable by reserve.
 4. Dispatch only the repository's reviewed recovery workflow on the same SHA.
    Public fork code never runs on the recovery pool.
@@ -118,7 +120,9 @@ Run the public-safe audit before and after recovery:
 python3 scripts/audit_runtime.py --output runner-runtime-receipt.json
 
 # Run locally as a trusted admin with the worker's rootless Docker environment.
-python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
+python3 scripts/audit_worker_runtime.py \
+  --image-release-manifest /etc/qdev-runner/runner-images.json \
+  --output worker-runtime-receipt.json
 
 sudo qdev-runner-worker-gate acquire \
   --owner QDEV-INCIDENT-ID --reason 'bounded runner maintenance'

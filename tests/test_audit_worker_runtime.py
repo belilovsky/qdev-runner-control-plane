@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -96,3 +97,76 @@ def test_audit_rejects_mutable_or_missing_executor_references() -> None:
         "image_reference_missing:QDEV_RUNNER_DOCKER_IMAGE",
         "image_not_immutable:QDEV_DOCKER_SIDECAR_IMAGE",
     ]
+
+
+def test_audit_requires_manifest_to_bind_the_enabled_image_references(tmp_path: Path) -> None:
+    module = load_module()
+    values = {
+        "QDEV_WORKER_NAME": "srv-qdev-primary",
+        "QDEV_WORKER_TIER": "primary",
+        "QDEV_WORKER_PROFILES": "qdev-ci",
+        "QDEV_RUNNER_IMAGE": "registry.example/qdev/general@sha256:" + "a" * 64,
+    }
+    manifest = tmp_path / "runner-images.json"
+    artifacts = []
+    for key, character in (
+        ("QDEV_RUNNER_IMAGE", "a"),
+        ("QDEV_RUNNER_BROWSER_IMAGE", "b"),
+        ("QDEV_RUNNER_DOCKER_IMAGE", "c"),
+        ("QDEV_DOCKER_SIDECAR_IMAGE", "d"),
+    ):
+        image_digest = "sha256:" + character * 64
+        reference = (
+            "registry.example/qdev/general@" + image_digest
+            if key == "QDEV_RUNNER_IMAGE"
+            else f"registry.example/qdev/{key.lower()}@{image_digest}"
+        )
+        artifacts.append(
+            {
+                "environment_key": key,
+                "reference": reference,
+                "sbom_digest": "sha256:" + "e" * 64,
+                "provenance_digest": "sha256:" + "f" * 64,
+                "signature": {
+                    "subject_digest": image_digest,
+                    "evidence_digest": "sha256:" + "1" * 64,
+                    "issuer": "https://ci.qdev.run",
+                    "identity": "https://ci.qdev.run/runner-images",
+                },
+                "vulnerability_review": {
+                    "report_digest": "sha256:" + "2" * 64,
+                    "scanner": "trivy",
+                    "critical": 0,
+                    "high": 0,
+                },
+            }
+        )
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-runner-image-release-v1",
+                "release_revision": "a" * 40,
+                "artifacts": artifacts,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = module.evaluate(
+        values,
+        inspector=lambda _engine, _reference: (True, "id"),
+        image_release_manifest=manifest,
+    )
+
+    assert result["errors"] == []
+    assert result["image_release"]["status"] == "verified"
+    assert result["image_release"]["checked_artifacts"] == ["QDEV_RUNNER_IMAGE"]
+
+    values["QDEV_RUNNER_IMAGE"] = "registry.example/qdev/other@sha256:" + "a" * 64
+    mismatch = module.evaluate(
+        values,
+        inspector=lambda _engine, _reference: (True, "id"),
+        image_release_manifest=manifest,
+    )
+    assert mismatch["errors"] == ["image_release_reference_mismatch:QDEV_RUNNER_IMAGE"]
+    assert mismatch["image_release"]["status"] == "mismatch"
