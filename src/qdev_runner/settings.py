@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+_IMMUTABLE_IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
         raise RuntimeError(f"required environment variable is missing: {name}")
+    return value
+
+
+def _required_immutable_image(name: str) -> str:
+    """Read one worker image only when it is an OCI content-addressed reference.
+
+    The worker accepts images from a private registry.  A release tag is a
+    mutable registry pointer, so treating one as a release identity would let
+    a later push alter the executable without changing the controller source
+    or the worker receipt.
+    """
+
+    value = _required(name)
+    if not _IMMUTABLE_IMAGE_REFERENCE.fullmatch(value):
+        raise RuntimeError(f"{name} must be an OCI @sha256 content-addressed reference")
     return value
 
 
@@ -164,23 +182,11 @@ class WorkerSettings:
             poll_seconds=max(1.0, float(os.environ.get("QDEV_WORKER_POLL_SECONDS", "3"))),
             container_engine=os.environ.get("QDEV_CONTAINER_ENGINE", "docker"),
             runner_images={
-                "qdev-ci": os.environ.get(
-                    "QDEV_RUNNER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner:2.336.0-r2",
-                ),
-                "qdev-ci-browser": os.environ.get(
-                    "QDEV_RUNNER_BROWSER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0-r2",
-                ),
-                "qdev-ci-docker": os.environ.get(
-                    "QDEV_RUNNER_DOCKER_IMAGE",
-                    "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2",
-                ),
+                "qdev-ci": _required_immutable_image("QDEV_RUNNER_IMAGE"),
+                "qdev-ci-browser": _required_immutable_image("QDEV_RUNNER_BROWSER_IMAGE"),
+                "qdev-ci-docker": _required_immutable_image("QDEV_RUNNER_DOCKER_IMAGE"),
             },
-            docker_sidecar_image=os.environ.get(
-                "QDEV_DOCKER_SIDECAR_IMAGE",
-                "docker.io/library/docker@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac",
-            ),
+            docker_sidecar_image=_required_immutable_image("QDEV_DOCKER_SIDECAR_IMAGE"),
             rootlesskit_path=os.environ.get("QDEV_ROOTLESSKIT", "/usr/bin/rootlesskit"),
             buildkitd_path=os.environ.get(
                 "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.32.2/bin/buildkitd"
