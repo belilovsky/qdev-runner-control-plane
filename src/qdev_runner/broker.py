@@ -28,6 +28,7 @@ from .claim_scope import (
     upsert_claim_scope,
 )
 from .github import GitHubAppClient, GitHubError
+from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .models import QueuedJob
 from .operations import (
     DISK_ONLY_BLOCKERS,
@@ -361,6 +362,7 @@ def create_app(
     store: Store | None = None,
     policy: Policy | None = None,
     github: GitHubAppClient | None = None,
+    github_actions_oidc_verifier: GitHubActionsArtifactOIDCVerifier | None = None,
 ) -> FastAPI:
     settings = settings or BrokerSettings.from_env()
     store = store or Store(settings.database_path)
@@ -370,6 +372,14 @@ def create_app(
         settings.app_private_key_path,
         settings.github_api_url,
         settings.github_api_version,
+    )
+    github_actions_oidc_verifier = (
+        github_actions_oidc_verifier
+        or GitHubActionsArtifactOIDCVerifier(
+            issuer=settings.github_actions_oidc_issuer,
+            audience=settings.github_actions_oidc_audience,
+            jwks_url=settings.github_actions_oidc_jwks_url,
+        )
     )
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
     operator_values = (
@@ -397,6 +407,7 @@ def create_app(
     app.state.store = store
     app.state.policy = policy
     app.state.github = github
+    app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
     app.state.operations = operations
     release_store: ReleaseStore | None = None
 
@@ -1558,19 +1569,33 @@ def create_app(
         name: str,
         request: Request,
         x_qdev_artifact_token: str | None = Header(default=None),
+        x_qdev_github_oidc: str | None = Header(default=None),
         x_qdev_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         full_name = f"{_safe_segment(owner)}/{_safe_segment(repo)}"
         safe_sha = _safe_segment(sha)
         safe_name = _safe_segment(name)
-        job = store.job(job_id)
-        if not artifact_job_is_active(job, full_name, safe_sha, job_id):
-            raise HTTPException(status_code=401, detail="artifact credentials expired")
-        expected_token = artifact_token(settings.worker_token, full_name, safe_sha, job_id)
-        if not x_qdev_artifact_token or not secrets.compare_digest(
-            x_qdev_artifact_token, expected_token
-        ):
-            raise HTTPException(status_code=401, detail="artifact authentication failed")
+        if bool(x_qdev_artifact_token) == bool(x_qdev_github_oidc):
+            raise HTTPException(status_code=401, detail="exactly one artifact identity is required")
+        if x_qdev_artifact_token:
+            job = store.job(job_id)
+            if not artifact_job_is_active(job, full_name, safe_sha, job_id):
+                raise HTTPException(status_code=401, detail="artifact credentials expired")
+            expected_token = artifact_token(settings.worker_token, full_name, safe_sha, job_id)
+            if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+                raise HTTPException(status_code=401, detail="artifact authentication failed")
+        else:
+            try:
+                github_actions_oidc_verifier.verify(
+                    x_qdev_github_oidc or "",
+                    repository=full_name,
+                    sha=safe_sha,
+                    run_id=job_id,
+                )
+            except GitHubActionsOIDCError as error:
+                raise HTTPException(
+                    status_code=401, detail="artifact OIDC authentication failed"
+                ) from error
         body = await request.body()
         if len(body) > 250 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="artifact is larger than 250 MiB")
