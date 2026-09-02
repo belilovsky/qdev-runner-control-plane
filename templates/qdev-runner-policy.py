@@ -106,6 +106,26 @@ def has_pull_request_trigger(lines: list[str]) -> bool:
     return False
 
 
+def is_manual_only_workflow(lines: list[str]) -> bool:
+    """Require an explicit workflow_dispatch-only top-level trigger."""
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"['\"]?on['\"]?\s*:\s*(.*)", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            return value in {"workflow_dispatch", "[workflow_dispatch]"}
+        events: set[str] = set()
+        for candidate in lines[index + 1 :]:
+            if candidate.strip() and candidate == candidate.lstrip():
+                break
+            event = re.fullmatch(r"\s{2,}['\"]?([A-Za-z_]+)['\"]?\s*:\s*(?:.*)", candidate)
+            if event:
+                events.add(event.group(1))
+        return events == {"workflow_dispatch"}
+    return False
+
+
 def job_blocks(lines: list[str]) -> list[tuple[int, str]]:
     """Return top-level job blocks as normalized text with their start line."""
     jobs_index: int | None = None
@@ -191,6 +211,7 @@ def workflow_violations(
     allowed_profiles: set[str],
     release_runners: set[str],
     release_registry_workflows: set[str],
+    recovery_workflows: set[str],
     allow_hosted: bool,
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
@@ -201,6 +222,9 @@ def workflow_violations(
     visited_actions: set[Path] = set()
     blocks = job_blocks(lines)
     allow_ghcr = allow_hosted and path.name in release_registry_workflows
+    is_recovery_workflow = allow_hosted and path.name in recovery_workflows
+    if is_recovery_workflow and not is_manual_only_workflow(lines):
+        errors.append(f"{rel}:1: recovery-workflow-not-manual-only")
     if allow_ghcr and has_pull_request_trigger(lines):
         errors.append(f"{rel}:1: release-registry-workflow-pull-request")
     if has_pull_request_trigger(lines):
@@ -271,6 +295,8 @@ def workflow_violations(
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         selected_profiles = set(QDEV_PROFILE.findall(selector))
         if selected_profiles:
+            if allow_hosted and not is_recovery_workflow:
+                errors.append(f"{rel}:{number}: self-hosted-runner-outside-recovery")
             if len(selected_profiles) != 1:
                 errors.append(f"{rel}:{number}: multiple-runner-profiles")
             if not selected_profiles <= allowed_profiles:
@@ -307,6 +333,7 @@ def check_repository(root: Path) -> list[str]:
     allowed_profiles: set[str] = set()
     release_runners: set[str] = set()
     release_registry_workflows: set[str] = set()
+    recovery_workflows: set[str] = set()
     allow_hosted = False
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
@@ -337,6 +364,11 @@ def check_repository(root: Path) -> list[str]:
             release_runners.add(release_match.group(1))
         release_runners.update(contract_list(text, "release_runners"))
         release_registry_workflows.update(contract_list(text, "release_registry_workflows"))
+        recovery_workflows.update(contract_list(text, "recovery_workflows"))
+        if allow_hosted and not recovery_workflows:
+            errors.append(".github/qdev-runner.yml:1: missing-recovery-workflows")
+        if recovery_workflows and not allow_hosted:
+            errors.append(".github/qdev-runner.yml:1: recovery-workflows-requires-v2")
         if release_registry_workflows and not allow_hosted:
             errors.append(".github/qdev-runner.yml:1: release-registry-requires-v2")
         for workflow_name in sorted(release_registry_workflows):
@@ -365,6 +397,10 @@ def check_repository(root: Path) -> list[str]:
             ".github/qdev-runner.yml:1: release-registry-workflow-missing "
             + workflow_name
         )
+    for workflow_name in sorted(recovery_workflows - available_workflows):
+        errors.append(
+            ".github/qdev-runner.yml:1: recovery-workflow-missing " + workflow_name
+        )
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
         errors.extend(
             workflow_violations(
@@ -373,6 +409,7 @@ def check_repository(root: Path) -> list[str]:
                 allowed_profiles,
                 release_runners,
                 release_registry_workflows,
+                recovery_workflows,
                 allow_hosted,
             )
         )

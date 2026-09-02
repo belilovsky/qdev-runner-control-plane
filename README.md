@@ -74,7 +74,9 @@ python3 /path/to/checkout/.github/scripts/qdev-runner-policy.py \
   --root /path/to/checkout
 ```
 
-For v2 products whose protected release workflow uses GHCR, declare the exact
+For v2 products, declare manual-only self-hosted recovery workflow filenames
+under `recovery_workflows`; normal CI must keep GitHub-hosted runners. For v2
+products whose protected release workflow uses GHCR, declare the exact
 workflow filename under `release_registry_workflows` in
 `.github/qdev-runner.yml`. The exemption is limited to `ghcr.io` inside that
 non-PR release lane; caches, Actions artifacts, and GitHub Packages remain

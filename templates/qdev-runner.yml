@@ -1,6 +1,9 @@
 schema_version: qdev-runner-v2
 execution_mode: github-hosted-primary
 self_hosted_recovery: true
+# Self-hosted profiles are permitted only in these manual recovery workflows.
+recovery_workflows:
+  - runner-smoke.yml
 profiles:
   - qdev-ci
 trusted_events:
