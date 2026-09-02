@@ -181,14 +181,28 @@ sudo scripts/rollback_controller_release.sh REVISION
 ```
 
 Runner images are built from the pinned definitions in `images/runner` and
-published only after the same capacity gate is healthy:
+published only after the same capacity gate is healthy. A pushed tag is an
+unreleased candidate, not a worker identity:
 
 ```bash
 QDEV_PUSH_IMAGES=true scripts/build_runner_images.sh
 ```
 
-Record the three resulting registry digests in rollout evidence. Do not reuse
-a mutable image from an unverified build.
+The signed image-release controller must then create a
+`qdev-runner-image-release-v1` manifest for the three executor images and the
+Docker sidecar. Every artifact is identified by `@sha256` and carries SBOM,
+provenance, signature and vulnerability-review digests. Critical findings are
+rejected; High findings need an immutable remediation receipt. Validate that
+non-secret envelope before placing its matching references in `worker.env`:
+
+```bash
+python3 scripts/validate_runner_image_release.py \
+  --manifest /etc/qdev-runner/runner-images.json \
+  --expected-revision RUNNER_IMAGE_SOURCE_SHA
+```
+
+Do not reuse a mutable image or an image that is absent from this verified
+manifest.
 
 Before removing a worker pause after any image cleanup, run the local executor
 audit as a trusted administrator with the worker's rootless Docker environment.
@@ -196,7 +210,9 @@ It fails if the configured tier/name identity is inconsistent or an enabled
 profile's immutable runner/sidecar image is absent:
 
 ```bash
-python3 scripts/audit_worker_runtime.py --output worker-runtime-receipt.json
+python3 scripts/audit_worker_runtime.py \
+  --image-release-manifest /etc/qdev-runner/runner-images.json \
+  --output worker-runtime-receipt.json
 ```
 
 Workers use a default-deny, owner-bound execution gate. Provisioning does not

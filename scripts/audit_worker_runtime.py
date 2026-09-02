@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from qdev_runner.runner_image_release import RunnerImageReleaseError
+from qdev_runner.runner_image_release import load as load_image_release
+
 IMAGE_KEYS = (
     "QDEV_RUNNER_IMAGE",
     "QDEV_RUNNER_BROWSER_IMAGE",
@@ -87,6 +90,7 @@ def evaluate(
     values: dict[str, str],
     *,
     inspector: Callable[[str, str], tuple[bool, str | None]] = inspect_image,
+    image_release_manifest: Path | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     worker_name = values.get("QDEV_WORKER_NAME", "")
@@ -118,11 +122,42 @@ def evaluate(
         )
         if not present:
             errors.append(f"image_missing:{key}")
+
+    image_release: dict[str, Any] = {"status": "not_checked"}
+    if image_release_manifest is not None:
+        try:
+            released_references, manifest_digest = load_image_release(image_release_manifest)
+        except RunnerImageReleaseError:
+            errors.append("image_release_manifest_invalid")
+            image_release = {"status": "invalid"}
+        else:
+            checked_keys: list[str] = []
+            for key, reference in required_images(values):
+                if not reference:
+                    errors.append(f"image_release_reference_missing:{key}")
+                    continue
+                if not _IMMUTABLE_IMAGE_REFERENCE.fullmatch(reference):
+                    errors.append(f"image_release_reference_not_immutable:{key}")
+                    continue
+                checked_keys.append(key)
+                if released_references.get(key) != reference:
+                    errors.append(f"image_release_reference_mismatch:{key}")
+            status = (
+                "verified"
+                if not any(error.startswith("image_release_") for error in errors)
+                else "mismatch"
+            )
+            image_release = {
+                "status": status,
+                "manifest_digest": manifest_digest,
+                "checked_artifacts": checked_keys,
+            }
     return {
         "worker_name": worker_name or None,
         "tier": tier or None,
         "container_engine": engine,
         "images": images,
+        "image_release": image_release,
         "errors": errors,
     }
 
@@ -130,16 +165,25 @@ def evaluate(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", type=Path, default=Path("/etc/qdev-runner/worker.env"))
+    parser.add_argument(
+        "--image-release-manifest",
+        type=Path,
+        default=Path("/etc/qdev-runner/runner-images.json"),
+        help="signed-evidence manifest for the configured immutable executor images",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
-        result = evaluate(load_contract(args.env_file))
+        result = evaluate(
+            load_contract(args.env_file), image_release_manifest=args.image_release_manifest
+        )
     except (OSError, ValueError) as error:
         result = {
             "worker_name": None,
             "tier": None,
             "container_engine": None,
             "images": [],
+            "image_release": {"status": "not_checked"},
             "errors": [f"contract_read_failed:{type(error).__name__}"],
         }
     receipt = {
