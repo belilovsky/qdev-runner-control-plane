@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -13,19 +14,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_IMAGES = {
-    "QDEV_RUNNER_IMAGE": "registry.ci.qdev.run/qdev/actions-runner:2.336.0-r2",
-    "QDEV_RUNNER_BROWSER_IMAGE": (
-        "registry.ci.qdev.run/qdev/actions-runner-browser:2.336.0-r2"
-    ),
-    "QDEV_RUNNER_DOCKER_IMAGE": (
-        "registry.ci.qdev.run/qdev/actions-runner-buildkit:2.336.0-r2"
-    ),
-    "QDEV_DOCKER_SIDECAR_IMAGE": (
-        "docker.io/library/docker@sha256:"
-        "2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac"
-    ),
-}
+IMAGE_KEYS = (
+    "QDEV_RUNNER_IMAGE",
+    "QDEV_RUNNER_BROWSER_IMAGE",
+    "QDEV_RUNNER_DOCKER_IMAGE",
+    "QDEV_DOCKER_SIDECAR_IMAGE",
+)
+_IMMUTABLE_IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 PROFILE_IMAGES = {
     "qdev-ci": ("QDEV_RUNNER_IMAGE",),
     "qdev-ci-browser": ("QDEV_RUNNER_BROWSER_IMAGE",),
@@ -36,7 +31,7 @@ SAFE_KEYS = {
     "QDEV_WORKER_TIER",
     "QDEV_WORKER_PROFILES",
     "QDEV_CONTAINER_ENGINE",
-    *DEFAULT_IMAGES,
+    *IMAGE_KEYS,
 }
 
 
@@ -70,7 +65,7 @@ def required_images(values: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[str] = []
     for profile in sorted(profiles):
         keys.extend(PROFILE_IMAGES.get(profile, ()))
-    return [(key, values.get(key, DEFAULT_IMAGES[key])) for key in dict.fromkeys(keys)]
+    return [(key, values.get(key, "")) for key in dict.fromkeys(keys)]
 
 
 def inspect_image(engine: str, reference: str) -> tuple[bool, str | None]:
@@ -106,6 +101,12 @@ def evaluate(
     engine = values.get("QDEV_CONTAINER_ENGINE", "docker")
     images = []
     for key, reference in required_images(values):
+        if not reference:
+            errors.append(f"image_reference_missing:{key}")
+            continue
+        if not _IMMUTABLE_IMAGE_REFERENCE.fullmatch(reference):
+            errors.append(f"image_not_immutable:{key}")
+            continue
         present, image_id = inspector(engine, reference)
         images.append(
             {

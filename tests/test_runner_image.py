@@ -30,10 +30,10 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
     worker_audit = (ROOT / "scripts/audit_worker_runtime.py").read_text(encoding="utf-8")
 
-    release = "2.336.0-r2"
-    assert f'QDEV_RUNNER_VERSION:-{release}' in builder
-    assert settings.count(f":{release}") == 3
-    assert worker_audit.count(f":{release}") == 3
+    assert "_required_immutable_image" in settings
+    assert "@sha256 content-addressed reference" in settings
+    assert "image_not_immutable" in worker_audit
+    assert 'QDEV_RUNNER_VERSION:-2.336.0-r2' in builder
 
 
 def test_docker_profile_has_compose_plugin() -> None:
