@@ -36,6 +36,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "cleanup_rollback_images" in script
     assert "config/profiles.yml" in script
     assert "config/release-lanes.yml" in script
+    assert "scripts/provision_operator_identity.sh" in script
     assert "scripts/qaz_tours_release_host_agent.py" in script
     assert "deploy/qdev-release-qaz-tours.service" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
@@ -51,6 +52,22 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'for durable_root in "$operations_root" "$release_jobs_root"; do' in script
     assert 'stat -c %u -- "$durable_root"' in script
     assert 'stat -c %g -- "$durable_root"' in script
+    assert "restore_operator_identity_metadata()" in script
+    assert '"$release/scripts/provision_operator_identity.sh"' in script
+    assert "operator mTLS identity is not usable" in script
+
+
+def test_controller_provisions_only_the_operator_identity_permissions() -> None:
+    script = (ROOT / "scripts/provision_operator_identity.sh").read_text(encoding="utf-8")
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+
+    assert "operator-key.pem" in script
+    assert "never creates, reads, copies, or rotates key material" in script
+    assert "-L \"$path\"" in script
+    assert "install -d -o root -g 9020 -m 0750" in script
+    assert "chown root:9020" in script
+    assert "chmod 0640" in script
+    assert "/etc/qdev-runner/mtls/operator" in provisioning
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
