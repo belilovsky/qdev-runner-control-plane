@@ -751,6 +751,57 @@ def create_app(
             "runtime_receipt": job.get("runtime_receipt"),
         }
 
+    @app.post("/internal/v1/releases/{lane_name}", status_code=202)
+    def admit_release(
+        lane_name: str,
+        request: ReleaseAdmissionRequest,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane(lane_name)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=404, detail="release lane is not allowlisted") from error
+        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        try:
+            validate_candidate(request, lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=422, detail="release candidate was rejected") from error
+        ready_host_agent(lane)
+        try:
+            job, _idempotent = release_state().admit(request, lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="release lane is busy") from error
+        return admission_receipt(job)
+
+    @app.get("/internal/v1/releases/{lane_name}/{release_id}")
+    def release_status(
+        lane_name: str,
+        release_id: str,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane(lane_name)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=404, detail="release lane is not allowlisted") from error
+        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        job = release_state().job(lane, release_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="release receipt was not found")
+        return {
+            "schema": "qdev-controller-release-status-v1",
+            "release_id": job["release_id"],
+            "status": job["status"],
+            "release_lane": job["release_lane"],
+            "project_id": job["project_id"],
+            "placement": job["placement"],
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+            "artifact_ref": job["artifact_ref"],
+            "runtime_receipt": job.get("runtime_receipt"),
+        }
+
     @app.get("/internal/v1/operations/controller-release")
     def operation_controller_release(
         x_qdev_operator_token: str | None = Header(default=None),

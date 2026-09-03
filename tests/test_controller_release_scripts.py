@@ -39,6 +39,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/provision_operator_identity.sh" in script
     assert "scripts/qaz_tours_release_host_agent.py" in script
     assert "deploy/qdev-release-qaz-tours.service" in script
+    assert "scripts/qdev_product_release_host_agent.py" in script
+    assert "deploy/qdev-release-qaz-fund.service" in script
+    assert "deploy/qdev-release-qaz-events.service" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
@@ -81,6 +84,9 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "for release_file in" in script
     assert '"$release/scripts/qaz_tours_release_host_agent.py"' in script
     assert '"$release/deploy/qdev-release-qaz-tours.service"' in script
+    assert '"$release/scripts/qdev_product_release_host_agent.py"' in script
+    assert '"$release/deploy/qdev-release-qaz-fund.service"' in script
+    assert '"$release/deploy/qdev-release-qaz-events.service"' in script
     assert 'sha256sum -- "$release_file"' in script
     assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
         "if ! write_release_status; then"

@@ -31,7 +31,10 @@ for required in \
   config/release-lanes.yml \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
+  scripts/qdev_product_release_host_agent.py \
   deploy/qdev-release-qaz-tours.service \
+  deploy/qdev-release-qaz-fund.service \
+  deploy/qdev-release-qaz-events.service \
   deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
@@ -183,6 +186,9 @@ release_digest="$(
     "$release/scripts/provision_operator_identity.sh" \
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
+    "$release/scripts/qdev_product_release_host_agent.py" \
+    "$release/deploy/qdev-release-qaz-fund.service" \
+    "$release/deploy/qdev-release-qaz-events.service" \
     "$release/deploy/Dockerfile.broker"
   do
     sha256sum -- "$release_file" | awk '{print $1}'

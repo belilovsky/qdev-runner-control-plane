@@ -12,3 +12,22 @@ lanes:
     # enough room for current, verified rollback and atomic candidate release.
     minimum_free_gib: 60
     heartbeat_ttl_seconds: 90
+    artifact_repository: qaz-tours
+  qdev-release-qaz-fund:
+    project_id: qaz-fund
+    placement: vps-apps-148
+    # These identity names are only an allowlist. The controller accepts them
+    # solely after the existing CA validates the enrolled client certificate.
+    client_mtls_identity: qdev-release-client:qaz-fund
+    host_agent_mtls_identity: qdev-host-agent:vps-apps-148
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qaz-fund
+  qdev-release-qaz-events:
+    project_id: qaz-events
+    placement: vps-main
+    client_mtls_identity: qdev-release-client:qaz-events
+    host_agent_mtls_identity: qdev-host-agent:vps-main
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qaz-events

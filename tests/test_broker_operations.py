@@ -109,6 +109,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
                         "minimum_free_gib": 60,
                         "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "qaz-tours",
                     }
                 },
             },
@@ -294,6 +295,22 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
     assert status.status_code == 200
     assert status.json()["status"] == "verified"
     assert status.json()["runtime_receipt"] == runtime_receipt
+
+
+def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    headers = {"X-QDev-mTLS-Identity": "qdev-release-client:qaz-tours"}
+    response = client.post(
+        "/internal/v1/releases/qdev-release-qaz-tours",
+        json=_release_request(),
+        headers=headers,
+    )
+    # The request is correctly identified, but an enrolled host heartbeat is
+    # still mandatory before a release can enter the controller queue.
+    assert response.status_code == 409
+    assert client.post(
+        "/internal/v1/releases/not-allowlisted", json=_release_request(), headers=headers
+    ).status_code == 404
 
 
 class FakeGitHub:

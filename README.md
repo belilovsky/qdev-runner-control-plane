@@ -116,6 +116,12 @@ are reported and left unchanged.
   product client. The mTLS host agent at `vps-hostinger-186` consumes the job,
   proves 60 GiB capacity plus a distinct verified rollback, and returns the
   runtime receipt. It is deliberately outside the shared GitHub runner queue.
+- `https://worker.ci.qdev.run/internal/v1/releases/qdev-release-qaz-fund` and
+  `/qdev-release-qaz-events` — controller-owned immutable release admission
+  for the existing `vps-apps-148` and `vps-main` placements. These lanes have
+  the same mTLS, candidate-receipt, fresh-heartbeat and verified-rollback
+  requirements as Qaz.Tours; a missing enrollment is a closed release lane,
+  never a reason to fall back to SSH or a source build.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
 
@@ -139,6 +145,19 @@ OCI source revision, unavailable lock and failed public health. It starts only
 the supplied immutable image with `docker compose --no-build --pull never`.
 On a failed candidate it restores and re-proves the verified rollback; it never
 creates hosts, cleans Docker state or reads runtime secret values.
+
+### QAZ.FUND and Qaz.Events immutable host agents
+
+`qdev-release-qaz-fund` and `qdev-release-qaz-events` use the generic,
+profile-compiled `scripts/qdev_product_release_host_agent.py`, invoked by the
+matching service unit under `deploy/`.  The fixed profiles accept only
+`registry.ci.qdev.run/qaz-fund@sha256:…` on `vps-apps-148` and
+`registry.ci.qdev.run/qaz-events@sha256:…` on `vps-main` respectively. They
+require root-owned private mTLS config and state from QDev Fleet, use only the
+product's `docker-compose.controller-release.yml` immutable overlay, and prove
+the source identity through each public release contract before completing the
+controller job. They never invoke either product's legacy source-build deploy
+script.
 
 ## Guarded controller release
 
