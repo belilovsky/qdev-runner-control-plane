@@ -27,9 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
-_QAZ_TOURS_ARTIFACT_REF = re.compile(
-    r"^registry\.ci\.qdev\.run/qaz-tours@(?P<digest>sha256:[0-9a-f]{64})$"
-)
+_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -77,6 +75,7 @@ class ReleaseLane:
     host_agent_mtls_identity: str
     minimum_free_gib: float
     heartbeat_ttl_seconds: int
+    artifact_repository: str
 
 
 class ReleaseLanePolicy:
@@ -105,6 +104,7 @@ class ReleaseLanePolicy:
                 "host_agent_mtls_identity",
                 "minimum_free_gib",
                 "heartbeat_ttl_seconds",
+                "artifact_repository",
             }
             if set(raw) != expected:
                 raise ReleaseLaneError("release lane fields are invalid")
@@ -118,11 +118,13 @@ class ReleaseLanePolicy:
                 raw["placement"],
                 raw["client_mtls_identity"],
                 raw["host_agent_mtls_identity"],
+                raw["artifact_repository"],
             )
             if (
                 not all(isinstance(value, str) and value for value in values)
                 or minimum_free_gib < 1
                 or not 30 <= heartbeat_ttl_seconds <= 900
+                or not _ARTIFACT_REPOSITORY.fullmatch(str(raw["artifact_repository"]))
             ):
                 raise ReleaseLaneError("release lane values are invalid")
             lanes[name] = ReleaseLane(
@@ -133,6 +135,7 @@ class ReleaseLanePolicy:
                 host_agent_mtls_identity=str(raw["host_agent_mtls_identity"]),
                 minimum_free_gib=minimum_free_gib,
                 heartbeat_ttl_seconds=heartbeat_ttl_seconds,
+                artifact_repository=str(raw["artifact_repository"]),
             )
         self._lanes = lanes
 
@@ -157,11 +160,8 @@ def _is_digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
-def _is_qaz_tours_artifact_ref(value: object, digest: str) -> bool:
-    if not isinstance(value, str):
-        return False
-    match = _QAZ_TOURS_ARTIFACT_REF.fullmatch(value)
-    return match is not None and match.group("digest") == digest
+def _is_lane_artifact_ref(value: object, digest: str, lane: ReleaseLane) -> bool:
+    return value == f"registry.ci.qdev.run/{lane.artifact_repository}@{digest}"
 
 
 def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
@@ -173,14 +173,15 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         raise ReleaseLaneError("release identity does not match allowlisted lane")
     if not _is_sha(request.source_sha) or not _is_digest(request.artifact_digest):
         raise ReleaseLaneError("release immutable tuple is invalid")
-    if not _is_qaz_tours_artifact_ref(request.artifact_ref, request.artifact_digest):
+    if not _is_lane_artifact_ref(request.artifact_ref, request.artifact_digest, lane):
         raise ReleaseLaneError(
             "release artifact reference is not immutable or does not match digest"
         )
     receipt = request.candidate_receipt
     if (
         not isinstance(receipt, dict)
-        or set(receipt) != {
+        or set(receipt)
+        != {
             "schema",
             "status",
             "source_sha",
@@ -212,16 +213,15 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         not isinstance(active, dict)
         or set(active) != {"source_sha", "artifact_digest", "artifact_ref"}
         or not isinstance(rollback, dict)
-        or set(rollback)
-        != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
+        or set(rollback) != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
         or not _is_sha(active.get("source_sha"))
         or not _is_digest(active.get("artifact_digest"))
-        or not _is_qaz_tours_artifact_ref(active.get("artifact_ref"), active["artifact_digest"])
+        or not _is_lane_artifact_ref(active.get("artifact_ref"), active["artifact_digest"], lane)
         or rollback.get("verified") is not True
         or not _is_sha(rollback.get("source_sha"))
         or not _is_digest(rollback.get("artifact_digest"))
-        or not _is_qaz_tours_artifact_ref(
-            rollback.get("artifact_ref"), rollback["artifact_digest"]
+        or not _is_lane_artifact_ref(
+            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
         )
         or (
             rollback.get("source_sha"),
@@ -282,8 +282,8 @@ def validate_runtime_receipt(
         or not _is_sha(rollback.get("source_sha"))
         or rollback.get("source_sha") == source_sha
         or not _is_digest(rollback.get("artifact_digest"))
-        or not _is_qaz_tours_artifact_ref(
-            rollback.get("artifact_ref"), rollback["artifact_digest"]
+        or not _is_lane_artifact_ref(
+            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
         )
     ):
         raise ReleaseLaneError("runtime receipt readiness or rollback proof is invalid")
