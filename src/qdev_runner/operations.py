@@ -56,6 +56,15 @@ def sign_payload(payload: Mapping[str, Any], key: str) -> str:
 
 _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
     "controller-release-audit": {"kind", "observed_at", "controller_release"},
+    "admin-platform-audit": {
+        "kind",
+        "observed_at",
+        "controller_release",
+        "managed_registry",
+        "admin_platform_ledger",
+        "active_candidate",
+        "admission",
+    },
     "worker-audit": {"kind", "observed_at", "workers", "pending"},
     "fifo-claim-scope-issued": {
         "kind",
@@ -120,6 +129,14 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         raise ValueError("controller receipt observed_at is invalid")
     if kind == "controller-release-audit" and not isinstance(value["controller_release"], dict):
         raise ValueError("controller release payload is invalid")
+    if kind == "admin-platform-audit" and (
+        not isinstance(value["controller_release"], dict)
+        or not isinstance(value["managed_registry"], dict)
+        or not isinstance(value["admin_platform_ledger"], dict)
+        or not isinstance(value["active_candidate"], str)
+        or not isinstance(value["admission"], dict)
+    ):
+        raise ValueError("admin platform audit payload is invalid")
     if kind == "worker-audit" and (
         not isinstance(value["workers"], list)
         or not isinstance(value["pending"], int)

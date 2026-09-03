@@ -99,6 +99,40 @@ class AdminPlatformLedger:
         self.active_candidate = active_candidate
         self.entries = tuple(entries)
         self._by_entry_id = {entry.entry_id: entry for entry in entries}
+        self._raw_entries = {
+            entry_id: {
+                stage: dict(raw_entries[entry_id][stage])
+                for stage in ("artifact", "ci", "deploy", "live_acceptance", "rollback")
+            }
+            | (
+                {"observed_external_ci": dict(raw_entries[entry_id]["observed_external_ci"])}
+                if entry_id == "qazposter"
+                else {}
+            )
+            for entry_id in ORDER
+        }
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a non-mutating, source-bound projection for controller audits."""
+        document: dict[str, Any] = {
+            "schema": SCHEMA,
+            "active_candidate": self.active_candidate,
+            "entries": [],
+        }
+        for entry in self.entries:
+            item: dict[str, Any] = {
+                "entry_id": entry.entry_id,
+                "project_id": entry.project_id,
+                "source_sha": entry.source_sha,
+                "status": entry.status,
+            }
+            source = self._raw_entries[entry.entry_id]
+            for stage in ("artifact", "ci", "deploy", "live_acceptance", "rollback"):
+                item[stage] = dict(source[stage])
+            if entry.entry_id == "qazposter":
+                item["observed_external_ci"] = dict(source["observed_external_ci"])
+            document["entries"].append(item)
+        return document
 
     def validate_admission(self, entry_id: str, exact_sha: str) -> AdminPlatformLedgerEntry:
         """Require the next controller claim to match the one active candidate."""

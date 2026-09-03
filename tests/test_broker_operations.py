@@ -487,6 +487,36 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     assert receipt["payload"]["controller_release"] == status
 
 
+def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+
+    assert client.get("/internal/v1/operations/admin-platform").status_code == 401
+    assert (
+        client.get(
+            "/internal/v1/operations/admin-platform",
+            headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        ).status_code
+        == 403
+    )
+    response = client.get(
+        "/internal/v1/operations/admin-platform",
+        headers={
+            "X-QDev-Operator-Token": OPERATOR_TOKEN,
+            "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+        },
+    )
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    payload = receipt["payload"]
+    assert payload["kind"] == "admin-platform-audit"
+    assert payload["active_candidate"] == "avds-admin-shell"
+    assert payload["admission"]["claim_scope"] == "controller-signed-only"
+    assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v2"
+    assert payload["admin_platform_ledger"]["schema"] == "qdev-admin-platform-ledger-v1"
+
+
 def test_health_reports_profile_specific_admission_without_job_details(tmp_path: Path) -> None:
     client = _app(tmp_path)
     store: Store = client.app.state.store

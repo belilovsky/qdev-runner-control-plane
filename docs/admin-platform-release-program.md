@@ -18,8 +18,11 @@ entry has a terminal receipt.
 1. Preserve the existing GitHub run. Never retry, cancel, duplicate, or create
    a provider job to recover queue capacity.
 2. With the existing `qdev-fleet-operations` mTLS identity, record signed
-   `qdev-runner-operator audit` and `release-audit` receipts. The receipts
-   establish queue capacity and the currently activated controller identity.
+   `qdev-runner-operator audit`, `release-audit`, and
+   `admin-platform-audit` receipts. The receipts establish queue capacity,
+   the currently activated controller identity, and the exact non-secret
+   managed registry/ordered ledger tuple. The latter is read-only and never
+   advances admission by itself.
 3. Issue a `claim-scope` only for the current FIFO job after the managed
    registry and ledger validation succeed. The signed receipt binds repository,
    exact SHA, workflow run, job, attempt, runner profile and both registry

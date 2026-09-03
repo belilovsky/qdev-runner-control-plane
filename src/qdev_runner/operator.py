@@ -169,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "release-audit", help="Read a signed controller release activation snapshot"
     )
+    commands.add_parser(
+        "admin-platform-audit",
+        help="Read the signed Admin Platform registry and ordered ledger snapshot",
+    )
 
     create = commands.add_parser("override", help="Create one expiring disk-only override")
     create.add_argument("worker")
@@ -222,6 +226,13 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             settings,
             method="GET",
             path="/internal/v1/operations/controller-release",
+        )
+    if arguments.command == "admin-platform-audit":
+        return controller_request(
+            settings,
+            method="GET",
+            path="/internal/v1/operations/admin-platform",
+            mtls_identity=OPERATOR_MTLS_IDENTITY,
         )
     if arguments.command == "override":
         worker = _worker_name(arguments.worker)

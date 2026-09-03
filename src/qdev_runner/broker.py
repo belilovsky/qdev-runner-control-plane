@@ -434,6 +434,14 @@ def create_app(
             raise HTTPException(status_code=401, detail="operator authentication failed")
         return operations
 
+    def require_operator_mtls(identity: str | None) -> None:
+        """Require the fleet-operations client identity for control-plane audits."""
+        if identity != "qdev-fleet-operations":
+            raise HTTPException(
+                status_code=403,
+                detail="qdev-fleet-operations mTLS identity required",
+            )
+
     def release_policy() -> ReleaseLanePolicy:
         try:
             return ReleaseLanePolicy(settings.release_lanes_path)
@@ -836,6 +844,57 @@ def create_app(
                 "controller_release": controller_release_status(
                     settings.controller_release_status_path
                 ),
+            }
+        )
+
+    @app.get("/internal/v1/operations/admin-platform")
+    def operation_admin_platform(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Issue the signed, read-only Admin Platform control-plane audit.
+
+        This endpoint never advances the ledger or claims a job.  It binds the
+        observed registry and ordered candidate ledger to the controller
+        activation observation, and is intentionally mTLS-protected so the
+        result can be used as the documented admission audit for the current
+        AVDS candidate.
+        """
+        operation_store = require_operator(x_qdev_operator_token)
+        require_operator_mtls(x_qdev_operator_mtls_identity)
+        registry = managed_registry()
+        ledger = admin_platform_ledger()
+        active_entry = next(
+            entry for entry in ledger.entries if entry.entry_id == ledger.active_candidate
+        )
+        if active_entry.source_sha is None:
+            raise HTTPException(
+                status_code=503,
+                detail="admin platform active candidate has no source SHA",
+            )
+        active = ledger.validate_admission(ledger.active_candidate, active_entry.source_sha)
+        managed = registry.entry_for_id(active.entry_id)
+        if managed is None or managed.project_id != active.project_id:
+            raise HTTPException(
+                status_code=503,
+                detail="admin platform registry and ledger are not aligned",
+            )
+        controller = controller_release_status(settings.controller_release_status_path)
+        return operation_store.receipt(
+            {
+                "kind": "admin-platform-audit",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "controller_release": controller,
+                "managed_registry": registry.snapshot(),
+                "admin_platform_ledger": ledger.snapshot(),
+                "active_candidate": active.entry_id,
+                "admission": {
+                    "state": "controller-release-observed",
+                    "source_sha": active.source_sha,
+                    "registry_entry": managed.entry_id,
+                    "ledger_status": active.status,
+                    "claim_scope": "controller-signed-only",
+                },
             }
         )
 

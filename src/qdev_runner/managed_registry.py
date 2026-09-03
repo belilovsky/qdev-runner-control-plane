@@ -105,7 +105,40 @@ class ManagedRegistry:
                 owner=str(raw["owner"]),
             )
             repositories.add(repository)
-        self._by_repository = {entry.repository: entry for entry in entries.values()}
+        self.entries = tuple(entries.values())
+        self._by_entry_id = entries
+        self._by_repository = {entry.repository: entry for entry in self.entries}
+
+    def entry_for_id(self, entry_id: str) -> ManagedRegistryEntry | None:
+        """Return one registry record by its stable controller identity."""
+        return self._by_entry_id.get(entry_id)
+
+    def snapshot(self) -> dict[str, object]:
+        """Return the non-secret registry projection used by signed audits.
+
+        Keep this projection deliberately explicit.  A registry entry is
+        configuration, not an arbitrary document that should be echoed by an
+        operator endpoint; the fields below are the complete v2 contract and
+        contain no credentials, cookies, or personal data.
+        """
+        return {
+            "schema": SCHEMA,
+            "entries": [
+                {
+                    "entry_id": entry.entry_id,
+                    "project_id": entry.project_id,
+                    "kind": entry.kind,
+                    "repository": entry.repository,
+                    "canonical_ref": entry.canonical_ref,
+                    "allowed_profiles": sorted(entry.allowed_profiles),
+                    "native_release_profile": entry.native_release_profile,
+                    "runtime_endpoints": list(entry.runtime_endpoints),
+                    "rollback_reference": entry.rollback_reference,
+                    "owner": entry.owner,
+                }
+                for entry in self.entries
+            ],
+        }
 
     def entry_for_repository(self, repository: str) -> ManagedRegistryEntry | None:
         return self._by_repository.get(repository)
