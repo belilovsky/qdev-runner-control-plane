@@ -107,11 +107,13 @@ def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> N
     internal = compose.split("  broker-internal:", 1)[1].split("  registry:", 1)[0]
     assert "network_mode: host" not in internal
     assert "- qdev_runner_internal" in internal
+    assert "- qdev_runner_egress" in internal
     assert "QDEV_TLS_CERT" not in internal
     assert "QDEV_TLS_KEY" not in internal
     assert "QDEV_TLS_CLIENT_CA" not in internal
     assert "qdev_runner_internal:" in compose
     assert "internal: true" in compose
+    assert "qdev_runner_egress:" in compose
 
 
 def test_registry_keeps_human_account_separate_from_job_account() -> None:

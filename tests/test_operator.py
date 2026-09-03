@@ -107,3 +107,41 @@ def test_claim_scope_rejects_untrusted_identity_inputs(
 
     with pytest.raises(ValueError, match=message):
         operator.run(arguments)
+
+
+def test_tls_context_keeps_system_roots_and_adds_controller_ca(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StubContext:
+        def __init__(self) -> None:
+            self.verify_locations: list[str] = []
+            self.cert_chain: tuple[str, str] | None = None
+
+        def load_verify_locations(self, *, cafile: str) -> None:
+            self.verify_locations.append(cafile)
+
+        def load_cert_chain(self, certfile: str, keyfile: str) -> None:
+            self.cert_chain = (certfile, keyfile)
+
+    created: list[StubContext] = []
+
+    def fake_create_default_context() -> StubContext:
+        context = StubContext()
+        created.append(context)
+        return context
+
+    monkeypatch.setattr(operator.ssl, "create_default_context", fake_create_default_context)
+    settings = operator.OperatorSettings(
+        controller_url="https://broker.invalid",
+        operator_token="inert-operator-token",
+        receipt_key="inert-receipt-key",
+        mtls_ca="/inert/controller-ca.pem",
+        mtls_cert="/inert/operator-cert.pem",
+        mtls_key="/inert/operator-key.pem",
+    )
+
+    context = operator._tls_context(settings)
+
+    assert context is created[0]
+    assert context.verify_locations == ["/inert/controller-ca.pem"]
+    assert context.cert_chain == ("/inert/operator-cert.pem", "/inert/operator-key.pem")

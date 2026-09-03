@@ -125,7 +125,11 @@ def verify_controller_receipt(
 
 
 def _tls_context(settings: OperatorSettings) -> ssl.SSLContext:
-    context = ssl.create_default_context(cafile=settings.mtls_ca)
+    # Preserve system roots for the public mTLS edge and extend that trust
+    # store with the controller's private CA. Passing ``cafile`` directly to
+    # create_default_context replaces public roots and fails at the edge.
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=settings.mtls_ca)
     context.load_cert_chain(settings.mtls_cert, settings.mtls_key)
     return context
 
