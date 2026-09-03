@@ -469,7 +469,7 @@ class Store:
                 FROM jobs LEFT JOIN workers ON workers.name=jobs.worker_name
                 WHERE jobs.status IN ('claimed','running') AND jobs.updated_at<?
                   AND (jobs.worker_name IS NULL OR workers.name IS NULL
-                       OR workers.last_seen<?)
+                       OR workers.last_seen<? OR workers.active_jobs=0)
                 ORDER BY jobs.created_at ASC, jobs.job_id ASC
                 """,
                 (cutoff, cutoff),
@@ -487,7 +487,7 @@ class Store:
                     claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running') AND updated_at<?
                   AND (worker_name IS NULL OR worker_name NOT IN (
-                    SELECT name FROM workers WHERE last_seen>=?
+                    SELECT name FROM workers WHERE last_seen>=? AND active_jobs>0
                   ))
                 """,
                 (now, reason[:4000], job_id, cutoff, cutoff),
