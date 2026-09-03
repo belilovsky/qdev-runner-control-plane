@@ -180,7 +180,8 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
     receipt = request.candidate_receipt
     if (
         not isinstance(receipt, dict)
-        or set(receipt) != {
+        or set(receipt)
+        != {
             "schema",
             "status",
             "source_sha",
@@ -212,15 +213,16 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         not isinstance(active, dict)
         or set(active) != {"source_sha", "artifact_digest", "artifact_ref"}
         or not isinstance(rollback, dict)
-        or set(rollback)
-        != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
+        or set(rollback) != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
         or not _is_sha(active.get("source_sha"))
         or not _is_digest(active.get("artifact_digest"))
         or not _is_lane_artifact_ref(active.get("artifact_ref"), active["artifact_digest"], lane)
         or rollback.get("verified") is not True
         or not _is_sha(rollback.get("source_sha"))
         or not _is_digest(rollback.get("artifact_digest"))
-        or not _is_lane_artifact_ref(rollback.get("artifact_ref"), rollback["artifact_digest"], lane)
+        or not _is_lane_artifact_ref(
+            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
+        )
         or (
             rollback.get("source_sha"),
             rollback.get("artifact_digest"),
@@ -280,7 +282,9 @@ def validate_runtime_receipt(
         or not _is_sha(rollback.get("source_sha"))
         or rollback.get("source_sha") == source_sha
         or not _is_digest(rollback.get("artifact_digest"))
-        or not _is_lane_artifact_ref(rollback.get("artifact_ref"), rollback["artifact_digest"], lane)
+        or not _is_lane_artifact_ref(
+            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
+        )
     ):
         raise ReleaseLaneError("runtime receipt readiness or rollback proof is invalid")
 

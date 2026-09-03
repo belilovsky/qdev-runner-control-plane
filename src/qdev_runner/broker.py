@@ -761,7 +761,9 @@ def create_app(
         try:
             lane = policy_value.lane(lane_name)
         except ReleaseLaneError as error:
-            raise HTTPException(status_code=404, detail="release lane is not allowlisted") from error
+            raise HTTPException(
+                status_code=404, detail="release lane is not allowlisted"
+            ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         try:
             validate_candidate(request, lane)
@@ -784,7 +786,9 @@ def create_app(
         try:
             lane = policy_value.lane(lane_name)
         except ReleaseLaneError as error:
-            raise HTTPException(status_code=404, detail="release lane is not allowlisted") from error
+            raise HTTPException(
+                status_code=404, detail="release lane is not allowlisted"
+            ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         job = release_state().job(lane, release_id)
         if job is None:

@@ -52,21 +52,36 @@ class Profile:
 
 PROFILES = {
     "qaz-fund": Profile(
-        name="qaz-fund", lane="qdev-release-qaz-fund", project="qaz-fund",
-        placement="vps-apps-148", repository="qaz-fund",
+        name="qaz-fund",
+        lane="qdev-release-qaz-fund",
+        project="qaz-fund",
+        placement="vps-apps-148",
+        repository="qaz-fund",
         release_dir=Path("/opt/grant-radar"),
-        compose_files=(Path("/opt/grant-radar/docker-compose.yml"), Path("/opt/grant-radar/docker-compose.prod.yml"), Path("/opt/grant-radar/docker-compose.controller-release.yml")),
-        runtime_env=Path("/opt/grant-radar/.env.prod"), services=("api", "worker"),
+        compose_files=(
+            Path("/opt/grant-radar/docker-compose.yml"),
+            Path("/opt/grant-radar/docker-compose.prod.yml"),
+            Path("/opt/grant-radar/docker-compose.controller-release.yml"),
+        ),
+        runtime_env=Path("/opt/grant-radar/.env.prod"),
+        services=("api", "worker"),
         local_ready_url="http://127.0.0.1:8000/ready",
         public_release_url="https://qaz.fund/.well-known/release.json",
         public_identity_path=("sourceSha",),
     ),
     "qaz-events": Profile(
-        name="qaz-events", lane="qdev-release-qaz-events", project="qaz-events",
-        placement="vps-main", repository="qaz-events",
+        name="qaz-events",
+        lane="qdev-release-qaz-events",
+        project="qaz-events",
+        placement="vps-main",
+        repository="qaz-events",
         release_dir=Path("/opt/ideo-calendar"),
-        compose_files=(Path("/opt/ideo-calendar/docker-compose.yml"), Path("/opt/ideo-calendar/docker-compose.controller-release.yml")),
-        runtime_env=Path("/opt/ideo-calendar/.env"), services=("app",),
+        compose_files=(
+            Path("/opt/ideo-calendar/docker-compose.yml"),
+            Path("/opt/ideo-calendar/docker-compose.controller-release.yml"),
+        ),
+        runtime_env=Path("/opt/ideo-calendar/.env"),
+        services=("app",),
         local_ready_url="http://127.0.0.1:8400/api/health",
         public_release_url="https://qaz.events/.well-known/qdev-ecosystem.json",
         public_identity_path=("evidence", "source_revision"),
@@ -106,8 +121,12 @@ def load_config(path: Path) -> Config:
             raise AgentError("host-agent configuration has an invalid line")
         values[key] = value
     expected = {
-        "QDEV_RELEASE_CONTROLLER_URL", "QDEV_RELEASE_AGENT_CERT", "QDEV_RELEASE_AGENT_KEY",
-        "QDEV_RELEASE_CONTROLLER_CA", "QDEV_RELEASE_STATE_PATH", "QDEV_RELEASE_LOCK_PATH",
+        "QDEV_RELEASE_CONTROLLER_URL",
+        "QDEV_RELEASE_AGENT_CERT",
+        "QDEV_RELEASE_AGENT_KEY",
+        "QDEV_RELEASE_CONTROLLER_CA",
+        "QDEV_RELEASE_STATE_PATH",
+        "QDEV_RELEASE_LOCK_PATH",
     }
     if set(values) != expected:
         raise AgentError("host-agent configuration keys are invalid")
@@ -120,7 +139,14 @@ def load_config(path: Path) -> Config:
         or parsed.fragment
     ):
         raise AgentError("controller URL must be the fixed HTTPS mTLS edge")
-    config = Config(values["QDEV_RELEASE_CONTROLLER_URL"], Path(values["QDEV_RELEASE_AGENT_CERT"]), Path(values["QDEV_RELEASE_AGENT_KEY"]), Path(values["QDEV_RELEASE_CONTROLLER_CA"]), Path(values["QDEV_RELEASE_STATE_PATH"]), Path(values["QDEV_RELEASE_LOCK_PATH"]))
+    config = Config(
+        values["QDEV_RELEASE_CONTROLLER_URL"],
+        Path(values["QDEV_RELEASE_AGENT_CERT"]),
+        Path(values["QDEV_RELEASE_AGENT_KEY"]),
+        Path(values["QDEV_RELEASE_CONTROLLER_CA"]),
+        Path(values["QDEV_RELEASE_STATE_PATH"]),
+        Path(values["QDEV_RELEASE_LOCK_PATH"]),
+    )
     for credential in (config.client_cert, config.client_key, config.controller_ca):
         _private(credential)
     return config
@@ -130,8 +156,17 @@ def _release(value: object, profile: Profile) -> dict[str, str]:
     expected = {"source_sha", "artifact_digest", "artifact_ref"}
     if not isinstance(value, dict) or set(value) != expected:
         raise AgentError("release state shape is invalid")
-    source, digest, ref = value.get("source_sha"), value.get("artifact_digest"), value.get("artifact_ref")
-    if not isinstance(source, str) or not _SHA.fullmatch(source) or not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+    source, digest, ref = (
+        value.get("source_sha"),
+        value.get("artifact_digest"),
+        value.get("artifact_ref"),
+    )
+    if (
+        not isinstance(source, str)
+        or not _SHA.fullmatch(source)
+        or not isinstance(digest, str)
+        or not _DIGEST.fullmatch(digest)
+    ):
         raise AgentError("release immutable tuple is invalid")
     if ref != f"registry.ci.qdev.run/{profile.repository}@{digest}":
         raise AgentError("release artifact reference is not allowlisted")
@@ -144,13 +179,20 @@ def read_state(path: Path, profile: Profile) -> tuple[dict[str, str], dict[str, 
         document = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise AgentError("host-agent state is not JSON") from error
-    if not isinstance(document, dict) or set(document) != {"schema", "active_release", "rollback"} or document.get("schema") != STATE_SCHEMA:
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "active_release", "rollback"}
+        or document.get("schema") != STATE_SCHEMA
+    ):
         raise AgentError("host-agent state shape is invalid")
     active = _release(document.get("active_release"), profile)
     rollback_raw = document.get("rollback")
     if not isinstance(rollback_raw, dict) or rollback_raw.get("verified") is not True:
         raise AgentError("host-agent rollback is not verified")
-    rollback = _release({key: rollback_raw.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}, profile)
+    rollback = _release(
+        {key: rollback_raw.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")},
+        profile,
+    )
     if active == rollback:
         raise AgentError("host-agent rollback must be distinct")
     return active, rollback
@@ -163,7 +205,16 @@ def write_state(path: Path, active: dict[str, str], rollback: dict[str, str]) ->
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"schema": STATE_SCHEMA, "active_release": active, "rollback": {"verified": True, **rollback}}, stream, sort_keys=True, separators=(",", ":"))
+            json.dump(
+                {
+                    "schema": STATE_SCHEMA,
+                    "active_release": active,
+                    "rollback": {"verified": True, **rollback},
+                },
+                stream,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -172,15 +223,43 @@ def write_state(path: Path, active: dict[str, str], rollback: dict[str, str]) ->
         temporary.unlink(missing_ok=True)
 
 
-def _run(command: list[str], *, input_bytes: bytes | None = None, environment: dict[str, str] | None = None) -> bytes:
-    result = subprocess.run(command, input=input_bytes, capture_output=True, check=False, env=environment)
+def _run(
+    command: list[str],
+    *,
+    input_bytes: bytes | None = None,
+    environment: dict[str, str] | None = None,
+) -> bytes:
+    result = subprocess.run(
+        command, input=input_bytes, capture_output=True, check=False, env=environment
+    )
     if result.returncode:
         raise AgentError(f"command failed: {command[0]}")
     return result.stdout
 
 
-def request(config: Config, method: str, path: str, payload: dict[str, Any] | None = None) -> tuple[int, bytes]:
-    command = ["curl", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "30", "--request", method, "--cert", str(config.client_cert), "--key", str(config.client_key), "--cacert", str(config.controller_ca), "--write-out", "\n%{http_code}", f"{config.controller_url.rstrip('/')}{path}"]
+def request(
+    config: Config, method: str, path: str, payload: dict[str, Any] | None = None
+) -> tuple[int, bytes]:
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "30",
+        "--request",
+        method,
+        "--cert",
+        str(config.client_cert),
+        "--key",
+        str(config.client_key),
+        "--cacert",
+        str(config.controller_ca),
+        "--write-out",
+        "\n%{http_code}",
+        f"{config.controller_url.rstrip('/')}{path}",
+    ]
     body = None
     if payload is not None:
         command[2:2] = ["--header", "content-type: application/json", "--data-binary", "@-"]
@@ -196,27 +275,81 @@ def request(config: Config, method: str, path: str, payload: dict[str, Any] | No
 def heartbeat(profile: Profile, active: dict[str, str], rollback: dict[str, str]) -> dict[str, Any]:
     stats = os.statvfs("/")
     free = stats.f_bavail * stats.f_frsize / 1024**3
-    return {"schema": "qdev-release-host-agent-heartbeat-v1", "release_lane": profile.lane, "project_id": profile.project, "placement": profile.placement, "state": "ready", "release_lock": "available", "capacity_free_gib": round(free, 3), "active_release": active, "rollback": {"verified": True, **rollback}}
+    return {
+        "schema": "qdev-release-host-agent-heartbeat-v1",
+        "release_lane": profile.lane,
+        "project_id": profile.project,
+        "placement": profile.placement,
+        "state": "ready",
+        "release_lock": "available",
+        "capacity_free_gib": round(free, 3),
+        "active_release": active,
+        "rollback": {"verified": True, **rollback},
+    }
 
 
 def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str]]:
-    required = {"schema", "release_id", "release_lane", "project_id", "placement", "source_sha", "artifact_digest", "artifact_ref"}
-    if not isinstance(document, dict) or set(document) != required or document.get("schema") != "qdev-release-host-agent-job-v1":
+    required = {
+        "schema",
+        "release_id",
+        "release_lane",
+        "project_id",
+        "placement",
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+    }
+    if (
+        not isinstance(document, dict)
+        or set(document) != required
+        or document.get("schema") != "qdev-release-host-agent-job-v1"
+    ):
         raise AgentError("controller release job shape is invalid")
-    if (document.get("release_lane"), document.get("project_id"), document.get("placement")) != (profile.lane, profile.project, profile.placement):
+    if (document.get("release_lane"), document.get("project_id"), document.get("placement")) != (
+        profile.lane,
+        profile.project,
+        profile.placement,
+    ):
         raise AgentError("controller release job identity is invalid")
     release_id = document.get("release_id")
     if not isinstance(release_id, str) or not release_id:
         raise AgentError("controller release job id is invalid")
-    return release_id, _release({key: document.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}, profile)
+    return release_id, _release(
+        {key: document.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")},
+        profile,
+    )
 
 
 def verify_image(release: dict[str, str]) -> None:
     _run(["docker", "pull", release["artifact_ref"]])
-    digests = json.loads(_run(["docker", "image", "inspect", release["artifact_ref"], "--format", "{{json .RepoDigests}}"]))
+    digests = json.loads(
+        _run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                release["artifact_ref"],
+                "--format",
+                "{{json .RepoDigests}}",
+            ]
+        )
+    )
     if not isinstance(digests, list) or release["artifact_ref"] not in digests:
         raise AgentError("pulled image does not retain requested immutable reference")
-    revision = _run(["docker", "image", "inspect", release["artifact_ref"], "--format", "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}"]).decode().strip()
+    revision = (
+        _run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                release["artifact_ref"],
+                "--format",
+                '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+            ]
+        )
+        .decode()
+        .strip()
+    )
     if revision != release["source_sha"]:
         raise AgentError("OCI image source revision does not match controller job")
 
@@ -227,12 +360,28 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
             raise AgentError("canonical controller compose overlay is unavailable")
     _private(profile.runtime_env)
     environment = dict(os.environ)
-    environment.update({"QDEV_RELEASE_SOURCE_SHA": release["source_sha"], "QDEV_RELEASE_ARTIFACT_DIGEST": release["artifact_digest"]})
-    environment["QAZ_FUND_IMAGE" if profile.name == "qaz-fund" else "QAZ_EVENTS_IMAGE"] = release["artifact_ref"]
-    command = ["docker", "compose", "--project-name", profile.name, "--env-file", str(profile.runtime_env)]
+    environment.update(
+        {
+            "QDEV_RELEASE_SOURCE_SHA": release["source_sha"],
+            "QDEV_RELEASE_ARTIFACT_DIGEST": release["artifact_digest"],
+        }
+    )
+    environment["QAZ_FUND_IMAGE" if profile.name == "qaz-fund" else "QAZ_EVENTS_IMAGE"] = release[
+        "artifact_ref"
+    ]
+    command = [
+        "docker",
+        "compose",
+        "--project-name",
+        profile.name,
+        "--env-file",
+        str(profile.runtime_env),
+    ]
     for file in profile.compose_files:
         command.extend(["-f", str(file)])
-    command.extend(["up", "-d", "--force-recreate", "--no-build", "--pull", "never", *profile.services])
+    command.extend(
+        ["up", "-d", "--force-recreate", "--no-build", "--pull", "never", *profile.services]
+    )
     _run(command, environment=environment)
 
 
@@ -246,20 +395,73 @@ def _read_path(document: object, path: tuple[str, ...]) -> object:
 
 
 def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
-    local = json.loads(_run(["curl", "--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "30", profile.local_ready_url]))
+    local = json.loads(
+        _run(
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "30",
+                profile.local_ready_url,
+            ]
+        )
+    )
     if not isinstance(local, dict) or local.get("status") != "ok":
         raise AgentError("local readiness is not truthful")
-    public = json.loads(_run(["curl", "--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "30", profile.public_release_url]))
+    public = json.loads(
+        _run(
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "30",
+                profile.public_release_url,
+            ]
+        )
+    )
     if _read_path(public, profile.public_identity_path) != release["source_sha"]:
         raise AgentError("public release identity does not match promoted source")
-    if profile.name == "qaz-fund" and (public.get("imageDigest") != release["artifact_digest"] or public.get("artifactDigest") != release["artifact_digest"]):
+    if profile.name == "qaz-fund" and (
+        public.get("imageDigest") != release["artifact_digest"]
+        or public.get("artifactDigest") != release["artifact_digest"]
+    ):
         raise AgentError("public QAZ.FUND artifact identity does not match promoted image")
     return {"local": "ok", "public": "ok"}
 
 
-def complete(config: Config, profile: Profile, release_id: str, release: dict[str, str], rollback: dict[str, str], readiness: dict[str, str]) -> None:
-    receipt = {"schema": "qdev-controller-release-runtime-receipt-v1", "status": "verified", "project": profile.project, "release_lane": profile.lane, "placement": profile.placement, **release, "health": "ok", "readiness": readiness, "rollback": {"verified": True, **rollback}}
-    status, _ = request(config, "POST", f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete", receipt)
+def complete(
+    config: Config,
+    profile: Profile,
+    release_id: str,
+    release: dict[str, str],
+    rollback: dict[str, str],
+    readiness: dict[str, str],
+) -> None:
+    receipt = {
+        "schema": "qdev-controller-release-runtime-receipt-v1",
+        "status": "verified",
+        "project": profile.project,
+        "release_lane": profile.lane,
+        "placement": profile.placement,
+        **release,
+        "health": "ok",
+        "readiness": readiness,
+        "rollback": {"verified": True, **rollback},
+    }
+    status, _ = request(
+        config,
+        "POST",
+        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete",
+        receipt,
+    )
     if status != 200:
         raise AgentError("controller rejected verified runtime receipt")
 
@@ -277,10 +479,14 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         beat = heartbeat(profile, active, rollback)
         if beat["capacity_free_gib"] < 20:
             raise AgentError("release capacity is below 20 GiB; no cleanup was attempted")
-        status, _ = request(config, "POST", f"/internal/v1/release-hosts/{profile.placement}/heartbeat", beat)
+        status, _ = request(
+            config, "POST", f"/internal/v1/release-hosts/{profile.placement}/heartbeat", beat
+        )
         if status != 200:
             raise AgentError("controller rejected host-agent heartbeat")
-        status, body = request(config, "GET", f"/internal/v1/release-hosts/{profile.placement}/jobs/next")
+        status, body = request(
+            config, "GET", f"/internal/v1/release-hosts/{profile.placement}/jobs/next"
+        )
         if status == 204:
             return {"status": "idle", "capacity_free_gib": beat["capacity_free_gib"]}
         if status != 200:
@@ -310,7 +516,9 @@ def main() -> int:
     try:
         result = run_once(load_config(args.config), PROFILES[args.profile])
     except (AgentError, json.JSONDecodeError) as error:
-        print(json.dumps({"status": "blocked", "reason": str(error)}, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps({"status": "blocked", "reason": str(error)}, sort_keys=True), file=sys.stderr
+        )
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0
