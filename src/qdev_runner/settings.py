@@ -63,6 +63,7 @@ class BrokerSettings:
     controller_release_status_path: Path = Path("/etc/qdev-runner/controller-release.json")
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
+    admin_platform_ledger_path: Path = Path("/etc/qdev-runner/admin-platform-ledger.yml")
     release_jobs_root: Path = Path("/var/lib/qdev-runner/release-jobs")
     github_actions_oidc_issuer: str = "https://token.actions.githubusercontent.com"
     github_actions_oidc_jwks_url: str = (
@@ -110,6 +111,12 @@ class BrokerSettings:
             ),
             managed_registry_path=Path(
                 os.environ.get("QDEV_MANAGED_REGISTRY", "/etc/qdev-runner/managed-registry.yml")
+            ),
+            admin_platform_ledger_path=Path(
+                os.environ.get(
+                    "QDEV_ADMIN_PLATFORM_LEDGER",
+                    "/etc/qdev-runner/admin-platform-ledger.yml",
+                )
             ),
             release_jobs_root=Path(
                 os.environ.get("QDEV_RELEASE_JOBS_ROOT", "/var/lib/qdev-runner/release-jobs")

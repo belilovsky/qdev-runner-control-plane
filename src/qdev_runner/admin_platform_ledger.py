@@ -98,6 +98,16 @@ class AdminPlatformLedger:
                 raise AdminPlatformLedgerError("later release is not blocked")
         self.active_candidate = active_candidate
         self.entries = tuple(entries)
+        self._by_entry_id = {entry.entry_id: entry for entry in entries}
+
+    def validate_admission(self, entry_id: str, exact_sha: str) -> AdminPlatformLedgerEntry:
+        """Require the next controller claim to match the one active candidate."""
+        entry = self._by_entry_id.get(entry_id)
+        if entry is None or self.active_candidate != entry_id:
+            raise AdminPlatformLedgerError("admin platform candidate is not active")
+        if entry.status not in ACTIVE_STATUSES or entry.source_sha != exact_sha:
+            raise AdminPlatformLedgerError("admin platform candidate tuple is not admitted")
+        return entry
 
     @staticmethod
     def _validate_stage(value: Any) -> None:

@@ -133,6 +133,9 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         claim_scopes_path=tmp_path / "claim-scopes.json",
         release_lanes_path=release_lanes,
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
+        admin_platform_ledger_path=(
+            Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
+        ),
         release_jobs_root=tmp_path / "release-jobs",
     )
     app = create_app(

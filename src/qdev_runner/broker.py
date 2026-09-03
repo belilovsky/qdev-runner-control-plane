@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
 from .claim_scope import (
     SCHEMA_V2,
     ClaimScope,
@@ -449,6 +450,14 @@ def create_app(
                 status_code=503, detail="managed registry is unavailable"
             ) from error
 
+    def admin_platform_ledger() -> AdminPlatformLedger:
+        try:
+            return AdminPlatformLedger(settings.admin_platform_ledger_path)
+        except AdminPlatformLedgerError as error:
+            raise HTTPException(
+                status_code=503, detail="admin platform ledger is unavailable"
+            ) from error
+
     def release_state() -> ReleaseStore:
         nonlocal release_store
         if release_store is None:
@@ -866,6 +875,13 @@ def create_app(
             )
         except ManagedRegistryError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if managed_entry is not None:
+            try:
+                admin_platform_ledger().validate_admission(
+                    managed_entry.entry_id, str(candidate["head_sha"])
+                )
+            except AdminPlatformLedgerError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         profile_queue: list[dict[str, Any]] = []
         for queued in store.pending_jobs():
@@ -933,6 +949,9 @@ def create_app(
                             "host": request.host,
                         },
                         "managed_registry_entry": (
+                            managed_entry.entry_id if managed_entry else None
+                        ),
+                        "admin_platform_ledger_entry": (
                             managed_entry.entry_id if managed_entry else None
                         ),
                         "worker": audit,
@@ -1053,6 +1072,7 @@ def create_app(
                 "host": request.host,
             },
             "managed_registry_entry": managed_entry.entry_id if managed_entry else None,
+            "admin_platform_ledger_entry": managed_entry.entry_id if managed_entry else None,
             "worker": audit,
         }
         return operation_store.receipt(payload)

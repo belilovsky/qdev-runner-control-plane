@@ -31,3 +31,15 @@ def test_ledger_rejects_a_nonterminal_predecessor(tmp_path: Path) -> None:
 
     with pytest.raises(AdminPlatformLedgerError, match="prior release"):
         AdminPlatformLedger(path)
+
+
+def test_ledger_admits_only_the_active_exact_source_tuple() -> None:
+    ledger = AdminPlatformLedger(_ledger_path())
+
+    assert ledger.validate_admission(
+        "avds-admin-shell", "975a725fd96edff73f3f171f155362e97482177e"
+    ).project_id == "avds-admin-shell"
+    with pytest.raises(AdminPlatformLedgerError, match="not active"):
+        ledger.validate_admission("ortcom", "a" * 40)
+    with pytest.raises(AdminPlatformLedgerError, match="tuple"):
+        ledger.validate_admission("avds-admin-shell", "a" * 40)

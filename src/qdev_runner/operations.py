@@ -66,6 +66,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "immutable_tuple",
         "worker",
         "managed_registry_entry",
+        "admin_platform_ledger_entry",
     },
     "capacity-override-created": {
         "kind",
@@ -139,6 +140,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
                 or not _WORKER_NAME.fullmatch(value["managed_registry_entry"])
             )
         )
+        or value["admin_platform_ledger_entry"] != value["managed_registry_entry"]
     ):
         raise ValueError("claim-scope payload is invalid")
     if kind.startswith("capacity-override") and not isinstance(value["worker_audit"], dict):
