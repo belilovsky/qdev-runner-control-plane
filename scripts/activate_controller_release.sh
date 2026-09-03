@@ -29,6 +29,8 @@ for required in \
   inventory/repos.json \
   config/profiles.yml \
   config/release-lanes.yml \
+  config/managed-registry.yml \
+  config/admin-platform-ledger.yml \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   deploy/qdev-release-qaz-tours.service \
@@ -106,9 +108,13 @@ previous="$(readlink -f -- "$current" 2>/dev/null || true)"
 temporary_link="$release_root/.current.$$"
 profiles_backup="$(mktemp /tmp/qdev-runner-profiles.XXXXXX)"
 release_lanes_backup="$(mktemp /tmp/qdev-runner-release-lanes.XXXXXX)"
+managed_registry_backup="$(mktemp /tmp/qdev-runner-managed-registry.XXXXXX)"
+admin_platform_ledger_backup="$(mktemp /tmp/qdev-runner-admin-platform-ledger.XXXXXX)"
 release_status_backup="$(mktemp /tmp/qdev-runner-controller-release-status.XXXXXX)"
 profiles_were_present=false
 release_lanes_were_present=false
+managed_registry_was_present=false
+admin_platform_ledger_was_present=false
 release_status_was_present=false
 operator_identity_metadata_backup="$(mktemp /tmp/qdev-runner-operator-mtls-metadata.XXXXXX)"
 operator_identity_was_present=false
@@ -119,6 +125,14 @@ fi
 if [[ -f /etc/qdev-runner/release-lanes.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/release-lanes.yml "$release_lanes_backup"
   release_lanes_were_present=true
+fi
+if [[ -f /etc/qdev-runner/managed-registry.yml ]]; then
+  install -m 0600 -- /etc/qdev-runner/managed-registry.yml "$managed_registry_backup"
+  managed_registry_was_present=true
+fi
+if [[ -f /etc/qdev-runner/admin-platform-ledger.yml ]]; then
+  install -m 0600 -- /etc/qdev-runner/admin-platform-ledger.yml "$admin_platform_ledger_backup"
+  admin_platform_ledger_was_present=true
 fi
 if [[ -f "$release_status_path" ]]; then
   install -m 0644 -- "$release_status_path" "$release_status_backup"
@@ -158,7 +172,7 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$managed_registry_backup" "$admin_platform_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -180,6 +194,8 @@ release_digest="$(
     "$release/inventory/repos.json" \
     "$release/config/profiles.yml" \
     "$release/config/release-lanes.yml" \
+    "$release/config/managed-registry.yml" \
+    "$release/config/admin-platform-ledger.yml" \
     "$release/scripts/provision_operator_identity.sh" \
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
@@ -217,6 +233,8 @@ restore_operator_identity_metadata() {
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
+install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml
+install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -240,6 +258,16 @@ rollback() {
     install -m 0644 -- "$release_lanes_backup" /etc/qdev-runner/release-lanes.yml
   else
     rm -f -- /etc/qdev-runner/release-lanes.yml
+  fi
+  if [[ "$managed_registry_was_present" == true ]]; then
+    install -m 0644 -- "$managed_registry_backup" /etc/qdev-runner/managed-registry.yml
+  else
+    rm -f -- /etc/qdev-runner/managed-registry.yml
+  fi
+  if [[ "$admin_platform_ledger_was_present" == true ]]; then
+    install -m 0644 -- "$admin_platform_ledger_backup" /etc/qdev-runner/admin-platform-ledger.yml
+  else
+    rm -f -- /etc/qdev-runner/admin-platform-ledger.yml
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then

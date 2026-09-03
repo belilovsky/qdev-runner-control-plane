@@ -1,0 +1,52 @@
+schema_version: qdev-managed-registry-v2
+entries:
+  avds-admin-shell:
+    project_id: avds-admin-shell
+    kind: package
+    repository: belilovsky/av-platform-core
+    canonical_ref: admin-shell-v0.2.0
+    allowed_profiles: [qdev-ci]
+    native_release_profile: github-actions-package
+    runtime_endpoints: [https://ci.qdev.run/artifacts/avds/admin-shell/0.2.0/]
+    rollback_reference: admin-shell-v0.1.0
+    owner: QDev AVDS
+  ortcom:
+    project_id: ortcom
+    kind: service
+    repository: belilovsky/ortcom-kz
+    canonical_ref: main
+    allowed_profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+    native_release_profile: ortcom-native-controller-release
+    runtime_endpoints: [https://ortcom.qdev.run/health, "https://ortcom.qdev.run/api/ready?deep=1", https://ortcom.qdev.run/release.json]
+    rollback_reference: deploy/ortcom-deploy transactional rollback
+    owner: ORTCOM
+  cmnt:
+    project_id: cmnt
+    kind: service
+    repository: belilovsky/cmnt-web
+    canonical_ref: main
+    allowed_profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+    native_release_profile: cmnt-native-rolling-release
+    runtime_endpoints: [https://cmnt.qdev.run/health]
+    rollback_reference: scripts/deploy_forward_only.sh native rollback receipt
+    owner: CMNT
+  total:
+    project_id: total-kz
+    kind: service
+    repository: belilovsky/total-kz
+    canonical_ref: main
+    allowed_profiles: [qdev-ci, qdev-ci-docker]
+    native_release_profile: total-native-immutable-release
+    runtime_endpoints: [https://total.qdev.run/health, https://total.qdev.run/ready, https://total.qdev.run/release.json]
+    rollback_reference: deploy/total-kz/rollback-total-public.sh
+    owner: Total
+  qazposter:
+    project_id: qazposter
+    kind: service
+    repository: belilovsky/qazposter
+    canonical_ref: main
+    allowed_profiles: [qdev-ci, qdev-ci-docker]
+    native_release_profile: qazposter-native-release
+    runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
+    rollback_reference: immutable previous-binary rollback contract
+    owner: QazPoster

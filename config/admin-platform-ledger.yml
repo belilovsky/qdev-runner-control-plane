@@ -1,0 +1,51 @@
+schema_version: qdev-admin-platform-ledger-v1
+active_candidate: avds-admin-shell
+entries:
+  avds-admin-shell:
+    project_id: avds-admin-shell
+    source_sha: 975a725fd96edff73f3f171f155362e97482177e
+    status: ci_queued
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: ci_queued, receipt_uri: "https://github.com/belilovsky/av-platform-core/actions/runs/33665883402"}
+    deploy: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+  ortcom:
+    project_id: ortcom
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+  cmnt:
+    project_id: cmnt
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+  total:
+    project_id: total-kz
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+  qazposter:
+    project_id: qazposter
+    source_sha: 9ebf6718c2085d1a58f59323f37b1e1dd707225f
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    observed_external_ci:
+      run_id: "33783332177"
+      state: queued

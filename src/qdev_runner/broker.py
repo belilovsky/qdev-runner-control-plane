@@ -29,6 +29,7 @@ from .claim_scope import (
 )
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
+from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .models import QueuedJob
 from .operations import (
     DISK_ONLY_BLOCKERS,
@@ -438,6 +439,14 @@ def create_app(
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=503, detail="release-lane policy is unavailable"
+            ) from error
+
+    def managed_registry() -> ManagedRegistry:
+        try:
+            return ManagedRegistry(settings.managed_registry_path)
+        except ManagedRegistryError as error:
+            raise HTTPException(
+                status_code=503, detail="managed registry is unavailable"
             ) from error
 
     def release_state() -> ReleaseStore:
@@ -851,6 +860,12 @@ def create_app(
                 status_code=409,
                 detail="profile admission is not confirmed for worker",
             )
+        try:
+            managed_entry = managed_registry().validate_claim_if_managed(
+                str(candidate["repository"]), profile.name
+            )
+        except ManagedRegistryError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         profile_queue: list[dict[str, Any]] = []
         for queued in store.pending_jobs():
@@ -917,6 +932,9 @@ def create_app(
                             "runner": request.runner,
                             "host": request.host,
                         },
+                        "managed_registry_entry": (
+                            managed_entry.entry_id if managed_entry else None
+                        ),
                         "worker": audit,
                     }
                     return operation_store.receipt(payload)
@@ -1034,6 +1052,7 @@ def create_app(
                 "runner": request.runner,
                 "host": request.host,
             },
+            "managed_registry_entry": managed_entry.entry_id if managed_entry else None,
             "worker": audit,
         }
         return operation_store.receipt(payload)
