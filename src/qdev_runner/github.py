@@ -59,12 +59,20 @@ class GitHubAppClient:
             "User-Agent": "qdev-runner-control-plane/0.1",
         }
 
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Make a GitHub API request with a broker-recoverable error boundary."""
+        try:
+            return self._client.request(method, f"{self.api_url}{path}", **kwargs)
+        except httpx.HTTPError as error:
+            raise GitHubError(f"GitHub API transport failure: {error}") from error
+
     def installation_token(self, installation_id: int) -> str:
         cached = self._token_cache.get(installation_id)
         if cached and cached[1] > time.time() + 120:
             return cached[0]
-        response = self._client.post(
-            f"{self.api_url}/app/installations/{installation_id}/access_tokens",
+        response = self._request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
             headers=self._headers(self._app_jwt()),
         )
         if response.status_code != 201:
@@ -77,8 +85,9 @@ class GitHubAppClient:
         return token
 
     def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
-        response = self._client.get(
-            f"{self.api_url}/repos/{repository}/actions/runs/{run_id}",
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/actions/runs/{run_id}",
             headers=self._headers(self.installation_token(installation_id)),
         )
         if response.status_code != 200:
@@ -88,8 +97,9 @@ class GitHubAppClient:
         return cast(dict[str, Any], response.json())
 
     def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, Any]:
-        response = self._client.get(
-            f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}",
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/actions/jobs/{job_id}",
             headers=self._headers(self.installation_token(installation_id)),
         )
         if response.status_code != 200:
@@ -105,8 +115,9 @@ class GitHubAppClient:
         name: str,
         labels: tuple[str, ...],
     ) -> str:
-        response = self._client.post(
-            f"{self.api_url}/repos/{repository}/actions/runners/generate-jitconfig",
+        response = self._request(
+            "POST",
+            f"/repos/{repository}/actions/runners/generate-jitconfig",
             headers=self._headers(self.installation_token(installation_id)),
             json={
                 "name": name,

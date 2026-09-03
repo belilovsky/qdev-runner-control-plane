@@ -54,6 +54,11 @@ services:
       - /var/log/qdev-runner:/var/log/qdev-runner
     networks:
       - qdev_runner_internal
+      # The broker accepts no host-published traffic, but it must reach the
+      # GitHub App API to validate an exact workflow run before assigning it.
+      # Keep that one-way egress surface separate from the mTLS-only worker
+      # network instead of weakening qdev_runner_internal.
+      - qdev_runner_egress
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -83,3 +88,5 @@ networks:
   qdev_runner_internal:
     name: qdev_runner_internal
     internal: true
+  qdev_runner_egress:
+    name: qdev_runner_egress

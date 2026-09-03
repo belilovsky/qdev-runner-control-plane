@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import (
@@ -18,6 +20,7 @@ from qdev_runner.broker import (
     worker_authenticated,
 )
 from qdev_runner.claim_scope import ClaimScope, ScopedJob
+from qdev_runner.github import GitHubAppClient, GitHubError
 from qdev_runner.models import QueuedJob
 from qdev_runner.policy import Policy
 from qdev_runner.settings import BrokerSettings
@@ -80,6 +83,20 @@ def test_completed_parent_run_is_terminal_even_when_job_api_stays_queued() -> No
     )
     assert completed_run_conclusion({"status": "completed", "conclusion": None}) == "unknown"
     assert completed_run_conclusion({"status": "in_progress", "conclusion": None}) is None
+
+
+def test_github_transport_errors_are_broker_recoverable(tmp_path: Path) -> None:
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("temporary DNS failure", request=request)
+
+    client = GitHubAppClient(
+        "1",
+        tmp_path / "unused-app.pem",
+        transport=httpx.MockTransport(unavailable),
+    )
+    with pytest.raises(GitHubError, match="transport failure"):
+        client._request("GET", "/rate_limit")
+    client.close()
 
 
 def test_certificate_bound_scope_does_not_fall_back_to_static_worker_token() -> None:

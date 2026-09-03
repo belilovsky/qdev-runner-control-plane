@@ -527,6 +527,19 @@ def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     assert store.claim("reserve-1", ("qdev-ci",)) is not None
 
 
+def test_fresh_idle_worker_orphaned_claim_is_recoverable(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=100", (time.time() - 600,))
+    store.heartbeat("primary-1", ("qdev-ci",), 0, (), {"tier": "primary"})
+    stale = store.stale_jobs(300)
+    assert [row["job_id"] for row in stale] == [100]
+    assert store.release_stale_job(100, "worker no longer reports job", 300) is True
+    assert store.job_status(100) == "pending"
+
+
 def test_heartbeat_does_not_requeue_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())
