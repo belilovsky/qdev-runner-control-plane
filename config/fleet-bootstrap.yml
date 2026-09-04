@@ -1,0 +1,19 @@
+schema_version: qdev-fleet-bootstrap-policy-v1
+bootstrap:
+  repository: belilovsky/qdev-runner-control-plane
+  branch: main
+  workflow: .github/workflows/fleet-bootstrap.yml
+  audience: qdev-fleet-bootstrap-v1
+  max_claim_ttl_seconds: 900
+activation:
+  controller_revision: 6973178af5a462a1fda71ed65ce52f3f9a2abfa2
+  controller_release_digest: sha256:900e07564b7c29efafa9638ca337f38f19daad651921db5321adbd25230e4fab
+  rollback_revision: 13a165e43b6dd61a3cbbb60ca487bb7edab10f37
+  rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
+enrolment:
+  lanes:
+    - qdev-release-qmt
+workers:
+  - qdev-ci
+  - qdev-ci-browser
+  - qdev-ci-docker
