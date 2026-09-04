@@ -5,10 +5,11 @@ schema_version: qdev-runner-profiles-v1
 repository_admission_disk_mb:
   # QDEV's qdev-ci lane only checks its runner contract and environment.
   # The ~20.4 MiB checkout has no build or package-install workload here.
-  # 8 GiB conservatively allows cold Actions/Python expansion (not measured
-  # peak usage). Its separate browser lane and 4.5 GiB running floor remain.
+  # 4 GiB conservatively covers checkout and the pinned Actions/Python setup
+  # for this dependency-free check. Its separate browser lane and the worker's
+  # independent 4.5 GiB running floor remain unchanged.
   belilovsky/qdev-run-site:
-    qdev-ci: 8192
+    qdev-ci: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
