@@ -20,6 +20,14 @@ MAX_OVERRIDE_SECONDS = 15 * 60
 DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_REPOSITORY = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
+_SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
+_FIFO_SKIP_REASONS = frozenset(
+    {
+        "admin-platform-candidate-not-active",
+        "admin-platform-candidate-tuple-not-admitted",
+    }
+)
 
 
 def utc_now() -> datetime:
@@ -73,6 +81,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "idempotent",
         "claim_scope",
         "immutable_tuple",
+        "fifo_skipped",
         "worker",
         "managed_registry_entry",
         "admission_ledger",
@@ -239,6 +248,40 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         )
     ):
         raise ValueError("claim-scope payload is invalid")
+    if kind == "fifo-claim-scope-issued":
+        fifo_skipped = value["fifo_skipped"]
+        if not isinstance(fifo_skipped, list) or len(fifo_skipped) > 512:
+            raise ValueError("claim-scope fifo skip list is invalid")
+        for item in fifo_skipped:
+            if not isinstance(item, dict) or set(item) != {
+                "job_id",
+                "repository",
+                "run_id",
+                "head_sha",
+                "profile",
+                "managed_registry_entry",
+                "reason",
+            }:
+                raise ValueError("claim-scope fifo skip item is invalid")
+            if (
+                not isinstance(item["job_id"], int)
+                or isinstance(item["job_id"], bool)
+                or item["job_id"] <= 0
+                or not isinstance(item["run_id"], int)
+                or isinstance(item["run_id"], bool)
+                or item["run_id"] <= 0
+                or not isinstance(item["repository"], str)
+                or not _REPOSITORY.fullmatch(item["repository"])
+                or not isinstance(item["head_sha"], str)
+                or not _SOURCE_SHA.fullmatch(item["head_sha"])
+                or not isinstance(item["profile"], str)
+                or not _WORKER_NAME.fullmatch(item["profile"])
+                or not isinstance(item["managed_registry_entry"], str)
+                or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
+                or not isinstance(item["reason"], str)
+                or item["reason"] not in _FIFO_SKIP_REASONS
+            ):
+                raise ValueError("claim-scope fifo skip item is invalid")
     if kind.startswith("capacity-override") and not isinstance(value["worker_audit"], dict):
         raise ValueError("capacity override payload is invalid")
     if kind == "capacity-override-created" and (

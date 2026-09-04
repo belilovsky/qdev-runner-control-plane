@@ -175,7 +175,6 @@ def test_qgeo_ci_commands_reject_non_lowercase_sha(
     with pytest.raises(ValueError, match="invalid Git source SHA"):
         operator.run(arguments)
 
-
 @pytest.mark.parametrize(
     ("flag", "value", "message"),
     [

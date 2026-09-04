@@ -627,9 +627,7 @@ def create_app(
                 name: record.get(name, False) if name == "bootstrap" else record[name]
                 for name in fields
             }
-            return HostHeartbeatRequest.model_validate(
-                heartbeat_data
-            )
+            return HostHeartbeatRequest.model_validate(heartbeat_data)
         except (KeyError, ValueError) as error:
             raise HTTPException(
                 status_code=409, detail="host-agent heartbeat is invalid"
@@ -881,9 +879,7 @@ def create_app(
         )
         try:
             validate_candidate(request, lane)
-            validate_controller_claim(
-                request, lane, signing_key=settings.controller_claim_key
-            )
+            validate_controller_claim(request, lane, signing_key=settings.controller_claim_key)
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
@@ -999,12 +995,8 @@ def create_app(
                 or x_qdev_release_fence != job.get("fence")
             ):
                 raise HTTPException(status_code=409, detail="release lease is stale")
-        elif (
-            x_qdev_release_lease is not None
-            and x_qdev_release_lease != job.get("lease_id")
-        ) or (
-            x_qdev_release_fence is not None
-            and x_qdev_release_fence != job.get("fence")
+        elif (x_qdev_release_lease is not None and x_qdev_release_lease != job.get("lease_id")) or (
+            x_qdev_release_fence is not None and x_qdev_release_fence != job.get("fence")
         ):
             raise HTTPException(status_code=409, detail="release lease is stale")
         return {
@@ -1107,9 +1099,7 @@ def create_app(
         )
         try:
             validate_candidate(request, lane)
-            validate_controller_claim(
-                request, lane, signing_key=settings.controller_claim_key
-            )
+            validate_controller_claim(request, lane, signing_key=settings.controller_claim_key)
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         validate_managed_candidate(request, lane)
@@ -1197,9 +1187,7 @@ def create_app(
                 status_code=503,
                 detail="admin platform has no active candidate",
             )
-        active_entry = next(
-            entry for entry in ledger.entries if entry.entry_id == active_candidate
-        )
+        active_entry = next(entry for entry in ledger.entries if entry.entry_id == active_candidate)
         if active_entry.source_sha is None:
             raise HTTPException(
                 status_code=503,
@@ -1777,6 +1765,8 @@ def create_app(
         # a general priority queue: every other scope remains strict FIFO.
         managed_exact_candidate_fifo = managed_release_ledger_entry == "qazgeo"
         profile_queue: list[dict[str, Any]] = []
+        fifo_skipped: list[dict[str, Any]] = []
+        queued_admin_platform_ledger: AdminPlatformLedger | None = None
         for queued in store.pending_jobs():
             try:
                 queued_profile = policy.profile_for_labels(
@@ -1785,6 +1775,49 @@ def create_app(
             except PolicyError:
                 continue
             if queued_profile.name == profile.name:
+                try:
+                    queued_managed = managed_registry().validate_claim_if_managed(
+                        str(queued["repository"]), queued_profile.name
+                    )
+                except ManagedRegistryError:
+                    # Keep malformed managed rows in the strict queue.  They
+                    # must not be silently bypassed by this observational
+                    # stale-candidate filter.
+                    profile_queue.append(queued)
+                    continue
+                if (
+                    queued_managed is not None
+                    and queued_managed.admission_ledger == "admin-platform"
+                ):
+                    if queued_admin_platform_ledger is None:
+                        try:
+                            queued_admin_platform_ledger = admin_platform_ledger()
+                        except AdminPlatformLedgerError as exc:
+                            raise HTTPException(
+                                status_code=503,
+                                detail=f"admin platform ledger unavailable: {exc}",
+                            ) from exc
+                    admitted, reason = queued_admin_platform_ledger.classify_admission(
+                        queued_managed.entry_id, str(queued["head_sha"])
+                    )
+                    if not admitted:
+                        # This row is retained as evidence in the signed
+                        # receipt, but cannot hold an unrelated profile FIFO.
+                        # Direct requests for the same managed row still use
+                        # validate_admission above and remain fail-closed.
+                        assert reason is not None
+                        fifo_skipped.append(
+                            {
+                                "job_id": int(queued["job_id"]),
+                                "repository": str(queued["repository"]),
+                                "run_id": int(queued["run_id"]),
+                                "head_sha": str(queued["head_sha"]),
+                                "profile": queued_profile.name,
+                                "managed_registry_entry": queued_managed.entry_id,
+                                "reason": reason,
+                            }
+                        )
+                        continue
                 profile_queue.append(queued)
         if not managed_exact_candidate_fifo and (
             not profile_queue or int(profile_queue[0]["job_id"]) != job_id
@@ -1877,6 +1910,7 @@ def create_app(
                             "runner": request.runner,
                             "host": request.host,
                         },
+                        "fifo_skipped": fifo_skipped,
                         "managed_registry_entry": (
                             managed_entry.entry_id if managed_entry else None
                         ),
@@ -2029,6 +2063,7 @@ def create_app(
                 "runner": request.runner,
                 "host": request.host,
             },
+            "fifo_skipped": fifo_skipped,
             "managed_registry_entry": managed_entry.entry_id if managed_entry else None,
             "admission_ledger": admission_ledger,
             "admin_platform_ledger_entry": admin_platform_ledger_entry,
