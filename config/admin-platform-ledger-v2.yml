@@ -1,0 +1,105 @@
+schema_version: qdev-admin-platform-ledger-v2
+program:
+  id: qdev-admin-platform-wave-1
+  owner: QDev
+  status: active
+  updated_at: 2026-09-04T00:00:00Z
+active_candidate: avds-admin-shell
+prerequisites:
+  controller:
+    state: live_accepted
+    receipt_uri: receipts/controller-release-f9109e3-receipt.json
+  qaz_admin_kit:
+    state: ci_passed
+    receipt_uri: https://ci.qdev.run/artifacts/qaz-admin-kit/0.4.7/receipt.json
+  avds_admin_shell:
+    state: ci_queued
+    receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402
+  compatibility_matrix:
+    state: candidate
+    receipt_uri: null
+history: []
+attempts:
+  - attempt_id: controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
+    release_id: qdev-controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
+    state: live_accepted
+    started_at: 2026-09-04T08:18:00Z
+    finished_at: 2026-09-04T08:20:58Z
+    receipt_uri: receipts/controller-release-f9109e3-receipt.json
+    reason: exact-SHA CI passed, native activation and signed runtime audit passed
+entries:
+  avds-admin-shell:
+    project_id: avds-admin-shell
+    source_sha: 975a725fd96edff73f3f171f155362e97482177e
+    status: ci_queued
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: ci_queued, receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402}
+    deploy: {state: blocked, receipt_uri: null}
+    browser: {state: blocked, receipt_uri: null}
+    observation: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    prerequisites: {controller: live_accepted, qaz_admin_kit: ci_passed}
+    attempts:
+      - attempt_id: avds-admin-shell-33665883402
+        release_id: avds-admin-shell-33665883402
+        state: rolled_back
+        started_at: 2026-09-04T08:08:00Z
+        finished_at: 2026-09-04T08:09:30Z
+        receipt_uri: receipts/av-admin-shell-0.2.0-ci-audit-33665883402.json
+        reason: setup job failed before package publication; controller audit retained; one replacement permitted
+  ortcom:
+    project_id: ortcom
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    browser: {state: blocked, receipt_uri: null}
+    observation: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    prerequisites: {avds_admin_shell: blocked}
+    attempts: []
+  cmnt:
+    project_id: cmnt
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    browser: {state: blocked, receipt_uri: null}
+    observation: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    prerequisites: {ortcom: blocked}
+    attempts: []
+  total:
+    project_id: total-kz
+    source_sha: null
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    browser: {state: blocked, receipt_uri: null}
+    observation: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    prerequisites: {cmnt: blocked}
+    attempts: []
+  qazposter:
+    project_id: qazposter
+    source_sha: 9ebf6718c2085d1a58f59323f37b1e1dd707225f
+    status: blocked
+    artifact: {state: blocked, receipt_uri: null}
+    ci: {state: blocked, receipt_uri: null}
+    deploy: {state: blocked, receipt_uri: null}
+    browser: {state: blocked, receipt_uri: null}
+    observation: {state: blocked, receipt_uri: null}
+    live_acceptance: {state: blocked, receipt_uri: null}
+    rollback: {state: blocked, receipt_uri: null}
+    observed_external_ci:
+      run_id: '33783332177'
+      state: queued
+    prerequisites: {total: blocked}
+    attempts: []

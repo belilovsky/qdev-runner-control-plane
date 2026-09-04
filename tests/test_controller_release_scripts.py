@@ -47,12 +47,28 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qaz-events.service" in script
     assert "deploy/qdev-release-qmt.service" in script
     assert "deploy/qdev-release-qmt.compose.yml" in script
+    assert "scripts/qdev_admin_platform_release_host_agent.py" in script
+    assert "deploy/qdev-release-ortcom.service" in script
+    assert "deploy/qdev-release-cmnt.service" in script
+    assert "deploy/qdev-release-total.service" in script
+    assert "deploy/qdev-release-qazposter.service" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml' in script
+    assert 'if [[ "$legacy_rollback" == true ]]; then' in script
     assert (
-        '"$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml'
+        'install -m 0644 -- "$release/config/admin-platform-ledger.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
         in script
+    )
+    assert (
+        'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
+        in script
+    )
+    assert script.index('if [[ "$legacy_rollback" == true ]]; then') < script.index(
+        'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
     )
     assert (
         '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
@@ -103,6 +119,11 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert '"$release/deploy/qdev-release-qaz-events.service"' in script
     assert '"$release/deploy/qdev-release-qmt.service"' in script
     assert '"$release/deploy/qdev-release-qmt.compose.yml"' in script
+    assert '"$release/scripts/qdev_admin_platform_release_host_agent.py"' in script
+    assert '"$release/deploy/qdev-release-ortcom.service"' in script
+    assert '"$release/deploy/qdev-release-cmnt.service"' in script
+    assert '"$release/deploy/qdev-release-total.service"' in script
+    assert '"$release/deploy/qdev-release-qazposter.service"' in script
     assert 'sha256sum -- "$release_file"' in script
     assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
         "if ! write_release_status; then"

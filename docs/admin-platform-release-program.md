@@ -34,6 +34,24 @@ entry has a terminal receipt.
    identity, route/browser evidence, rollback result and health window before
    moving the ledger to the next candidate.
 
+## Product lane enrollment
+
+`qdev-release-ortcom`, `qdev-release-cmnt`, `qdev-release-total`, and
+`qdev-release-qazposter` are policy-compiled mTLS lanes. The controller ships
+the narrow unit and its profile; QDev Fleet separately enrolls each host only
+when the named root-owned native release, rollback and receipt dispatchers are
+already present. The dispatcher interface accepts the exact source SHA,
+artifact digest and artifact reference, and its receipt must prove the same
+tuple plus `native`, `public`, and `identity` readiness. This interface is the
+only bridge to the product's existing native release mechanism.
+
+The release agent cannot select a remote host, arbitrary directory, URL,
+registry or command. It refuses a missing state, mTLS credential, current
+native receipt, distinct verified rollback tuple, dispatcher, capacity floor,
+or typed post-deploy receipt. A failed post-dispatch verification invokes the
+compiled native rollback dispatcher and re-proves the prior active tuple;
+failure to prove that rollback keeps the release unverified.
+
 ## Current AVDS gate
 
 The active entry is `avds-admin-shell`, source

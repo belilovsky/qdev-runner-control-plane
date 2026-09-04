@@ -13,6 +13,8 @@ from .claim_scope import PORTFOLIO_PROFILES
 SCHEMA = "qdev-managed-registry-v3"
 _ENTRY_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_ARTIFACT_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{1,191}$")
+_HOST_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{1,191}$")
 
 
 class ManagedRegistryError(ValueError):
@@ -30,6 +32,8 @@ class ManagedRegistryEntry:
     native_release_profile: str
     runtime_endpoints: tuple[str, ...]
     rollback_reference: str
+    artifact_repository: str
+    host_identity: str
     owner: str
     admission_ledger: str
 
@@ -58,6 +62,8 @@ class ManagedRegistry:
             "native_release_profile",
             "runtime_endpoints",
             "rollback_reference",
+            "artifact_repository",
+            "host_identity",
             "owner",
             "admission_ledger",
         }
@@ -71,7 +77,14 @@ class ManagedRegistry:
                 raise ManagedRegistryError("managed registry strings must be non-empty")
             kind = str(raw["kind"])
             repository = str(raw["repository"])
-            if kind not in {"package", "service"} or not _REPOSITORY.fullmatch(repository):
+            artifact_repository = str(raw["artifact_repository"])
+            host_identity = str(raw["host_identity"])
+            if (
+                kind not in {"package", "service"}
+                or not _REPOSITORY.fullmatch(repository)
+                or not _ARTIFACT_REPOSITORY.fullmatch(artifact_repository)
+                or not _HOST_IDENTITY.fullmatch(host_identity)
+            ):
                 raise ManagedRegistryError("managed registry identity is invalid")
             if repository in repositories:
                 raise ManagedRegistryError("managed registry repository is duplicated")
@@ -106,6 +119,8 @@ class ManagedRegistry:
                 native_release_profile=str(raw["native_release_profile"]),
                 runtime_endpoints=tuple(endpoints),
                 rollback_reference=str(raw["rollback_reference"]),
+                artifact_repository=artifact_repository,
+                host_identity=host_identity,
                 owner=str(raw["owner"]),
                 admission_ledger=str(raw["admission_ledger"]),
             )
@@ -139,6 +154,8 @@ class ManagedRegistry:
                     "native_release_profile": entry.native_release_profile,
                     "runtime_endpoints": list(entry.runtime_endpoints),
                     "rollback_reference": entry.rollback_reference,
+                    "artifact_repository": entry.artifact_repository,
+                    "host_identity": entry.host_identity,
                     "owner": entry.owner,
                     "admission_ledger": entry.admission_ledger,
                 }

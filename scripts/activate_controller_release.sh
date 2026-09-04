@@ -24,7 +24,15 @@ case "$release" in
     exit 64
     ;;
 esac
-for required in \
+legacy_rollback="${QDEV_CONTROLLER_LEGACY_ROLLBACK:-false}"
+if [[ "$legacy_rollback" != true && "$legacy_rollback" != false ]]; then
+  printf 'QDEV_CONTROLLER_LEGACY_ROLLBACK must be true or false\n' >&2
+  exit 64
+fi
+# Forward activation is fail-closed on the Admin Platform v2 ledger and its
+# fixed product adapters.  The explicit legacy flag is reserved for the
+# controller-owned rollback helper restoring an older controller release.
+required=(
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
@@ -40,9 +48,21 @@ for required in \
   deploy/qdev-release-qaz-events.service \
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qmt.compose.yml \
-  deploy/Dockerfile.broker; do
-  [[ -f "$release/$required" ]] || {
-    printf 'release is missing %s\n' "$required" >&2
+  deploy/Dockerfile.broker
+)
+if [[ "$legacy_rollback" != true ]]; then
+  required+=(
+    config/admin-platform-ledger-v2.yml
+    scripts/qdev_admin_platform_release_host_agent.py
+    deploy/qdev-release-ortcom.service
+    deploy/qdev-release-cmnt.service
+    deploy/qdev-release-total.service
+    deploy/qdev-release-qazposter.service
+  )
+fi
+for required_file in "${required[@]}"; do
+  [[ -f "$release/$required_file" ]] || {
+    printf 'release is missing %s\n' "$required_file" >&2
     exit 66
   }
 done
@@ -200,8 +220,7 @@ if [[ ! "$release_revision" =~ ^[0-9a-f]{40}$ ]]; then
   printf 'release must expose an exact git revision via HEAD or QDEV_CONTROLLER_RELEASE_REVISION\n' >&2
   exit 66
 fi
-release_digest="$(
-  for release_file in \
+digest_files=(
     "$release/deploy/compose.yml" \
     "$release/inventory/repos.json" \
     "$release/config/profiles.yml" \
@@ -218,7 +237,19 @@ release_digest="$(
     "$release/deploy/qdev-release-qmt.service" \
     "$release/deploy/qdev-release-qmt.compose.yml" \
     "$release/deploy/Dockerfile.broker"
-  do
+)
+if [[ "$legacy_rollback" != true ]]; then
+  digest_files+=(
+    "$release/config/admin-platform-ledger-v2.yml"
+    "$release/scripts/qdev_admin_platform_release_host_agent.py"
+    "$release/deploy/qdev-release-ortcom.service"
+    "$release/deploy/qdev-release-cmnt.service"
+    "$release/deploy/qdev-release-total.service"
+    "$release/deploy/qdev-release-qazposter.service"
+  )
+fi
+release_digest="$(
+  for release_file in "${digest_files[@]}"; do
     sha256sum -- "$release_file" | awk '{print $1}'
   done | sha256sum | awk '{print $1}'
 )"
@@ -252,7 +283,19 @@ install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
 install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml
-install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
+# v1 remains packaged for explicitly requested legacy rollback only.  Forward
+# activation must install the validated v2 projection directly; installing v1
+# first creates a brief downgrade window and can leave an older runtime
+# projection behind if activation is interrupted between the two writes.
+if [[ "$legacy_rollback" == true ]]; then
+  install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
+else
+  [[ -f "$release/config/admin-platform-ledger-v2.yml" ]] || {
+    printf 'forward activation requires config/admin-platform-ledger-v2.yml\n' >&2
+    exit 66
+  }
+  install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" /etc/qdev-runner/admin-platform-ledger.yml
+fi
 install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml
 activate_link "$release"
 

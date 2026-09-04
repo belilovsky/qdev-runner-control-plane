@@ -5,10 +5,12 @@ entries:
     kind: package
     repository: belilovsky/av-platform-core
     canonical_ref: admin-shell-v0.2.0
+    artifact_repository: ghcr.io/belilovsky/av-platform-core
     allowed_profiles: [qdev-ci]
     native_release_profile: github-actions-package
     runtime_endpoints: [https://ci.qdev.run/artifacts/avds/admin-shell/0.2.0/]
     rollback_reference: admin-shell-v0.1.0
+    host_identity: qdev-artifact-publisher:avds
     owner: QDev AVDS
     admission_ledger: admin-platform
   ortcom:
@@ -16,10 +18,12 @@ entries:
     kind: service
     repository: belilovsky/ortcom-kz
     canonical_ref: main
+    artifact_repository: ghcr.io/belilovsky/ortcom-kz
     allowed_profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
     native_release_profile: ortcom-native-controller-release
     runtime_endpoints: [https://ortcom.qdev.run/health, "https://ortcom.qdev.run/api/ready?deep=1", https://ortcom.qdev.run/release.json]
     rollback_reference: deploy/ortcom-deploy transactional rollback
+    host_identity: qdev-release-agent:ortcom-production-controller
     owner: ORTCOM
     admission_ledger: admin-platform
   cmnt:
@@ -27,10 +31,12 @@ entries:
     kind: service
     repository: belilovsky/cmnt-web
     canonical_ref: main
+    artifact_repository: ci.qdev.run/artifacts/cmnt-web-admin
     allowed_profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
     native_release_profile: cmnt-native-rolling-release
     runtime_endpoints: [https://cmnt.qdev.run/health]
     rollback_reference: scripts/deploy_forward_only.sh native rollback receipt
+    host_identity: qdev-release-agent:cmnt-rolling-controller
     owner: CMNT
     admission_ledger: admin-platform
   total:
@@ -38,10 +44,12 @@ entries:
     kind: service
     repository: belilovsky/total-kz
     canonical_ref: main
+    artifact_repository: ci.qdev.run/artifacts/total-kz-admin
     allowed_profiles: [qdev-ci, qdev-ci-docker]
     native_release_profile: total-native-immutable-release
     runtime_endpoints: [https://total.qdev.run/health, https://total.qdev.run/ready, https://total.qdev.run/release.json]
     rollback_reference: deploy/total-kz/rollback-total-public.sh
+    host_identity: qdev-release-agent:total-qdev-origin
     owner: Total
     admission_ledger: admin-platform
   qazposter:
@@ -49,10 +57,12 @@ entries:
     kind: service
     repository: belilovsky/qazposter
     canonical_ref: main
+    artifact_repository: ci.qdev.run/artifacts/qazposter-admin
     allowed_profiles: [qdev-ci, qdev-ci-docker]
     native_release_profile: qazposter-native-release
     runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
     rollback_reference: immutable previous-binary rollback contract
+    host_identity: qdev-release-agent:qazposter-production-controller
     owner: QazPoster
     admission_ledger: admin-platform
   qazgeo:
@@ -60,9 +70,11 @@ entries:
     kind: service
     repository: belilovsky/qazgeo
     canonical_ref: main
+    artifact_repository: qazgeo
     allowed_profiles: [qdev-ci, qdev-ci-docker]
     native_release_profile: qazgeo-native-immutable-release
     runtime_endpoints: [https://qgeo.tech/health, https://qgeo.tech/health/live, https://qgeo.tech/health/ready]
     rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
+    host_identity: qdev-release-agent:vps-main
     owner: QazGeo
     admission_ledger: managed-production

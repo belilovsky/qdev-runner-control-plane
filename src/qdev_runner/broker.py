@@ -50,6 +50,7 @@ from .release_lane import (
     ReleaseStore,
     admission_receipt,
     validate_candidate,
+    validate_controller_claim,
     validate_host_heartbeat,
 )
 from .settings import BrokerSettings
@@ -306,12 +307,35 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     return attempt if attempt > 0 else None
 
 
-def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
+def _worker_audit(
+    worker: dict[str, Any],
+    now: float,
+    *,
+    operations: OperationStore | None = None,
+) -> dict[str, Any]:
     detail = _json_object(worker.get("detail_json"))
     raw = _json_object(detail.get("raw_capacity"))
     baseline = _json_object(detail.get("baseline_capacity"))
     effective = _json_object(detail.get("effective_capacity"))
     profiles = _json_strings(worker.get("profiles_json"))
+    directive_id = detail.get("capacity_directive_id")
+    capacity_allowed = worker.get("capacity_allowed") is True
+    if directive_id:
+        # A heartbeat may outlive a bounded override. Never let its last
+        # `allowed` bit turn an expired or replaced directive into admission.
+        capacity_allowed = False
+        if operations is not None:
+            directive = operations.active(
+                str(worker.get("name") or ""),
+                registered_profiles=profiles,
+                now=datetime.fromtimestamp(now, UTC),
+            )
+            capacity_allowed = bool(
+                directive is not None and directive.operation_id == str(directive_id)
+            )
+    effective_profiles = _json_strings(detail.get("effective_profiles", []))
+    if not capacity_allowed:
+        effective_profiles = ()
     return {
         "worker": str(worker.get("name") or ""),
         "tier": str(worker.get("tier") or detail.get("tier") or ""),
@@ -323,12 +347,12 @@ def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
         "raw_capacity": raw,
         "baseline_capacity": baseline,
         "effective_capacity": effective,
-        "capacity_allowed": worker.get("capacity_allowed") is True,
+        "capacity_allowed": capacity_allowed,
         "configured_claim_scope_id": detail.get("configured_claim_scope_id"),
         "admission": {
-            "allowed": worker.get("capacity_allowed") is True,
-            "directive_id": detail.get("capacity_directive_id"),
-            "profiles": list(_json_strings(detail.get("effective_profiles", []))),
+            "allowed": capacity_allowed,
+            "directive_id": directive_id,
+            "profiles": list(effective_profiles),
         },
     }
 
@@ -514,9 +538,16 @@ def create_app(
             "capacity_free_gib",
             "active_release",
             "rollback",
+            "bootstrap",
         }
         try:
-            return HostHeartbeatRequest.model_validate({name: record[name] for name in fields})
+            heartbeat_data = {
+                name: record.get(name, False) if name == "bootstrap" else record[name]
+                for name in fields
+            }
+            return HostHeartbeatRequest.model_validate(
+                heartbeat_data
+            )
         except (KeyError, ValueError) as error:
             raise HTTPException(
                 status_code=409, detail="host-agent heartbeat is invalid"
@@ -547,7 +578,11 @@ def create_app(
         )
         if worker is None:
             raise HTTPException(status_code=404, detail="worker not registered")
-        return worker, _worker_audit(worker, float(snapshot["now"]))
+        return worker, _worker_audit(
+            worker,
+            float(snapshot["now"]),
+            operations=operations,
+        )
 
     def bound_scope_for_job(
         job: dict[str, Any],
@@ -637,8 +672,24 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, Any]:
         data = store.health()
+        audited_workers = []
+        for worker in data["workers"]:
+            audit = _worker_audit(
+                worker,
+                float(data["now"]),
+                operations=operations,
+            )
+            audited_workers.append(
+                worker
+                | {
+                    "capacity_allowed": audit["capacity_allowed"],
+                    "available": bool(
+                        audit["capacity_allowed"] and int(worker["slots_available"]) > 0
+                    ),
+                }
+            )
         fresh_workers = [
-            worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
+            worker for worker in audited_workers if data["now"] - worker["last_seen"] < 90
         ]
         primary = [worker for worker in fresh_workers if worker["tier"] == "primary"]
         reserve = [worker for worker in fresh_workers if worker["tier"] == "reserve"]
@@ -711,6 +762,9 @@ def create_app(
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         try:
             validate_candidate(request, lane)
+            validate_controller_claim(
+                request, lane, signing_key=settings.controller_claim_key
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
@@ -747,15 +801,20 @@ def create_app(
             "source_sha": job["source_sha"],
             "artifact_digest": job["artifact_digest"],
             "artifact_ref": job["artifact_ref"],
+            "lease_id": job["lease_id"],
+            "fence": job["fence"],
         }
 
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/receipt")
     def complete_release_host_job(
         placement: str,
         release_id: str,
         receipt: dict[str, Any],
         release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -766,10 +825,99 @@ def create_app(
             ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
         try:
-            job = release_state().complete(lane, release_id, receipt)
+            job = release_state().complete(
+                lane,
+                release_id,
+                receipt,
+                lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="runtime receipt was rejected") from error
         return dict(job["runtime_receipt"])
+
+    @app.get("/internal/v1/release-hosts/{placement}/jobs/{release_id}")
+    def release_host_job_status(
+        placement: str,
+        release_id: str,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Return controller state to a host agent reconciling a lost response."""
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        job = release_state().job(lane, release_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="release job was not found")
+        # A managed host may reconcile only the operation it was admitted for.
+        # Legacy lanes retain their historical status-only read path, while
+        # v2 lanes require both durable fencing values to prevent a stale
+        # worker from learning or acting on another attempt's outcome.
+        if lane.canonical_repository is not None:
+            if (
+                not x_qdev_release_lease
+                or not x_qdev_release_fence
+                or x_qdev_release_lease != job.get("lease_id")
+                or x_qdev_release_fence != job.get("fence")
+            ):
+                raise HTTPException(status_code=409, detail="release lease is stale")
+        elif (
+            x_qdev_release_lease is not None
+            and x_qdev_release_lease != job.get("lease_id")
+        ) or (
+            x_qdev_release_fence is not None
+            and x_qdev_release_fence != job.get("fence")
+        ):
+            raise HTTPException(status_code=409, detail="release lease is stale")
+        return {
+            "schema": "qdev-controller-release-status-v1",
+            "release_id": release_id,
+            "status": job["status"],
+            "release_lane": lane.name,
+            "project_id": lane.project_id,
+            "placement": lane.placement,
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+            "artifact_ref": job["artifact_ref"],
+            "runtime_receipt": job.get("runtime_receipt"),
+            "rollback_receipt": job.get("rollback_receipt"),
+        }
+
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/rollback")
+    def rollback_release_host_job(
+        placement: str,
+        release_id: str,
+        receipt: dict[str, Any],
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        try:
+            job = release_state().rollback(
+                lane,
+                release_id,
+                receipt,
+                lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence,
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="rollback receipt was rejected") from error
+        return dict(job["rollback_receipt"])
 
     @app.get("/internal/v1/releases/qaz-tours/{release_id}")
     def qaz_tours_release_status(
@@ -816,6 +964,9 @@ def create_app(
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         try:
             validate_candidate(request, lane)
+            validate_controller_claim(
+                request, lane, signing_key=settings.controller_claim_key
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
@@ -890,15 +1041,21 @@ def create_app(
         require_operator_mtls(x_qdev_operator_mtls_identity)
         registry = managed_registry()
         ledger = admin_platform_ledger()
+        active_candidate = ledger.active_candidate
+        if active_candidate is None:
+            raise HTTPException(
+                status_code=503,
+                detail="admin platform has no active candidate",
+            )
         active_entry = next(
-            entry for entry in ledger.entries if entry.entry_id == ledger.active_candidate
+            entry for entry in ledger.entries if entry.entry_id == active_candidate
         )
         if active_entry.source_sha is None:
             raise HTTPException(
                 status_code=503,
                 detail="admin platform active candidate has no source SHA",
             )
-        active = ledger.validate_admission(ledger.active_candidate, active_entry.source_sha)
+        active = ledger.validate_admission(active_candidate, active_entry.source_sha)
         managed = registry.entry_for_id(active.entry_id)
         if managed is None or managed.project_id != active.project_id:
             raise HTTPException(
@@ -938,7 +1095,12 @@ def create_app(
             "kind": "worker-audit",
             "observed_at": observed_at,
             "workers": [
-                _worker_audit(worker, float(snapshot["now"])) for worker in snapshot["workers"]
+                _worker_audit(
+                    worker,
+                    float(snapshot["now"]),
+                    operations=operation_store,
+                )
+                for worker in snapshot["workers"]
             ],
             "pending": int(snapshot["jobs"].get("pending", 0)),
         }
