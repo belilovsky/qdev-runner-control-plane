@@ -119,7 +119,9 @@ def is_manual_only_workflow(lines: list[str]) -> bool:
         for candidate in lines[index + 1 :]:
             if candidate.strip() and candidate == candidate.lstrip():
                 break
-            event = re.fullmatch(r"\s{2,}['\"]?([A-Za-z_]+)['\"]?\s*:\s*(?:.*)", candidate)
+            # Only two-space children of the top-level trigger are events;
+            # nested workflow_dispatch inputs must not be treated as events.
+            event = re.fullmatch(r"  ['\"]?([A-Za-z_]+)['\"]?\s*:\s*(?:.*)", candidate)
             if event:
                 events.add(event.group(1))
         return events == {"workflow_dispatch"}

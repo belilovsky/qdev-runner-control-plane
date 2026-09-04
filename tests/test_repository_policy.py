@@ -173,6 +173,31 @@ jobs:
     assert run_guard(root).returncode == 0
 
 
+def test_v2_allows_manual_recovery_inputs(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/runner-smoke.yml").write_text(
+        """on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        required: true
+jobs:
+  recovery:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
 def test_v2_rejects_self_hosted_job_outside_declared_recovery_workflow(
     tmp_path: Path,
 ) -> None:
