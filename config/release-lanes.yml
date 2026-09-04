@@ -125,6 +125,10 @@ lanes:
     placement: qazgeo-primary-187
     client_mtls_identity: qdev-release-client:qazgeo
     host_agent_mtls_identity: qdev-host-agent:qazgeo-primary-187
+    # Edge forwards the verified client-certificate fingerprint; the broker
+    # binds each QGeo release identity to these exact CA-issued certificates.
+    client_certificate_sha256: cef254b2aae2434c2d9be3e1eec45fa5f366c29a8b34fe876d6c0c3328bc6ef6
+    host_agent_certificate_sha256: d1054f3dd0cffc6533317595a7542211c90402c75a883a36516072765bf4659d
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: belilovsky/qazgeo

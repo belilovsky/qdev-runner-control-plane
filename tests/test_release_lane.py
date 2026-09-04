@@ -110,6 +110,22 @@ def test_release_policy_rejects_unsafe_nested_oci_repositories(
         ReleaseLanePolicy(path)
 
 
+def test_release_policy_parses_and_validates_certificate_bindings(tmp_path: Path) -> None:
+    document = yaml.safe_load(LANES_PATH.read_text(encoding="utf-8"))
+    document["lanes"]["qdev-release-qazgeo"]["client_certificate_sha256"] = "a" * 64
+    document["lanes"]["qdev-release-qazgeo"]["host_agent_certificate_sha256"] = "b" * 64
+    path = tmp_path / "release-lanes.yml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    lane = ReleaseLanePolicy(path).lane("qdev-release-qazgeo")
+    assert lane.client_certificate_sha256 == "a" * 64
+    assert lane.host_agent_certificate_sha256 == "b" * 64
+
+    document["lanes"]["qdev-release-qazgeo"]["client_certificate_sha256"] = "not-a-fingerprint"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(ReleaseLaneError, match="certificate binding"):
+        ReleaseLanePolicy(path)
+
+
 def test_qgeo_bootstrap_accepts_old_runtime_as_active_and_rollback() -> None:
     lane = _qgeo_lane()
     old = {

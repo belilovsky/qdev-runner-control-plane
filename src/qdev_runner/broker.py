@@ -553,7 +553,29 @@ def create_app(
             app.state.release_store = release_store
         return release_store
 
-    def require_release_mtls(identity: str | None, expected: str) -> None:
+    def require_release_mtls(
+        identity: str | None,
+        expected: str,
+        certificate_sha256: str | None = None,
+        expected_certificate_sha256: str | None = None,
+    ) -> None:
+        """Authenticate a release caller against the controller's mTLS binding.
+
+        The public edge terminates client mTLS and forwards the verified
+        certificate fingerprint.  Once a lane has an explicit fingerprint
+        binding, a caller-supplied identity header is deliberately ignored;
+        this prevents direct header spoofing from authorizing a release.  The
+        legacy identity-only path remains for lanes that have not yet enrolled
+        a certificate, preserving compatibility while they are migrated.
+        """
+        if expected_certificate_sha256 is not None:
+            normalized = (certificate_sha256 or "").strip().lower()
+            if not secrets.compare_digest(normalized, expected_certificate_sha256):
+                raise HTTPException(
+                    status_code=403,
+                    detail="release-lane mTLS certificate binding required",
+                )
+            return
         if not identity or not secrets.compare_digest(identity, expected):
             raise HTTPException(status_code=403, detail="release-lane mTLS identity required")
 
@@ -776,6 +798,7 @@ def create_app(
         placement: str,
         request: HostHeartbeatRequest,
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -784,7 +807,12 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.host_agent_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.host_agent_certificate_sha256,
+        )
         try:
             validate_host_heartbeat(request, lane)
             record = release_state().record_heartbeat(
@@ -806,6 +834,7 @@ def create_app(
     def admit_qaz_tours_release(
         request: ReleaseAdmissionRequest,
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -814,7 +843,12 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="qaz-tours release lane is unavailable"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.client_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.client_certificate_sha256,
+        )
         try:
             validate_candidate(request, lane)
             validate_controller_claim(
@@ -834,6 +868,7 @@ def create_app(
         placement: str,
         release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         policy_value = release_policy()
         try:
@@ -842,7 +877,12 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.host_agent_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.host_agent_certificate_sha256,
+        )
         ready_host_agent(lane)
         job = release_state().next_job(lane)
         if job is None:
@@ -870,6 +910,7 @@ def create_app(
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -878,7 +919,12 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.host_agent_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.host_agent_certificate_sha256,
+        )
         try:
             job = release_state().complete(
                 lane,
@@ -978,6 +1024,7 @@ def create_app(
     def qaz_tours_release_status(
         release_id: str,
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -986,7 +1033,12 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="qaz-tours release lane is unavailable"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.client_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.client_certificate_sha256,
+        )
         job = release_state().job(lane, release_id)
         if job is None:
             raise HTTPException(status_code=404, detail="release receipt was not found")
@@ -1008,6 +1060,7 @@ def create_app(
         lane_name: str,
         request: ReleaseAdmissionRequest,
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -1016,7 +1069,12 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="release lane is not allowlisted"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.client_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.client_certificate_sha256,
+        )
         try:
             validate_candidate(request, lane)
             validate_controller_claim(
@@ -1037,6 +1095,7 @@ def create_app(
         lane_name: str,
         release_id: str,
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -1045,7 +1104,12 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="release lane is not allowlisted"
             ) from error
-        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.client_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.client_certificate_sha256,
+        )
         job = release_state().job(lane, release_id)
         if job is None:
             raise HTTPException(status_code=404, detail="release receipt was not found")

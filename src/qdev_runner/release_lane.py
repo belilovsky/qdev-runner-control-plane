@@ -29,7 +29,13 @@ from pydantic import BaseModel, ConfigDict, Field
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
-_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+# OCI repositories may be nested (for example ``belilovsky/qazgeo``), but
+# every component is still constrained to the registry's portable lowercase
+# grammar.  Keeping the grammar here (rather than splitting on ``@`` in
+# callers) also makes traversal and empty-component attempts fail closed.
+_ARTIFACT_REPOSITORY = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,127}(?:/[a-z0-9][a-z0-9._-]{0,127})*$"
+)
 _CANONICAL_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,38}/[a-z0-9][a-z0-9_.-]{0,99}$")
 _ARTIFACT_PREFIX = re.compile(
     r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
@@ -37,6 +43,9 @@ _ARTIFACT_PREFIX = re.compile(
 _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
+_CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
+_QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -112,6 +121,8 @@ class ReleaseLane:
     runtime_endpoints: tuple[str, ...]
     rollback_reference: str
     required_readiness: tuple[str, ...]
+    client_certificate_sha256: str | None = None
+    host_agent_certificate_sha256: str | None = None
 
 
 class ReleaseLanePolicy:
@@ -151,11 +162,12 @@ class ReleaseLanePolicy:
                 "rollback_reference",
                 "required_readiness",
             }
+            optional = {"client_certificate_sha256", "host_agent_certificate_sha256"}
             # A v2 policy may retain a pre-existing lane whose source binding
             # has not yet been verified. Treat only the exact legacy shape as
             # compatibility data; new Admin Platform lanes must be complete v2
             # records and cannot silently lose their bindings.
-            is_legacy_entry = set(raw) == legacy_expected
+            is_legacy_entry = set(raw) - optional == legacy_expected
             expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
             if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
                 if name not in LEGACY_COMPATIBILITY_LANES:
@@ -163,7 +175,11 @@ class ReleaseLanePolicy:
                         "legacy release lane is not an explicit compatibility lane"
                     )
                 expected = legacy_expected
-            if set(raw) != expected:
+            # Certificate fingerprints are an optional additive enrollment
+            # binding.  They may accompany either the complete v2 shape or an
+            # explicitly allowlisted legacy lane, but no other fields are
+            # accepted.
+            if set(raw) - expected - optional or not expected <= set(raw):
                 raise ReleaseLaneError("release lane fields are invalid")
             try:
                 minimum_free_gib = float(raw["minimum_free_gib"])
@@ -177,6 +193,15 @@ class ReleaseLanePolicy:
                 raw["host_agent_mtls_identity"],
                 raw["artifact_repository"],
             )
+            certificate_values: dict[str, str | None] = {}
+            for field in optional:
+                value = raw.get(field)
+                if value is not None:
+                    if not isinstance(value, str) or _CERTIFICATE_SHA256.fullmatch(value) is None:
+                        raise ReleaseLaneError("release lane certificate binding is invalid")
+                    certificate_values[field] = value
+                else:
+                    certificate_values[field] = None
             if (
                 not all(isinstance(value, str) and value for value in values)
                 or minimum_free_gib < 1
@@ -246,6 +271,8 @@ class ReleaseLanePolicy:
                 runtime_endpoints=runtime_endpoints,
                 rollback_reference=rollback_reference,
                 required_readiness=required_readiness,
+                client_certificate_sha256=certificate_values["client_certificate_sha256"],
+                host_agent_certificate_sha256=certificate_values["host_agent_certificate_sha256"],
             )
         self._lanes = lanes
 
