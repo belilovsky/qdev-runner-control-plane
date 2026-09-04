@@ -12,7 +12,11 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "systemctl" not in script
     assert "mv -Tf" in script
     assert "rollback" in script
-    assert "free < 31457280" in script
+    assert "min_free_gib" in script
+    assert "QDEV_CONTROLLER_MIN_FREE_GIB" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT" in script
+    assert "minfree < 10" in script
+    assert "maxused > 93" in script
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script
@@ -27,6 +31,7 @@ def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert "QDEV_CONTROLLER_ROLLBACK=true" in script
 
 
 def test_controller_compose_project_is_namespaced() -> None:

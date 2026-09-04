@@ -63,6 +63,17 @@ def test_installer_is_idempotent_and_preserves_existing_agents(tmp_path: Path) -
     assert run_guard(root).returncode == 0
 
 
+def test_installer_installs_test_report_uploader(tmp_path: Path) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    uploader = root / ".github/scripts/qdev-upload-test-report.sh"
+    assert uploader.is_file()
+    assert uploader.stat().st_mode & 0o111
+    contents = uploader.read_text(encoding="utf-8")
+    assert "qdev-test-run.json" in contents
+    assert "QDEV_TEST_REPORT" in contents
+
+
 def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     installer = load_installer()

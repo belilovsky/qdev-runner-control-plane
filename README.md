@@ -81,14 +81,19 @@ sudo scripts/activate_controller_release.sh \
 ```
 
 Activation requires at least 30 GiB free disk, less than 85% disk use, at
-least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
-atomically changes `current`, refreshes the repository inventory, and recreates
+least 4 GiB available RAM, and load-15 no greater than twice the CPU count. If
+the host is in a measured administrative-recovery state, the operator may set
+`QDEV_CONTROLLER_MIN_FREE_GIB` and `QDEV_CONTROLLER_MAX_DISK_USED_PCT`; the
+script rejects values below 10 GiB or above 93% and the override must be
+recorded with its rollback values. It atomically changes `current`, refreshes
+the repository inventory, and recreates
 only `broker-public` and `broker-internal`. It does not restart a worker, stop
 the registry, remove Compose or Docker objects, or touch product containers.
 If either Compose or the public health check fails, the script restores the
 previous release and its inventory.
 
-To select a previously staged revision without rebuilding its cached images:
+To select a previously staged revision without rebuilding its cached images
+(rollback mode bypasses only the activation capacity gate):
 
 ```bash
 sudo scripts/rollback_controller_release.sh REVISION

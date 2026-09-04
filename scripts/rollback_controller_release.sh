@@ -8,4 +8,5 @@ fi
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 target="/opt/qdev-runner-control-plane/releases/$1"
-QDEV_CONTROLLER_NO_BUILD=true "$script_dir/activate_controller_release.sh" "$target"
+QDEV_CONTROLLER_NO_BUILD=true QDEV_CONTROLLER_ROLLBACK=true \
+  "$script_dir/activate_controller_release.sh" "$target"
