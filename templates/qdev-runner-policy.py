@@ -88,6 +88,44 @@ def contract_list(text: str, key: str) -> list[str]:
     return values
 
 
+def contract_mapping(text: str, key: str) -> dict[str, str] | None:
+    """Read a small top-level YAML mapping of scalar values.
+
+    The runner contract intentionally has no YAML dependency.  This helper is
+    deliberately narrow: only an indented ``name: scalar`` mapping directly
+    below the requested top-level key is accepted.  Nested mappings, duplicate
+    keys, and malformed values are left out so the caller can fail closed.
+    """
+    lines = text.splitlines()
+    values: dict[str, str] = {}
+    in_block = False
+    found = False
+    for raw in lines:
+        line = strip_yaml_comment(raw)
+        if not line.strip():
+            continue
+        if not in_block:
+            if re.fullmatch(rf"{re.escape(key)}\s*:\s*", line):
+                in_block = True
+                found = True
+            elif re.fullmatch(rf"{re.escape(key)}\s*:\s*\S.*", line):
+                # An inline scalar is not the supported mapping shape.
+                return {"__invalid__": "inline-value"}
+            continue
+        if line == line.lstrip():
+            break
+        match = re.fullmatch(r"\s{2}([A-Za-z0-9_.-]+)\s*:\s*(\S.*?)\s*", line)
+        if not match:
+            continue
+        name, value = match.groups()
+        if name in values:
+            # Preserve an explicit duplicate marker for fail-closed callers.
+            values[name] = "__duplicate__"
+            continue
+        values[name] = value.strip("'\"")
+    return values if found else None
+
+
 def has_pull_request_trigger(lines: list[str]) -> bool:
     """Recognize block and flow forms of a top-level pull_request trigger."""
     for index, line in enumerate(lines):
@@ -337,6 +375,7 @@ def check_repository(root: Path) -> list[str]:
     release_registry_workflows: set[str] = set()
     recovery_workflows: set[str] = set()
     allow_hosted = False
+    recovery_ci_alternative: dict[str, str] | None = None
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
@@ -367,6 +406,7 @@ def check_repository(root: Path) -> list[str]:
         release_runners.update(contract_list(text, "release_runners"))
         release_registry_workflows.update(contract_list(text, "release_registry_workflows"))
         recovery_workflows.update(contract_list(text, "recovery_workflows"))
+        recovery_ci_alternative = contract_mapping(text, "recovery_ci_alternative")
         if allow_hosted and not recovery_workflows:
             errors.append(".github/qdev-runner.yml:1: missing-recovery-workflows")
         if recovery_workflows and not allow_hosted:
@@ -378,6 +418,36 @@ def check_repository(root: Path) -> list[str]:
                 errors.append(
                     ".github/qdev-runner.yml:1: invalid-release-registry-workflow "
                     + workflow_name
+                )
+        if recovery_ci_alternative is not None:
+            if not allow_hosted:
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-requires-v2"
+                )
+            if recovery_ci_alternative.get("enabled") != "true":
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-not-enabled"
+                )
+            if recovery_ci_alternative.get("receipt_schema") != "qdev-controller-receipt-v2":
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-invalid-receipt-schema"
+                )
+            if recovery_ci_alternative.get("enforcement") != "enforced":
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-not-enforced"
+                )
+            if recovery_ci_alternative.get("requires_exact_binding") != "true":
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-not-exact"
+                )
+            unknown = sorted(
+                set(recovery_ci_alternative)
+                - {"enabled", "receipt_schema", "enforcement", "requires_exact_binding"}
+            )
+            for name in unknown:
+                errors.append(
+                    ".github/qdev-runner.yml:1: recovery-ci-alternative-unknown-key "
+                    + name
                 )
 
     agents = root / "AGENTS.md"

@@ -4,6 +4,13 @@ self_hosted_recovery: true
 # Self-hosted profiles are permitted only in these manual recovery workflows.
 recovery_workflows:
   - runner-smoke.yml
+# Hosted checks remain primary. This repository may use the recovery lane only
+# with a terminal full run and a signed, enforced receipt bound to every tuple.
+recovery_ci_alternative:
+  enabled: true
+  receipt_schema: qdev-controller-receipt-v2
+  enforcement: enforced
+  requires_exact_binding: true
 profiles:
   - qdev-ci
 trusted_events:
