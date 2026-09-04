@@ -367,6 +367,39 @@ def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) 
     )
 
 
+def test_certificate_bound_release_lane_ignores_spoofed_identity_header(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    settings = client.app.state.settings
+    document = yaml.safe_load(settings.release_lanes_path.read_text(encoding="utf-8"))
+    document["lanes"]["qdev-release-qaz-tours"]["client_certificate_sha256"] = "a" * 64
+    document["lanes"]["qdev-release-qaz-tours"]["host_agent_certificate_sha256"] = "b" * 64
+    settings.release_lanes_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    heartbeat = _release_heartbeat()
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers={
+                "X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186",
+                "X-QDev-Client-Certificate-SHA256": "c" * 64,
+            },
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers={
+                "X-QDev-mTLS-Identity": "spoofed",
+                "X-QDev-Client-Certificate-SHA256": "b" * 64,
+            },
+        ).status_code
+        == 200
+    )
+
+
 class FakeGitHub:
     def __init__(
         self,

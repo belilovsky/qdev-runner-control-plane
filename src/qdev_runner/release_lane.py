@@ -32,6 +32,7 @@ _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 # grammar.  Keeping the grammar here (rather than splitting on ``@`` in
 # callers) also makes traversal and empty-component attempts fail closed.
 _ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}(?:/[a-z0-9][a-z0-9._-]{0,127})*$")
+_CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
 _QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
 
@@ -82,6 +83,8 @@ class ReleaseLane:
     minimum_free_gib: float
     heartbeat_ttl_seconds: int
     artifact_repository: str
+    client_certificate_sha256: str | None = None
+    host_agent_certificate_sha256: str | None = None
 
 
 class ReleaseLanePolicy:
@@ -103,7 +106,7 @@ class ReleaseLanePolicy:
                 raise ReleaseLaneError("release lane name is invalid")
             if not isinstance(raw, dict):
                 raise ReleaseLaneError("release lane entry is invalid")
-            expected = {
+            required = {
                 "project_id",
                 "placement",
                 "client_mtls_identity",
@@ -112,7 +115,8 @@ class ReleaseLanePolicy:
                 "heartbeat_ttl_seconds",
                 "artifact_repository",
             }
-            if set(raw) != expected:
+            optional = {"client_certificate_sha256", "host_agent_certificate_sha256"}
+            if not required <= set(raw) or set(raw) - required - optional:
                 raise ReleaseLaneError("release lane fields are invalid")
             try:
                 minimum_free_gib = float(raw["minimum_free_gib"])
@@ -126,6 +130,15 @@ class ReleaseLanePolicy:
                 raw["host_agent_mtls_identity"],
                 raw["artifact_repository"],
             )
+            certificate_values: dict[str, str | None] = {}
+            for field in optional:
+                value = raw.get(field)
+                if value is not None:
+                    if not isinstance(value, str) or _CERTIFICATE_SHA256.fullmatch(value) is None:
+                        raise ReleaseLaneError("release lane certificate binding is invalid")
+                    certificate_values[field] = value
+                else:
+                    certificate_values[field] = None
             if (
                 not all(isinstance(value, str) and value for value in values)
                 or minimum_free_gib < 1
@@ -143,6 +156,8 @@ class ReleaseLanePolicy:
                 minimum_free_gib=minimum_free_gib,
                 heartbeat_ttl_seconds=heartbeat_ttl_seconds,
                 artifact_repository=str(raw["artifact_repository"]),
+                client_certificate_sha256=certificate_values["client_certificate_sha256"],
+                host_agent_certificate_sha256=certificate_values["host_agent_certificate_sha256"],
             )
         self._lanes = lanes
 
