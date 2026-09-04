@@ -307,12 +307,35 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     return attempt if attempt > 0 else None
 
 
-def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
+def _worker_audit(
+    worker: dict[str, Any],
+    now: float,
+    *,
+    operations: OperationStore | None = None,
+) -> dict[str, Any]:
     detail = _json_object(worker.get("detail_json"))
     raw = _json_object(detail.get("raw_capacity"))
     baseline = _json_object(detail.get("baseline_capacity"))
     effective = _json_object(detail.get("effective_capacity"))
     profiles = _json_strings(worker.get("profiles_json"))
+    directive_id = detail.get("capacity_directive_id")
+    capacity_allowed = worker.get("capacity_allowed") is True
+    if directive_id:
+        # A heartbeat may outlive a bounded override. Never let its last
+        # `allowed` bit turn an expired or replaced directive into admission.
+        capacity_allowed = False
+        if operations is not None:
+            directive = operations.active(
+                str(worker.get("name") or ""),
+                registered_profiles=profiles,
+                now=datetime.fromtimestamp(now, UTC),
+            )
+            capacity_allowed = bool(
+                directive is not None and directive.operation_id == str(directive_id)
+            )
+    effective_profiles = _json_strings(detail.get("effective_profiles", []))
+    if not capacity_allowed:
+        effective_profiles = ()
     return {
         "worker": str(worker.get("name") or ""),
         "tier": str(worker.get("tier") or detail.get("tier") or ""),
@@ -324,12 +347,12 @@ def _worker_audit(worker: dict[str, Any], now: float) -> dict[str, Any]:
         "raw_capacity": raw,
         "baseline_capacity": baseline,
         "effective_capacity": effective,
-        "capacity_allowed": worker.get("capacity_allowed") is True,
+        "capacity_allowed": capacity_allowed,
         "configured_claim_scope_id": detail.get("configured_claim_scope_id"),
         "admission": {
-            "allowed": worker.get("capacity_allowed") is True,
-            "directive_id": detail.get("capacity_directive_id"),
-            "profiles": list(_json_strings(detail.get("effective_profiles", []))),
+            "allowed": capacity_allowed,
+            "directive_id": directive_id,
+            "profiles": list(effective_profiles),
         },
     }
 
@@ -555,7 +578,11 @@ def create_app(
         )
         if worker is None:
             raise HTTPException(status_code=404, detail="worker not registered")
-        return worker, _worker_audit(worker, float(snapshot["now"]))
+        return worker, _worker_audit(
+            worker,
+            float(snapshot["now"]),
+            operations=operations,
+        )
 
     def bound_scope_for_job(
         job: dict[str, Any],
@@ -645,8 +672,24 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, Any]:
         data = store.health()
+        audited_workers = []
+        for worker in data["workers"]:
+            audit = _worker_audit(
+                worker,
+                float(data["now"]),
+                operations=operations,
+            )
+            audited_workers.append(
+                worker
+                | {
+                    "capacity_allowed": audit["capacity_allowed"],
+                    "available": bool(
+                        audit["capacity_allowed"] and int(worker["slots_available"]) > 0
+                    ),
+                }
+            )
         fresh_workers = [
-            worker for worker in data["workers"] if data["now"] - worker["last_seen"] < 90
+            worker for worker in audited_workers if data["now"] - worker["last_seen"] < 90
         ]
         primary = [worker for worker in fresh_workers if worker["tier"] == "primary"]
         reserve = [worker for worker in fresh_workers if worker["tier"] == "reserve"]
@@ -1052,7 +1095,12 @@ def create_app(
             "kind": "worker-audit",
             "observed_at": observed_at,
             "workers": [
-                _worker_audit(worker, float(snapshot["now"])) for worker in snapshot["workers"]
+                _worker_audit(
+                    worker,
+                    float(snapshot["now"]),
+                    operations=operation_store,
+                )
+                for worker in snapshot["workers"]
             ],
             "pending": int(snapshot["jobs"].get("pending", 0)),
         }

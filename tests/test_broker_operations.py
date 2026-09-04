@@ -902,6 +902,44 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
     assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
 
 
+def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True)
+    operation_store = client.app.state.operations
+    assert operation_store is not None
+    directive = operation_store.create_capacity_override(
+        worker_name=WORKER_NAME,
+        repository="belilovsky/qazshield",
+        profiles=("qdev-ci-docker",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95.0,
+        owner="portfolio-ci",
+        reason="expired directive audit regression",
+        duration_seconds=300,
+        now=datetime.now(UTC) - timedelta(seconds=301),
+    )
+    store: Store = client.app.state.store
+    worker = store.health()["workers"][0]
+    detail = json.loads(worker["detail_json"])
+    detail["capacity_directive_id"] = directive.operation_id
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
+        )
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["primary_capacity_allowed"] is False
+    response = client.get("/internal/v1/operations/workers", headers=OPERATOR_HEADERS)
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    audit = payload["workers"][0]
+    assert audit["capacity_allowed"] is False
+    assert audit["admission"]["allowed"] is False
+    assert audit["admission"]["profiles"] == []
+
+
 def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
     _heartbeat(client)
