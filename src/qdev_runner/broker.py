@@ -31,6 +31,7 @@ from .claim_scope import (
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
+from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
 from .models import QueuedJob
 from .operations import (
     DISK_ONLY_BLOCKERS,
@@ -443,9 +444,7 @@ def create_app(
                 detail="qdev-fleet-operations mTLS identity required",
             )
 
-    def require_operator_session(
-        token: str | None, mtls_identity: str | None
-    ) -> OperationStore:
+    def require_operator_session(token: str | None, mtls_identity: str | None) -> OperationStore:
         """Require the controller-issued fleet-operations session on every operator route.
 
         The edge authenticates the client certificate and injects this identity;
@@ -479,6 +478,14 @@ def create_app(
         except AdminPlatformLedgerError as error:
             raise HTTPException(
                 status_code=503, detail="admin platform ledger is unavailable"
+            ) from error
+
+    def managed_release_ledger() -> ManagedReleaseLedger:
+        try:
+            return ManagedReleaseLedger(settings.managed_release_ledger_path)
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=503, detail="managed release ledger is unavailable"
             ) from error
 
     def release_state() -> ReleaseStore:
@@ -674,7 +681,7 @@ def create_app(
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, request.release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -727,11 +734,12 @@ def create_app(
     @app.get("/internal/v1/release-hosts/{placement}/jobs/next", response_model=None)
     def next_release_host_job(
         placement: str,
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -760,13 +768,14 @@ def create_app(
         placement: str,
         release_id: str,
         receipt: dict[str, Any],
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -1120,12 +1129,23 @@ def create_app(
             )
         except ManagedRegistryError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        admission_ledger: str | None = None
+        admin_platform_ledger_entry: str | None = None
+        managed_release_ledger_entry: str | None = None
         if managed_entry is not None:
             try:
-                admin_platform_ledger().validate_admission(
-                    managed_entry.entry_id, str(candidate["head_sha"])
-                )
-            except AdminPlatformLedgerError as exc:
+                admission_ledger = managed_entry.admission_ledger
+                if admission_ledger == "admin-platform":
+                    admin_platform_ledger().validate_admission(
+                        managed_entry.entry_id, str(candidate["head_sha"])
+                    )
+                    admin_platform_ledger_entry = managed_entry.entry_id
+                else:
+                    managed_release_ledger().validate_admission(
+                        managed_entry.entry_id, str(candidate["head_sha"])
+                    )
+                    managed_release_ledger_entry = managed_entry.entry_id
+            except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         profile_queue: list[dict[str, Any]] = []
@@ -1196,9 +1216,9 @@ def create_app(
                         "managed_registry_entry": (
                             managed_entry.entry_id if managed_entry else None
                         ),
-                        "admin_platform_ledger_entry": (
-                            managed_entry.entry_id if managed_entry else None
-                        ),
+                        "admission_ledger": admission_ledger,
+                        "admin_platform_ledger_entry": admin_platform_ledger_entry,
+                        "managed_release_ledger_entry": managed_release_ledger_entry,
                         "worker": audit,
                     }
                     return operation_store.receipt(payload)
@@ -1317,7 +1337,9 @@ def create_app(
                 "host": request.host,
             },
             "managed_registry_entry": managed_entry.entry_id if managed_entry else None,
-            "admin_platform_ledger_entry": managed_entry.entry_id if managed_entry else None,
+            "admission_ledger": admission_ledger,
+            "admin_platform_ledger_entry": admin_platform_ledger_entry,
+            "managed_release_ledger_entry": managed_release_ledger_entry,
             "worker": audit,
         }
         return operation_store.receipt(payload)

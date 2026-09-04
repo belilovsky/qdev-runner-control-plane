@@ -10,7 +10,7 @@ def _registry_path() -> Path:
     return Path(__file__).parents[1] / "config" / "managed-registry.yml"
 
 
-def test_managed_registry_enrolls_admin_wave_with_total_qdev_only() -> None:
+def test_managed_registry_separates_admin_wave_from_qazgeo_production() -> None:
     registry = ManagedRegistry(_registry_path())
     total = registry.entry_for_repository("belilovsky/total-kz")
     assert total is not None
@@ -20,6 +20,14 @@ def test_managed_registry_enrolls_admin_wave_with_total_qdev_only() -> None:
         "https://total.qdev.run/release.json",
     )
     assert registry.validate_claim_if_managed("belilovsky/av-platform-core", "qdev-ci")
+    qazgeo = registry.entry_for_repository("belilovsky/qazgeo")
+    assert qazgeo is not None
+    assert qazgeo.admission_ledger == "managed-production"
+    assert qazgeo.runtime_endpoints == (
+        "https://qgeo.tech/health",
+        "https://qgeo.tech/health/live",
+        "https://qgeo.tech/health/ready",
+    )
 
 
 def test_managed_registry_rejects_secret_fields_and_profile_drift(tmp_path: Path) -> None:

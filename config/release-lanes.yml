@@ -119,3 +119,11 @@ lanes:
     runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
     rollback_reference: immutable previous-binary rollback contract
     required_readiness: [native, public, identity]
+  qdev-release-qazgeo:
+    project_id: qazgeo
+    placement: vps-main
+    client_mtls_identity: qdev-release-client:qazgeo
+    host_agent_mtls_identity: qdev-host-agent:vps-main
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qazgeo

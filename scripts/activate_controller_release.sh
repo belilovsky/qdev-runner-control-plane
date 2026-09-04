@@ -24,30 +24,45 @@ case "$release" in
     exit 64
     ;;
 esac
-for required in \
+legacy_rollback="${QDEV_CONTROLLER_LEGACY_ROLLBACK:-false}"
+if [[ "$legacy_rollback" != true && "$legacy_rollback" != false ]]; then
+  printf 'QDEV_CONTROLLER_LEGACY_ROLLBACK must be true or false\n' >&2
+  exit 64
+fi
+# Forward activation is fail-closed on the Admin Platform v2 ledger and its
+# fixed product adapters.  The explicit legacy flag is reserved for the
+# controller-owned rollback helper restoring an older controller release.
+required=(
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
   config/release-lanes.yml \
   config/managed-registry.yml \
   config/admin-platform-ledger.yml \
-  config/admin-platform-ledger-v2.yml \
+  config/managed-release-ledger.yml \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   scripts/qdev_product_release_host_agent.py \
-  scripts/qdev_admin_platform_release_host_agent.py \
   deploy/qdev-release-qaz-tours.service \
   deploy/qdev-release-qaz-fund.service \
   deploy/qdev-release-qaz-events.service \
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qmt.compose.yml \
-  deploy/qdev-release-ortcom.service \
-  deploy/qdev-release-cmnt.service \
-  deploy/qdev-release-total.service \
-  deploy/qdev-release-qazposter.service \
-  deploy/Dockerfile.broker; do
-  [[ -f "$release/$required" ]] || {
-    printf 'release is missing %s\n' "$required" >&2
+  deploy/Dockerfile.broker
+)
+if [[ "$legacy_rollback" != true ]]; then
+  required+=(
+    config/admin-platform-ledger-v2.yml
+    scripts/qdev_admin_platform_release_host_agent.py
+    deploy/qdev-release-ortcom.service
+    deploy/qdev-release-cmnt.service
+    deploy/qdev-release-total.service
+    deploy/qdev-release-qazposter.service
+  )
+fi
+for required_file in "${required[@]}"; do
+  [[ -f "$release/$required_file" ]] || {
+    printf 'release is missing %s\n' "$required_file" >&2
     exit 66
   }
 done
@@ -121,11 +136,13 @@ profiles_backup="$(mktemp /tmp/qdev-runner-profiles.XXXXXX)"
 release_lanes_backup="$(mktemp /tmp/qdev-runner-release-lanes.XXXXXX)"
 managed_registry_backup="$(mktemp /tmp/qdev-runner-managed-registry.XXXXXX)"
 admin_platform_ledger_backup="$(mktemp /tmp/qdev-runner-admin-platform-ledger.XXXXXX)"
+managed_release_ledger_backup="$(mktemp /tmp/qdev-runner-managed-release-ledger.XXXXXX)"
 release_status_backup="$(mktemp /tmp/qdev-runner-controller-release-status.XXXXXX)"
 profiles_were_present=false
 release_lanes_were_present=false
 managed_registry_was_present=false
 admin_platform_ledger_was_present=false
+managed_release_ledger_was_present=false
 release_status_was_present=false
 operator_identity_metadata_backup="$(mktemp /tmp/qdev-runner-operator-mtls-metadata.XXXXXX)"
 operator_identity_was_present=false
@@ -144,6 +161,10 @@ fi
 if [[ -f /etc/qdev-runner/admin-platform-ledger.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/admin-platform-ledger.yml "$admin_platform_ledger_backup"
   admin_platform_ledger_was_present=true
+fi
+if [[ -f /etc/qdev-runner/managed-release-ledger.yml ]]; then
+  install -m 0600 -- /etc/qdev-runner/managed-release-ledger.yml "$managed_release_ledger_backup"
+  managed_release_ledger_was_present=true
 fi
 if [[ -f "$release_status_path" ]]; then
   install -m 0644 -- "$release_status_path" "$release_status_backup"
@@ -183,7 +204,7 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$managed_registry_backup" "$admin_platform_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$profiles_backup" "$release_lanes_backup" "$managed_registry_backup" "$admin_platform_ledger_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -199,15 +220,14 @@ if [[ ! "$release_revision" =~ ^[0-9a-f]{40}$ ]]; then
   printf 'release must expose an exact git revision via HEAD or QDEV_CONTROLLER_RELEASE_REVISION\n' >&2
   exit 66
 fi
-release_digest="$(
-  for release_file in \
+digest_files=(
     "$release/deploy/compose.yml" \
     "$release/inventory/repos.json" \
     "$release/config/profiles.yml" \
     "$release/config/release-lanes.yml" \
     "$release/config/managed-registry.yml" \
     "$release/config/admin-platform-ledger.yml" \
-    "$release/config/admin-platform-ledger-v2.yml" \
+    "$release/config/managed-release-ledger.yml" \
     "$release/scripts/provision_operator_identity.sh" \
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
@@ -216,13 +236,20 @@ release_digest="$(
     "$release/deploy/qdev-release-qaz-events.service" \
     "$release/deploy/qdev-release-qmt.service" \
     "$release/deploy/qdev-release-qmt.compose.yml" \
-    "$release/scripts/qdev_admin_platform_release_host_agent.py" \
-    "$release/deploy/qdev-release-ortcom.service" \
-    "$release/deploy/qdev-release-cmnt.service" \
-    "$release/deploy/qdev-release-total.service" \
-    "$release/deploy/qdev-release-qazposter.service" \
     "$release/deploy/Dockerfile.broker"
-  do
+)
+if [[ "$legacy_rollback" != true ]]; then
+  digest_files+=(
+    "$release/config/admin-platform-ledger-v2.yml"
+    "$release/scripts/qdev_admin_platform_release_host_agent.py"
+    "$release/deploy/qdev-release-ortcom.service"
+    "$release/deploy/qdev-release-cmnt.service"
+    "$release/deploy/qdev-release-total.service"
+    "$release/deploy/qdev-release-qazposter.service"
+  )
+fi
+release_digest="$(
+  for release_file in "${digest_files[@]}"; do
     sha256sum -- "$release_file" | awk '{print $1}'
   done | sha256sum | awk '{print $1}'
 )"
@@ -260,7 +287,13 @@ install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/
 # Keep the v1 source in the release for compatibility/audit, but make the
 # validated v2 ledger the runtime projection.  The existing backup/rollback
 # path restores the previous release's ledger atomically if activation fails.
-install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" /etc/qdev-runner/admin-platform-ledger.yml
+if [[ -f "$release/config/admin-platform-ledger-v2.yml" ]]; then
+  install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" /etc/qdev-runner/admin-platform-ledger.yml
+elif [[ "$legacy_rollback" != true ]]; then
+  printf 'forward activation requires config/admin-platform-ledger-v2.yml\n' >&2
+  exit 66
+fi
+install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -294,6 +327,11 @@ rollback() {
     install -m 0644 -- "$admin_platform_ledger_backup" /etc/qdev-runner/admin-platform-ledger.yml
   else
     rm -f -- /etc/qdev-runner/admin-platform-ledger.yml
+  fi
+  if [[ "$managed_release_ledger_was_present" == true ]]; then
+    install -m 0644 -- "$managed_release_ledger_backup" /etc/qdev-runner/managed-release-ledger.yml
+  else
+    rm -f -- /etc/qdev-runner/managed-release-ledger.yml
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then

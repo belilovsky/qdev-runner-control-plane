@@ -38,6 +38,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "config/release-lanes.yml" in script
     assert "config/managed-registry.yml" in script
     assert "config/admin-platform-ledger.yml" in script
+    assert "config/managed-release-ledger.yml" in script
     assert "scripts/provision_operator_identity.sh" in script
     assert "scripts/qaz_tours_release_host_agent.py" in script
     assert "deploy/qdev-release-qaz-tours.service" in script
@@ -56,6 +57,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert '"$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml' in script
     assert (
         '"$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml'
+        in script
+    )
+    assert (
+        '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
         in script
     )
     assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
