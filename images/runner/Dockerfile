@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 COPY install-pinned-npm.sh /usr/local/bin/install-pinned-npm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
-      postgresql-16 python3-venv rsync unzip xz-utils zip \
+      python3-venv rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && mkdir -p /home/runner/actions-runner \
@@ -35,6 +35,14 @@ WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS general
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-16 \
+    && rm -rf /var/lib/apt/lists/* \
+    && for binary in initdb pg_ctl createdb dropdb psql pg_dump pg_restore; do \
+         test -x "/usr/lib/postgresql/16/bin/${binary}"; \
+       done \
+    && /usr/lib/postgresql/16/bin/postgres --version | grep -Eq ' 16\.'
+USER runner
 
 # Playwright clients installed by browser jobs must stay in lockstep with the
 # bundled Chromium revision. This is v1.62.1-noble-amd64, pinned by its OCI

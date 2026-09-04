@@ -18,9 +18,17 @@ def test_native_build_toolchain_is_in_general_and_browser_images() -> None:
 def test_general_image_supplies_native_postgresql_16_toolchain() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
-    base, browser = dockerfile.split("FROM base AS general", maxsplit=1)
-    assert "postgresql-16" in base
+    base, after_general = dockerfile.split("FROM base AS general", maxsplit=1)
+    general, after_browser = after_general.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    browser, docker = after_browser.split("FROM base AS docker", maxsplit=1)
+    assert "postgresql-16" not in base
+    assert "postgresql-16" in general
     assert "postgresql-16" not in browser
+    assert "postgresql-16" not in docker
+    assert "for binary in initdb pg_ctl createdb dropdb psql pg_dump pg_restore" in general
+    assert 'test -x "/usr/lib/postgresql/16/bin/${binary}"' in general
+    assert "/usr/lib/postgresql/16/bin/postgres --version" in general
+    assert "grep -Eq ' 16\\.'" in general
 
 
 def test_browser_image_pins_the_playwright_1_62_1_chromium_bundle() -> None:
