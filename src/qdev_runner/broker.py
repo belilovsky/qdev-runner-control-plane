@@ -1270,9 +1270,7 @@ def create_app(
             operation_path = (
                 settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
             )
-            receipt_path = (
-                settings.fleet_bootstrap_receipt_root / f"{request.idempotency_key}.json"
-            )
+            receipt_path = settings.fleet_bootstrap_receipt_root / f"{request.idempotency_key}.json"
             execution = execute_existing_worker_recovery(
                 policy=policy_value,
                 store=BootstrapOperationStore(operation_path),
@@ -1660,6 +1658,7 @@ def create_app(
                 "backup_path": result["backup_path"],
             }
         )
+
     @app.post("/internal/v1/operations/jobs/{job_id}/claim-scope")
     def issue_fifo_claim_scope(
         job_id: int,

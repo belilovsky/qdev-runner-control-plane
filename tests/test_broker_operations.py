@@ -27,15 +27,11 @@ OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
-_FLEET_BOOTSTRAP_POLICY = (
-    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
-)
+_FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
 
 
 def _fleet_bootstrap_activation() -> dict[str, str]:
-    activation = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )["activation"]
+    activation = yaml.safe_load(_FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8"))["activation"]
     return {
         "controller_revision": str(activation["controller_revision"]),
         "controller_release_digest": str(activation["controller_release_digest"]),
@@ -99,19 +95,21 @@ def _app(
         encoding="utf-8",
     )
     profiles = tmp_path / "profiles.yml"
+    admission_overrides: dict[str, dict[str, int]] = {
+        "belilovsky/qazshield": {"qdev-ci-docker": 15360},
+        "belilovsky/qazlake": {"qdev-ci-docker": 12288},
+        "belilovsky/example": {"qdev-ci-docker": 15360},
+        "belilovsky/qazposter": {"qdev-ci-docker": 15360},
+    }
+    if include_qgeo:
+        # Keep the QGeo override below the profile default so the test
+        # exercises the admission path without making an equal-value override
+        # invalid under the policy contract.
+        admission_overrides["belilovsky/qazgeo"] = {"qdev-ci-docker": 15360}
     profiles.write_text(
         yaml.safe_dump(
             {
-                "repository_admission_disk_mb": {
-                    "belilovsky/qazshield": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazlake": {"qdev-ci-docker": 12288},
-                    "belilovsky/example": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazposter": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazgeo": {
-                        "qdev-ci": 12288,
-                        "qdev-ci-docker": 20480,
-                    },
-                },
+                "repository_admission_disk_mb": admission_overrides,
                 "profiles": {
                     "qdev-ci": {
                         "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
@@ -914,7 +912,7 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, include_qgeo=True)
     activation = _fleet_bootstrap_activation()
     request = {
         "schema": "qdev-fleet-bootstrap-request-v1",

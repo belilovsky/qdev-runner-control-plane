@@ -199,9 +199,7 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     if repository != policy.identity.repository:
         raise BootstrapValidationError("workflow repository is not allowlisted")
     run_id = _positive_int(_required("GITHUB_RUN_ID"), "GITHUB_RUN_ID")
-    attempt = _positive_int(
-        os.environ.get("GITHUB_RUN_ATTEMPT", "1"), "GITHUB_RUN_ATTEMPT"
-    )
+    attempt = _positive_int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"), "GITHUB_RUN_ATTEMPT")
     expected_job_name = _required("BOOTSTRAP_JOB_NAME")
     job_id = resolve_job_id(repository, run_id, expected_name=expected_job_name)
     raw: dict[str, Any] = {

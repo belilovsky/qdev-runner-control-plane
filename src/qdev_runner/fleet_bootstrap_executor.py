@@ -43,9 +43,7 @@ _DEFAULT_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
 class RecoveryExecution:
     """A non-secret result suitable for a private operator receipt."""
 
-    status: Literal[
-        "completed", "access_blocked", "active_work", "target_unregistered", "failed"
-    ]
+    status: Literal["completed", "access_blocked", "active_work", "target_unregistered", "failed"]
     operation_status: Literal["pending", "completed"]
     idempotency_key: str
     request_fingerprint: str

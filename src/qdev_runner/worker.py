@@ -449,14 +449,10 @@ class Worker:
         max_disk_used_pct: float | None = None,
     ) -> str:
         minimum = (
-            self.settings.min_disk_free_gib
-            if min_disk_free_gib is None
-            else min_disk_free_gib
+            self.settings.min_disk_free_gib if min_disk_free_gib is None else min_disk_free_gib
         )
         maximum = (
-            self.settings.max_disk_used_pct
-            if max_disk_used_pct is None
-            else max_disk_used_pct
+            self.settings.max_disk_used_pct if max_disk_used_pct is None else max_disk_used_pct
         )
         if capacity.disk_used_pct >= maximum:
             return (
@@ -492,12 +488,8 @@ class Worker:
                 return output, "capacity override expired during running job"
             capacity_detail = self.disk_hard_floor_violation(
                 self.capacity(),
-                min_disk_free_gib=(
-                    admission.min_disk_free_gib if admission is not None else None
-                ),
-                max_disk_used_pct=(
-                    admission.max_disk_used_pct if admission is not None else None
-                ),
+                min_disk_free_gib=(admission.min_disk_free_gib if admission is not None else None),
+                max_disk_used_pct=(admission.max_disk_used_pct if admission is not None else None),
             )
             if capacity_detail:
                 await self.terminate_process(process)

@@ -33,7 +33,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert 'QDEV_RUNNER_VERSION:-2.336.0-r2' in builder
+    assert "QDEV_RUNNER_VERSION:-2.336.0-r2" in builder
 
 
 def test_docker_profile_has_compose_plugin() -> None:

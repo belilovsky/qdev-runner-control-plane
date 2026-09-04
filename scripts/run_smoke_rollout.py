@@ -131,9 +131,7 @@ def dispatch_batch(
                 )
                 item["run"] = run
             elif run.get("status") != "completed":
-                run = github.json(
-                    "GET", f"/repos/{item['repository']}/actions/runs/{run['id']}"
-                )
+                run = github.json("GET", f"/repos/{item['repository']}/actions/runs/{run['id']}")
                 item["run"] = run
             if run is None or run.get("status") != "completed":
                 complete = False
@@ -185,8 +183,7 @@ def main() -> None:
     selected = inventory["repositories"]
     if args.repository:
         requested = {
-            name if "/" in name else f"{inventory['owner']}/{name}"
-            for name in args.repository
+            name if "/" in name else f"{inventory['owner']}/{name}" for name in args.repository
         }
         selected = [repo for repo in selected if repo["full_name"] in requested]
         missing = requested - {repo["full_name"] for repo in selected}
