@@ -15,9 +15,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--expected-revision")
+    parser.add_argument("--verify-evidence", action="store_true")
     args = parser.parse_args()
     try:
-        references, manifest_digest = load(args.manifest, expected_revision=args.expected_revision)
+        references, manifest_digest = load(
+            args.manifest,
+            expected_revision=args.expected_revision,
+            strict_evidence=args.verify_evidence,
+        )
     except RunnerImageReleaseError as error:
         print(f"runner_image_release=failed reason={error}", file=sys.stderr)
         return 1
@@ -28,6 +33,7 @@ def main() -> int:
                 "status": "passed",
                 "manifest_digest": manifest_digest,
                 "artifacts": sorted(references),
+                "evidence_verified": args.verify_evidence,
             },
             sort_keys=True,
         )

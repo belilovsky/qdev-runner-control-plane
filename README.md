@@ -259,17 +259,25 @@ unreleased candidate, not a worker identity:
 QDEV_PUSH_IMAGES=true scripts/build_runner_images.sh
 ```
 
-The signed image-release controller must then create a
+The signed image-release publisher must then create a
 `qdev-runner-image-release-v1` manifest for the three executor images and the
 Docker sidecar. Every artifact is identified by `@sha256` and carries SBOM,
 provenance, signature and vulnerability-review digests. Critical findings are
-rejected; High findings need an immutable remediation receipt. Validate that
-non-secret envelope before placing its matching references in `worker.env`:
+rejected; High findings need an immutable remediation receipt. Initialize the
+host-local Ed25519 identity once, then scan and publish an exact clean source
+revision with `scripts/release_runner_images.py`. The private key must remain
+mode 0600 on the controller host and is never copied into the evidence root.
+The publisher refuses mutable references, dirty source, a revision mismatch,
+Critical findings, and unreviewed High findings.
+
+Validate both the envelope and its protected files before placing matching
+references in `worker.env`:
 
 ```bash
 python3 scripts/validate_runner_image_release.py \
   --manifest /etc/qdev-runner/runner-images.json \
-  --expected-revision RUNNER_IMAGE_SOURCE_SHA
+  --expected-revision RUNNER_IMAGE_SOURCE_SHA \
+  --verify-evidence
 ```
 
 Do not reuse a mutable image or an image that is absent from this verified
