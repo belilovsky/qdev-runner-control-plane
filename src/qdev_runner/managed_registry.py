@@ -10,7 +10,7 @@ import yaml
 
 from .claim_scope import PORTFOLIO_PROFILES
 
-SCHEMA = "qdev-managed-registry-v2"
+SCHEMA = "qdev-managed-registry-v3"
 _ENTRY_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -31,6 +31,7 @@ class ManagedRegistryEntry:
     runtime_endpoints: tuple[str, ...]
     rollback_reference: str
     owner: str
+    admission_ledger: str
 
 
 class ManagedRegistry:
@@ -58,6 +59,7 @@ class ManagedRegistry:
             "runtime_endpoints",
             "rollback_reference",
             "owner",
+            "admission_ledger",
         }
         for entry_id, raw in raw_entries.items():
             if not isinstance(entry_id, str) or not _ENTRY_ID.fullmatch(entry_id):
@@ -73,13 +75,14 @@ class ManagedRegistry:
                 raise ManagedRegistryError("managed registry identity is invalid")
             if repository in repositories:
                 raise ManagedRegistryError("managed registry repository is duplicated")
+            if raw["admission_ledger"] not in {"admin-platform", "managed-production"}:
+                raise ManagedRegistryError("managed registry admission ledger is invalid")
             profiles = raw["allowed_profiles"]
             if (
                 not isinstance(profiles, list)
                 or not profiles
                 or any(
-                    not isinstance(item, str) or item not in PORTFOLIO_PROFILES
-                    for item in profiles
+                    not isinstance(item, str) or item not in PORTFOLIO_PROFILES for item in profiles
                 )
             ):
                 raise ManagedRegistryError("managed registry profiles are invalid")
@@ -97,12 +100,14 @@ class ManagedRegistry:
                 entry_id=entry_id,
                 project_id=str(raw["project_id"]),
                 kind=kind,
-                repository=repository, canonical_ref=str(raw["canonical_ref"]),
+                repository=repository,
+                canonical_ref=str(raw["canonical_ref"]),
                 allowed_profiles=frozenset(profiles),
                 native_release_profile=str(raw["native_release_profile"]),
                 runtime_endpoints=tuple(endpoints),
                 rollback_reference=str(raw["rollback_reference"]),
                 owner=str(raw["owner"]),
+                admission_ledger=str(raw["admission_ledger"]),
             )
             repositories.add(repository)
         self.entries = tuple(entries.values())
@@ -116,7 +121,7 @@ class ManagedRegistry:
     def snapshot(self) -> dict[str, object]:
         """Return the non-secret registry projection used by signed audits.
 
-        Keep this projection deliberately explicit.  A registry entry is
+        Keep this projection deliberately explicit. A registry entry is
         configuration, not an arbitrary document that should be echoed by an
         operator endpoint; the fields below are the complete v2 contract and
         contain no credentials, cookies, or personal data.
@@ -135,6 +140,7 @@ class ManagedRegistry:
                     "runtime_endpoints": list(entry.runtime_endpoints),
                     "rollback_reference": entry.rollback_reference,
                     "owner": entry.owner,
+                    "admission_ledger": entry.admission_ledger,
                 }
                 for entry in self.entries
             ],

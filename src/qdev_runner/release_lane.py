@@ -145,11 +145,20 @@ class ReleaseLanePolicy:
             raise ReleaseLaneError("release lane is not allowlisted")
         return lane
 
-    def lane_for_placement(self, placement: str) -> ReleaseLane:
+    def lane_for_host(self, placement: str, release_lane: str | None = None) -> ReleaseLane:
+        if release_lane is not None:
+            lane = self.lane(release_lane)
+            if lane.placement != placement:
+                raise ReleaseLaneError("release lane does not match host placement")
+            return lane
         matches = [lane for lane in self._lanes.values() if lane.placement == placement]
         if len(matches) != 1:
-            raise ReleaseLaneError("release placement is not uniquely allowlisted")
+            raise ReleaseLaneError("release lane must be explicit for shared placement")
         return matches[0]
+
+    def lane_for_placement(self, placement: str) -> ReleaseLane:
+        """Compatibility lookup for deployments with a unique host placement."""
+        return self.lane_for_host(placement)
 
 
 def _is_sha(value: object) -> bool:
@@ -335,8 +344,8 @@ class ReleaseStore:
             if temporary.exists():
                 temporary.unlink()
 
-    def _agent_path(self, placement: str) -> Path:
-        return self.agents_root / f"{self._safe_name(placement)}.json"
+    def _agent_path(self, lane_name: str) -> Path:
+        return self.agents_root / f"{self._safe_name(lane_name)}.json"
 
     def _job_path(self, lane_name: str) -> Path:
         return self.jobs_root / f"{self._safe_name(lane_name)}.json"
@@ -367,12 +376,12 @@ class ReleaseStore:
         record = request.model_dump(mode="json", by_alias=True)
         record["mtls_identity"] = identity
         record["received_at"] = time.time()
-        with self._lock(lane.placement):
-            self._write(self._agent_path(lane.placement), record)
+        with self._lock(lane.name):
+            self._write(self._agent_path(lane.name), record)
         return record
 
     def fresh_agent(self, lane: ReleaseLane) -> dict[str, Any] | None:
-        record = self._read(self._agent_path(lane.placement))
+        record = self._read(self._agent_path(lane.name))
         if record is None or record.get("mtls_identity") != lane.host_agent_mtls_identity:
             return None
         received_at = record.get("received_at")

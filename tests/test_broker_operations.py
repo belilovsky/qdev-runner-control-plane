@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ from qdev_runner.broker import create_app
 from qdev_runner.models import QueuedJob
 from qdev_runner.operator import verify_controller_receipt
 from qdev_runner.policy import Policy
+from qdev_runner.release_lane import ReleaseLaneError, ReleaseLanePolicy
 from qdev_runner.settings import BrokerSettings
 from qdev_runner.store import Store
 
@@ -93,7 +95,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         },
                         "timeout_minutes": 90,
                         "allow_public_pr": True,
-                    }
+                    },
                 },
             },
             sort_keys=True,
@@ -194,6 +196,47 @@ def _release_request(source_sha: str = "a" * 40) -> dict[str, Any]:
             "artifact_ref": artifact_ref,
         },
     }
+
+
+def test_shared_host_requires_explicit_release_lane(tmp_path: Path) -> None:
+    policy_path = tmp_path / "release-lanes.yml"
+    policy_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "qdev-release-lanes-v1",
+                "lanes": {
+                    "qdev-release-qaz-events": {
+                        "project_id": "qaz-events",
+                        "placement": "vps-main",
+                        "client_mtls_identity": "qdev-release-client:qaz-events",
+                        "host_agent_mtls_identity": "qdev-host-agent:vps-main",
+                        "minimum_free_gib": 20,
+                        "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "qaz-events",
+                    },
+                    "qdev-release-qazgeo": {
+                        "project_id": "qazgeo",
+                        "placement": "vps-main",
+                        "client_mtls_identity": "qdev-release-client:qazgeo",
+                        "host_agent_mtls_identity": "qdev-host-agent:vps-main",
+                        "minimum_free_gib": 20,
+                        "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "qazgeo",
+                    },
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    policy = ReleaseLanePolicy(policy_path)
+
+    with pytest.raises(ReleaseLaneError, match="must be explicit"):
+        policy.lane_for_host("vps-main")
+    assert policy.lane_for_host("vps-main", "qdev-release-qazgeo").project_id == "qazgeo"
+    with pytest.raises(ReleaseLaneError, match="does not match"):
+        policy.lane_for_host("other-host", "qdev-release-qazgeo")
 
 
 def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
@@ -316,9 +359,12 @@ def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) 
     # The request is correctly identified, but an enrolled host heartbeat is
     # still mandatory before a release can enter the controller queue.
     assert response.status_code == 409
-    assert client.post(
-        "/internal/v1/releases/not-allowlisted", json=_release_request(), headers=headers
-    ).status_code == 404
+    assert (
+        client.post(
+            "/internal/v1/releases/not-allowlisted", json=_release_request(), headers=headers
+        ).status_code
+        == 404
+    )
 
 
 class FakeGitHub:
@@ -517,7 +563,7 @@ def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
     assert payload["kind"] == "admin-platform-audit"
     assert payload["active_candidate"] == "avds-admin-shell"
     assert payload["admission"]["claim_scope"] == "controller-signed-only"
-    assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v2"
+    assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v3"
     assert payload["admin_platform_ledger"]["schema"] == "qdev-admin-platform-ledger-v1"
 
 

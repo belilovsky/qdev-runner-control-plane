@@ -304,16 +304,20 @@ def verify_image(release: dict[str, str]) -> None:
         raise AgentError("pulled image digest cannot be verified") from error
     if not isinstance(repo_digests, list) or release["artifact_ref"] not in repo_digests:
         raise AgentError("pulled image does not retain the requested immutable reference")
-    label = _run(
-        [
-            "docker",
-            "image",
-            "inspect",
-            release["artifact_ref"],
-            "--format",
-            "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}",
-        ]
-    ).decode().strip()
+    label = (
+        _run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                release["artifact_ref"],
+                "--format",
+                '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
+            ]
+        )
+        .decode()
+        .strip()
+    )
     if label != release["source_sha"]:
         raise AgentError("OCI image source revision does not match controller job")
 
@@ -324,7 +328,9 @@ def promote(config: Config, release: dict[str, str]) -> None:
     ) as stream:
         temporary_env = Path(stream.name)
         os.fchmod(stream.fileno(), 0o600)
-        stream.write(f"QAZ_TOURS_IMAGE={release['artifact_ref']}\nSOURCE_REVISION={release['source_sha']}\n")
+        stream.write(
+            f"QAZ_TOURS_IMAGE={release['artifact_ref']}\nSOURCE_REVISION={release['source_sha']}\n"
+        )
     try:
         _run(
             [
@@ -357,10 +363,16 @@ def runtime_proof(release: dict[str, str]) -> dict[str, str]:
         ".then(x=>process.stdout.write(JSON.stringify(x)))"
         ".catch(()=>process.exit(1))"
     )
-    local = _run([
-        "docker", "exec", "qaz-tours-app", "node", "-e",
-        local_probe,
-    ])
+    local = _run(
+        [
+            "docker",
+            "exec",
+            "qaz-tours-app",
+            "node",
+            "-e",
+            local_probe,
+        ]
+    )
     try:
         live, readiness = json.loads(local)
     except (ValueError, json.JSONDecodeError) as error:
@@ -420,7 +432,7 @@ def complete(
     status, _body = controller_request(
         config,
         "POST",
-        f"/internal/v1/release-hosts/{PLACEMENT}/jobs/{release_id}/complete",
+        f"/internal/v1/release-hosts/{PLACEMENT}/jobs/{release_id}/complete?release_lane={LANE}",
         receipt,
     )
     if status != 200:
@@ -449,7 +461,9 @@ def run_once(config: Config) -> dict[str, Any]:
         if status != 200:
             raise AgentError("controller rejected host-agent heartbeat")
         status, body = controller_request(
-            config, "GET", f"/internal/v1/release-hosts/{PLACEMENT}/jobs/next"
+            config,
+            "GET",
+            f"/internal/v1/release-hosts/{PLACEMENT}/jobs/next?release_lane={LANE}",
         )
         if status == 204:
             return {"status": "idle", "capacity_free_gib": payload["capacity_free_gib"]}
