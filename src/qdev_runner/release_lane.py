@@ -155,7 +155,9 @@ class ReleaseLanePolicy:
             expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
             if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
                 if name not in LEGACY_COMPATIBILITY_LANES:
-                    raise ReleaseLaneError("legacy release lane is not an explicit compatibility lane")
+                    raise ReleaseLaneError(
+                        "legacy release lane is not an explicit compatibility lane"
+                    )
                 expected = legacy_expected
             if set(raw) != expected:
                 raise ReleaseLaneError("release lane fields are invalid")
@@ -406,8 +408,7 @@ def validate_controller_claim(
         "runner_profile",
     }:
         raise ReleaseLaneError("controller-signed claim scope is invalid")
-    if lane.canonical_repository is not None:
-        if (
+    if lane.canonical_repository is not None and (
             scope.get("repository") != lane.canonical_repository
             or scope.get("exact_sha") != request.source_sha
             or not isinstance(scope.get("workflow"), str)
@@ -418,8 +419,8 @@ def validate_controller_claim(
             or isinstance(scope.get("attempt"), bool)
             or scope["attempt"] <= 0
             or scope.get("runner_profile") not in _RUNNER_PROFILES
-        ):
-            raise ReleaseLaneError("controller-signed claim scope is invalid")
+    ):
+        raise ReleaseLaneError("controller-signed claim scope is invalid")
     canonical = json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     calculated = hmac.new(signing_key.encode(), canonical, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calculated, signature):
@@ -534,7 +535,9 @@ def validate_runtime_receipt(
         if not isinstance(provenance, dict):
             raise ReleaseLaneError("runtime artifact provenance is invalid")
         for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
-            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(provenance[field]):
+            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
+                provenance[field]
+            ):
                 raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
         if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
             provenance["avds_source_sha"]
@@ -569,7 +572,13 @@ class ReleaseStore:
         self.jobs_root = root / "jobs"
         self.locks_root = root / "locks"
         self.operations_root = root / "operations"
-        for path in (self.root, self.agents_root, self.jobs_root, self.locks_root, self.operations_root):
+        for path in (
+            self.root,
+            self.agents_root,
+            self.jobs_root,
+            self.locks_root,
+            self.operations_root,
+        ):
             path.mkdir(parents=True, exist_ok=True)
             path.chmod(0o700)
 
@@ -827,10 +836,17 @@ class ReleaseStore:
             }:
                 raise ReleaseLaneError("rollback receipt does not bind failed release")
             restored = receipt["restored_release"]
-            _release_tuple = {key: restored.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}
-            if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(_release_tuple["artifact_digest"]):
+            _release_tuple = {
+                key: restored.get(key)
+                for key in ("source_sha", "artifact_digest", "artifact_ref")
+            }
+            if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(
+                _release_tuple["artifact_digest"]
+            ):
                 raise ReleaseLaneError("rollback release identity is invalid")
-            if not _is_lane_artifact_ref(restored.get("artifact_ref"), restored["artifact_digest"], lane):
+            if not _is_lane_artifact_ref(
+                restored.get("artifact_ref"), restored["artifact_digest"], lane
+            ):
                 raise ReleaseLaneError("rollback artifact identity is invalid")
             if _release_tuple == failed_tuple:
                 raise ReleaseLaneError("rollback must restore a different immutable release")

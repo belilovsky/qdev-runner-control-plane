@@ -48,8 +48,8 @@ from .release_lane import (
     ReleaseLanePolicy,
     ReleaseStore,
     admission_receipt,
-    validate_controller_claim,
     validate_candidate,
+    validate_controller_claim,
     validate_host_heartbeat,
 )
 from .settings import BrokerSettings
@@ -511,8 +511,12 @@ def create_app(
             "bootstrap",
         }
         try:
+            heartbeat_data = {
+                name: record.get(name, False) if name == "bootstrap" else record[name]
+                for name in fields
+            }
             return HostHeartbeatRequest.model_validate(
-                {name: record.get(name, False) if name == "bootstrap" else record[name] for name in fields}
+                heartbeat_data
             )
         except (KeyError, ValueError) as error:
             raise HTTPException(

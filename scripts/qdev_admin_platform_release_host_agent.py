@@ -511,7 +511,7 @@ def _write_journal(
         "release_lane": profile.lane,
         "placement": profile.placement,
         "phase": phase,
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     for name, value in (("release_id", release_id), ("lease_id", lease_id), ("fence", fence)):
         if value is not None:
@@ -537,7 +537,11 @@ def _runtime_evidence(
     runtime = document.get("runtime_identity")
     dependencies = document.get("dependency_identity")
     provenance = document.get("artifact_provenance")
-    if not isinstance(runtime, dict) or not isinstance(dependencies, dict) or not isinstance(provenance, dict):
+    if (
+        not isinstance(runtime, dict)
+        or not isinstance(dependencies, dict)
+        or not isinstance(provenance, dict)
+    ):
         raise AgentError("native receipt lacks runtime evidence")
     required_runtime = {"source_sha", "artifact_digest", "artifact_ref", "measured"}
     if (
@@ -548,7 +552,9 @@ def _runtime_evidence(
         or runtime.get("artifact_ref") != release["artifact_ref"]
     ):
         raise AgentError("native runtime identity is not measured or does not match release")
-    if not dependencies or any(not isinstance(value, str) or not value for value in dependencies.values()):
+    if not dependencies or any(
+        not isinstance(value, str) or not value for value in dependencies.values()
+    ):
         raise AgentError("native dependency identity is incomplete")
     if set(provenance) != {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}:
         raise AgentError("native artifact provenance is incomplete")
@@ -799,7 +805,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 fence=fence,
             )
             try:
-                receipt = complete(
+                complete(
                     config,
                     profile,
                     release_id,
@@ -809,7 +815,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                     lease_id=lease_id,
                     fence=fence,
                 )
-            except ControllerTransportError:
+            except ControllerTransportError as error:
                 _write_journal(
                     profile,
                     "completion_unknown",
@@ -826,7 +832,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                         lease_id=lease_id,
                         fence=fence,
                     )
-                except ControllerTransportError:
+                except ControllerTransportError as reconcile_error:
                     # Both completion and reconciliation are unknown.  Do
                     # not mutate the native release blindly; the next run
                     # can reconcile using the durable journal and lease.
@@ -837,10 +843,13 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                         lease_id=lease_id,
                         fence=fence,
                     )
-                    raise AgentError("controller completion outcome is unresolved")
+                    raise AgentError(
+                        "controller completion outcome is unresolved"
+                    ) from reconcile_error
                 if reconciled.get("status") not in {"completed", "verified"}:
-                    raise AgentError("controller completion was not accepted")
-                receipt = reconciled.get("runtime_receipt")
+                    raise AgentError(
+                        "controller completion was not accepted"
+                    ) from error
             _write_journal(
                 profile,
                 "verified",
