@@ -116,7 +116,16 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "minimum_free_gib": 60,
                         "heartbeat_ttl_seconds": 90,
                         "artifact_repository": "qaz-tours",
-                    }
+                    },
+                    "qdev-release-qmt": {
+                        "project_id": "kaztilshi",
+                        "placement": "srv138jump",
+                        "client_mtls_identity": "qdev-release-client:kaztilshi",
+                        "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
+                        "minimum_free_gib": 20,
+                        "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "kaztilshi",
+                    },
                 },
             },
             sort_keys=True,
@@ -139,6 +148,10 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         controller_release_status_path=tmp_path / "controller-release.json",
         claim_scopes_path=tmp_path / "claim-scopes.json",
         release_lanes_path=release_lanes,
+        fleet_bootstrap_policy_path=Path(__file__).parents[1] / "config" / "fleet-bootstrap.yml",
+        fleet_bootstrap_operation_root=tmp_path / "fleet-bootstrap-operations",
+        fleet_bootstrap_receipt_root=tmp_path / "fleet-bootstrap-receipts",
+        fleet_recovery_executable=tmp_path / "not-installed-recovery",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
         admin_platform_ledger_path=(
             Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
@@ -535,6 +548,58 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["kind"] == "controller-release-audit"
     assert receipt["payload"]["controller_release"] == status
+
+
+def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    request = {
+        "schema": "qdev-fleet-bootstrap-request-v1",
+        "action": "restore-existing-worker",
+        "source_sha": "a" * 40,
+        "run_id": 123,
+        "job_id": 456,
+        "attempt": 1,
+        "claim_ttl_seconds": 300,
+        "controller_revision": "d3341e9f0d900d7dc023dfb2e95efd45ef45d8cd",
+        "controller_release_digest": (
+            "sha256:14c5a8b506947c18c55646e36bfec077885a63a8a272b5aea1112d31266e969f"
+        ),
+        "release_lane": None,
+        "worker_name": "qdev-platform-ci-187",
+    }
+    body = {
+        "request": request,
+        "idempotency_key": "worker-recovery-001",
+        "active_jobs": 0,
+        "timeout_seconds": 5,
+    }
+    path = "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
+    assert (
+        client.post(path, json=body).status_code == 401
+    )
+    assert (
+        client.post(
+            path,
+            json=body,
+            headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        ).status_code
+        == 403
+    )
+
+    response = client.post(path, json=body, headers=OPERATOR_HEADERS)
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    payload = receipt["payload"]
+    assert payload["kind"] == "fleet-bootstrap-recovery"
+    assert payload["status"] == "access_blocked"
+    assert payload["operation_status"] == "pending"
+    assert payload["worker_name"] == "qdev-platform-ci-187"
+    assert payload["target_id"].endswith("qdev-platform-ci-187")
+    assert payload["active_jobs"] == 0
+    private_receipt = tmp_path / "fleet-bootstrap-receipts" / "worker-recovery-001.json"
+    assert json.loads(private_receipt.read_text(encoding="utf-8"))["status"] == "access_blocked"
 
 
 def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(

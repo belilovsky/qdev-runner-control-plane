@@ -14,6 +14,13 @@ services:
       # Controller configuration is read-only; mutable signed scopes belong on
       # the durable writable state volume.
       QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
+      # Existing-worker recovery is controller-bound. The executable is
+      # installed by the host provisioning/control-plane release; it is never
+      # supplied by a workflow request.
+      QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
+      QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
+      QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
+      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
@@ -48,6 +55,10 @@ services:
       QDEV_OPERATOR_MTLS_CA: /etc/qdev-runner/mtls/operator/ca.pem
       QDEV_OPERATOR_MTLS_CERT: /etc/qdev-runner/mtls/operator/operator-cert.pem
       QDEV_OPERATOR_MTLS_KEY: /etc/qdev-runner/mtls/operator/operator-key.pem
+      QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
+      QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
+      QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
+      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner

@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
 from .claim_scope import (
@@ -28,6 +28,13 @@ from .claim_scope import (
     resolve_claim_scope,
     upsert_claim_scope,
 )
+from .fleet_bootstrap import (
+    BootstrapOperationStore,
+    FleetBootstrapError,
+    FleetBootstrapPolicy,
+    FleetBootstrapRequest,
+)
+from .fleet_bootstrap_executor import execute_existing_worker_recovery
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
@@ -203,6 +210,17 @@ class StaleJobRecoveryRequest(BaseModel):
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
+
+
+class FleetBootstrapRecoveryRequest(BaseModel):
+    """Controller-observed request for one existing-worker recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request: dict[str, Any] = Field(min_length=1)
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+    active_jobs: int = Field(ge=0)
+    timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
 
 def verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
@@ -485,6 +503,17 @@ def create_app(
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=503, detail="release-lane policy is unavailable"
+            ) from error
+
+    def fleet_bootstrap_policy() -> FleetBootstrapPolicy:
+        try:
+            return FleetBootstrapPolicy(
+                settings.fleet_bootstrap_policy_path,
+                settings.release_lanes_path,
+            )
+        except FleetBootstrapError as error:
+            raise HTTPException(
+                status_code=503, detail="fleet bootstrap policy is unavailable"
             ) from error
 
     def managed_registry() -> ManagedRegistry:
@@ -1105,6 +1134,67 @@ def create_app(
             "pending": int(snapshot["jobs"].get("pending", 0)),
         }
         return operation_store.receipt(payload)
+
+    @app.post("/internal/v1/operations/fleet-bootstrap/recover-existing-worker")
+    def recover_existing_worker(
+        request: FleetBootstrapRecoveryRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Run one controller-owned recovery for an allowlisted existing worker.
+
+        GitHub validation produces the signed request, but this endpoint is
+        deliberately reachable only through the fleet-operations mTLS session.
+        The controller supplies the policy, operation paths and recovery
+        adapter; callers cannot select a host, service, executable or CA key.
+        Non-completed results are signed receipts and leave durable operation
+        state pending so an operator can retry after the external condition is
+        repaired.
+        """
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        try:
+            bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
+            policy_value = fleet_bootstrap_policy()
+            operation_path = (
+                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
+            )
+            receipt_path = (
+                settings.fleet_bootstrap_receipt_root / f"{request.idempotency_key}.json"
+            )
+            execution = execute_existing_worker_recovery(
+                policy=policy_value,
+                store=BootstrapOperationStore(operation_path),
+                request=bootstrap_request,
+                idempotency_key=request.idempotency_key,
+                active_jobs=request.active_jobs,
+                adapter=settings.fleet_recovery_executable,
+                timeout_seconds=request.timeout_seconds,
+                receipt_path=receipt_path,
+            )
+        except (FleetBootstrapError, ValidationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="fleet bootstrap recovery request is invalid",
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "fleet-bootstrap-recovery",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "status": execution.status,
+                "operation_status": execution.operation_status,
+                "idempotency_key": execution.idempotency_key,
+                "request_fingerprint": execution.request_fingerprint,
+                "worker_name": execution.worker_name,
+                "target_id": execution.target_id,
+                "service_unit": execution.service_unit,
+                "active_jobs": request.active_jobs,
+                "error_code": execution.error_code,
+                "result": execution.result,
+            }
+        )
 
     @app.post("/internal/v1/operations/jobs/{job_id}/claim-scope")
     def issue_fifo_claim_scope(

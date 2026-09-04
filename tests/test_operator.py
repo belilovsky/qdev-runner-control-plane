@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -69,6 +71,54 @@ def test_claim_scope_uses_fifo_endpoint(
         "correlation_id": "qazlake-claim-42",
         "duration_seconds": 900,
     }
+
+
+def test_recover_existing_worker_uses_controller_execution_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+    request_path = tmp_path / "bootstrap-request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-fleet-bootstrap-request-v1",
+                "action": "restore-existing-worker",
+                "source_sha": "a" * 40,
+                "run_id": 123,
+                "job_id": 456,
+                "attempt": 1,
+                "claim_ttl_seconds": 300,
+                "controller_revision": "d" * 40,
+                "controller_release_digest": "sha256:" + "e" * 64,
+                "worker_name": "qdev-platform-ci-187",
+                "release_lane": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "recover-existing-worker",
+            "--request",
+            str(request_path),
+            "--idempotency-key",
+            "worker-recovery-001",
+            "--active-jobs",
+            "0",
+        ]
+    )
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
+    assert captured["body"]["idempotency_key"] == "worker-recovery-001"
+    assert captured["body"]["active_jobs"] == 0
 
 
 @pytest.mark.parametrize(

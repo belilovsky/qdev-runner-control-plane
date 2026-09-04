@@ -17,3 +17,17 @@ workers:
   - qdev-ci
   - qdev-ci-browser
   - qdev-ci-docker
+worker_targets:
+  # These are existing, controller-registered service identities. The
+  # controller resolves host_binding through its private registry; no
+  # workflow may supply a hostname or a new runner identity.
+  - worker_name: qdev-platform-ci-187
+    target_id: actions.runner.belilovsky-platform-portal.qdev-platform-ci-187
+    service_unit: actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service
+    host_binding: controller-registry
+    labels: [self-hosted, Linux, X64, qdev-platform-ci]
+  - worker_name: qdev-qazstack-01
+    target_id: actions.runner.belilovsky-qazstack.qdev-qazstack-01
+    service_unit: actions.runner.belilovsky-qazstack.qdev-qazstack-01.service
+    host_binding: controller-registry
+    labels: [self-hosted, Linux, X64, qdev-ci]

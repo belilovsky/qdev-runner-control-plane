@@ -36,6 +36,8 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _WORKFLOW_PATH = re.compile(r"^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$")
 _WORKER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+_TARGET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$")
+_SERVICE_UNIT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,254}\.service$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _SENSITIVE_RESULT_KEY = re.compile(
     r"(?:token|secret|private|password|credential|cookie|pin|claim)", re.IGNORECASE
@@ -61,6 +63,22 @@ class ControllerActivation:
     release_digest: str
     rollback_revision: str
     rollback_release_digest: str
+
+
+@dataclass(frozen=True)
+class WorkerRecoveryTarget:
+    """The controller-owned identity of one existing worker service.
+
+    ``host_binding`` is intentionally a registry reference rather than a
+    hostname.  The privileged controller resolves it against its registered
+    host/service inventory; a workflow can never select an arbitrary host.
+    """
+
+    worker_name: str
+    target_id: str
+    service_unit: str
+    host_binding: str
+    labels: tuple[str, ...]
 
 
 class FleetBootstrapRequest(BaseModel):
@@ -109,6 +127,7 @@ class FleetBootstrapPolicy:
             "activation",
             "enrolment",
             "workers",
+            "worker_targets",
         }:
             raise FleetBootstrapError("fleet bootstrap policy shape is invalid")
         if document["schema_version"] != POLICY_SCHEMA:
@@ -117,6 +136,7 @@ class FleetBootstrapPolicy:
         self.activation = self._activation(document["activation"])
         self._allowed_lanes = self._parse_lanes(document["enrolment"], release_lanes_path)
         self._allowed_workers = self._parse_workers(document["workers"])
+        self._worker_targets = self._parse_worker_targets(document["worker_targets"])
 
     @staticmethod
     def _identity(raw: object) -> BootstrapIdentity:
@@ -211,6 +231,61 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap workers are invalid")
         return frozenset(raw)
 
+    @staticmethod
+    def _parse_worker_targets(raw: object) -> dict[str, WorkerRecoveryTarget]:
+        if not isinstance(raw, list) or not raw:
+            raise FleetBootstrapError("bootstrap worker target mapping is invalid")
+        targets: dict[str, WorkerRecoveryTarget] = {}
+        seen_target_ids: set[str] = set()
+        seen_services: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, dict) or set(entry) != {
+                "worker_name",
+                "target_id",
+                "service_unit",
+                "host_binding",
+                "labels",
+            }:
+                raise FleetBootstrapError("bootstrap worker target mapping is invalid")
+            worker_name = entry["worker_name"]
+            target_id = entry["target_id"]
+            service_unit = entry["service_unit"]
+            host_binding = entry["host_binding"]
+            labels = entry["labels"]
+            if (
+                not isinstance(worker_name, str)
+                or not _WORKER.fullmatch(worker_name)
+                or worker_name in targets
+                or not isinstance(target_id, str)
+                or not _TARGET_ID.fullmatch(target_id)
+                or target_id in seen_target_ids
+                or not isinstance(service_unit, str)
+                or not _SERVICE_UNIT.fullmatch(service_unit)
+                or service_unit in seen_services
+                or host_binding != "controller-registry"
+                or not isinstance(labels, list)
+                or not labels
+                or not all(isinstance(label, str) and label for label in labels)
+                or len(labels) != len(set(labels))
+                or not {"self-hosted", "Linux", "X64"}.issubset(labels)
+            ):
+                raise FleetBootstrapError("bootstrap worker target mapping is invalid")
+            targets[worker_name] = WorkerRecoveryTarget(
+                worker_name=worker_name,
+                target_id=target_id,
+                service_unit=service_unit,
+                host_binding=host_binding,
+                labels=tuple(labels),
+            )
+            seen_target_ids.add(target_id)
+            seen_services.add(service_unit)
+        return targets
+
+    def worker_target(self, worker_name: str) -> WorkerRecoveryTarget | None:
+        """Return the exact registered target for an existing worker name."""
+
+        return self._worker_targets.get(worker_name)
+
     def validate(self, request: FleetBootstrapRequest) -> None:
         if request.schema_name != REQUEST_SCHEMA:
             raise FleetBootstrapError("bootstrap request schema is invalid")
@@ -231,7 +306,7 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
         if (
             request.action == "restore-existing-worker"
-            and request.worker_name not in self._allowed_workers
+            and request.worker_name not in self._worker_targets
         ):
             raise FleetBootstrapError("bootstrap worker is not allowlisted")
 

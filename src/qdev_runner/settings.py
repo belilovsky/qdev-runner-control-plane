@@ -75,6 +75,14 @@ class BrokerSettings:
         "https://token.actions.githubusercontent.com/.well-known/jwks"
     )
     github_actions_oidc_audience: str = "qdev-artifact-v1"
+    fleet_bootstrap_policy_path: Path = Path("/etc/qdev-runner/fleet-bootstrap.yml")
+    fleet_bootstrap_operation_root: Path = Path(
+        "/var/lib/qdev-runner/operations/fleet-bootstrap"
+    )
+    fleet_bootstrap_receipt_root: Path = Path(
+        "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
+    )
+    fleet_recovery_executable: Path = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -146,6 +154,30 @@ class BrokerSettings:
             github_actions_oidc_audience=os.environ.get(
                 "QDEV_GITHUB_ACTIONS_OIDC_AUDIENCE", "qdev-artifact-v1"
             ).strip(),
+            fleet_bootstrap_policy_path=Path(
+                os.environ.get(
+                    "QDEV_FLEET_BOOTSTRAP_POLICY",
+                    "/etc/qdev-runner/fleet-bootstrap.yml",
+                )
+            ),
+            fleet_bootstrap_operation_root=Path(
+                os.environ.get(
+                    "QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT",
+                    "/var/lib/qdev-runner/operations/fleet-bootstrap",
+                )
+            ),
+            fleet_bootstrap_receipt_root=Path(
+                os.environ.get(
+                    "QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT",
+                    "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts",
+                )
+            ),
+            fleet_recovery_executable=Path(
+                os.environ.get(
+                    "QDEV_FLEET_RECOVERY_EXECUTABLE",
+                    "/usr/local/sbin/qdev-fleet-worker-recovery",
+                )
+            ),
         )
 
 

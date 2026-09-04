@@ -17,6 +17,7 @@ from .operations import payload_digest, sign_payload, validate_controller_receip
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _ENDPOINT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OPERATOR_MTLS_IDENTITY = "qdev-fleet-operations"
@@ -31,6 +32,12 @@ def _worker_name(value: str) -> str:
 def _scope_id(value: str) -> str:
     if not _SCOPE_ID.fullmatch(value):
         raise ValueError("invalid claim scope ID")
+    return value
+
+
+def _idempotency_key(value: str) -> str:
+    if not _IDEMPOTENCY_KEY.fullmatch(value):
+        raise ValueError("invalid idempotency key")
     return value
 
 
@@ -213,6 +220,15 @@ def build_parser() -> argparse.ArgumentParser:
     claim_scope.add_argument("--worker-certificate-sha256", required=True)
     claim_scope.add_argument("--correlation-id", required=True)
     claim_scope.add_argument("--duration-seconds", type=int, default=900)
+
+    recover_worker = commands.add_parser(
+        "recover-existing-worker",
+        help="Run one controller-owned recovery for an existing enrolled worker",
+    )
+    recover_worker.add_argument("--request", required=True, type=Path)
+    recover_worker.add_argument("--idempotency-key", required=True)
+    recover_worker.add_argument("--active-jobs", required=True, type=int)
+    recover_worker.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
 
@@ -297,6 +313,27 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "worker_certificate_sha256": certificate_sha256,
                 "correlation_id": correlation_id,
                 "duration_seconds": arguments.duration_seconds,
+            },
+        )
+    if arguments.command == "recover-existing-worker":
+        key = _idempotency_key(arguments.idempotency_key)
+        if arguments.active_jobs < 0:
+            raise ValueError("active jobs cannot be negative")
+        try:
+            raw = json.loads(arguments.request.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("bootstrap request file is invalid") from error
+        if not isinstance(raw, dict):
+            raise ValueError("bootstrap request file must contain an object")
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/fleet-bootstrap/recover-existing-worker",
+            body={
+                "request": raw,
+                "idempotency_key": key,
+                "active_jobs": arguments.active_jobs,
+                "timeout_seconds": arguments.timeout_seconds,
             },
         )
     raise AssertionError("unreachable command")
