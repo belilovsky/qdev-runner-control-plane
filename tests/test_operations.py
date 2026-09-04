@@ -182,6 +182,7 @@ def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
         "replaced_expired_scope": False,
         "rolled_over_terminal_scope": False,
         "rebound_legacy_scope": False,
+        "repaired_managed_scope": False,
         "claim_scope": {},
         "immutable_tuple": {},
         "fifo_skipped": [
@@ -214,6 +215,7 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
         "replaced_expired_scope": False,
         "rolled_over_terminal_scope": False,
         "rebound_legacy_scope": False,
+        "repaired_managed_scope": False,
         "claim_scope": {},
         "immutable_tuple": {},
         "fifo_skipped": [

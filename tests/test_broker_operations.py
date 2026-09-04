@@ -93,10 +93,7 @@ def _app(
                     "belilovsky/qazshield": {"qdev-ci-docker": 15360},
                     "belilovsky/qazlake": {"qdev-ci-docker": 12288},
                     "belilovsky/example": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazposter": {
-                        "qdev-ci": 12288,
-                        "qdev-ci-docker": 15360,
-                    },
+                    "belilovsky/qazposter": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
                     "qdev-ci": {
