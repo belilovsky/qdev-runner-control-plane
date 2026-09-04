@@ -116,12 +116,23 @@ def is_manual_only_workflow(lines: list[str]) -> bool:
         if value:
             return value in {"workflow_dispatch", "[workflow_dispatch]"}
         events: set[str] = set()
+        trigger_lines: list[str] = []
         for candidate in lines[index + 1 :]:
             if candidate.strip() and candidate == candidate.lstrip():
                 break
-            event = re.fullmatch(r"\s{2,}['\"]?([A-Za-z_]+)['\"]?\s*:\s*(?:.*)", candidate)
+            if candidate.strip():
+                trigger_lines.append(candidate)
+        if not trigger_lines:
+            return False
+        event_indent = min(len(candidate) - len(candidate.lstrip()) for candidate in trigger_lines)
+        for candidate in trigger_lines:
+            if len(candidate) - len(candidate.lstrip()) != event_indent:
+                continue
+            event = re.fullmatch(r"\s+['\"]?([A-Za-z_]+)['\"]?\s*:\s*(?:.*)", candidate)
             if event:
                 events.add(event.group(1))
+            else:
+                return False
         return events == {"workflow_dispatch"}
     return False
 
