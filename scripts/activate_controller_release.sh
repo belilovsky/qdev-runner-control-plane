@@ -37,6 +37,8 @@ for required in \
   deploy/qdev-release-qaz-tours.service \
   deploy/qdev-release-qaz-fund.service \
   deploy/qdev-release-qaz-events.service \
+  deploy/qdev-release-qmt.service \
+  deploy/qdev-release-qmt.compose.yml \
   deploy/Dockerfile.broker; do
   [[ -f "$release/$required" ]] || {
     printf 'release is missing %s\n' "$required" >&2
@@ -205,6 +207,8 @@ release_digest="$(
     "$release/scripts/qdev_product_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-fund.service" \
     "$release/deploy/qdev-release-qaz-events.service" \
+    "$release/deploy/qdev-release-qmt.service" \
+    "$release/deploy/qdev-release-qmt.compose.yml" \
     "$release/deploy/Dockerfile.broker"
   do
     sha256sum -- "$release_file" | awk '{print $1}'

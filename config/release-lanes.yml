@@ -31,3 +31,13 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-events
+  qdev-release-qmt:
+    project_id: kaztilshi
+    placement: srv138jump
+    # These names are allowlists only. The edge derives them from a certificate
+    # validated by the existing QDev CA; no caller-supplied header is trusted.
+    client_mtls_identity: qdev-release-client:kaztilshi
+    host_agent_mtls_identity: qdev-host-agent:srv138jump
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: kaztilshi

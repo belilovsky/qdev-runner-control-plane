@@ -116,8 +116,8 @@ are reported and left unchanged.
   product client. The mTLS host agent at `vps-hostinger-186` consumes the job,
   proves 60 GiB capacity plus a distinct verified rollback, and returns the
   runtime receipt. It is deliberately outside the shared GitHub runner queue.
-- `https://worker.ci.qdev.run/internal/v1/releases/qdev-release-qaz-fund` and
-  `/qdev-release-qaz-events` — controller-owned immutable release admission
+- `https://worker.ci.qdev.run/internal/v1/releases/qdev-release-qaz-fund`,
+  `/qdev-release-qaz-events` and `/qdev-release-qmt` — controller-owned immutable release admission
   for the existing `vps-apps-148` and `vps-main` placements. These lanes have
   the same mTLS, candidate-receipt, fresh-heartbeat and verified-rollback
   requirements as Qaz.Tours; a missing enrollment is a closed release lane,
@@ -158,6 +158,20 @@ product's `docker-compose.controller-release.yml` immutable overlay, and prove
 the source identity through each public release contract before completing the
 controller job. They never invoke either product's legacy source-build deploy
 script.
+
+### QMT immutable host agent
+
+`qdev-release-qmt` is the fixed `kaztilshi` lane for the existing
+`srv138jump` placement. Its only accepted artifact is
+`registry.ci.qdev.run/kaztilshi@sha256:…`; its client and host-agent mTLS
+identities are allowlisted in `config/release-lanes.yml` and are valid only
+after enrollment through the existing QDev CA. QDev Fleet installs the
+root-owned `/etc/qdev-release-agents/qmt.env`, its referenced certificate,
+key and CA, and the distinct verified active/rollback state through the
+host-agent path. The agent uses the controller-owned fixed overlay, requires
+the image to already be present locally, and never builds or pulls on the
+production host. It completes a job only after `/release.json` proves QMT
+`4.4.1`, matching source and runtime revisions, and `identityStatus=verified`.
 
 ## Guarded controller release
 

@@ -1,0 +1,5 @@
+services:
+  kaztilshi:
+    image: ${QMT_IMAGE:?QMT_IMAGE must be an immutable OCI digest reference}
+    environment:
+      APP_REVISION: ${QDEV_RELEASE_SOURCE_SHA:?QDEV_RELEASE_SOURCE_SHA is required}

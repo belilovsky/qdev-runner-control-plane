@@ -3,10 +3,11 @@
 
 Only profiles compiled into this file may run.  A private root-owned config
 contains the mTLS material and state paths; it cannot select a product, a
-registry, a compose directory, or an arbitrary public URL.  The agent pulls a
-digest, proves its OCI source label, starts it with Docker Compose without a
-build or pull, proves both local and public release identity, and restores the
-previous verified immutable tuple on every failed candidate.
+registry, a compose directory, or an arbitrary public URL. The agent proves
+the OCI source label, starts only an immutable digest with Docker Compose
+without a build, proves local and public release identity, and restores the
+previous verified immutable tuple on every failed candidate. QMT requires a
+controller-preloaded image and never pulls on the production host.
 """
 
 from __future__ import annotations
@@ -46,8 +47,14 @@ class Profile:
     runtime_env: Path
     services: tuple[str, ...]
     local_ready_url: str
+    local_readiness_url: str | None
     public_release_url: str
     public_identity_path: tuple[str, ...]
+    image_environment: str
+    public_version: str | None
+    require_runtime_identity: bool
+    controller_overlay: Path | None
+    preloaded_image_required: bool
 
 
 PROFILES = {
@@ -66,8 +73,14 @@ PROFILES = {
         runtime_env=Path("/opt/grant-radar/.env.prod"),
         services=("api", "worker"),
         local_ready_url="http://127.0.0.1:8000/ready",
+        local_readiness_url=None,
         public_release_url="https://qaz.fund/.well-known/release.json",
         public_identity_path=("sourceSha",),
+        image_environment="QAZ_FUND_IMAGE",
+        public_version=None,
+        require_runtime_identity=False,
+        controller_overlay=None,
+        preloaded_image_required=False,
     ),
     "qaz-events": Profile(
         name="qaz-events",
@@ -83,8 +96,36 @@ PROFILES = {
         runtime_env=Path("/opt/ideo-calendar/.env"),
         services=("app",),
         local_ready_url="http://127.0.0.1:8400/api/health",
+        local_readiness_url=None,
         public_release_url="https://qaz.events/.well-known/qdev-ecosystem.json",
         public_identity_path=("evidence", "source_revision"),
+        image_environment="QAZ_EVENTS_IMAGE",
+        public_version=None,
+        require_runtime_identity=False,
+        controller_overlay=None,
+        preloaded_image_required=False,
+    ),
+    "qmt": Profile(
+        name="qmt",
+        lane="qdev-release-qmt",
+        project="kaztilshi",
+        placement="srv138jump",
+        repository="kaztilshi",
+        release_dir=Path("/opt/kaztilshi"),
+        compose_files=(Path("/opt/kaztilshi/docker-compose.yml"),),
+        runtime_env=Path("/opt/kaztilshi/.env"),
+        services=("kaztilshi",),
+        local_ready_url="http://127.0.0.1:5000/api/health",
+        local_readiness_url="http://127.0.0.1:5000/api/readiness",
+        public_release_url="https://qmt.digital/release.json",
+        public_identity_path=("source_revision",),
+        image_environment="QMT_IMAGE",
+        public_version="4.4.1",
+        require_runtime_identity=True,
+        controller_overlay=Path(
+            "/opt/qdev-runner-control-plane/current/deploy/qdev-release-qmt.compose.yml"
+        ),
+        preloaded_image_required=True,
     ),
 }
 
@@ -320,8 +361,9 @@ def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str
     )
 
 
-def verify_image(release: dict[str, str]) -> None:
-    _run(["docker", "pull", release["artifact_ref"]])
+def verify_image(release: dict[str, str], profile: Profile) -> None:
+    if not profile.preloaded_image_required:
+        _run(["docker", "pull", release["artifact_ref"]])
     digests = json.loads(
         _run(
             [
@@ -358,6 +400,8 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
     for file in profile.compose_files:
         if not file.is_file() or file.parent != profile.release_dir:
             raise AgentError("canonical controller compose overlay is unavailable")
+    if profile.controller_overlay is not None and not profile.controller_overlay.is_file():
+        raise AgentError("canonical controller compose overlay is unavailable")
     _private(profile.runtime_env)
     environment = dict(os.environ)
     environment.update(
@@ -366,9 +410,7 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
             "QDEV_RELEASE_ARTIFACT_DIGEST": release["artifact_digest"],
         }
     )
-    environment["QAZ_FUND_IMAGE" if profile.name == "qaz-fund" else "QAZ_EVENTS_IMAGE"] = release[
-        "artifact_ref"
-    ]
+    environment[profile.image_environment] = release["artifact_ref"]
     command = [
         "docker",
         "compose",
@@ -379,6 +421,8 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
     ]
     for file in profile.compose_files:
         command.extend(["-f", str(file)])
+    if profile.controller_overlay is not None:
+        command.extend(["-f", str(profile.controller_overlay)])
     command.extend(
         ["up", "-d", "--force-recreate", "--no-build", "--pull", "never", *profile.services]
     )
@@ -412,6 +456,26 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
     )
     if not isinstance(local, dict) or local.get("status") != "ok":
         raise AgentError("local readiness is not truthful")
+    readiness = {"local": "ok"}
+    if profile.local_readiness_url is not None:
+        local_readiness = json.loads(
+            _run(
+                [
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    "30",
+                    profile.local_readiness_url,
+                ]
+            )
+        )
+        if not isinstance(local_readiness, dict) or local_readiness.get("ready") is not True:
+            raise AgentError("local startup readiness is not truthful")
+        readiness["migration"] = "startup-readiness-verified"
     public = json.loads(
         _run(
             [
@@ -429,12 +493,20 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
     )
     if _read_path(public, profile.public_identity_path) != release["source_sha"]:
         raise AgentError("public release identity does not match promoted source")
+    if profile.public_version is not None and public.get("version") != profile.public_version:
+        raise AgentError("public release version does not match allowlisted profile")
+    if profile.require_runtime_identity and (
+        public.get("runtime_revision") != release["source_sha"]
+        or public.get("identityStatus") != "verified"
+    ):
+        raise AgentError("public runtime identity is not verified")
     if profile.name == "qaz-fund" and (
         public.get("imageDigest") != release["artifact_digest"]
         or public.get("artifactDigest") != release["artifact_digest"]
     ):
         raise AgentError("public QAZ.FUND artifact identity does not match promoted image")
-    return {"local": "ok", "public": "ok"}
+    readiness["public"] = "ok"
+    return readiness
 
 
 def complete(
@@ -493,7 +565,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             raise AgentError("controller job poll was rejected")
         release_id, release = validate_job(json.loads(body), profile)
         try:
-            verify_image(release)
+            verify_image(release, profile)
             _compose(profile, release)
             readiness = runtime_proof(profile, release)
             complete(config, profile, release_id, release, active, readiness)
