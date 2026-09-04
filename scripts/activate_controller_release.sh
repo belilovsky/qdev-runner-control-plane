@@ -100,7 +100,8 @@ max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-30}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
-for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_per_cpu"; do
+health_check_attempts="${QDEV_CONTROLLER_HEALTH_CHECK_ATTEMPTS:-90}"
+for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_per_cpu" "$health_check_attempts"; do
   [[ "$value" =~ ^[0-9]+$ ]] || {
     printf 'controller capacity overrides must be non-negative integers\n' >&2
     exit 64
@@ -108,6 +109,10 @@ for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_p
 done
 if [[ "$allow_build_capacity_override" != true && "$allow_build_capacity_override" != false ]]; then
   printf 'QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE must be true or false\n' >&2
+  exit 64
+fi
+if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
+  printf 'QDEV_CONTROLLER_HEALTH_CHECK_ATTEMPTS must be an integer from 30 to 180\n' >&2
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
@@ -353,7 +358,7 @@ if ! "${compose[@]}" "${compose_action[@]}"; then
 fi
 
 healthy=false
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$health_check_attempts"); do
   if curl --fail --silent --show-error https://ci.qdev.run/health >/dev/null; then
     healthy=true
     break
