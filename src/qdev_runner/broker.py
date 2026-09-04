@@ -539,6 +539,31 @@ def create_app(
                 status_code=409, detail="host-agent capacity is below release minimum"
             )
 
+    def validate_managed_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
+        """Require the controller's complete CI ledger before a QGeo release.
+
+        The candidate receipt is an input to admission, never an authority of
+        its own.  QGeo's provider run/job/attempt bindings and terminal state
+        live in the managed ledger loaded by the controller.
+        """
+
+        if lane.project_id != "qazgeo":
+            return
+        evidence = request.candidate_receipt.get("evidence")
+        ci = evidence.get("ci") if isinstance(evidence, dict) else None
+        run_ids = ci.get("run_ids") if isinstance(ci, dict) else None
+        if not isinstance(run_ids, list) or any(not isinstance(run_id, str) for run_id in run_ids):
+            raise HTTPException(status_code=422, detail="release candidate was rejected")
+        typed_run_ids = [run_id for run_id in run_ids]
+        try:
+            managed_release_ledger().validate_candidate_ci_runs(
+                "qazgeo", request.source_sha, typed_run_ids
+            )
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=409, detail="managed CI admission is not complete"
+            ) from error
+
     def current_worker(worker_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         snapshot = store.health()
         worker = next(
@@ -818,6 +843,7 @@ def create_app(
             validate_candidate(request, lane)
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
+        validate_managed_candidate(request, lane)
         ready_host_agent(lane)
         try:
             job, _idempotent = release_state().admit(request, lane)
@@ -996,6 +1022,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="job not found")
         if candidate.get("status") != "pending":
             raise HTTPException(status_code=409, detail="job is not pending")
+        attempt = _job_attempt(candidate)
+        if attempt is None:
+            raise HTTPException(status_code=409, detail="provider attempt is unavailable")
 
         labels = _json_strings(candidate["labels_json"])
         try:
@@ -1028,7 +1057,12 @@ def create_app(
                     admin_platform_ledger_entry = managed_entry.entry_id
                 else:
                     managed_release_ledger().validate_admission(
-                        managed_entry.entry_id, str(candidate["head_sha"])
+                        managed_entry.entry_id,
+                        str(candidate["head_sha"]),
+                        repository=str(candidate["repository"]),
+                        run_id=str(candidate["run_id"]),
+                        attempt=str(attempt),
+                        job_id=str(job_id),
                     )
                     managed_release_ledger_entry = managed_entry.entry_id
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
@@ -1046,10 +1080,6 @@ def create_app(
                 profile_queue.append(queued)
         if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
-
-        attempt = _job_attempt(candidate)
-        if attempt is None:
-            raise HTTPException(status_code=409, detail="provider attempt is unavailable")
 
         try:
             scopes = load_claim_scopes(settings.claim_scopes_path)

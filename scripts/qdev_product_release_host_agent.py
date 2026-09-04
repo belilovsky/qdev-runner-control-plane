@@ -13,7 +13,9 @@ controller-preloaded image and never pulls on the production host.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -55,6 +57,15 @@ class Profile:
     require_runtime_identity: bool
     controller_overlay: Path | None
     preloaded_image_required: bool
+    # QGeo keeps its candidate static bundles in a controller-owned release
+    # root while the already-running recovery image/static tree remains the
+    # rollback target.  The rollback tuple is expressed with the canonical
+    # registry identity for controller receipts, then mapped to its local
+    # immutable image tag at compose time.
+    static_directory_root: Path | None = None
+    rollback_static_directory: Path | None = None
+    rollback_image_reference: str | None = None
+    rollback_release: dict[str, str] | None = None
 
 
 PROFILES = {
@@ -126,6 +137,41 @@ PROFILES = {
             "/opt/qdev-runner-control-plane/current/deploy/qdev-release-qmt.compose.yml"
         ),
         preloaded_image_required=True,
+    ),
+    "qazgeo": Profile(
+        name="qazgeo",
+        lane="qdev-release-qazgeo",
+        project="qazgeo",
+        placement="qazgeo-primary-187",
+        repository="belilovsky/qazgeo",
+        release_dir=Path("/opt/qazgeo"),
+        compose_files=(Path("/opt/qazgeo/docker-compose.yml"),),
+        runtime_env=Path("/opt/qazgeo/.env"),
+        services=("db", "redis", "app", "martin", "photon", "valhalla", "nginx"),
+        local_ready_url="http://127.0.0.1:18280/health",
+        local_readiness_url="http://127.0.0.1:18280/health/ready",
+        public_release_url="https://qgeo.tech/health",
+        public_identity_path=("source_revision",),
+        image_environment="QAZGEO_APP_IMAGE",
+        public_version=None,
+        require_runtime_identity=False,
+        controller_overlay=Path("/opt/qazgeo/releases/controller/compose-runtime.override.yml"),
+        preloaded_image_required=False,
+        static_directory_root=Path("/opt/qazgeo/releases/controller/static"),
+        rollback_static_directory=Path(
+            "/opt/qazgeo/releases/2.18.0-gitd65cd62-tablet-overflow-20260828/static"
+        ),
+        rollback_image_reference=("qazgeo-app:2.18.0-d65cd62-tablet-overflow-20260828"),
+        rollback_release={
+            "source_sha": "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69",
+            "artifact_digest": (
+                "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
+            ),
+            "artifact_ref": (
+                "registry.ci.qdev.run/belilovsky/qazgeo@"
+                "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
+            ),
+        },
     ),
 }
 
@@ -214,6 +260,25 @@ def _release(value: object, profile: Profile) -> dict[str, str]:
     return {"source_sha": source, "artifact_digest": digest, "artifact_ref": ref}
 
 
+def _is_profile_rollback(release: dict[str, str], profile: Profile) -> bool:
+    return profile.rollback_release is not None and release == profile.rollback_release
+
+
+def _is_qgeo_bootstrap(active: dict[str, str], rollback: dict[str, str], profile: Profile) -> bool:
+    """Allow the one-time recovery state without inventing a third release.
+
+    Before the first managed QGeo cutover, the verified d65 runtime is both
+    the observed active image and the retained rollback target.  Once a
+    candidate completes, ``write_state`` records the normal distinct tuple.
+    """
+    return (
+        profile.project == "qazgeo"
+        and profile.rollback_release is not None
+        and active == profile.rollback_release
+        and rollback == profile.rollback_release
+    )
+
+
 def read_state(path: Path, profile: Profile) -> tuple[dict[str, str], dict[str, str]]:
     _private(path)
     try:
@@ -234,7 +299,7 @@ def read_state(path: Path, profile: Profile) -> tuple[dict[str, str], dict[str, 
         {key: rollback_raw.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
-    if active == rollback:
+    if active == rollback and not _is_qgeo_bootstrap(active, rollback, profile):
         raise AgentError("host-agent rollback must be distinct")
     return active, rollback
 
@@ -362,7 +427,10 @@ def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str
 
 
 def verify_image(release: dict[str, str], profile: Profile) -> None:
-    if not profile.preloaded_image_required:
+    image_reference = release["artifact_ref"]
+    if _is_profile_rollback(release, profile) and profile.rollback_image_reference:
+        image_reference = profile.rollback_image_reference
+    elif not profile.preloaded_image_required:
         _run(["docker", "pull", release["artifact_ref"]])
     digests = json.loads(
         _run(
@@ -370,13 +438,16 @@ def verify_image(release: dict[str, str], profile: Profile) -> None:
                 "docker",
                 "image",
                 "inspect",
-                release["artifact_ref"],
+                image_reference,
                 "--format",
                 "{{json .RepoDigests}}",
             ]
         )
     )
-    if not isinstance(digests, list) or release["artifact_ref"] not in digests:
+    expected_digest_ref = f"qazgeo-app@{release['artifact_digest']}"
+    if not isinstance(digests, list) or not (
+        release["artifact_ref"] in digests or expected_digest_ref in digests
+    ):
         raise AgentError("pulled image does not retain requested immutable reference")
     revision = (
         _run(
@@ -384,7 +455,7 @@ def verify_image(release: dict[str, str], profile: Profile) -> None:
                 "docker",
                 "image",
                 "inspect",
-                release["artifact_ref"],
+                image_reference,
                 "--format",
                 '{{ index .Config.Labels "org.opencontainers.image.revision" }}',
             ]
@@ -396,6 +467,112 @@ def verify_image(release: dict[str, str], profile: Profile) -> None:
         raise AgentError("OCI image source revision does not match controller job")
 
 
+def _static_manifest(directory: Path, release: dict[str, str]) -> tuple[dict[str, str], str]:
+    """Return a deterministic file manifest and its digest for a static tree."""
+    files: list[dict[str, str]] = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise AgentError("static bundle contains a symlink")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(directory).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        files.append({"path": relative, "sha256": digest})
+    if not files:
+        raise AgentError("static bundle is empty")
+    payload = {
+        "schema": "qdev-qazgeo-static-bundle-v1",
+        "source_sha": release["source_sha"],
+        "artifact_digest": release["artifact_digest"],
+        "files": files,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return payload, hashlib.sha256(encoded).hexdigest()
+
+
+def materialize_static(release: dict[str, str], profile: Profile) -> dict[str, str] | None:
+    """Extract candidate ``/app/static`` into an immutable host directory.
+
+    The image has already passed ``verify_image`` when this helper runs.  A
+    pre-existing directory is reused only when its controller-owned manifest
+    proves the same source SHA and image digest; otherwise the release fails
+    closed instead of overwriting an ambiguous tree.
+    """
+    if profile.project != "qazgeo" or profile.static_directory_root is None:
+        return None
+    if _is_profile_rollback(release, profile):
+        return None
+    root = profile.static_directory_root
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise AgentError("QGeo static root is not canonical")
+    root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    target = root / release["source_sha"]
+    manifest_dir = root.parent / "manifests"
+    manifest_path = manifest_dir / f"{release['source_sha']}.json"
+    if target.exists():
+        if target.is_symlink() or not target.is_dir() or not manifest_path.is_file():
+            raise AgentError("QGeo static release already exists without proof")
+        try:
+            recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise AgentError("QGeo static manifest is unreadable") from error
+        if not isinstance(recorded, dict):
+            raise AgentError("QGeo static manifest shape is invalid")
+        expected, digest = _static_manifest(target, release)
+        if recorded.get("manifest_digest") != digest or recorded.get("bundle") != expected:
+            raise AgentError("QGeo static release proof does not match candidate")
+        return {"digest": f"sha256:{digest}", "manifest": str(manifest_path)}
+
+    temporary = Path(tempfile.mkdtemp(prefix=f".{release['source_sha']}.", dir=root))
+    container_id = ""
+    try:
+        container_id = _run(["docker", "create", release["artifact_ref"]]).decode().strip()
+        if not container_id:
+            raise AgentError("candidate image container could not be created")
+        _run(["docker", "cp", f"{container_id}:/app/static/.", str(temporary)])
+        bundle, digest = _static_manifest(temporary, release)
+        manifest_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if manifest_path.exists():
+            raise AgentError("QGeo static manifest appeared during materialization")
+        temporary.rename(target)
+        manifest = {
+            "schema": "qdev-qazgeo-static-manifest-v1",
+            "bundle": bundle,
+            "manifest_digest": digest,
+        }
+        temporary_manifest: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=manifest_dir, prefix=".static-", delete=False
+            ) as descriptor:
+                temporary_manifest = Path(descriptor.name)
+                json.dump(manifest, descriptor, sort_keys=True, separators=(",", ":"))
+                descriptor.write("\n")
+                descriptor.flush()
+                os.fsync(descriptor.fileno())
+            assert temporary_manifest is not None
+            os.chmod(temporary_manifest, 0o644)
+            os.replace(temporary_manifest, manifest_path)
+        except Exception:
+            if temporary_manifest is not None:
+                temporary_manifest.unlink(missing_ok=True)
+            raise
+        return {"digest": f"sha256:{digest}", "manifest": str(manifest_path)}
+    except Exception:
+        if temporary.exists():
+            for child in sorted(temporary.rglob("*"), reverse=True):
+                if child.is_file() or child.is_symlink():
+                    child.unlink(missing_ok=True)
+                elif child.is_dir():
+                    child.rmdir()
+            temporary.rmdir()
+        raise
+    finally:
+        if container_id:
+            with contextlib.suppress(AgentError):
+                _run(["docker", "rm", "--force", container_id])
+
+
 def _compose(profile: Profile, release: dict[str, str]) -> None:
     for file in profile.compose_files:
         if not file.is_file() or file.parent != profile.release_dir:
@@ -403,6 +580,23 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
     if profile.controller_overlay is not None and not profile.controller_overlay.is_file():
         raise AgentError("canonical controller compose overlay is unavailable")
     _private(profile.runtime_env)
+    image_reference = release["artifact_ref"]
+    if _is_profile_rollback(release, profile) and profile.rollback_image_reference:
+        image_reference = profile.rollback_image_reference
+    static_directory: Path | None = None
+    if profile.static_directory_root is not None:
+        if _is_profile_rollback(release, profile):
+            static_directory = profile.rollback_static_directory
+        else:
+            static_directory = profile.static_directory_root / release["source_sha"]
+        if static_directory is None or not static_directory.is_dir():
+            raise AgentError("immutable release static directory is unavailable")
+        if static_directory.is_symlink() or static_directory.parent != (
+            profile.rollback_static_directory.parent
+            if _is_profile_rollback(release, profile) and profile.rollback_static_directory
+            else profile.static_directory_root
+        ):
+            raise AgentError("release static directory is not canonical")
     environment = dict(os.environ)
     environment.update(
         {
@@ -410,7 +604,9 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
             "QDEV_RELEASE_ARTIFACT_DIGEST": release["artifact_digest"],
         }
     )
-    environment[profile.image_environment] = release["artifact_ref"]
+    environment[profile.image_environment] = image_reference
+    if static_directory is not None:
+        environment["QAZGEO_STATIC_DIR"] = str(static_directory)
     command = [
         "docker",
         "compose",
@@ -473,7 +669,10 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
                 ]
             )
         )
-        if not isinstance(local_readiness, dict) or local_readiness.get("ready") is not True:
+        if not isinstance(local_readiness, dict) or not (
+            local_readiness.get("ready") is True
+            or (profile.project == "qazgeo" and local_readiness.get("status") == "ok")
+        ):
             raise AgentError("local startup readiness is not truthful")
         readiness["migration"] = "startup-readiness-verified"
     public = json.loads(
@@ -505,6 +704,32 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
         or public.get("artifactDigest") != release["artifact_digest"]
     ):
         raise AgentError("public QAZ.FUND artifact identity does not match promoted image")
+    if profile.project == "qazgeo":
+        dependency_values = {
+            "db": local.get("db_connected"),
+            "postgis": local.get("postgis"),
+            "martin": local.get("martin_tiles"),
+            "photon": local.get("photon_geocoder"),
+        }
+        if any(value is not True for value in dependency_values.values()):
+            raise AgentError("QGeo local dependency readiness is not truthful")
+        redis_state = (
+            _run(
+                [
+                    "docker",
+                    "inspect",
+                    "qazgeo_redis",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                ]
+            )
+            .decode()
+            .strip()
+        )
+        if redis_state != "healthy":
+            raise AgentError("QGeo Redis readiness is not truthful")
+        readiness.update({key: "ok" for key in dependency_values})
+        readiness["redis"] = "ok"
     readiness["public"] = "ok"
     return readiness
 
@@ -569,6 +794,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         release_id, release = validate_job(json.loads(body), profile)
         try:
             verify_image(release, profile)
+            materialize_static(release, profile)
             _compose(profile, release)
             readiness = runtime_proof(profile, release)
             complete(config, profile, release_id, release, active, readiness)

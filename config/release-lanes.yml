@@ -43,9 +43,10 @@ lanes:
     artifact_repository: kaztilshi
   qdev-release-qazgeo:
     project_id: qazgeo
-    placement: vps-main
+    # Verified QGeo application host behind the qgeo.tech edge (187.55.228.239).
+    placement: qazgeo-primary-187
     client_mtls_identity: qdev-release-client:qazgeo
-    host_agent_mtls_identity: qdev-host-agent:vps-main
+    host_agent_mtls_identity: qdev-host-agent:qazgeo-primary-187
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
-    artifact_repository: qazgeo
+    artifact_repository: belilovsky/qazgeo

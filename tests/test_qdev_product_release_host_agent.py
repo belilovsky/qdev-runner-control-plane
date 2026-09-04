@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -70,3 +71,61 @@ def test_qmt_requires_a_preloaded_digest_and_never_pulls(monkeypatch: pytest.Mon
     monkeypatch.setattr(AGENT, "_run", fake_run)
     AGENT.verify_image(release, profile)
     assert ["docker", "pull", release["artifact_ref"]] not in commands
+
+
+def test_qgeo_materializes_static_from_candidate_image_idempotently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = replace(
+        AGENT.PROFILES["qazgeo"],
+        static_directory_root=tmp_path / "static",
+        rollback_static_directory=tmp_path / "rollback",
+    )
+    release = {
+        "source_sha": SHA,
+        "artifact_digest": DIGEST,
+        "artifact_ref": f"registry.ci.qdev.run/belilovsky/qazgeo@{DIGEST}",
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> bytes:
+        commands.append(command)
+        if command[:2] == ["docker", "create"]:
+            return b"candidate-container\n"
+        if command[:2] == ["docker", "cp"]:
+            destination = Path(command[-1])
+            (destination / "css").mkdir()
+            (destination / "css" / "app.css").write_text("candidate", encoding="utf-8")
+            return b""
+        if command[:3] == ["docker", "rm", "--force"]:
+            return b""
+        raise AssertionError(command)
+
+    monkeypatch.setattr(AGENT, "_run", fake_run)
+    first = AGENT.materialize_static(release, profile)
+    second = AGENT.materialize_static(release, profile)
+    assert first == second
+    assert first is not None and first["digest"].startswith("sha256:")
+    assert (tmp_path / "static" / SHA / "css" / "app.css").read_text() == "candidate"
+    assert sum(command[:2] == ["docker", "create"] for command in commands) == 1
+
+
+def test_qgeo_materialization_rejects_unproven_existing_static_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = replace(
+        AGENT.PROFILES["qazgeo"],
+        static_directory_root=tmp_path / "static",
+        rollback_static_directory=tmp_path / "rollback",
+    )
+    release = {
+        "source_sha": SHA,
+        "artifact_digest": DIGEST,
+        "artifact_ref": f"registry.ci.qdev.run/belilovsky/qazgeo@{DIGEST}",
+    }
+    target = profile.static_directory_root / SHA
+    target.mkdir(parents=True)
+    (target / "app.css").write_text("unknown", encoding="utf-8")
+    monkeypatch.setattr(AGENT, "_run", lambda *_args, **_kwargs: b"")
+    with pytest.raises(AGENT.AgentError, match="without proof"):
+        AGENT.materialize_static(release, profile)

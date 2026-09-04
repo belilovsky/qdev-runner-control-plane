@@ -27,7 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
-_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+# OCI repositories may be nested (for example ``belilovsky/qazgeo``), but
+# every component is still constrained to the registry's portable lowercase
+# grammar.  Keeping the grammar here (rather than splitting on ``@`` in
+# callers) also makes traversal and empty-component attempts fail closed.
+_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}(?:/[a-z0-9][a-z0-9._-]{0,127})*$")
+_QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
+_QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -125,6 +131,7 @@ class ReleaseLanePolicy:
                 or minimum_free_gib < 1
                 or not 30 <= heartbeat_ttl_seconds <= 900
                 or not _ARTIFACT_REPOSITORY.fullmatch(str(raw["artifact_repository"]))
+                or str(raw["artifact_repository"]).startswith("registry.ci.qdev.run/")
             ):
                 raise ReleaseLaneError("release lane values are invalid")
             lanes[name] = ReleaseLane(
@@ -187,16 +194,21 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
             "release artifact reference is not immutable or does not match digest"
         )
     receipt = request.candidate_receipt
+    if not isinstance(receipt, dict):
+        raise ReleaseLaneError("completed candidate receipt does not bind immutable release tuple")
+    base_fields = {
+        "schema",
+        "status",
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+    }
+    # QGeo is the first lane whose release is admitted from two provider
+    # workflow runs plus independently recorded artifact/static/provenance
+    # receipts.  Other products retain the established five-field contract.
+    expected_fields = base_fields | {"evidence"} if lane.project_id == "qazgeo" else base_fields
     if (
-        not isinstance(receipt, dict)
-        or set(receipt)
-        != {
-            "schema",
-            "status",
-            "source_sha",
-            "artifact_digest",
-            "artifact_ref",
-        }
+        set(receipt) != expected_fields
         or receipt.get("schema") != "qdev-release-candidate-receipt-v1"
         or receipt.get("status") != "passed"
         or receipt.get("source_sha") != request.source_sha
@@ -204,6 +216,42 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         or receipt.get("artifact_ref") != request.artifact_ref
     ):
         raise ReleaseLaneError("completed candidate receipt does not bind immutable release tuple")
+    if lane.project_id != "qazgeo":
+        return
+    evidence = receipt.get("evidence")
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "ci",
+        "artifact",
+        "static",
+        "provenance",
+        "preflight",
+    }:
+        raise ReleaseLaneError("QGeo candidate evidence is incomplete")
+    for name in ("ci", "artifact", "static", "provenance", "preflight"):
+        item = evidence.get(name)
+        if not isinstance(item, dict) or item.get("status") != "passed":
+            raise ReleaseLaneError(f"QGeo {name} evidence is not passed")
+        if item.get("source_sha") != request.source_sha:
+            raise ReleaseLaneError(f"QGeo {name} evidence source SHA does not match")
+    ci = evidence["ci"]
+    run_ids = ci.get("run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or not run_ids
+        or any(not isinstance(run_id, str) or not run_id.isdigit() for run_id in run_ids)
+    ):
+        raise ReleaseLaneError("QGeo CI evidence has no valid run IDs")
+    artifact = evidence["artifact"]
+    if (
+        artifact.get("artifact_digest") != request.artifact_digest
+        or artifact.get("artifact_ref") != request.artifact_ref
+    ):
+        raise ReleaseLaneError("QGeo artifact evidence does not match immutable tuple")
+    static_digest = evidence["static"].get("digest")
+    if not _is_digest(static_digest):
+        raise ReleaseLaneError("QGeo static evidence digest is invalid")
+    if evidence["provenance"].get("artifact_digest") != request.artifact_digest:
+        raise ReleaseLaneError("QGeo provenance evidence does not match artifact")
 
 
 def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) -> None:
@@ -218,6 +266,27 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         raise ReleaseLaneError("host-agent is not ready for a release")
     active = request.active_release
     rollback = request.rollback
+    same_release = False
+    bootstrap_recovery = False
+    if isinstance(active, dict) and isinstance(rollback, dict):
+        active_tuple = (
+            active.get("source_sha"),
+            active.get("artifact_digest"),
+            active.get("artifact_ref"),
+        )
+        rollback_tuple = (
+            rollback.get("source_sha"),
+            rollback.get("artifact_digest"),
+            rollback.get("artifact_ref"),
+        )
+        same_release = active_tuple == rollback_tuple
+        bootstrap_recovery = (
+            lane.project_id == "qazgeo"
+            and active.get("source_sha") == _QGEO_RECOVERY_SHA
+            and active.get("artifact_digest") == _QGEO_RECOVERY_DIGEST
+            and rollback.get("source_sha") == _QGEO_RECOVERY_SHA
+            and rollback.get("artifact_digest") == _QGEO_RECOVERY_DIGEST
+        )
     if (
         not isinstance(active, dict)
         or set(active) != {"source_sha", "artifact_digest", "artifact_ref"}
@@ -232,16 +301,7 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         or not _is_lane_artifact_ref(
             rollback.get("artifact_ref"), rollback["artifact_digest"], lane
         )
-        or (
-            rollback.get("source_sha"),
-            rollback.get("artifact_digest"),
-            rollback.get("artifact_ref"),
-        )
-        == (
-            active.get("source_sha"),
-            active.get("artifact_digest"),
-            active.get("artifact_ref"),
-        )
+        or (same_release and not bootstrap_recovery)
     ):
         raise ReleaseLaneError("host-agent rollback proof is invalid")
 
@@ -287,6 +347,14 @@ def validate_runtime_receipt(
         raise ReleaseLaneError("runtime receipt readiness is invalid")
     if lane.project_id == "qaz-tours":
         readiness_valid = readiness.get("qazgeo") in {"ok", "degraded"}
+    elif lane.project_id == "qazgeo":
+        dependency_keys = {"db", "postgis", "martin", "photon", "redis"}
+        readiness_valid = (
+            readiness.get("local") == "ok"
+            and readiness.get("public") == "ok"
+            and dependency_keys.issubset(readiness)
+            and all(readiness.get(key) == "ok" for key in dependency_keys)
+        )
     else:
         readiness_valid = readiness.get("local") == "ok" and readiness.get("public") == "ok"
     if (
@@ -399,14 +467,25 @@ class ReleaseStore:
         self, request: ReleaseAdmissionRequest, lane: ReleaseLane
     ) -> tuple[dict[str, Any], bool]:
         with self._lock(lane.name):
-            existing = self._active_job_unlocked(lane)
             tuple_fields = ("source_sha", "artifact_digest", "artifact_ref")
+            existing = self._active_job_unlocked(lane)
             if existing is not None:
                 if all(existing.get(name) == getattr(request, name) for name in tuple_fields):
+                    if existing.get("candidate_receipt") != request.candidate_receipt:
+                        raise ReleaseLaneError(
+                            "release lane immutable tuple has different candidate evidence"
+                        )
                     return existing, True
                 raise ReleaseLaneError("release lane already has an active immutable tuple")
             current = self._read(self._job_path(lane.name))
             if current is not None and current.get("status") == "verified":
+                if all(current.get(name) == getattr(request, name) for name in tuple_fields):
+                    if current.get("candidate_receipt") != request.candidate_receipt:
+                        raise ReleaseLaneError("verified release has different candidate evidence")
+                    # A repeated request for the exact immutable release is a
+                    # read of the existing terminal result, not a new
+                    # release.  This preserves idempotence after cutover.
+                    return current, True
                 self._write(self._previous_path(lane.name), current)
             job = {
                 "release_id": secrets.token_urlsafe(18),

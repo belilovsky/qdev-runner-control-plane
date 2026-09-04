@@ -77,7 +77,7 @@ class ManagedReleaseLedger:
                 raise ManagedReleaseLedgerError("managed release ledger source SHA is invalid")
             if not isinstance(status, str) or status not in STATUSES:
                 raise ManagedReleaseLedgerError("managed release ledger status is invalid")
-            ci_runs = self._validate_ci_runs(raw["ci_runs"])
+            ci_runs = self._validate_ci_runs(raw["ci_runs"], project_id=project_id)
             for stage in ("artifact", "ci", "deploy", "live_acceptance", "rollback"):
                 self._validate_stage(raw[stage])
             entries[entry_id] = ManagedReleaseLedgerEntry(
@@ -112,12 +112,72 @@ class ManagedReleaseLedger:
             ],
         }
 
-    def validate_admission(self, entry_id: str, exact_sha: str) -> ManagedReleaseLedgerEntry:
+    def validate_admission(
+        self,
+        entry_id: str,
+        exact_sha: str,
+        *,
+        repository: str | None = None,
+        run_id: str | None = None,
+        attempt: str | None = None,
+        job_id: str | None = None,
+    ) -> ManagedReleaseLedgerEntry:
         entry = self._by_entry_id.get(entry_id)
         if entry is None:
             raise ManagedReleaseLedgerError("managed production candidate is not registered")
         if entry.status not in ACTIVE_STATUSES or entry.source_sha != exact_sha:
             raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
+        # Provider bindings are part of the durable admission record for lanes
+        # that are waiting on already-created workflow runs.  A caller cannot
+        # turn a same-SHA run, a different attempt, or a different repository
+        # into an admissible claim by merely presenting ``status: passed``.
+        bound_runs = [item for item in entry.ci_runs if "repository" in item or "job_id" in item]
+        if bound_runs:
+            if None in {repository, run_id, attempt, job_id}:
+                raise ManagedReleaseLedgerError("managed production provider binding is incomplete")
+            if not any(
+                item.get("repository") == repository
+                and item.get("run_id") == run_id
+                and item.get("attempt") == attempt
+                and item.get("job_id") == job_id
+                for item in bound_runs
+            ):
+                raise ManagedReleaseLedgerError(
+                    "managed production provider binding is not admitted"
+                )
+        return entry
+
+    def validate_candidate_ci_runs(
+        self, entry_id: str, exact_sha: str, run_ids: list[str]
+    ) -> ManagedReleaseLedgerEntry:
+        """Admit only the complete, terminal CI set recorded by the controller.
+
+        The provider bindings in ``ci_runs`` are the controller's allowlist for
+        the candidate.  A release receipt may not introduce an unregistered
+        run, omit one of the bound runs, or turn a queued/in-progress run into
+        evidence merely by reporting ``status: passed``.
+        """
+
+        entry = self._by_entry_id.get(entry_id)
+        if entry is None:
+            raise ManagedReleaseLedgerError("managed production candidate is not registered")
+        if entry.source_sha != exact_sha:
+            raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
+        if not isinstance(run_ids, list) or not run_ids:
+            raise ManagedReleaseLedgerError("managed release CI evidence has no run IDs")
+        if any(not isinstance(run_id, str) or not run_id.isdigit() for run_id in run_ids) or len(
+            run_ids
+        ) != len(set(run_ids)):
+            raise ManagedReleaseLedgerError("managed release CI evidence run IDs are invalid")
+        expected = {item["run_id"] for item in entry.ci_runs}
+        if set(run_ids) != expected:
+            raise ManagedReleaseLedgerError(
+                "managed release CI evidence does not match the admitted run set"
+            )
+        if entry.status != "ci_passed" or any(
+            item["state"] != "terminal" for item in entry.ci_runs
+        ):
+            raise ManagedReleaseLedgerError("managed release CI evidence is not terminal")
         return entry
 
     @staticmethod
@@ -130,21 +190,35 @@ class ManagedReleaseLedger:
             raise ManagedReleaseLedgerError("managed release ledger evidence state is invalid")
 
     @staticmethod
-    def _validate_ci_runs(value: Any) -> tuple[dict[str, str], ...]:
+    def _validate_ci_runs(value: Any, *, project_id: str) -> tuple[dict[str, str], ...]:
         if not isinstance(value, list) or not value:
             raise ManagedReleaseLedgerError("managed release CI runs are invalid")
         result: list[dict[str, str]] = []
         run_ids: set[str] = set()
         for item in value:
+            if not isinstance(item, dict):
+                raise ManagedReleaseLedgerError("managed release CI run state is invalid")
+            basic = {"run_id", "state"}
+            extended = basic | {"repository", "job_id", "attempt"}
+            allowed = extended if project_id == "qazgeo" else basic
             if (
-                not isinstance(item, dict)
-                or set(item) != {"run_id", "state"}
+                set(item) != allowed
                 or not isinstance(item["run_id"], str)
                 or not item["run_id"].isdigit()
                 or item["state"] not in {"queued", "in_progress", "terminal"}
                 or item["run_id"] in run_ids
             ):
                 raise ManagedReleaseLedgerError("managed release CI run state is invalid")
+            if project_id == "qazgeo" and (
+                not isinstance(item["repository"], str)
+                or item["repository"] != "belilovsky/qazgeo"
+                or not isinstance(item["job_id"], str)
+                or not item["job_id"].isdigit()
+                or not isinstance(item["attempt"], str)
+                or not item["attempt"].isdigit()
+                or int(item["attempt"]) < 1
+            ):
+                raise ManagedReleaseLedgerError("managed release CI provider binding is invalid")
             run_ids.add(item["run_id"])
-            result.append({"run_id": item["run_id"], "state": item["state"]})
+            result.append({str(key): str(value) for key, value in item.items()})
         return tuple(result)
