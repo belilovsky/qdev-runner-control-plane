@@ -31,3 +31,13 @@ def test_adilet_digest_docker_admission_matches_its_source_manifest() -> None:
         ("belilovsky/adilet-digest-studio", "qdev-ci-docker")
     ] == 12 * 1024
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
+
+
+def test_qazgeo_docker_admission_matches_measured_candidate() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert policy.repository_profile_disk_mb[
+        ("belilovsky/qazgeo", "qdev-ci-docker")
+    ] == 4 * 1024
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024

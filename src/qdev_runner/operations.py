@@ -15,7 +15,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 HARD_MIN_FREE_GIB = 4.5
-HARD_MAX_DISK_USED_PCT = 95.0
+# Runtime overrides remain repository-, SHA-, profile- and time-bound.  The
+# absolute free-space floor plus the repository reservation is the primary
+# safety invariant; 96% is the outer percentage guard for large volumes where
+# that absolute invariant is stricter than the former 95% ceiling.
+HARD_MAX_DISK_USED_PCT = 96.0
 MAX_OVERRIDE_SECONDS = 15 * 60
 DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 

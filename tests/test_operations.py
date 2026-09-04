@@ -260,3 +260,15 @@ def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -
             reason="reason",
             duration_seconds=60,
         )
+    with pytest.raises(ValueError, match="hard ceiling"):
+        store.create_capacity_override(
+            worker_name="worker-primary",
+            repository="belilovsky/qazgeo",
+            head_sha="a" * 40,
+            profiles=("qdev-ci-docker",),
+            min_disk_free_gib=HARD_MIN_FREE_GIB,
+            max_disk_used_pct=HARD_MAX_DISK_USED_PCT + 0.1,
+            owner="owner",
+            reason="reason",
+            duration_seconds=60,
+        )

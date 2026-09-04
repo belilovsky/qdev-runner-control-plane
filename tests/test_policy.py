@@ -104,7 +104,7 @@ def test_repository_profile_disk_override_is_exact(policy_files: tuple[Path, Pat
     }
 
 
-@pytest.mark.parametrize("disk_mb", [11000, 15360, 16000])
+@pytest.mark.parametrize("disk_mb", [4095, 15360, 16000])
 def test_repository_profile_disk_override_stays_bounded(
     policy_files: tuple[Path, Path], disk_mb: int
 ) -> None:
