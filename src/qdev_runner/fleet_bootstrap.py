@@ -9,10 +9,16 @@ host, image, compose file, worker, or arbitrary controller revision.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import json
+import os
 import re
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -30,6 +36,10 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _WORKFLOW_PATH = re.compile(r"^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$")
 _WORKER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+_SENSITIVE_RESULT_KEY = re.compile(
+    r"(?:token|secret|private|password|credential|cookie|pin|claim)", re.IGNORECASE
+)
 
 
 class FleetBootstrapError(RuntimeError):
@@ -248,6 +258,180 @@ class FleetBootstrapPolicy:
             or claims.get("sha") != request.source_sha
             or str(claims.get("run_id")) != str(request.run_id)
             or claims.get("workflow_ref") != expected_workflow_ref
-            or claims.get("job_workflow_ref") != expected_workflow_ref
         ):
             raise FleetBootstrapError("bootstrap OIDC scope is invalid")
+        # GitHub emits ``job_workflow_ref`` for reusable workflows.  A normal
+        # workflow does not have that claim, so requiring it unconditionally
+        # would make the signed bootstrap workflow impossible to run.  When
+        # GitHub does provide it, bind it to the same immutable workflow ref.
+        job_workflow_ref = claims.get("job_workflow_ref")
+        if job_workflow_ref is not None and job_workflow_ref != expected_workflow_ref:
+            raise FleetBootstrapError("bootstrap OIDC scope is invalid")
+
+
+def bootstrap_request_fingerprint(request: FleetBootstrapRequest) -> str:
+    """Return the stable digest used to make one bootstrap request idempotent."""
+
+    payload = request.model_dump(mode="json", by_alias=True, exclude_none=False)
+    canonical = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+@dataclass(frozen=True)
+class BootstrapOperationRecord:
+    """Durable, non-secret state for one bootstrap operation."""
+
+    idempotency_key: str
+    request_fingerprint: str
+    status: Literal["pending", "completed"]
+    result: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "schema": "qdev-fleet-bootstrap-operation-v1",
+            "idempotency_key": self.idempotency_key,
+            "request_fingerprint": self.request_fingerprint,
+            "status": self.status,
+        }
+        if self.result is not None:
+            value["result"] = self.result
+        return value
+
+
+class BootstrapOperationStore:
+    """Atomically persist one-shot bootstrap state and reject parameter drift.
+
+    The store is deliberately separate from privileged controller execution.
+    It contains only the non-secret request digest and a caller-supplied,
+    schema-light operation result.  Callers must pass an explicit durable path
+    owned by the controller; the workflow uses an ephemeral path only for
+    request validation.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock_path = path.with_name(f".{path.name}.lock")
+
+    @staticmethod
+    def _validate_key(value: str) -> None:
+        if not _IDEMPOTENCY_KEY.fullmatch(value):
+            raise FleetBootstrapError("bootstrap idempotency key is invalid")
+
+    @staticmethod
+    def _validate_result(result: dict[str, Any]) -> None:
+        if not isinstance(result, dict) or any(
+            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key)
+            for key in result
+        ):
+            raise FleetBootstrapError("bootstrap operation result is not safe to persist")
+        for value in result.values():
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                raise FleetBootstrapError("bootstrap operation result is not safe to persist")
+
+    def _read_unlocked(self) -> BootstrapOperationRecord | None:
+        if not self.path.exists():
+            return None
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise FleetBootstrapError("bootstrap operation state is unreadable") from exc
+        if not isinstance(raw, dict) or raw.get("schema") != "qdev-fleet-bootstrap-operation-v1":
+            raise FleetBootstrapError("bootstrap operation state schema is invalid")
+        key = raw.get("idempotency_key")
+        fingerprint = raw.get("request_fingerprint")
+        status = raw.get("status")
+        result = raw.get("result")
+        if (
+            not isinstance(key, str)
+            or not _IDEMPOTENCY_KEY.fullmatch(key)
+            or not isinstance(fingerprint, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            or status not in {"pending", "completed"}
+            or (result is not None and not isinstance(result, dict))
+        ):
+            raise FleetBootstrapError("bootstrap operation state is invalid")
+        if result is not None:
+            self._validate_result(result)
+        return BootstrapOperationRecord(key, fingerprint, status, result)
+
+    def _write_unlocked(self, record: BootstrapOperationRecord) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            record.as_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{self.path.name}.", dir=self.path.parent, text=True
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        except OSError as exc:
+            with suppress(OSError):
+                os.unlink(temporary)
+            raise FleetBootstrapError("bootstrap operation state cannot be written") from exc
+
+    def _locked(self) -> TextIO:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.lock_path.open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+
+    def begin(
+        self, idempotency_key: str, request: FleetBootstrapRequest
+    ) -> BootstrapOperationRecord:
+        self._validate_key(idempotency_key)
+        fingerprint = bootstrap_request_fingerprint(request)
+        with self._locked() as lock:
+            try:
+                existing = self._read_unlocked()
+                if existing is not None:
+                    if existing.idempotency_key != idempotency_key:
+                        raise FleetBootstrapError("bootstrap operation state key mismatch")
+                    if existing.request_fingerprint != fingerprint:
+                        raise FleetBootstrapError(
+                            "bootstrap idempotency key was reused with different parameters"
+                        )
+                    return existing
+                record = BootstrapOperationRecord(idempotency_key, fingerprint, "pending")
+                self._write_unlocked(record)
+                return record
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def complete(
+        self,
+        idempotency_key: str,
+        request: FleetBootstrapRequest,
+        result: dict[str, Any],
+    ) -> BootstrapOperationRecord:
+        self._validate_key(idempotency_key)
+        self._validate_result(result)
+        fingerprint = bootstrap_request_fingerprint(request)
+        with self._locked() as lock:
+            try:
+                existing = self._read_unlocked()
+                if existing is None:
+                    raise FleetBootstrapError("bootstrap operation has not been started")
+                if (
+                    existing.idempotency_key != idempotency_key
+                    or existing.request_fingerprint != fingerprint
+                ):
+                    raise FleetBootstrapError("bootstrap operation parameters do not match")
+                if existing.status == "completed":
+                    if existing.result != result:
+                        raise FleetBootstrapError("bootstrap operation result cannot be changed")
+                    return existing
+                record = BootstrapOperationRecord(
+                    idempotency_key, fingerprint, "completed", dict(result)
+                )
+                self._write_unlocked(record)
+                return record
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

@@ -6,8 +6,8 @@ bootstrap:
   audience: qdev-fleet-bootstrap-v1
   max_claim_ttl_seconds: 900
 activation:
-  controller_revision: 6973178af5a462a1fda71ed65ce52f3f9a2abfa2
-  controller_release_digest: sha256:900e07564b7c29efafa9638ca337f38f19daad651921db5321adbd25230e4fab
+  controller_revision: bfabddddcd4c6aa1679b7a45dd4d63054feee4cd
+  controller_release_digest: sha256:a879c69590c1a8586565302746ef6f53b57be0325f2197b209299ccdffc2abc1
   rollback_revision: 13a165e43b6dd61a3cbbb60ca487bb7edab10f37
   rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
 enrolment:

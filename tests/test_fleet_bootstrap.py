@@ -6,9 +6,11 @@ import pytest
 
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
+    BootstrapOperationStore,
     FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
+    bootstrap_request_fingerprint,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +28,9 @@ def _request(**overrides: object) -> FleetBootstrapRequest:
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": "6973178af5a462a1fda71ed65ce52f3f9a2abfa2",
+        "controller_revision": "bfabddddcd4c6aa1679b7a45dd4d63054feee4cd",
         "controller_release_digest": (
-            "sha256:900e07564b7c29efafa9638ca337f38f19daad651921db5321adbd25230e4fab"
+            "sha256:a879c69590c1a8586565302746ef6f53b57be0325f2197b209299ccdffc2abc1"
         ),
         "release_lane": None,
         "worker_name": None,
@@ -61,6 +63,13 @@ def test_bootstrap_policy_accepts_only_the_fixed_transition() -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     policy.validate(_request())
     policy.validate_oidc_claims(_claims(), _request())
+
+
+def test_bootstrap_policy_accepts_standard_workflow_without_job_workflow_ref() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    claims = _claims()
+    claims.pop("job_workflow_ref")
+    policy.validate_oidc_claims(claims, _request())
 
 
 @pytest.mark.parametrize(
@@ -101,9 +110,40 @@ def test_bootstrap_policy_rejects_any_unapproved_target(
         _claims(sha="b" * 40),
         _claims(run_attempt="2"),
         _claims(workflow_ref="belilovsky/other/.github/workflows/x.yml@refs/heads/main"),
+        _claims(job_workflow_ref="belilovsky/other/.github/workflows/x.yml@refs/heads/main"),
     ],
 )
 def test_bootstrap_policy_rejects_oidc_claim_drift(claims: dict[str, object]) -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     with pytest.raises(FleetBootstrapError, match="OIDC"):
         policy.validate_oidc_claims(claims, _request())
+
+
+def test_bootstrap_operation_store_is_idempotent_and_rejects_drift(tmp_path: Path) -> None:
+    request = _request()
+    store = BootstrapOperationStore(tmp_path / "operations.json")
+    key = "bootstrap-operation-001"
+
+    first = store.begin(key, request)
+    assert first.status == "pending"
+    assert first.request_fingerprint == bootstrap_request_fingerprint(request)
+    assert store.begin(key, request) == first
+
+    with pytest.raises(FleetBootstrapError, match="reused"):
+        store.begin(key, _request(run_id=124))
+
+    completed = store.complete(key, request, {"action": "validated", "attempt": 1})
+    assert completed.status == "completed"
+    assert store.begin(key, request) == completed
+    assert store.complete(key, request, {"action": "validated", "attempt": 1}) == completed
+
+    with pytest.raises(FleetBootstrapError, match="cannot be changed"):
+        store.complete(key, request, {"action": "different"})
+
+
+def test_bootstrap_operation_store_never_persists_sensitive_result_keys(tmp_path: Path) -> None:
+    store = BootstrapOperationStore(tmp_path / "operations.json")
+    request = _request()
+    store.begin("bootstrap-operation-002", request)
+    with pytest.raises(FleetBootstrapError, match="safe"):
+        store.complete("bootstrap-operation-002", request, {"oidc_token": "redacted"})

@@ -9,4 +9,6 @@ __pycache__/
 .env
 secrets/
 work/
+.fleet-bootstrap-operation.json
+.fleet-bootstrap-operation.json.lock
 dist/

@@ -129,7 +129,16 @@ class GitHubActionsArtifactOIDCVerifier:
             self._cached_until = time.monotonic() + 300
         return self._cached_jwks
 
-    def verify(self, token: str, *, repository: str, sha: str, run_id: int) -> None:
+    def verify_and_decode(
+        self, token: str, *, repository: str, sha: str, run_id: int
+    ) -> dict[str, Any]:
+        """Verify a token and return its claims without exposing the token.
+
+        The decoded claims are needed by the controller-specific bootstrap
+        policy to bind workflow, branch and attempt.  The existing ``verify``
+        method remains the side-effect-free compatibility wrapper for callers
+        that only need authentication.
+        """
         parts = token.split(".")
         if len(parts) != 3 or not all(parts):
             raise GitHubActionsOIDCError("OIDC token is malformed")
@@ -184,3 +193,7 @@ class GitHubActionsArtifactOIDCVerifier:
             or claims.get("event_name") == "pull_request"
         ):
             raise GitHubActionsOIDCError("OIDC token scope is invalid")
+        return claims
+
+    def verify(self, token: str, *, repository: str, sha: str, run_id: int) -> None:
+        self.verify_and_decode(token, repository=repository, sha=sha, run_id=run_id)
