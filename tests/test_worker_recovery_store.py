@@ -101,13 +101,9 @@ def _acceptance_proof(
 ) -> dict[str, Any]:
     worker_name = str(recovery["worker_name"])
     repository = str(recovery["repository"])
-    permanent_labels = (
-        tuple(json.loads(str(recovery["labels_json"]))) if labels is None else labels
-    )
+    permanent_labels = tuple(json.loads(str(recovery["labels_json"]))) if labels is None else labels
     prior_runner_id = int(recovery["provider_runner_id"])
-    resulting_runner_id = (
-        prior_runner_id if provider_runner_id is None else provider_runner_id
-    )
+    resulting_runner_id = prior_runner_id if provider_runner_id is None else provider_runner_id
     now = time.time()
     completed_at = (
         max(float(recovery["native_finalized_at"]), now - 0.001)
@@ -141,14 +137,83 @@ def _acceptance_proof(
         canary_run_id=500,
         canary_run_attempt=1,
         canary_job_id=501,
-        canary_runner_id=(
-            resulting_runner_id if canary_runner_id is None else canary_runner_id
-        ),
+        canary_runner_id=(resulting_runner_id if canary_runner_id is None else canary_runner_id),
         canary_runner_name=worker_name,
         canary_status="completed",
         canary_conclusion="success",
         canary_completed_at=completed_at,
         observed_at=provider_observed_at,
+    )
+
+
+def _complete_canary(
+    store: Store,
+    recovery: dict[str, Any],
+    *,
+    provider_runner_id: int | None = None,
+) -> dict[str, Any]:
+    worker_name = str(recovery["worker_name"])
+    repository = str(recovery["repository"])
+    runner_id = (
+        int(recovery["provider_runner_id"]) if provider_runner_id is None else provider_runner_id
+    )
+    workflow = (
+        ".github/workflows/runner-smoke.yml"
+        if worker_name == WORKER
+        else ".github/workflows/self-hosted-recovery.yml"
+    )
+    canary, replay = store.create_worker_recovery_canary_intent(
+        operation_id=str(recovery["operation_id"]),
+        repository=repository,
+        workflow=workflow,
+        ref="refs/heads/main",
+        head_sha="8" * 40,
+        baseline_run_id=499,
+        provider_runner_id=runner_id,
+        provider_runner_name=worker_name,
+        temporary_labels=("qdev-job-recovery-canary",),
+    )
+    assert replay is False
+    canary, permitted = store.claim_worker_recovery_canary_dispatch(
+        operation_id=str(recovery["operation_id"]),
+        expected_revision=int(canary["revision"]),
+    )
+    assert permitted is True
+    steps = (
+        ("dispatched", {}),
+        ("run_observed", {"run_id": 500, "run_attempt": 1}),
+        ("labels_pending", {}),
+        ("labels_applied", {}),
+        ("job_observed", {"job_id": 501, "run_status": "in_progress"}),
+        ("completed", {"run_status": "completed", "conclusion": "success"}),
+        ("cleanup_pending", {}),
+        ("cleaned", {}),
+    )
+    for phase, observation in steps:
+        canary, replay = store.transition_worker_recovery_canary(
+            operation_id=str(recovery["operation_id"]),
+            expected_revision=int(canary["revision"]),
+            expected_phase=str(canary["phase"]),
+            phase=phase,
+            **observation,
+        )
+        assert replay is False
+    return canary
+
+
+def _completed_recovery(store: Store) -> dict[str, Any]:
+    admitted = store.begin_worker_recovery(**_begin_arguments())
+    store.advance_worker_recovery(
+        admitted["idempotency_key"], expected="prepared", state="invoking"
+    )
+    return store.reconcile_worker_recovery(
+        operation_id=admitted["operation_id"],
+        worker_name=WORKER,
+        request_fingerprint="a" * 64,
+        agent_certificate_sha256="c" * 64,
+        outcome="completed",
+        outcome_digest="sha256:" + "4" * 64,
+        reconciliation_key=RECONCILIATION_KEY,
     )
 
 
@@ -182,15 +247,14 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
     migrated = store.worker_recovery_by_idempotency_key("legacy-recovery-0001")
 
     assert migrated is not None
-    assert migrated["operation_id"] == hashlib.sha256(
-        f"legacy-recovery-0001\0{WORKER}\0{'9' * 64}".encode()
-    ).hexdigest()
+    assert (
+        migrated["operation_id"]
+        == hashlib.sha256(f"legacy-recovery-0001\0{WORKER}\0{'9' * 64}".encode()).hexdigest()
+    )
     with store.connect() as connection:
         indexes = {
             str(row["name"])
-            for row in connection.execute(
-                "PRAGMA index_list(worker_recoveries)"
-            ).fetchall()
+            for row in connection.execute("PRAGMA index_list(worker_recoveries)").fetchall()
         }
         tables = {
             str(row["name"])
@@ -202,6 +266,8 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
     assert "worker_recovery_request_nonce_idx" in indexes
     assert "worker_recovery_outcomes" in tables
     assert "worker_recovery_acceptances" in tables
+    assert "worker_recovery_canaries" in tables
+    assert "worker_recovery_canary_events" in tables
 
 
 def test_offline_worker_can_be_fenced_only_with_signed_provider_and_durable_idle_proof(
@@ -321,9 +387,7 @@ def test_exact_terminal_request_replay_does_not_reopen_freshness_window(
     replay = store.begin_worker_recovery(**arguments, proof_max_age_seconds=0.0)
     assert replay["state"] == "released"
     assert replay["operation_id"] == admitted["operation_id"]
-    lookup = store.worker_recovery_by_idempotency_key(
-        admitted["idempotency_key"]
-    )
+    lookup = store.worker_recovery_by_idempotency_key(admitted["idempotency_key"])
     assert lookup is not None
     assert lookup["operation_id"] == admitted["operation_id"]
     assert lookup["state"] == "released"
@@ -400,9 +464,7 @@ def test_recovery_rejects_unregistered_target_and_unbound_provider_reconciliatio
     tampered = _provider_proof()
     tampered["provider_reconciliation_digest"] = "sha256:" + "9" * 64
     with pytest.raises(ValueError, match="provider idle proof"):
-        store.begin_worker_recovery(
-            **_begin_arguments(provider_idle_proof=tampered)
-        )
+        store.begin_worker_recovery(**_begin_arguments(provider_idle_proof=tampered))
 
 
 def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_completes(
@@ -438,9 +500,7 @@ def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_complete
         reconciliation_key=RECONCILIATION_KEY,
         observed_at=observed_at - 600,
     )
-    assert replay["reconciliation_receipt_digest"] == ambiguous[
-        "reconciliation_receipt_digest"
-    ]
+    assert replay["reconciliation_receipt_digest"] == ambiguous["reconciliation_receipt_digest"]
 
     completed = store.reconcile_worker_recovery(
         operation_id=admitted["operation_id"],
@@ -458,7 +518,8 @@ def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_complete
         store.advance_worker_recovery(
             admitted["idempotency_key"], expected="completed", state="released"
         )
-    acceptance = _acceptance_proof(completed)
+    canary = _complete_canary(store, completed)
+    acceptance = _acceptance_proof(completed, canary_completed_at=float(canary["completed_at"]))
     released = store.advance_worker_recovery(
         admitted["idempotency_key"],
         expected="completed",
@@ -586,10 +647,7 @@ def test_reconciliation_is_bound_to_expected_agent_and_signed(tmp_path: Path) ->
     )
     stored_outcomes = store.worker_recovery_outcomes(admitted["operation_id"])
     assert len(stored_outcomes) == 1
-    assert (
-        stored_outcomes[0]["provider_reconciliation_digest"]
-        == PROVIDER_RECONCILIATION_DIGEST
-    )
+    assert stored_outcomes[0]["provider_reconciliation_digest"] == PROVIDER_RECONCILIATION_DIGEST
 
 
 def test_native_outcome_cannot_predate_adapter_invocation(tmp_path: Path) -> None:
@@ -640,9 +698,7 @@ def test_acceptance_rejects_wrong_workflow_labels_and_platform_id_rotation(
     }
     wrong_workflow["canary_workflow"] = ".github/workflows/other.yml"
     with pytest.raises(ValueError, match="acceptance proof"):
-        Store.issue_worker_recovery_acceptance_proof(
-            key=ACCEPTANCE_KEY, **wrong_workflow
-        )
+        Store.issue_worker_recovery_acceptance_proof(key=ACCEPTANCE_KEY, **wrong_workflow)
     with pytest.raises(ValueError, match="acceptance proof"):
         _acceptance_proof(
             completed,
@@ -705,6 +761,9 @@ def test_qazstack_same_name_replace_accepts_unique_new_provider_id(
         completed,
         provider_runner_id=22,
         prior_provider_runner_disposition="absent",
+        canary_completed_at=float(
+            _complete_canary(store, completed, provider_runner_id=22)["completed_at"]
+        ),
     )
     released = store.advance_worker_recovery(
         admitted["idempotency_key"],
@@ -716,3 +775,317 @@ def test_qazstack_same_name_replace_accepts_unique_new_provider_id(
     assert released["state"] == "released"
     assert released["provider_runner_id"] == 21
     assert released["accepted_provider_runner_id"] == 22
+
+
+def test_canary_intent_is_exact_secret_free_and_replay_safe(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+    arguments = {
+        "operation_id": recovery["operation_id"],
+        "repository": REPOSITORY,
+        "workflow": ".github/workflows/runner-smoke.yml",
+        "ref": "refs/heads/main",
+        "head_sha": "8" * 40,
+        "baseline_run_id": 499,
+        "provider_runner_id": 187,
+        "provider_runner_name": WORKER,
+        "temporary_labels": ("qdev-job-recovery-canary",),
+    }
+
+    intent, replay = store.create_worker_recovery_canary_intent(**arguments)
+
+    assert replay is False
+    assert intent["phase"] == "dispatch_intent"
+    assert intent["revision"] == 1
+    assert intent["repository"] == REPOSITORY
+    assert intent["workflow"] == ".github/workflows/runner-smoke.yml"
+    assert intent["ref"] == "refs/heads/main"
+    assert intent["head_sha"] == "8" * 40
+    assert intent["baseline_run_id"] == 499
+    assert intent["provider_runner_id"] == 187
+    assert intent["provider_runner_name"] == WORKER
+    assert intent["temporary_labels"] == ("qdev-job-recovery-canary",)
+    events = store.worker_recovery_canary_events(recovery["operation_id"])
+    assert len(events) == 1
+    assert events[0]["event"]["phase"] == "dispatch_intent"
+    assert set(events[0]["event"]) == {
+        "schema",
+        "operation_id",
+        "revision",
+        "from_phase",
+        "phase",
+        "intent_digest",
+        "worker_name",
+        "repository",
+        "workflow",
+        "ref",
+        "head_sha",
+        "baseline_run_id",
+        "provider_runner_id",
+        "provider_runner_name",
+        "temporary_labels",
+        "run_id",
+        "run_attempt",
+        "job_id",
+        "run_status",
+        "conclusion",
+        "completed_at",
+        "cleaned_at",
+        "accepted_at",
+        "recorded_at",
+    }
+    with store.connect() as connection:
+        column_names = {
+            str(row["name"]).lower()
+            for table in (
+                "worker_recovery_canaries",
+                "worker_recovery_canary_events",
+            )
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        event_json = str(
+            connection.execute("SELECT event_json FROM worker_recovery_canary_events").fetchone()[0]
+        ).lower()
+    assert not column_names.intersection(
+        {"token", "registration_token", "secret", "credential", "provider_response"}
+    )
+    assert all(
+        marker not in event_json
+        for marker in ("registration_token", "credential", "provider_response")
+    )
+
+    claimed, permitted = store.claim_worker_recovery_canary_dispatch(
+        operation_id=recovery["operation_id"], expected_revision=1
+    )
+    assert permitted is True
+    exact_replay, replay = store.create_worker_recovery_canary_intent(**arguments)
+    assert replay is True
+    assert exact_replay == claimed
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 2
+
+    with pytest.raises(ValueError, match="another intent"):
+        store.create_worker_recovery_canary_intent(**(arguments | {"head_sha": "7" * 40}))
+
+
+def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+    intent, _ = store.create_worker_recovery_canary_intent(
+        operation_id=recovery["operation_id"],
+        repository=REPOSITORY,
+        workflow=".github/workflows/runner-smoke.yml",
+        ref="refs/heads/main",
+        head_sha="8" * 40,
+        baseline_run_id=499,
+        provider_runner_id=187,
+        provider_runner_name=WORKER,
+        temporary_labels=("qdev-job-recovery-canary",),
+    )
+
+    claimed, permitted = store.claim_worker_recovery_canary_dispatch(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(intent["revision"]),
+    )
+    replayed, permitted_again = store.claim_worker_recovery_canary_dispatch(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(intent["revision"]),
+    )
+    assert permitted is True
+    assert permitted_again is False
+    assert replayed == claimed
+
+    dispatched, replay = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=2,
+        expected_phase="dispatching",
+        phase="dispatched",
+    )
+    assert replay is False
+    replayed_dispatch, replay = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=2,
+        expected_phase="dispatching",
+        phase="dispatched",
+    )
+    assert replay is True
+    assert replayed_dispatch == dispatched
+    with pytest.raises(ValueError, match="ambiguous"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=2,
+            expected_phase="dispatching",
+            phase="run_observed",
+            run_id=500,
+            run_attempt=1,
+        )
+    current = store.worker_recovery_canary(recovery["operation_id"])
+    assert current == dispatched
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 3
+
+    ambiguous, replay = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=3,
+        expected_phase="dispatched",
+        phase="ambiguous",
+    )
+    assert replay is False
+    assert ambiguous["phase"] == "ambiguous"
+    with pytest.raises(ValueError, match="invalid worker recovery canary transition"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=4,
+            expected_phase="ambiguous",
+            phase="run_observed",
+            run_id=500,
+            run_attempt=1,
+        )
+
+
+def test_canary_lifecycle_acceptance_is_atomic_append_only_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+    cleaned = _complete_canary(store, recovery)
+    expected_phases = [
+        "dispatch_intent",
+        "dispatching",
+        "dispatched",
+        "run_observed",
+        "labels_pending",
+        "labels_applied",
+        "job_observed",
+        "completed",
+        "cleanup_pending",
+        "cleaned",
+    ]
+    events = store.worker_recovery_canary_events(recovery["operation_id"])
+    assert [event["phase"] for event in events] == expected_phases
+    assert [event["revision"] for event in events] == list(range(1, 11))
+    assert cleaned["run_id"] == 500
+    assert cleaned["run_attempt"] == 1
+    assert cleaned["job_id"] == 501
+    assert cleaned["run_status"] == "completed"
+    assert cleaned["conclusion"] == "success"
+    assert cleaned["completed_at"] <= cleaned["cleaned_at"]
+
+    with store.connect() as connection:
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            connection.execute(
+                "UPDATE worker_recovery_canary_events SET phase='accepted' "
+                "WHERE operation_id=? AND revision=1",
+                (recovery["operation_id"],),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            connection.execute(
+                "DELETE FROM worker_recovery_canary_events WHERE operation_id=?",
+                (recovery["operation_id"],),
+            )
+
+    acceptance = _acceptance_proof(recovery, canary_completed_at=float(cleaned["completed_at"]))
+    released = store.advance_worker_recovery(
+        recovery["idempotency_key"],
+        expected="completed",
+        state="released",
+        acceptance_proof=acceptance,
+        acceptance_proof_key=ACCEPTANCE_KEY,
+    )
+    assert released["state"] == "released"
+    accepted = store.worker_recovery_canary(recovery["operation_id"])
+    assert accepted is not None
+    assert accepted["phase"] == "accepted"
+    assert accepted["revision"] == 11
+    assert accepted["accepted_at"] is not None
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 11
+
+    replay = store.advance_worker_recovery(
+        recovery["idempotency_key"],
+        expected="completed",
+        state="released",
+        acceptance_proof=acceptance,
+        acceptance_proof_key=ACCEPTANCE_KEY,
+        proof_max_age_seconds=0,
+    )
+    assert replay == released
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 11
+
+
+def test_acceptance_without_cleaned_durable_canary_keeps_recovery_fenced(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+    acceptance = _acceptance_proof(recovery)
+
+    with pytest.raises(ValueError, match="durable proof is missing"):
+        store.advance_worker_recovery(
+            recovery["idempotency_key"],
+            expected="completed",
+            state="released",
+            acceptance_proof=acceptance,
+            acceptance_proof_key=ACCEPTANCE_KEY,
+        )
+
+    current = store.worker_recovery(recovery["operation_id"])
+    assert current is not None
+    assert current["state"] == "completed"
+    with store.connect() as connection:
+        acceptance_count = connection.execute(
+            "SELECT COUNT(*) FROM worker_recovery_acceptances WHERE operation_id=?",
+            (recovery["operation_id"],),
+        ).fetchone()[0]
+    assert acceptance_count == 0
+
+
+def test_canary_observations_are_exact_and_invalid_progress_does_not_commit(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+    with pytest.raises(ValueError, match="binding is invalid"):
+        store.create_worker_recovery_canary_intent(
+            operation_id=recovery["operation_id"],
+            repository=REPOSITORY,
+            workflow=".github/workflows/runner-smoke.yml",
+            ref="refs/heads/main",
+            head_sha="8" * 40,
+            baseline_run_id=499,
+            provider_runner_id=187,
+            provider_runner_name=WORKER,
+            temporary_labels=("temporary-canary",),
+        )
+    intent, _ = store.create_worker_recovery_canary_intent(
+        operation_id=recovery["operation_id"],
+        repository=REPOSITORY,
+        workflow=".github/workflows/runner-smoke.yml",
+        ref="refs/heads/main",
+        head_sha="8" * 40,
+        baseline_run_id=499,
+        provider_runner_id=187,
+        provider_runner_name=WORKER,
+        temporary_labels=("qdev-job-recovery-canary",),
+    )
+    claimed, _ = store.claim_worker_recovery_canary_dispatch(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(intent["revision"]),
+    )
+    dispatched, _ = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(claimed["revision"]),
+        expected_phase="dispatching",
+        phase="dispatched",
+    )
+    with pytest.raises(ValueError, match="run observation is invalid"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=int(dispatched["revision"]),
+            expected_phase="dispatched",
+            phase="run_observed",
+            run_id=499,
+            run_attempt=1,
+        )
+    current = store.worker_recovery_canary(recovery["operation_id"])
+    assert current == dispatched
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 3

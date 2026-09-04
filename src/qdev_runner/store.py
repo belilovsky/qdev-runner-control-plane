@@ -25,9 +25,8 @@ _INTERFACE_VERSION = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _CANARY_WORKFLOW = re.compile(r"^[A-Za-z0-9_.@/ -]{1,255}$")
 _CANARY_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
-_RECOVERY_ACTIONS = frozenset(
-    {"restore_saved_configuration", "replace_existing_registration"}
-)
+_RUNNER_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
+_RECOVERY_ACTIONS = frozenset({"restore_saved_configuration", "replace_existing_registration"})
 _WORKER_RECOVERY_BINDINGS = {
     "qdev-platform-ci-187": {
         "repository": "belilovsky/platform-portal",
@@ -44,6 +43,52 @@ _WORKER_RECOVERY_CANARY_WORKFLOWS = {
     "qdev-platform-ci-187": ".github/workflows/runner-smoke.yml",
     "qdev-qazstack-01": ".github/workflows/self-hosted-recovery.yml",
 }
+_WORKER_RECOVERY_CANARY_PHASES = frozenset(
+    {
+        "dispatch_intent",
+        "dispatching",
+        "dispatched",
+        "run_observed",
+        "labels_pending",
+        "labels_applied",
+        "job_observed",
+        "completed",
+        "cleanup_pending",
+        "cleaned",
+        "accepted",
+        "ambiguous",
+    }
+)
+_WORKER_RECOVERY_CANARY_TRANSITIONS = {
+    "dispatch_intent": frozenset({"dispatching", "ambiguous"}),
+    "dispatching": frozenset({"dispatched", "ambiguous"}),
+    "dispatched": frozenset({"run_observed", "ambiguous"}),
+    "run_observed": frozenset({"labels_pending", "ambiguous"}),
+    "labels_pending": frozenset({"labels_applied", "ambiguous"}),
+    "labels_applied": frozenset({"job_observed", "ambiguous"}),
+    "job_observed": frozenset({"completed", "ambiguous"}),
+    "completed": frozenset({"cleanup_pending", "ambiguous"}),
+    "cleanup_pending": frozenset({"cleaned", "ambiguous"}),
+    "cleaned": frozenset({"accepted", "ambiguous"}),
+    "accepted": frozenset(),
+    "ambiguous": frozenset(),
+}
+_WORKER_RECOVERY_CANARY_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "pending", "requested", "completed"}
+)
+_WORKER_RECOVERY_CANARY_CONCLUSIONS = frozenset(
+    {
+        "success",
+        "failure",
+        "neutral",
+        "cancelled",
+        "skipped",
+        "timed_out",
+        "action_required",
+        "stale",
+        "startup_failure",
+    }
+)
 
 
 def _finite_recovery_number(value: object, *, field: str) -> float:
@@ -71,6 +116,7 @@ def _valid_canary_ref(value: object) -> bool:
         and "@{" not in value
         and not value.endswith(("/", "."))
     )
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -225,6 +271,73 @@ CREATE TABLE IF NOT EXISTS worker_recovery_acceptances (
 );
 CREATE INDEX IF NOT EXISTS worker_recovery_acceptances_operation_idx
     ON worker_recovery_acceptances(operation_id, accepted_at);
+
+-- Canary dispatch and label cleanup contain provider-side ambiguity windows.
+-- The projection is updated only through compare-and-swap transitions while
+-- the event ledger below preserves every committed state.  It intentionally
+-- has no provider-response, credential, registration-token or free-form
+-- payload column: only the minimum identity needed for safe reconciliation is
+-- durable.
+CREATE TABLE IF NOT EXISTS worker_recovery_canaries (
+    operation_id TEXT PRIMARY KEY,
+    worker_name TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    workflow TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    baseline_run_id INTEGER NOT NULL CHECK(baseline_run_id>=0),
+    provider_runner_id INTEGER NOT NULL CHECK(provider_runner_id>0),
+    provider_runner_name TEXT NOT NULL,
+    temporary_labels_json TEXT NOT NULL,
+    intent_digest TEXT NOT NULL UNIQUE,
+    phase TEXT NOT NULL CHECK(phase IN (
+        'dispatch_intent','dispatching','dispatched','run_observed',
+        'labels_pending','labels_applied','job_observed','completed',
+        'cleanup_pending','cleaned','accepted','ambiguous'
+    )),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    run_id INTEGER,
+    run_attempt INTEGER,
+    job_id INTEGER,
+    run_status TEXT,
+    conclusion TEXT,
+    completed_at REAL,
+    cleaned_at REAL,
+    accepted_at REAL,
+    last_event_digest TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(operation_id) REFERENCES worker_recoveries(operation_id)
+);
+CREATE INDEX IF NOT EXISTS worker_recovery_canaries_phase_idx
+    ON worker_recovery_canaries(phase, updated_at);
+
+CREATE TABLE IF NOT EXISTS worker_recovery_canary_events (
+    event_digest TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    from_phase TEXT,
+    phase TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    recorded_at REAL NOT NULL,
+    FOREIGN KEY(operation_id) REFERENCES worker_recoveries(operation_id),
+    UNIQUE(operation_id, revision)
+);
+CREATE INDEX IF NOT EXISTS worker_recovery_canary_events_operation_idx
+    ON worker_recovery_canary_events(operation_id, revision);
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_canary_events_no_update
+BEFORE UPDATE ON worker_recovery_canary_events
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery canary events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_canary_events_no_delete
+BEFORE DELETE ON worker_recovery_canary_events
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery canary events are append-only');
+END;
+
 """
 
 
@@ -391,14 +504,10 @@ class Store:
         }
         for name, sql_type in recovery_additions.items():
             if name not in recovery_columns:
-                connection.execute(
-                    f"ALTER TABLE worker_recoveries ADD COLUMN {name} {sql_type}"
-                )
+                connection.execute(f"ALTER TABLE worker_recoveries ADD COLUMN {name} {sql_type}")
         outcome_columns = {
             str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(worker_recovery_outcomes)"
-            ).fetchall()
+            for row in connection.execute("PRAGMA table_info(worker_recovery_outcomes)").fetchall()
         }
         if "provider_reconciliation_digest" not in outcome_columns:
             connection.execute(
@@ -414,8 +523,7 @@ class Store:
         for row in rows:
             operation_id = hashlib.sha256(
                 (
-                    f"{row['idempotency_key']}\0{row['worker_name']}\0"
-                    f"{row['request_fingerprint']}"
+                    f"{row['idempotency_key']}\0{row['worker_name']}\0{row['request_fingerprint']}"
                 ).encode()
             ).hexdigest()
             connection.execute(
@@ -785,9 +893,7 @@ class Store:
             raise ValueError("worker has active or unverified work")
 
     @staticmethod
-    def _require_no_durable_worker_work(
-        connection: sqlite3.Connection, worker_name: str
-    ) -> None:
+    def _require_no_durable_worker_work(connection: sqlite3.Connection, worker_name: str) -> None:
         """Prove the controller has no durable claim for an offline worker.
 
         A stale or missing heartbeat is expected during recovery and therefore
@@ -799,8 +905,7 @@ class Store:
 
         if (
             connection.execute(
-                "SELECT 1 FROM jobs WHERE worker_name=? "
-                "AND status IN ('claimed','running')",
+                "SELECT 1 FROM jobs WHERE worker_name=? AND status IN ('claimed','running')",
                 (worker_name,),
             ).fetchone()
             is not None
@@ -919,9 +1024,7 @@ class Store:
             "request_nonce": request_nonce,
             "requested_at": requested_at,
             "provider_idle_proof_digest": provider["digest"],
-            "provider_reconciliation_digest": provider[
-                "provider_reconciliation_digest"
-            ],
+            "provider_reconciliation_digest": provider["provider_reconciliation_digest"],
         }
         operation_id = hashlib.sha256(
             json.dumps(
@@ -1091,9 +1194,7 @@ class Store:
         timestamp = (
             time.time()
             if observed_at is None
-            else _finite_recovery_number(
-                observed_at, field="provider idle proof timestamp"
-            )
+            else _finite_recovery_number(observed_at, field="provider idle proof timestamp")
         )
         payload = {
             "schema": "qdev-worker-provider-idle-proof-v1",
@@ -1160,9 +1261,7 @@ class Store:
         except (TypeError, ValueError) as error:
             raise ValueError("provider idle proof is invalid") from error
         expected_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
-        expected_signature = hmac.new(
-            key.encode("utf-8"), canonical, hashlib.sha256
-        ).hexdigest()
+        expected_signature = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
         now = time.time()
         try:
             observed_at = _finite_recovery_number(
@@ -1264,8 +1363,7 @@ class Store:
             or target["repository"] != repository
             or target["labels"] != labels
             or any(
-                isinstance(value, bool) or not isinstance(value, int)
-                for value in integer_values
+                isinstance(value, bool) or not isinstance(value, int) for value in integer_values
             )
             or any(value <= 0 for value in integer_values)
             or matching_runner_count != 1
@@ -1280,8 +1378,7 @@ class Store:
             or canary_repository != repository
             or not isinstance(canary_workflow, str)
             or not _CANARY_WORKFLOW.fullmatch(canary_workflow)
-            or canary_workflow
-            != _WORKER_RECOVERY_CANARY_WORKFLOWS.get(worker_name)
+            or canary_workflow != _WORKER_RECOVERY_CANARY_WORKFLOWS.get(worker_name)
             or not _valid_canary_ref(canary_ref)
             or not isinstance(canary_head_sha, str)
             or not _GIT_REVISION.fullmatch(canary_head_sha)
@@ -1297,9 +1394,7 @@ class Store:
         timestamp = (
             time.time()
             if observed_at is None
-            else _finite_recovery_number(
-                observed_at, field="worker recovery acceptance timestamp"
-            )
+            else _finite_recovery_number(observed_at, field="worker recovery acceptance timestamp")
         )
         if timestamp < completed_at:
             raise ValueError("worker recovery acceptance proof is invalid")
@@ -1414,9 +1509,7 @@ class Store:
         except (TypeError, ValueError) as error:
             raise ValueError("worker recovery acceptance proof is invalid") from error
         expected_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
-        expected_signature = hmac.new(
-            key.encode("utf-8"), canonical, hashlib.sha256
-        ).hexdigest()
+        expected_signature = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
         integer_fields = (
             "prior_provider_runner_id",
             "provider_runner_id",
@@ -1427,9 +1520,7 @@ class Store:
             "canary_runner_id",
         )
         integers_are_valid = all(
-            not isinstance(proof[name], bool)
-            and isinstance(proof[name], int)
-            and proof[name] > 0
+            not isinstance(proof[name], bool) and isinstance(proof[name], int) and proof[name] > 0
             for name in integer_fields
         )
         runner_transition_is_valid = (
@@ -1462,8 +1553,7 @@ class Store:
             or proof["canary_repository"] != repository
             or not isinstance(proof["canary_workflow"], str)
             or not _CANARY_WORKFLOW.fullmatch(proof["canary_workflow"])
-            or proof["canary_workflow"]
-            != _WORKER_RECOVERY_CANARY_WORKFLOWS.get(worker_name)
+            or proof["canary_workflow"] != _WORKER_RECOVERY_CANARY_WORKFLOWS.get(worker_name)
             or not _valid_canary_ref(proof["canary_ref"])
             or not isinstance(proof["canary_head_sha"], str)
             or not _GIT_REVISION.fullmatch(proof["canary_head_sha"])
@@ -1485,10 +1575,697 @@ class Store:
             raise ValueError("worker recovery acceptance proof is invalid")
         return dict(proof)
 
-    def worker_recovery(self, operation_id: str) -> dict[str, Any] | None:
-        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(
-            operation_id
+    @staticmethod
+    def _worker_recovery_canary_row(
+        row: sqlite3.Row | dict[str, Any],
+    ) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            labels = json.loads(str(value.pop("temporary_labels_json")))
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("worker recovery canary durable binding is invalid") from error
+        if (
+            not isinstance(labels, list)
+            or not labels
+            or any(not isinstance(label, str) for label in labels)
         ):
+            raise ValueError("worker recovery canary durable binding is invalid")
+        value["temporary_labels"] = tuple(labels)
+        return value
+
+    @staticmethod
+    def _worker_recovery_canary_event_payload(
+        canary: dict[str, Any],
+        *,
+        from_phase: str | None,
+        recorded_at: float,
+    ) -> dict[str, Any]:
+        """Build the complete allowlisted event body without caller payloads."""
+
+        return {
+            "schema": "qdev-worker-recovery-canary-event-v1",
+            "operation_id": canary["operation_id"],
+            "revision": canary["revision"],
+            "from_phase": from_phase,
+            "phase": canary["phase"],
+            "intent_digest": canary["intent_digest"],
+            "worker_name": canary["worker_name"],
+            "repository": canary["repository"],
+            "workflow": canary["workflow"],
+            "ref": canary["ref"],
+            "head_sha": canary["head_sha"],
+            "baseline_run_id": canary["baseline_run_id"],
+            "provider_runner_id": canary["provider_runner_id"],
+            "provider_runner_name": canary["provider_runner_name"],
+            "temporary_labels": list(canary["temporary_labels"]),
+            "run_id": canary["run_id"],
+            "run_attempt": canary["run_attempt"],
+            "job_id": canary["job_id"],
+            "run_status": canary["run_status"],
+            "conclusion": canary["conclusion"],
+            "completed_at": canary["completed_at"],
+            "cleaned_at": canary["cleaned_at"],
+            "accepted_at": canary["accepted_at"],
+            "recorded_at": recorded_at,
+        }
+
+    @staticmethod
+    def _worker_recovery_canary_event_digest(payload: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def _require_worker_recovery_canary_event(
+        connection: sqlite3.Connection,
+        canary: dict[str, Any],
+        *,
+        from_phase: str | None,
+        require_current_tip: bool = True,
+    ) -> None:
+        event = connection.execute(
+            "SELECT * FROM worker_recovery_canary_events WHERE operation_id=? AND revision=?",
+            (canary["operation_id"], canary["revision"]),
+        ).fetchone()
+        if event is None:
+            raise ValueError("worker recovery canary event history is incomplete")
+        try:
+            payload = json.loads(str(event["event_json"]))
+            expected = Store._worker_recovery_canary_event_payload(
+                canary,
+                from_phase=from_phase,
+                recorded_at=_finite_recovery_number(
+                    event["recorded_at"], field="worker recovery canary event timestamp"
+                ),
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("worker recovery canary event history is invalid") from error
+        digest = Store._worker_recovery_canary_event_digest(expected)
+        if (
+            payload != expected
+            or event["event_digest"] != digest
+            or (require_current_tip and canary["last_event_digest"] != digest)
+            or event["from_phase"] != from_phase
+            or event["phase"] != canary["phase"]
+        ):
+            raise ValueError("worker recovery canary event history is invalid")
+
+    @staticmethod
+    def _validate_worker_recovery_canary_identity(
+        *,
+        worker_name: str,
+        repository: str,
+        workflow: str,
+        ref: str,
+        head_sha: str,
+        baseline_run_id: int,
+        provider_runner_id: int,
+        provider_runner_name: str,
+        permanent_labels: tuple[str, ...],
+        temporary_labels: tuple[str, ...],
+    ) -> None:
+        target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
+        lowered_temporary = [label.lower() for label in temporary_labels]
+        if (
+            target is None
+            or target["repository"] != repository
+            or target["labels"] != permanent_labels
+            or workflow != _WORKER_RECOVERY_CANARY_WORKFLOWS.get(worker_name)
+            or not _CANARY_WORKFLOW.fullmatch(workflow)
+            or not _valid_canary_ref(ref)
+            or not _GIT_REVISION.fullmatch(head_sha)
+            or isinstance(baseline_run_id, bool)
+            or not isinstance(baseline_run_id, int)
+            or baseline_run_id < 0
+            or isinstance(provider_runner_id, bool)
+            or not isinstance(provider_runner_id, int)
+            or provider_runner_id <= 0
+            or provider_runner_name != worker_name
+            or not temporary_labels
+            or any(
+                not isinstance(label, str) or _RUNNER_LABEL.fullmatch(label) is None
+                for label in temporary_labels
+            )
+            or len(set(lowered_temporary)) != len(lowered_temporary)
+            or not any(label.startswith("qdev-job-") for label in lowered_temporary)
+            or set(lowered_temporary).intersection(label.lower() for label in permanent_labels)
+        ):
+            raise ValueError("worker recovery canary binding is invalid")
+
+    def create_worker_recovery_canary_intent(
+        self,
+        *,
+        operation_id: str,
+        repository: str,
+        workflow: str,
+        ref: str,
+        head_sha: str,
+        baseline_run_id: int,
+        provider_runner_id: int,
+        provider_runner_name: str,
+        temporary_labels: tuple[str, ...],
+    ) -> tuple[dict[str, Any], bool]:
+        """Commit an exact canary dispatch intent before any provider action.
+
+        Only allowlisted identity fields are accepted, so registration tokens,
+        credentials and raw provider responses cannot enter this ledger.  The
+        boolean result is ``True`` only for an exact idempotent replay.
+        """
+
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+            raise ValueError("worker recovery canary operation identity is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                recovery = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if (
+                    recovery is None
+                    or recovery["state"] != "completed"
+                    or recovery["native_outcome"] != "completed"
+                ):
+                    raise ValueError("worker recovery is not ready for canary dispatch")
+                try:
+                    permanent_labels = tuple(json.loads(str(recovery["labels_json"])))
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("worker recovery durable binding is invalid") from error
+                self._validate_worker_recovery_canary_identity(
+                    worker_name=str(recovery["worker_name"]),
+                    repository=repository,
+                    workflow=workflow,
+                    ref=ref,
+                    head_sha=head_sha,
+                    baseline_run_id=baseline_run_id,
+                    provider_runner_id=provider_runner_id,
+                    provider_runner_name=provider_runner_name,
+                    permanent_labels=permanent_labels,
+                    temporary_labels=temporary_labels,
+                )
+                intent = {
+                    "schema": "qdev-worker-recovery-canary-intent-v1",
+                    "operation_id": operation_id,
+                    "worker_name": recovery["worker_name"],
+                    "repository": repository,
+                    "workflow": workflow,
+                    "ref": ref,
+                    "head_sha": head_sha,
+                    "baseline_run_id": baseline_run_id,
+                    "provider_runner_id": provider_runner_id,
+                    "provider_runner_name": provider_runner_name,
+                    "temporary_labels": list(temporary_labels),
+                }
+                intent_digest = self._worker_recovery_canary_event_digest(intent)
+                existing = connection.execute(
+                    "SELECT * FROM worker_recovery_canaries WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if existing is not None:
+                    canary = self._worker_recovery_canary_row(existing)
+                    if canary["intent_digest"] != intent_digest:
+                        raise ValueError(
+                            "worker recovery canary operation is bound to another intent"
+                        )
+                    initial = dict(canary)
+                    initial.update(
+                        {
+                            "phase": "dispatch_intent",
+                            "revision": 1,
+                            "run_id": None,
+                            "run_attempt": None,
+                            "job_id": None,
+                            "run_status": None,
+                            "conclusion": None,
+                            "completed_at": None,
+                            "cleaned_at": None,
+                            "accepted_at": None,
+                        }
+                    )
+                    self._require_worker_recovery_canary_event(
+                        connection,
+                        initial,
+                        from_phase=None,
+                        require_current_tip=canary["revision"] == 1,
+                    )
+                    connection.execute("COMMIT")
+                    return canary, True
+                canary = {
+                    "operation_id": operation_id,
+                    "worker_name": recovery["worker_name"],
+                    "repository": repository,
+                    "workflow": workflow,
+                    "ref": ref,
+                    "head_sha": head_sha,
+                    "baseline_run_id": baseline_run_id,
+                    "provider_runner_id": provider_runner_id,
+                    "provider_runner_name": provider_runner_name,
+                    "temporary_labels": temporary_labels,
+                    "intent_digest": intent_digest,
+                    "phase": "dispatch_intent",
+                    "revision": 1,
+                    "run_id": None,
+                    "run_attempt": None,
+                    "job_id": None,
+                    "run_status": None,
+                    "conclusion": None,
+                    "completed_at": None,
+                    "cleaned_at": None,
+                    "accepted_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                event_payload = self._worker_recovery_canary_event_payload(
+                    canary, from_phase=None, recorded_at=now
+                )
+                event_digest = self._worker_recovery_canary_event_digest(event_payload)
+                canary["last_event_digest"] = event_digest
+                connection.execute(
+                    "INSERT INTO worker_recovery_canaries("
+                    "operation_id,worker_name,repository,workflow,ref,head_sha,"
+                    "baseline_run_id,provider_runner_id,provider_runner_name,"
+                    "temporary_labels_json,intent_digest,phase,revision,run_id,"
+                    "run_attempt,job_id,run_status,conclusion,completed_at,cleaned_at,"
+                    "accepted_at,last_event_digest,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        operation_id,
+                        recovery["worker_name"],
+                        repository,
+                        workflow,
+                        ref,
+                        head_sha,
+                        baseline_run_id,
+                        provider_runner_id,
+                        provider_runner_name,
+                        json.dumps(list(temporary_labels), separators=(",", ":")),
+                        intent_digest,
+                        "dispatch_intent",
+                        1,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        event_digest,
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO worker_recovery_canary_events("
+                    "event_digest,operation_id,revision,from_phase,phase,event_json,"
+                    "recorded_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        event_digest,
+                        operation_id,
+                        1,
+                        None,
+                        "dispatch_intent",
+                        json.dumps(
+                            event_payload,
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        now,
+                    ),
+                )
+                connection.execute("COMMIT")
+                return canary, False
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _worker_recovery_canary_transition_matches(
+        canary: dict[str, Any],
+        *,
+        run_id: int | None,
+        run_attempt: int | None,
+        job_id: int | None,
+        run_status: str | None,
+        conclusion: str | None,
+    ) -> bool:
+        supplied = {
+            "run_id": run_id,
+            "run_attempt": run_attempt,
+            "job_id": job_id,
+            "run_status": run_status,
+            "conclusion": conclusion,
+        }
+        return all(value is None or canary[name] == value for name, value in supplied.items())
+
+    @staticmethod
+    def _validate_worker_recovery_canary_observation(canary: dict[str, Any], *, phase: str) -> None:
+        if phase == "ambiguous":
+            return
+        run_phases = {
+            "run_observed",
+            "labels_pending",
+            "labels_applied",
+            "job_observed",
+            "completed",
+            "cleanup_pending",
+            "cleaned",
+            "accepted",
+        }
+        job_phases = {
+            "job_observed",
+            "completed",
+            "cleanup_pending",
+            "cleaned",
+            "accepted",
+        }
+        completed_phases = {"completed", "cleanup_pending", "cleaned", "accepted"}
+        if phase in run_phases and (
+            not isinstance(canary["run_id"], int)
+            or isinstance(canary["run_id"], bool)
+            or canary["run_id"] <= canary["baseline_run_id"]
+            or not isinstance(canary["run_attempt"], int)
+            or isinstance(canary["run_attempt"], bool)
+            or canary["run_attempt"] <= 0
+        ):
+            raise ValueError("worker recovery canary run observation is invalid")
+        if phase in job_phases and (
+            not isinstance(canary["job_id"], int)
+            or isinstance(canary["job_id"], bool)
+            or canary["job_id"] <= 0
+            or canary["run_status"] not in _WORKER_RECOVERY_CANARY_STATUSES
+        ):
+            raise ValueError("worker recovery canary job observation is invalid")
+        if phase in completed_phases and (
+            canary["run_status"] != "completed"
+            or canary["conclusion"] not in _WORKER_RECOVERY_CANARY_CONCLUSIONS
+            or canary["completed_at"] is None
+        ):
+            raise ValueError("worker recovery canary completion is invalid")
+        if phase in {"cleaned", "accepted"} and canary["cleaned_at"] is None:
+            raise ValueError("worker recovery canary cleanup is invalid")
+        if phase == "accepted" and (
+            canary["conclusion"] != "success" or canary["accepted_at"] is None
+        ):
+            raise ValueError("worker recovery canary acceptance is invalid")
+
+    def _transition_worker_recovery_canary(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        operation_id: str,
+        expected_revision: int,
+        expected_phase: str,
+        phase: str,
+        run_id: int | None,
+        run_attempt: int | None,
+        job_id: int | None,
+        run_status: str | None,
+        conclusion: str | None,
+        allow_accepted: bool,
+    ) -> tuple[dict[str, Any], bool]:
+        row = connection.execute(
+            "SELECT * FROM worker_recovery_canaries WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("worker recovery canary intent is missing")
+        current = self._worker_recovery_canary_row(row)
+        current_revision = int(current["revision"])
+        if current_revision == expected_revision + 1:
+            if current["phase"] != phase or not self._worker_recovery_canary_transition_matches(
+                current,
+                run_id=run_id,
+                run_attempt=run_attempt,
+                job_id=job_id,
+                run_status=run_status,
+                conclusion=conclusion,
+            ):
+                raise ValueError("worker recovery canary transition is ambiguous")
+            self._require_worker_recovery_canary_event(
+                connection, current, from_phase=expected_phase
+            )
+            return current, True
+        if current_revision != expected_revision or current["phase"] != expected_phase:
+            raise ValueError("worker recovery canary transition is ambiguous")
+        if phase not in _WORKER_RECOVERY_CANARY_TRANSITIONS.get(expected_phase, frozenset()):
+            raise ValueError("invalid worker recovery canary transition")
+        if phase == "accepted" and not allow_accepted:
+            raise ValueError("worker recovery canary acceptance is controller-owned")
+
+        for name, supplied in (
+            ("run_id", run_id),
+            ("run_attempt", run_attempt),
+            ("job_id", job_id),
+            ("conclusion", conclusion),
+        ):
+            if supplied is not None and current[name] not in {None, supplied}:
+                raise ValueError("worker recovery canary observation changed")
+            if supplied is not None:
+                current[name] = supplied
+        if run_status is not None:
+            if run_status not in _WORKER_RECOVERY_CANARY_STATUSES or (
+                current["run_status"] == "completed" and run_status != "completed"
+            ):
+                raise ValueError("worker recovery canary status changed")
+            current["run_status"] = run_status
+        if conclusion is not None and conclusion not in _WORKER_RECOVERY_CANARY_CONCLUSIONS:
+            raise ValueError("worker recovery canary conclusion is invalid")
+        if phase == "ambiguous" and any(
+            value is not None for value in (run_id, run_attempt, job_id, run_status, conclusion)
+        ):
+            raise ValueError("ambiguous canary transition cannot select provider evidence")
+
+        now = time.time()
+        current["phase"] = phase
+        current["revision"] = current_revision + 1
+        current["updated_at"] = now
+        if phase == "completed" and current["completed_at"] is None:
+            current["completed_at"] = now
+        if phase == "cleaned" and current["cleaned_at"] is None:
+            current["cleaned_at"] = now
+        if phase == "accepted" and current["accepted_at"] is None:
+            current["accepted_at"] = now
+        self._validate_worker_recovery_canary_observation(current, phase=phase)
+        event_payload = self._worker_recovery_canary_event_payload(
+            current, from_phase=expected_phase, recorded_at=now
+        )
+        event_digest = self._worker_recovery_canary_event_digest(event_payload)
+        updated = connection.execute(
+            "UPDATE worker_recovery_canaries SET phase=?,revision=?,run_id=?,"
+            "run_attempt=?,job_id=?,run_status=?,conclusion=?,completed_at=?,"
+            "cleaned_at=?,accepted_at=?,last_event_digest=?,updated_at=? "
+            "WHERE operation_id=? AND revision=? AND phase=?",
+            (
+                phase,
+                current["revision"],
+                current["run_id"],
+                current["run_attempt"],
+                current["job_id"],
+                current["run_status"],
+                current["conclusion"],
+                current["completed_at"],
+                current["cleaned_at"],
+                current["accepted_at"],
+                event_digest,
+                now,
+                operation_id,
+                expected_revision,
+                expected_phase,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("worker recovery canary transition is ambiguous")
+        connection.execute(
+            "INSERT INTO worker_recovery_canary_events("
+            "event_digest,operation_id,revision,from_phase,phase,event_json,recorded_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                event_digest,
+                operation_id,
+                current["revision"],
+                expected_phase,
+                phase,
+                json.dumps(
+                    event_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                now,
+            ),
+        )
+        current["last_event_digest"] = event_digest
+        return current, False
+
+    def transition_worker_recovery_canary(
+        self,
+        *,
+        operation_id: str,
+        expected_revision: int,
+        expected_phase: str,
+        phase: str,
+        run_id: int | None = None,
+        run_attempt: int | None = None,
+        job_id: int | None = None,
+        run_status: str | None = None,
+        conclusion: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """CAS one durable canary phase; exact replay is explicitly reported."""
+
+        if (
+            not isinstance(operation_id, str)
+            or not _SHA256_HEX.fullmatch(operation_id)
+            or isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision <= 0
+            or expected_phase not in _WORKER_RECOVERY_CANARY_PHASES
+            or phase not in _WORKER_RECOVERY_CANARY_PHASES
+        ):
+            raise ValueError("worker recovery canary transition binding is invalid")
+        for value in (run_id, run_attempt, job_id):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
+                raise ValueError("worker recovery canary observation is invalid")
+        if run_status is not None and run_status not in _WORKER_RECOVERY_CANARY_STATUSES:
+            raise ValueError("worker recovery canary status is invalid")
+        if conclusion is not None and conclusion not in _WORKER_RECOVERY_CANARY_CONCLUSIONS:
+            raise ValueError("worker recovery canary conclusion is invalid")
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._transition_worker_recovery_canary(
+                    connection,
+                    operation_id=operation_id,
+                    expected_revision=expected_revision,
+                    expected_phase=expected_phase,
+                    phase=phase,
+                    run_id=run_id,
+                    run_attempt=run_attempt,
+                    job_id=job_id,
+                    run_status=run_status,
+                    conclusion=conclusion,
+                    allow_accepted=False,
+                )
+                connection.execute("COMMIT")
+                return result
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def claim_worker_recovery_canary_dispatch(
+        self, *, operation_id: str, expected_revision: int
+    ) -> tuple[dict[str, Any], bool]:
+        """Fence the dispatch ambiguity window before calling the provider.
+
+        The boolean is ``True`` only for the process that acquired permission
+        to make the provider call.  Exact replays return ``False`` and must
+        reconcile the in-flight dispatch instead of dispatching again.
+        """
+
+        canary, idempotent = self.transition_worker_recovery_canary(
+            operation_id=operation_id,
+            expected_revision=expected_revision,
+            expected_phase="dispatch_intent",
+            phase="dispatching",
+        )
+        return canary, not idempotent
+
+    def worker_recovery_canary(self, operation_id: str) -> dict[str, Any] | None:
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+            raise ValueError("worker recovery canary operation identity is invalid")
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM worker_recovery_canaries WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        return self._worker_recovery_canary_row(row) if row is not None else None
+
+    def worker_recovery_canary_events(self, operation_id: str) -> list[dict[str, Any]]:
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+            raise ValueError("worker recovery canary operation identity is invalid")
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM worker_recovery_canary_events WHERE operation_id=? "
+                "ORDER BY revision",
+                (operation_id,),
+            ).fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["event"] = json.loads(str(value.pop("event_json")))
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValueError("worker recovery canary event history is invalid") from error
+            events.append(value)
+        return events
+
+    @staticmethod
+    def _require_worker_recovery_canary_acceptance(
+        connection: sqlite3.Connection,
+        recovery: sqlite3.Row,
+        accepted: dict[str, Any],
+        *,
+        phase: str,
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT * FROM worker_recovery_canaries WHERE operation_id=?",
+            (recovery["operation_id"],),
+        ).fetchone()
+        if row is None:
+            raise ValueError("worker recovery canary durable proof is missing")
+        canary = Store._worker_recovery_canary_row(row)
+        try:
+            completed_at = _finite_recovery_number(
+                canary["completed_at"],
+                field="worker recovery canary completion timestamp",
+            )
+            cleaned_at = _finite_recovery_number(
+                canary["cleaned_at"],
+                field="worker recovery canary cleanup timestamp",
+            )
+            observed_at = _finite_recovery_number(
+                accepted["observed_at"],
+                field="worker recovery acceptance timestamp",
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("worker recovery canary durable proof is invalid") from error
+        if (
+            canary["phase"] != phase
+            or canary["worker_name"] != recovery["worker_name"]
+            or canary["repository"] != recovery["repository"]
+            or canary["workflow"] != accepted["canary_workflow"]
+            or canary["ref"] != accepted["canary_ref"]
+            or canary["head_sha"] != accepted["canary_head_sha"]
+            or canary["provider_runner_id"] != accepted["provider_runner_id"]
+            or canary["provider_runner_name"] != accepted["canary_runner_name"]
+            or canary["run_id"] != accepted["canary_run_id"]
+            or canary["run_attempt"] != accepted["canary_run_attempt"]
+            or canary["job_id"] != accepted["canary_job_id"]
+            or canary["run_status"] != accepted["canary_status"]
+            or canary["conclusion"] != accepted["canary_conclusion"]
+            or completed_at != accepted["canary_completed_at"]
+            or completed_at > cleaned_at
+            or cleaned_at > observed_at
+        ):
+            raise ValueError("worker recovery acceptance is not bound to the durable canary")
+        Store._validate_worker_recovery_canary_observation(canary, phase=phase)
+        Store._require_worker_recovery_canary_event(
+            connection,
+            canary,
+            from_phase="cleanup_pending" if phase == "cleaned" else "cleaned",
+        )
+        return canary
+
+    def worker_recovery(self, operation_id: str) -> dict[str, Any] | None:
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
             raise ValueError("native recovery operation identity is invalid")
         with self.connect() as connection:
             row = connection.execute(
@@ -1496,14 +2273,10 @@ class Store:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def worker_recovery_by_idempotency_key(
-        self, idempotency_key: str
-    ) -> dict[str, Any] | None:
+    def worker_recovery_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any] | None:
         """Return the exact durable operation after a lost prepare response."""
 
-        if not isinstance(idempotency_key, str) or not _RECOVERY_KEY.fullmatch(
-            idempotency_key
-        ):
+        if not isinstance(idempotency_key, str) or not _RECOVERY_KEY.fullmatch(idempotency_key):
             raise ValueError("worker recovery idempotency key is invalid")
         with self.connect() as connection:
             row = connection.execute(
@@ -1513,10 +2286,7 @@ class Store:
         return dict(row) if row is not None else None
 
     def prepared_worker_recovery(self, worker_name: str) -> dict[str, Any] | None:
-        if (
-            not isinstance(worker_name, str)
-            or worker_name not in _WORKER_RECOVERY_BINDINGS
-        ):
+        if not isinstance(worker_name, str) or worker_name not in _WORKER_RECOVERY_BINDINGS:
             raise ValueError("worker recovery target is not registered")
         with self.connect() as connection:
             row = connection.execute(
@@ -1535,9 +2305,7 @@ class Store:
         acceptance_proof_key: str | None = None,
         proof_max_age_seconds: float = 120.0,
     ) -> dict[str, Any]:
-        if not isinstance(idempotency_key, str) or not _RECOVERY_KEY.fullmatch(
-            idempotency_key
-        ):
+        if not isinstance(idempotency_key, str) or not _RECOVERY_KEY.fullmatch(idempotency_key):
             raise ValueError("worker recovery idempotency key is invalid")
         if (expected, state) not in {
             ("prepared", "invoking"),
@@ -1566,10 +2334,7 @@ class Store:
                 # freshness window.  Verify the exact signed proof and compare
                 # it with the already-persisted acceptance without re-running
                 # provider observation or agent mutation.
-                if (
-                    row["state"] == "released"
-                    and (expected, state) == ("completed", "released")
-                ):
+                if row["state"] == "released" and (expected, state) == ("completed", "released"):
                     if (
                         row["native_outcome"] != "completed"
                         or acceptance_proof is None
@@ -1590,22 +2355,21 @@ class Store:
                         max_age_seconds=None,
                     )
                     acceptance_row = connection.execute(
-                        "SELECT * FROM worker_recovery_acceptances "
-                        "WHERE operation_id=?",
+                        "SELECT * FROM worker_recovery_acceptances WHERE operation_id=?",
                         (row["operation_id"],),
                     ).fetchone()
                     if (
                         acceptance_row is None
                         or row["acceptance_proof_digest"] != accepted["digest"]
                         or row["acceptance_proof_signature"] != accepted["signature"]
-                        or row["accepted_provider_runner_id"]
-                        != accepted["provider_runner_id"]
+                        or row["accepted_provider_runner_id"] != accepted["provider_runner_id"]
                         or acceptance_row["proof_digest"] != accepted["digest"]
                         or acceptance_row["signature"] != accepted["signature"]
                     ):
-                        raise ValueError(
-                            "worker recovery acceptance is bound to another proof"
-                        )
+                        raise ValueError("worker recovery acceptance is bound to another proof")
+                    self._require_worker_recovery_canary_acceptance(
+                        connection, row, accepted, phase="accepted"
+                    )
                     connection.execute("COMMIT")
                     return dict(row)
                 if row["state"] != expected:
@@ -1626,9 +2390,7 @@ class Store:
                             field="worker recovery provider timestamp",
                         )
                     except ValueError as error:
-                        raise ValueError(
-                            "worker recovery durable binding is invalid"
-                        ) from error
+                        raise ValueError("worker recovery durable binding is invalid") from error
                     if any(
                         not 0 <= now - timestamp <= proof_max_age_seconds
                         for timestamp in (
@@ -1637,37 +2399,27 @@ class Store:
                             provider_observed_at,
                         )
                     ):
-                        raise ValueError(
-                            "worker recovery evidence expired before invocation"
-                        )
-                    self._require_no_durable_worker_work(
-                        connection, str(row["worker_name"])
-                    )
+                        raise ValueError("worker recovery evidence expired before invocation")
+                    self._require_no_durable_worker_work(connection, str(row["worker_name"]))
                 elif (expected, state) == ("completed", "released"):
                     if (
                         row["native_outcome"] != "completed"
                         or not isinstance(row["native_outcome_digest"], str)
                         or not _SHA256_DIGEST.fullmatch(row["native_outcome_digest"])
                         or not isinstance(row["agent_certificate_sha256"], str)
-                        or not _SHA256_HEX.fullmatch(
-                            row["agent_certificate_sha256"]
-                        )
+                        or not _SHA256_HEX.fullmatch(row["agent_certificate_sha256"])
                         or not isinstance(row["native_outcome_signature"], str)
                         or not _SHA256_HEX.fullmatch(row["native_outcome_signature"])
                         or row["reconciled_at"] is None
                         or row["native_finalized_at"] is None
                     ):
-                        raise ValueError(
-                            "worker recovery has no signed completed native outcome"
-                        )
+                        raise ValueError("worker recovery has no signed completed native outcome")
                     if (
                         acceptance_proof is None
                         or not isinstance(acceptance_proof_key, str)
                         or not acceptance_proof_key
                     ):
-                        raise ValueError(
-                            "worker recovery acceptance proof is required"
-                        )
+                        raise ValueError("worker recovery acceptance proof is required")
                     accepted = self.verify_worker_recovery_acceptance_proof(
                         acceptance_proof,
                         key=acceptance_proof_key,
@@ -1680,8 +2432,22 @@ class Store:
                         native_finalized_at=float(row["native_finalized_at"]),
                         max_age_seconds=proof_max_age_seconds,
                     )
-                    self._require_no_durable_worker_work(
-                        connection, str(row["worker_name"])
+                    self._require_no_durable_worker_work(connection, str(row["worker_name"]))
+                    canary = self._require_worker_recovery_canary_acceptance(
+                        connection, row, accepted, phase="cleaned"
+                    )
+                    self._transition_worker_recovery_canary(
+                        connection,
+                        operation_id=str(row["operation_id"]),
+                        expected_revision=int(canary["revision"]),
+                        expected_phase="cleaned",
+                        phase="accepted",
+                        run_id=int(canary["run_id"]),
+                        run_attempt=int(canary["run_attempt"]),
+                        job_id=int(canary["job_id"]),
+                        run_status=str(canary["run_status"]),
+                        conclusion=str(canary["conclusion"]),
+                        allow_accepted=True,
                     )
                     connection.execute(
                         "INSERT INTO worker_recovery_acceptances("
@@ -1807,18 +2573,14 @@ class Store:
             raise ValueError("native recovery operation identity is invalid")
         if not isinstance(worker_name, str) or worker_name not in _WORKER_RECOVERY_BINDINGS:
             raise ValueError("native recovery worker identity is invalid")
-        if (
-            not isinstance(request_fingerprint, str)
-            or not _SHA256_HEX.fullmatch(request_fingerprint)
+        if not isinstance(request_fingerprint, str) or not _SHA256_HEX.fullmatch(
+            request_fingerprint
         ):
             raise ValueError("native recovery request digest is invalid")
-        if not isinstance(outcome_digest, str) or not _SHA256_DIGEST.fullmatch(
-            outcome_digest
-        ):
+        if not isinstance(outcome_digest, str) or not _SHA256_DIGEST.fullmatch(outcome_digest):
             raise ValueError("native recovery outcome digest is invalid")
-        if (
-            not isinstance(agent_certificate_sha256, str)
-            or not _SHA256_HEX.fullmatch(agent_certificate_sha256)
+        if not isinstance(agent_certificate_sha256, str) or not _SHA256_HEX.fullmatch(
+            agent_certificate_sha256
         ):
             raise ValueError("native recovery agent certificate is invalid")
         if not isinstance(reconciliation_key, str) or not reconciliation_key:
@@ -1826,9 +2588,7 @@ class Store:
         native_observed_at = (
             time.time()
             if observed_at is None
-            else _finite_recovery_number(
-                observed_at, field="native recovery outcome timestamp"
-            )
+            else _finite_recovery_number(observed_at, field="native recovery outcome timestamp")
         )
         now = time.time()
         with self.connect() as connection:
@@ -1879,25 +2639,16 @@ class Store:
                     row["invoked_at"], field="native recovery invocation timestamp"
                 )
                 if native_observed_at < invoked_at:
-                    raise ValueError(
-                        "native recovery outcome predates adapter invocation"
-                    )
+                    raise ValueError("native recovery outcome predates adapter invocation")
                 if row["state"] != "invoking":
                     raise ValueError("native recovery operation is not awaiting outcome")
                 if row["native_outcome"] in {"completed", "not_applied"}:
                     raise ValueError("native recovery terminal outcome cannot be changed")
-                provider_reconciliation_digest = row[
-                    "provider_reconciliation_digest"
-                ]
-                if (
-                    not isinstance(provider_reconciliation_digest, str)
-                    or not _SHA256_DIGEST.fullmatch(
-                        provider_reconciliation_digest
-                    )
-                ):
-                    raise ValueError(
-                        "native recovery provider reconciliation binding is invalid"
-                    )
+                provider_reconciliation_digest = row["provider_reconciliation_digest"]
+                if not isinstance(
+                    provider_reconciliation_digest, str
+                ) or not _SHA256_DIGEST.fullmatch(provider_reconciliation_digest):
+                    raise ValueError("native recovery provider reconciliation binding is invalid")
                 receipt_payload = {
                     "schema": "qdev-worker-recovery-native-outcome-v1",
                     "operation_id": operation_id,
@@ -1985,9 +2736,7 @@ class Store:
                 raise
 
     def worker_recovery_outcomes(self, operation_id: str) -> list[dict[str, Any]]:
-        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(
-            operation_id
-        ):
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
             raise ValueError("native recovery operation identity is invalid")
         with self.connect() as connection:
             rows = connection.execute(
