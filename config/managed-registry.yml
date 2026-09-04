@@ -1,4 +1,4 @@
-schema_version: qdev-managed-registry-v2
+schema_version: qdev-managed-registry-v3
 entries:
   avds-admin-shell:
     project_id: avds-admin-shell
@@ -10,6 +10,7 @@ entries:
     runtime_endpoints: [https://ci.qdev.run/artifacts/avds/admin-shell/0.2.0/]
     rollback_reference: admin-shell-v0.1.0
     owner: QDev AVDS
+    admission_ledger: admin-platform
   ortcom:
     project_id: ortcom
     kind: service
@@ -20,6 +21,7 @@ entries:
     runtime_endpoints: [https://ortcom.qdev.run/health, "https://ortcom.qdev.run/api/ready?deep=1", https://ortcom.qdev.run/release.json]
     rollback_reference: deploy/ortcom-deploy transactional rollback
     owner: ORTCOM
+    admission_ledger: admin-platform
   cmnt:
     project_id: cmnt
     kind: service
@@ -30,6 +32,7 @@ entries:
     runtime_endpoints: [https://cmnt.qdev.run/health]
     rollback_reference: scripts/deploy_forward_only.sh native rollback receipt
     owner: CMNT
+    admission_ledger: admin-platform
   total:
     project_id: total-kz
     kind: service
@@ -40,6 +43,7 @@ entries:
     runtime_endpoints: [https://total.qdev.run/health, https://total.qdev.run/ready, https://total.qdev.run/release.json]
     rollback_reference: deploy/total-kz/rollback-total-public.sh
     owner: Total
+    admission_ledger: admin-platform
   qazposter:
     project_id: qazposter
     kind: service
@@ -50,3 +54,15 @@ entries:
     runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
     rollback_reference: immutable previous-binary rollback contract
     owner: QazPoster
+    admission_ledger: admin-platform
+  qazgeo:
+    project_id: qazgeo
+    kind: service
+    repository: belilovsky/qazgeo
+    canonical_ref: main
+    allowed_profiles: [qdev-ci, qdev-ci-docker]
+    native_release_profile: qazgeo-native-immutable-release
+    runtime_endpoints: [https://qgeo.tech/health, https://qgeo.tech/health/live, https://qgeo.tech/health/ready]
+    rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
+    owner: QazGeo
+    admission_ledger: managed-production

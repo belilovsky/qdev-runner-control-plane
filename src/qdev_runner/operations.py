@@ -75,7 +75,9 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "immutable_tuple",
         "worker",
         "managed_registry_entry",
+        "admission_ledger",
         "admin_platform_ledger_entry",
+        "managed_release_ledger_entry",
     },
     "capacity-override-created": {
         "kind",
@@ -157,7 +159,45 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
                 or not _WORKER_NAME.fullmatch(value["managed_registry_entry"])
             )
         )
-        or value["admin_platform_ledger_entry"] != value["managed_registry_entry"]
+        or value["admission_ledger"] not in {None, "admin-platform", "managed-production"}
+        or any(
+            value[field] is not None
+            and (not isinstance(value[field], str) or not _WORKER_NAME.fullmatch(value[field]))
+            for field in ("admin_platform_ledger_entry", "managed_release_ledger_entry")
+        )
+        or (
+            value["managed_registry_entry"] is None
+            and any(
+                value[field] is not None
+                for field in (
+                    "admission_ledger",
+                    "admin_platform_ledger_entry",
+                    "managed_release_ledger_entry",
+                )
+            )
+        )
+        or (
+            value["managed_registry_entry"] is not None
+            and (
+                (
+                    value["admission_ledger"] == "admin-platform"
+                    and value["admin_platform_ledger_entry"] != value["managed_registry_entry"]
+                )
+                or (
+                    value["admission_ledger"] == "managed-production"
+                    and value["managed_release_ledger_entry"] != value["managed_registry_entry"]
+                )
+                or (
+                    value["admission_ledger"] == "admin-platform"
+                    and value["managed_release_ledger_entry"] is not None
+                )
+                or (
+                    value["admission_ledger"] == "managed-production"
+                    and value["admin_platform_ledger_entry"] is not None
+                )
+                or value["admission_ledger"] is None
+            )
+        )
     ):
         raise ValueError("claim-scope payload is invalid")
     if kind.startswith("capacity-override") and not isinstance(value["worker_audit"], dict):

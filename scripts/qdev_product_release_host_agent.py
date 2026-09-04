@@ -531,7 +531,8 @@ def complete(
     status, _ = request(
         config,
         "POST",
-        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete",
+        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete"
+        f"?release_lane={profile.lane}",
         receipt,
     )
     if status != 200:
@@ -557,7 +558,9 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         if status != 200:
             raise AgentError("controller rejected host-agent heartbeat")
         status, body = request(
-            config, "GET", f"/internal/v1/release-hosts/{profile.placement}/jobs/next"
+            config,
+            "GET",
+            f"/internal/v1/release-hosts/{profile.placement}/jobs/next?release_lane={profile.lane}",
         )
         if status == 204:
             return {"status": "idle", "capacity_free_gib": beat["capacity_free_gib"]}
