@@ -37,6 +37,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "config/profiles.yml" in script
     assert "config/release-lanes.yml" in script
     assert "config/managed-registry.yml" in script
+    assert "config/fleet-bootstrap.yml" in script
     assert "config/admin-platform-ledger.yml" in script
     assert "config/managed-release-ledger.yml" in script
     assert "scripts/provision_operator_identity.sh" in script
@@ -55,6 +56,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml' in script
+    assert '"$release/config/fleet-bootstrap.yml" /etc/qdev-runner/fleet-bootstrap.yml' in script
+    assert "fleet_bootstrap_backup=" in script
+    assert "fleet_bootstrap_was_present=" in script
     assert 'if [[ "$legacy_rollback" == true ]]; then' in script
     assert (
         'install -m 0644 -- "$release/config/admin-platform-ledger.yml" '
@@ -99,6 +103,7 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "chown root:9020" in script
     assert "chmod 0640" in script
     assert "/etc/qdev-runner/mtls/operator" in provisioning
+    assert "config/fleet-bootstrap.yml /etc/qdev-runner/fleet-bootstrap.yml" in provisioning
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
