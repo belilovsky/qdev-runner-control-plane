@@ -1433,6 +1433,28 @@ def create_app(
                     for item in existing.jobs
                 )
             )
+            terminal_managed_job_ids: set[int] = set()
+            if existing.expires_at > datetime.now(UTC) and managed_exact_candidate_fifo:
+                # A managed scope may span the qdev-ci and qdev-ci-docker
+                # jobs from the same provider run. Once the first profile's
+                # tuple is terminal, the worker's capacity directive can
+                # legitimately narrow to the next profile. Prune only
+                # provider-terminal QGeo tuples; missing or non-terminal
+                # records remain fail-closed and block scope reuse.
+                for item in existing.jobs:
+                    if (
+                        item.job_id == job_id
+                        or item.repository != QGEO_REPOSITORY
+                        or item.exact_sha != str(candidate["head_sha"])
+                    ):
+                        continue
+                    record = store.job(item.job_id)
+                    if record is not None and str(record.get("status")) in {
+                        "completed",
+                        "failed",
+                        "rejected",
+                    }:
+                        terminal_managed_job_ids.add(item.job_id)
             same_scope = (
                 existing.schema == SCHEMA_V2
                 and existing.worker_name == request.worker_name
@@ -1452,7 +1474,8 @@ def create_app(
             )
             if same_scope:
                 if existing.expires_at > datetime.now(UTC) and (
-                    not managed_exact_candidate_fifo or managed_scope_is_narrow
+                    not managed_exact_candidate_fifo
+                    or (managed_scope_is_narrow and not terminal_managed_job_ids)
                 ):
                     payload = {
                         "kind": "fifo-claim-scope-issued",
@@ -1481,17 +1504,19 @@ def create_app(
                     return operation_store.receipt(payload)
                 if existing.expires_at <= datetime.now(UTC):
                     replaced_expired_scope = True
-                elif managed_exact_candidate_fifo and not managed_scope_is_narrow:
+                elif managed_exact_candidate_fifo:
                     # A prior controller version could persist a managed
-                    # exception scope containing an unrelated provider job.
-                    # Repair that durable scope in place while leaving the
-                    # unrelated job pending in the provider queue.
+                    # exception scope containing an unrelated provider job,
+                    # or a terminal tuple from the previous profile. Repair
+                    # that durable scope in place while leaving unrelated or
+                    # non-terminal provider jobs pending in the queue.
                     retained_jobs = tuple(
                         item
                         for item in existing.jobs
                         if item.repository == QGEO_REPOSITORY
                         and item.exact_sha == str(candidate["head_sha"])
                         and item.job_id != job_id
+                        and item.job_id not in terminal_managed_job_ids
                     )
                     repaired_managed_scope = True
             elif (

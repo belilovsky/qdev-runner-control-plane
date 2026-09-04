@@ -29,39 +29,52 @@ OPERATOR_HEADERS = {
 }
 
 
-def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
+def _app(
+    tmp_path: Path,
+    github: Any | None = None,
+    *,
+    include_qgeo: bool = False,
+) -> TestClient:
     inventory = tmp_path / "repos.json"
-    inventory.write_text(
-        json.dumps(
+    repositories = [
+        {
+            "id": 1,
+            "full_name": "belilovsky/qazshield",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        },
+        {
+            "id": 2,
+            "full_name": "belilovsky/qazlake",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        },
+        {
+            "id": 3,
+            "full_name": "belilovsky/example",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
+        },
+    ]
+    if include_qgeo:
+        repositories.append(
             {
-                "repositories": [
-                    {
-                        "id": 1,
-                        "full_name": "belilovsky/qazshield",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 2,
-                        "full_name": "belilovsky/qazlake",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 3,
-                        "full_name": "belilovsky/example",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
-                    },
-                ]
+                "id": 4,
+                "full_name": "belilovsky/qazgeo",
+                "private": True,
+                "archived": False,
+                "default_branch": "main",
+                "profiles": ["qdev-ci", "qdev-ci-docker"],
             }
-        ),
+        )
+    inventory.write_text(
+        json.dumps({"repositories": repositories}),
         encoding="utf-8",
     )
     profiles = tmp_path / "profiles.yml"
@@ -74,6 +87,17 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                     "belilovsky/example": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
+                    "qdev-ci": {
+                        "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
+                        "resources": {
+                            "cpu": 1.0,
+                            "memory_mb": 3072,
+                            "disk_mb": 12288,
+                            "pids_limit": 512,
+                        },
+                        "timeout_minutes": 45,
+                        "allow_public_pr": True,
+                    },
                     "qdev-ci-docker": {
                         "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
                         "resources": {
@@ -155,6 +179,9 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
         admin_platform_ledger_path=(
             Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
+        ),
+        managed_release_ledger_path=(
+            Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
         ),
         release_jobs_root=tmp_path / "release-jobs",
     )
@@ -496,7 +523,11 @@ def _heartbeat(
     disk_free_gib: float = 30.0,
     admitted: bool = False,
     scope_id: str | None = None,
+    profiles: list[str] | None = None,
+    effective_profiles: list[str] | None = None,
 ) -> dict[str, object]:
+    worker_profiles = profiles or ["qdev-ci-docker"]
+    admitted_profiles = effective_profiles if effective_profiles is not None else ["qdev-ci-docker"]
     raw = {
         "allowed": True,
         "disk_used_pct": 87.0,
@@ -514,7 +545,7 @@ def _heartbeat(
         json={
             "worker_name": WORKER_NAME,
             "tier": "primary",
-            "profiles": ["qdev-ci-docker"],
+            "profiles": worker_profiles,
             "active_jobs": active_jobs,
             "active_job_ids": [42] if active_jobs else [],
             "detail": {
@@ -522,7 +553,7 @@ def _heartbeat(
                 "raw_capacity": raw,
                 "baseline_capacity": baseline,
                 "effective_capacity": baseline,
-                "effective_profiles": ["qdev-ci-docker"] if admitted else [],
+                "effective_profiles": admitted_profiles if admitted else [],
                 "capacity_directive_id": None,
                 "configured_claim_scope_id": scope_id,
                 "concurrency": 1,
@@ -892,6 +923,116 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
     assert payload["idempotent"] is False
     assert payload["rolled_over_terminal_scope"] is True
     assert [item["job_id"] for item in payload["claim_scope"]["jobs"]] == [42, 43]
+
+
+def test_managed_qgeo_scope_prunes_terminal_profile_tuple_on_reuse(tmp_path: Path) -> None:
+    client = _app(tmp_path, include_qgeo=True)
+    store: Store = client.app.state.store
+    candidate_sha = "8bfd4e5bb7da5c7c99fd12865fb56d88fc5c9d7d"
+    first_job = QueuedJob(
+        delivery_id="qgeo-security",
+        job_id=100982561858,
+        run_id=33838251934,
+        repository="belilovsky/qazgeo",
+        repository_id=4,
+        installation_id=1,
+        labels=("self-hosted", "Linux", "X64", "qdev-ci"),
+        head_sha=candidate_sha,
+        head_branch="main",
+        payload={"workflow_job": {"run_attempt": 1}},
+    )
+    second_job = QueuedJob(
+        delivery_id="qgeo-test",
+        job_id=100982561902,
+        run_id=33838251934,
+        repository="belilovsky/qazgeo",
+        repository_id=4,
+        installation_id=1,
+        labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+        head_sha=candidate_sha,
+        head_branch="main",
+        payload={"workflow_job": {"run_attempt": 1}},
+    )
+    assert store.enqueue(first_job) is True
+    assert store.enqueue(second_job) is True
+    scope_id = "qgeo-release-scope-20260904"
+    request = {
+        "job_id": first_job.job_id,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": scope_id,
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "qgeo-profile-transition",
+        "duration_seconds": 900,
+    }
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id=scope_id,
+        profiles=["qdev-ci", "qdev-ci-docker"],
+        effective_profiles=["qdev-ci"],
+    )
+    headers = OPERATOR_HEADERS
+    first = client.post(
+        f"/internal/v1/operations/jobs/{first_job.job_id}/claim-scope",
+        headers=headers,
+        json=request,
+    )
+    assert first.status_code == 200
+    store.set_status(first_job.job_id, "completed", "success")
+
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id=scope_id,
+        profiles=["qdev-ci", "qdev-ci-docker"],
+        effective_profiles=["qdev-ci-docker"],
+    )
+    second_request = request | {
+        "job_id": second_job.job_id,
+    }
+    rollover = client.post(
+        f"/internal/v1/operations/jobs/{second_job.job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert rollover.status_code == 200
+    rollover_payload = verify_controller_receipt(rollover.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert rollover_payload["rolled_over_terminal_scope"] is True
+    assert [item["job_id"] for item in rollover_payload["claim_scope"]["jobs"]] == [
+        first_job.job_id,
+        second_job.job_id,
+    ]
+
+    repaired = client.post(
+        f"/internal/v1/operations/jobs/{second_job.job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert repaired.status_code == 200
+    repaired_payload = verify_controller_receipt(repaired.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repaired_payload["idempotent"] is False
+    assert repaired_payload["repaired_managed_scope"] is True
+    assert [item["job_id"] for item in repaired_payload["claim_scope"]["jobs"]] == [
+        second_job.job_id
+    ]
+
+    repeated = client.post(
+        f"/internal/v1/operations/jobs/{second_job.job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
 
 
 def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_path: Path) -> None:
