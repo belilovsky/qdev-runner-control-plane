@@ -124,6 +124,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             "replaced_expired_scope",
             "rolled_over_terminal_scope",
             "rebound_legacy_scope",
+            "repaired_managed_scope",
         }
     if set(value) != expected:
         raise ValueError("controller receipt payload fields are invalid")

@@ -328,6 +328,10 @@ def upsert_claim_scope(path: Path, scope: ClaimScope) -> None:
     FIFO position, lease or provider state.  The controller later lets the
     already-configured worker claim the exact immutable tuple.
     """
+    # Validate the newly serialized entry before touching the durable
+    # document.  This keeps a malformed controller-generated scope from
+    # poisoning the worker claim path.
+    _parse_scope(_scope_entry(scope), schema=scope.schema)
     scopes = load_claim_scopes(path)
     scopes[scope.scope_id] = scope
     document = {

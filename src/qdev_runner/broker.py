@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
 from .claim_scope import (
     MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    QGEO_REPOSITORY,
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
@@ -1165,11 +1166,21 @@ def create_app(
         replaced_expired_scope = False
         rolled_over_terminal_scope = False
         rebound_legacy_scope = False
+        repaired_managed_scope = False
         retained_jobs: tuple[ScopedJob, ...] = ()
         fifo_exception: str | None = (
             MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION if managed_exact_candidate_fifo else None
         )
         if existing is not None:
+            managed_scope_is_narrow = (
+                existing.schema == SCHEMA_V2
+                and existing.fifo_exception == MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+                and all(
+                    item.repository == QGEO_REPOSITORY
+                    and item.exact_sha == str(candidate["head_sha"])
+                    for item in existing.jobs
+                )
+            )
             same_scope = (
                 existing.schema == SCHEMA_V2
                 and existing.worker_name == request.worker_name
@@ -1188,7 +1199,9 @@ def create_app(
                 )
             )
             if same_scope:
-                if existing.expires_at > datetime.now(UTC):
+                if existing.expires_at > datetime.now(UTC) and (
+                    not managed_exact_candidate_fifo or managed_scope_is_narrow
+                ):
                     payload = {
                         "kind": "fifo-claim-scope-issued",
                         "operator_session": "verified",
@@ -1214,7 +1227,21 @@ def create_app(
                         "worker": audit,
                     }
                     return operation_store.receipt(payload)
-                replaced_expired_scope = True
+                if existing.expires_at <= datetime.now(UTC):
+                    replaced_expired_scope = True
+                elif managed_exact_candidate_fifo and not managed_scope_is_narrow:
+                    # A prior controller version could persist a managed
+                    # exception scope containing an unrelated provider job.
+                    # Repair that durable scope in place while leaving the
+                    # unrelated job pending in the provider queue.
+                    retained_jobs = tuple(
+                        item
+                        for item in existing.jobs
+                        if item.repository == QGEO_REPOSITORY
+                        and item.exact_sha == str(candidate["head_sha"])
+                        and item.job_id != job_id
+                    )
+                    repaired_managed_scope = True
             elif (
                 # A legacy v2 document issued before certificate binding was
                 # enforced cannot be claimed: the worker-side claim endpoint
@@ -1251,7 +1278,17 @@ def create_app(
                 # tuple it contains has a provider-terminal local record.  This
                 # lets one enrolled worker progress through profile FIFO without
                 # widening scope, requeueing, or changing the worker binding.
-                previous = [store.job(item.job_id) for item in existing.jobs]
+                rollover_jobs = existing.jobs
+                if managed_exact_candidate_fifo:
+                    rollover_jobs = tuple(
+                        item
+                        for item in existing.jobs
+                        if item.repository == QGEO_REPOSITORY
+                        and item.exact_sha == str(candidate["head_sha"])
+                    )
+                    if len(rollover_jobs) != len(existing.jobs):
+                        repaired_managed_scope = True
+                previous = [store.job(item.job_id) for item in rollover_jobs]
                 if any(
                     item is None
                     or str(item.get("status")) not in {"completed", "failed", "rejected"}
@@ -1262,7 +1299,7 @@ def create_app(
                         detail="claim scope has non-terminal immutable tuple",
                     )
                 rolled_over_terminal_scope = True
-                retained_jobs = existing.jobs
+                retained_jobs = tuple(item for item in rollover_jobs if item.job_id != job_id)
                 fifo_exception = existing.fifo_exception or fifo_exception
             elif not (
                 existing.schema == SCHEMA_V2
@@ -1319,6 +1356,7 @@ def create_app(
             "replaced_expired_scope": replaced_expired_scope,
             "rolled_over_terminal_scope": rolled_over_terminal_scope,
             "rebound_legacy_scope": rebound_legacy_scope,
+            "repaired_managed_scope": repaired_managed_scope,
             "claim_scope": claim_scope_mapping(scope),
             "immutable_tuple": {
                 "repository": candidate["repository"],
