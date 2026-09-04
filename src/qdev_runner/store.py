@@ -228,6 +228,7 @@ class Store:
         profile_disk_mb: dict[str, int] | None = None,
         repository_profile_disk_mb: dict[tuple[str, str], int] | None = None,
         repository: str | None = None,
+        head_sha: str | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
     ) -> dict[str, Any] | None:
@@ -269,6 +270,8 @@ class Store:
                         profile_heads.setdefault(matching_profile.lower(), int(row["job_id"]))
             for row in pending_rows:
                 if repository is not None and str(row["repository"]).lower() != repository.lower():
+                    continue
+                if head_sha is not None and str(row["head_sha"]).lower() != head_sha.lower():
                     continue
                 labels = {label.lower() for label in json.loads(row["labels_json"])}
                 matching_profile = next(

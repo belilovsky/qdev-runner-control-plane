@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-08-31T13:31:45.071802+00:00",
+  "generated_at": "2026-09-04T18:27:49.740573+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
   "runner_repository_count": 96,
@@ -2815,13 +2815,14 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
       "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "abcb4958ad2e973833dee0104e7ecfc7bcd06e28",
+          "sha": "74c93e350cd07de36735d39a616e81abec2d4d9e",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2829,7 +2830,7 @@
         },
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
-          "sha": "39b6fbc75ba5e46100e69d5371070d0483ed131b",
+          "sha": "ea2d414284a16864f65490e28bb62a8650e42324",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2837,7 +2838,7 @@
         },
         {
           "path": ".github/workflows/runner-smoke.yml",
-          "sha": "e84dc1fda8425afe041fa181ddf0a50bf3babe99",
+          "sha": "ad3281a9369057f9af2ef2885436aa35c0d1c9ca",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -3612,7 +3613,8 @@
       "archived": false,
       "default_branch": "master",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
       "workflow_count": 7,
       "workflow_files": [
@@ -3626,7 +3628,7 @@
         },
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
-          "sha": "dd9f9a92df12b37d9b73d34bb874b153fdcb9c5a",
+          "sha": "243e87b1e547a492031851e52139ea8e60b7c98b",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -3634,7 +3636,7 @@
         },
         {
           "path": ".github/workflows/quality.yml",
-          "sha": "e29e85dc63ddc7ae9f120ae051966d9df508d968",
+          "sha": "c5b6a5ab9e25aed4cbfcad069b440428784c977e",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,

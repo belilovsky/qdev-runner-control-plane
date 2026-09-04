@@ -71,7 +71,10 @@ class Policy:
                         "repository admission override must be an integer MiB value: "
                         f"{full_name}/{profile_name}"
                     )
-                minimum_disk_mb = min(profile.disk_mb, 12 * 1024)
+                # A repository override is combined with the worker's hard
+                # free-space floor, so the reservation may follow a measured
+                # small workload without weakening the independent floor.
+                minimum_disk_mb = min(profile.disk_mb, 4 * 1024)
                 if not minimum_disk_mb <= raw_disk_mb < profile.disk_mb:
                     raise PolicyError(
                         "repository admission override must be below the profile default "

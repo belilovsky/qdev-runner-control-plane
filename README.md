@@ -118,7 +118,8 @@ are reported and left unchanged.
   creates the one-day, client-auth-only backhaul credential locally on that
   host. It must never be copied to a worker or committed.
 - `https://worker.ci.qdev.run/internal/v1/operations/*` — mTLS operator API
-  for signed audits and one expiring, disk-only capacity override.
+  for signed audits and one expiring, disk-only capacity override bound to one
+  repository, runner profile and exact source SHA.
 - `https://worker.ci.qdev.run/internal/v1/releases/qaz-tours` — the separate,
   product-specific Qaz.Tours release admission. It accepts only an exact SHA,
   immutable artifact digest and completed candidate receipt from the enrolled

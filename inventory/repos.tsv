@@ -72,7 +72,7 @@ belilovsky/qazlake	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazlake-api	true	main	qdev-ci	6	0	0	0	0
 belilovsky/qazlost	true	main	qdev-ci	4	1	0	0	0
 belilovsky/qazpipe	true	main	qdev-ci	5	0	0	0	0
-belilovsky/qazpolit	true	main	qdev-ci	4	0	0	0	0
+belilovsky/qazpolit	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazposter	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazshield	true	main	qdev-ci,qdev-ci-docker	8	0	0	0	2
 belilovsky/qazstack	true	main	qdev-ci	6	0	1	0	0
@@ -92,6 +92,6 @@ belilovsky/taskqueue	true	main	qdev-ci	4	0	0	0	0
 belilovsky/tazy-platform	true	main	qdev-ci	3	0	0	0	0
 belilovsky/tazy-pro	true	main	qdev-ci,qdev-ci-browser	3	0	0	0	0
 belilovsky/tazy-pro-navigator	true	main	qdev-ci	3	0	0	0	0
-belilovsky/tokaev-module	true	master	qdev-ci	7	0	0	0	0
+belilovsky/tokaev-module	true	master	qdev-ci,qdev-ci-docker	7	0	0	0	0
 belilovsky/total-kz	true	main	qdev-ci,qdev-ci-docker	5	1	1	0	0
 belilovsky/vps-pipelines	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0

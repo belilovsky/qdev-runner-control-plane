@@ -30,6 +30,26 @@ repository_admission_disk_mb:
   # for every other repository.
   belilovsky/adilet-digest-studio:
     qdev-ci-docker: 12288
+  # QGeo's exact candidate has 176 MiB of tracked source, a 290 MiB local test
+  # environment and a 142 MiB production image. Its qdev-ci-docker lane adds
+  # one pinned PostGIS service before publishing one immutable image. Reserve
+  # 4 GiB (over 6.7x the measured 608 MiB inputs) for this repository only;
+  # the worker's independent 4.5 GiB free-space floor remains enforced before
+  # selection and throughout execution.
+  belilovsky/qazgeo:
+    qdev-ci-docker: 4096
+  # Qaz.Vision's release image has a measured 201 MiB compressed runtime and
+  # its candidate checkout is 331 MiB. Its Docker lane is a single slim
+  # Python image build with no nested services; reserve the supported 12 GiB
+  # repository minimum after that measurement. The worker's independent
+  # 4.5 GiB hard free-space floor and workflow preflight remain enforced.
+  belilovsky/tokaev-module:
+    qdev-ci-docker: 12288
+  # QazPolit declares a 12 GiB exact-SHA Docker release lane. Keep this
+  # repository-specific admission bound below the profile default while the
+  # worker's independent hard floor remains enforced during execution.
+  belilovsky/qazpolit:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]

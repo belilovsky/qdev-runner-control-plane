@@ -756,6 +756,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazshield",
+            "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 90.0,
@@ -769,6 +770,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     operation = override["payload"]["operation"]
     assert operation["profiles"] == ["qdev-ci-docker"]
     assert operation["repository"] == "belilovsky/qazshield"
+    assert operation["head_sha"] == "a" * 40
     assert operation["min_disk_free_gib"] == 4.5
 
     directive_response = _heartbeat(client)
@@ -1035,6 +1037,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazshield",
+            "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 90.0,
@@ -1057,6 +1060,7 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazlake",
+            "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 95.0,
@@ -1079,6 +1083,7 @@ def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
     directive = operation_store.create_capacity_override(
         worker_name=WORKER_NAME,
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95.0,
@@ -1129,7 +1134,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     )
     assert store.enqueue(
         QueuedJob(
-            delivery_id="target",
+            delivery_id="old-target",
             job_id=101,
             run_id=84,
             repository="belilovsky/qazlake",
@@ -1141,11 +1146,26 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             payload={},
         )
     )
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="target",
+            job_id=102,
+            run_id=85,
+            repository="belilovsky/qazlake",
+            repository_id=2,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+            head_sha="b" * 40,
+            head_branch="candidate",
+            payload={},
+        )
+    )
     override_response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazlake",
+            "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 95.0,
@@ -1174,6 +1194,17 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
         | {
             "capacity_directive_id": operation["operation_id"],
             "capacity_repository": "belilovsky/qazshield",
+            "capacity_head_sha": "b" * 40,
+        },
+    )
+    wrong_sha = client.post(
+        "/internal/v1/jobs/claim",
+        headers=headers,
+        json=claim
+        | {
+            "capacity_directive_id": operation["operation_id"],
+            "capacity_repository": "belilovsky/qazlake",
+            "capacity_head_sha": "a" * 40,
         },
     )
     accepted = client.post(
@@ -1183,6 +1214,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
         | {
             "capacity_directive_id": operation["operation_id"],
             "capacity_repository": "belilovsky/qazlake",
+            "capacity_head_sha": "b" * 40,
         },
     )
 
@@ -1190,10 +1222,13 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     assert missing_binding.json()["detail"] == "capacity override binding rejected"
     assert wrong_repository.status_code == 403
     assert wrong_repository.json()["detail"] == "capacity override binding rejected"
+    assert wrong_sha.status_code == 403
+    assert wrong_sha.json()["detail"] == "capacity override binding rejected"
     assert accepted.status_code == 200
-    assert accepted.json()["job_id"] == 101
+    assert accepted.json()["job_id"] == 102
     assert accepted.json()["repository"] == "belilovsky/qazlake"
     assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:

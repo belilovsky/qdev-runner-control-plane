@@ -34,6 +34,7 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
     directive = operation_store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci", "qdev-ci-docker", "qdev-ci"),
         min_disk_free_gib=HARD_MIN_FREE_GIB,
         max_disk_used_pct=HARD_MAX_DISK_USED_PCT,
@@ -44,6 +45,7 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
     )
 
     assert directive.profiles == ("qdev-ci", "qdev-ci-docker")
+    assert directive.head_sha == "a" * 40
     assert (
         operation_store.active(
             "srv1879763-light-primary",
@@ -85,6 +87,7 @@ def test_capacity_override_rejects_tamper_profile_mismatch_and_expiry(
     directive = operation_store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=HARD_MIN_FREE_GIB,
         max_disk_used_pct=HARD_MAX_DISK_USED_PCT,
@@ -249,9 +252,22 @@ def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -
         store.create_capacity_override(
             worker_name="worker-primary",
             repository="belilovsky/qazshield",
+            head_sha="a" * 40,
             profiles=("qdev-ci",),
             min_disk_free_gib=HARD_MIN_FREE_GIB - 0.1,
             max_disk_used_pct=HARD_MAX_DISK_USED_PCT,
+            owner="owner",
+            reason="reason",
+            duration_seconds=60,
+        )
+    with pytest.raises(ValueError, match="hard ceiling"):
+        store.create_capacity_override(
+            worker_name="worker-primary",
+            repository="belilovsky/qazgeo",
+            head_sha="a" * 40,
+            profiles=("qdev-ci-docker",),
+            min_disk_free_gib=HARD_MIN_FREE_GIB,
+            max_disk_used_pct=HARD_MAX_DISK_USED_PCT + 0.1,
             owner="owner",
             reason="reason",
             duration_seconds=60,
