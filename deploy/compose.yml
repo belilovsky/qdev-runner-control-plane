@@ -14,6 +14,9 @@ services:
       # Controller configuration is read-only; mutable signed scopes belong on
       # the durable writable state volume.
       QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
+      # The managed-release ledger is mutable runtime state. Keep it on the
+      # durable writable volume; /etc/qdev-runner is intentionally read-only.
+      QDEV_MANAGED_RELEASE_LEDGER: /var/lib/qdev-runner/controller-state/managed-release-ledger.yml
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
@@ -42,6 +45,9 @@ services:
       # never published on a host port and is reachable only on the internal
       # Docker network.
       QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
+      # Admission and reconciliation append signed CI receipts here. The
+      # release configuration in /etc remains an immutable seed only.
+      QDEV_MANAGED_RELEASE_LEDGER: /var/lib/qdev-runner/controller-state/managed-release-ledger.yml
       # The operator uses the externally authenticated edge.  It must not
       # acquire a direct path around worker certificate verification.
       QDEV_CONTROLLER_URL: https://worker.ci.qdev.run

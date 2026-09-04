@@ -63,10 +63,20 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert (
         'release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"' in script
     )
+    assert (
+        'managed_release_ledger_path="${QDEV_MANAGED_RELEASE_LEDGER:-/var/lib/qdev-runner/controller-state/managed-release-ledger.yml}"'
+        in script
+    )
+    assert 'managed_release_ledger_root="$(dirname -- "$managed_release_ledger_path")"' in script
     assert 'runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"' in script
     assert 'runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"' in script
     assert 'install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700' in script
-    assert 'for durable_root in "$operations_root" "$release_jobs_root"; do' in script
+    assert (
+        'for durable_root in "$operations_root" "$release_jobs_root" '
+        '"$managed_release_ledger_root"; do' in script
+    )
+    assert "Seed mutable state exactly once" in script
+    assert "managed-release ledger path is not a regular file" in script
     assert 'stat -c %u -- "$durable_root"' in script
     assert 'stat -c %g -- "$durable_root"' in script
     assert "restore_operator_identity_metadata()" in script
@@ -121,6 +131,13 @@ def test_controller_compose_project_is_namespaced() -> None:
 
     assert compose.startswith("name: qdev-runner\n")
     assert service.count("--project-name qdev-runner") == 2
+    assert (
+        compose.count(
+            "QDEV_MANAGED_RELEASE_LEDGER: /var/lib/qdev-runner/controller-state/"
+            "managed-release-ledger.yml"
+        )
+        == 2
+    )
 
 
 def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> None:
