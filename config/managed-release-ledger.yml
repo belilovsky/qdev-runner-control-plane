@@ -2,21 +2,19 @@ schema_version: qdev-managed-release-ledger-v1
 entries:
   qazgeo:
     project_id: qazgeo
-    source_sha: 8bfd4e5bb7da5c7c99fd12865fb56d88fc5c9d7d
+    source_sha: 932883aeed522500d03b0a56e2d1798a3ea9c910
     status: ci_queued
     # These are observed, immutable provider runs. This controller config may
     # issue a scoped claim for them, but may never cancel, requeue, or replace them.
     ci_runs:
-      - run_id: "33838251934"
-        state: queued
-      - run_id: "33838251867"
+      - run_id: "33908036125"
         state: queued
     artifact:
       state: blocked
       receipt_uri: null
     ci:
       state: ci_queued
-      receipt_uri: https://github.com/belilovsky/qazgeo/actions/runs/33838251934
+      receipt_uri: https://github.com/belilovsky/qazgeo/actions/runs/33908036125
     deploy:
       state: blocked
       receipt_uri: null
