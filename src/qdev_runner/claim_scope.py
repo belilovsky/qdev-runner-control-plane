@@ -24,6 +24,11 @@ SUPPORTED_SCHEMAS = frozenset({SCHEMA_V1, SCHEMA_V2, LEGACY_SCHEMA, MIXED_SCHEMA
 ALLOWED_REPOSITORY = "belilovsky/qazagents"
 ALLOWED_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker"})
 PORTFOLIO_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
+# A controller-issued exception for one exact managed-release tuple.  This is
+# intentionally not a general priority flag: it is accepted only on a v2
+# scope whose immutable jobs are all bound to the managed QGeo candidate.
+MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION = "managed-exact-candidate"
+QGEO_REPOSITORY = "belilovsky/qazgeo"
 MAX_TTL = timedelta(minutes=15)
 _SHA256 = re.compile(r"^[0-9a-f]{40}$")
 _CERT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -59,6 +64,7 @@ class ClaimScope:
     host: str | None = None
     runner: str | None = None
     correlation_id: str | None = None
+    fifo_exception: str | None = None
 
     def permits(
         self,
@@ -168,6 +174,11 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
         host = _required_string(raw.get("host"), "host")
         runner = _required_string(raw.get("runner"), "runner")
         correlation_id = _required_string(raw.get("correlation_id"), "correlation_id")
+        fifo_exception = raw.get("fifo_exception")
+        if fifo_exception is not None:
+            fifo_exception = _required_string(fifo_exception, "fifo_exception")
+            if fifo_exception != MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION:
+                raise ClaimScopeError("claim scope fifo_exception is unsupported")
         v2_jobs = [_parse_v2_job(item) for item in jobs_raw]
         if len({item.job_id for item in v2_jobs}) != len(v2_jobs):
             raise ClaimScopeError("claim scope job IDs must be unique")
@@ -179,6 +190,11 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
             raise ClaimScopeError("claim scope immutable job tuples must be unique")
         first = v2_jobs[0]
         assert first.repository is not None and first.exact_sha is not None
+        if fifo_exception == MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION and any(
+            item.repository != QGEO_REPOSITORY or item.exact_sha != first.exact_sha
+            for item in v2_jobs
+        ):
+            raise ClaimScopeError("managed exact candidate fifo_exception requires one QGeo SHA")
         return ClaimScope(
             scope_id=scope_id,
             worker_name=worker_name,
@@ -192,6 +208,7 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
             host=host,
             runner=runner,
             correlation_id=correlation_id,
+            fifo_exception=fifo_exception,
         )
 
     repository = _required_string(raw.get("repository"), "repository")
@@ -274,6 +291,7 @@ def _scope_entry(scope: ClaimScope) -> dict[str, object]:
                 "host": scope.host,
                 "runner": scope.runner,
                 "correlation_id": scope.correlation_id,
+                "fifo_exception": scope.fifo_exception,
                 "jobs": [
                     {
                         "job_id": item.job_id,
@@ -310,6 +328,10 @@ def upsert_claim_scope(path: Path, scope: ClaimScope) -> None:
     FIFO position, lease or provider state.  The controller later lets the
     already-configured worker claim the exact immutable tuple.
     """
+    # Validate the newly serialized entry before touching the durable
+    # document.  This keeps a malformed controller-generated scope from
+    # poisoning the worker claim path.
+    _parse_scope(_scope_entry(scope), schema=scope.schema)
     scopes = load_claim_scopes(path)
     scopes[scope.scope_id] = scope
     document = {

@@ -13,6 +13,7 @@ activation:
 enrolment:
   lanes:
     - qdev-release-qmt
+    - qdev-release-qazgeo
 workers:
   - qdev-ci
   - qdev-ci-browser

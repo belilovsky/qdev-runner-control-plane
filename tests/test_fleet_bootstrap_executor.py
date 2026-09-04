@@ -40,11 +40,11 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
 def _adapter(path: Path, *, status: str = "completed") -> Path:
     path.write_text(
         "#!/bin/sh\n"
-        "python3 -c 'import json,sys; x=json.load(sys.stdin); t=x[\"target\"]; "
-        f"print(json.dumps({{\"schema\":\"qdev-fleet-worker-recovery-result-v1\","
-        f"\"status\":\"{status}\",\"worker_name\":t[\"worker_name\"],"
-        "\"target_id\":t[\"target_id\"],\"service_unit\":t[\"service_unit\"],"
-        "\"active_jobs\":0,\"result\":{\"native\":\"ok\"}}))'\n",
+        'python3 -c \'import json,sys; x=json.load(sys.stdin); t=x["target"]; '
+        f'print(json.dumps({{"schema":"qdev-fleet-worker-recovery-result-v1",'
+        f'"status":"{status}","worker_name":t["worker_name"],'
+        '"target_id":t["target_id"],"service_unit":t["service_unit"],'
+        '"active_jobs":0,"result":{"native":"ok"}}))\'\n',
         encoding="utf-8",
     )
     path.chmod(0o700)
@@ -117,10 +117,10 @@ def test_adapter_identity_mismatch_fails_closed(tmp_path: Path) -> None:
     # adapter is covered by replacing its output with an unsafe identity.
     adapter.write_text(
         "#!/bin/sh\n"
-        "printf '%s' '{\"schema\":\"qdev-fleet-worker-recovery-result-v1\","
-        "\"status\":\"completed\",\"worker_name\":\"other\","
-        "\"target_id\":\"other\",\"service_unit\":\"other.service\","
-        "\"active_jobs\":0,\"result\":{}}'\n",
+        'printf \'%s\' \'{"schema":"qdev-fleet-worker-recovery-result-v1",'
+        '"status":"completed","worker_name":"other",'
+        '"target_id":"other","service_unit":"other.service",'
+        '"active_jobs":0,"result":{}}\'\n',
         encoding="utf-8",
     )
     adapter.chmod(0o700)

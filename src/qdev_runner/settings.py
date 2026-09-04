@@ -76,9 +76,7 @@ class BrokerSettings:
     )
     github_actions_oidc_audience: str = "qdev-artifact-v1"
     fleet_bootstrap_policy_path: Path = Path("/etc/qdev-runner/fleet-bootstrap.yml")
-    fleet_bootstrap_operation_root: Path = Path(
-        "/var/lib/qdev-runner/operations/fleet-bootstrap"
-    )
+    fleet_bootstrap_operation_root: Path = Path("/var/lib/qdev-runner/operations/fleet-bootstrap")
     fleet_bootstrap_receipt_root: Path = Path(
         "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
     )
@@ -110,9 +108,7 @@ class BrokerSettings:
             operator_directive_key=(
                 os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
             ),
-            controller_claim_key=(
-                os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None
-            ),
+            controller_claim_key=(os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None),
             operations_root=Path(
                 os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")
             ),

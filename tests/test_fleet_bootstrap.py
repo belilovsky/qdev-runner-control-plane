@@ -82,9 +82,7 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
     policy.validate(request)
     target = policy.worker_target("qdev-platform-ci-187")
     assert target is not None
-    assert target.target_id == (
-        "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187"
-    )
+    assert target.target_id == ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187")
     assert target.service_unit.endswith(".service")
     assert target.host_binding == "controller-registry"
 

@@ -70,11 +70,11 @@ entries:
     kind: service
     repository: belilovsky/qazgeo
     canonical_ref: main
-    artifact_repository: qazgeo
+    artifact_repository: belilovsky/qazgeo
     allowed_profiles: [qdev-ci, qdev-ci-docker]
-    native_release_profile: qazgeo-native-immutable-release
-    runtime_endpoints: [https://qgeo.tech/health, https://qgeo.tech/health/live, https://qgeo.tech/health/ready]
+    native_release_profile: qazgeo-native-immutable-release-v1
+    runtime_endpoints: [https://qgeo.tech/health, https://qgeo.tech/health/live, https://qgeo.tech/health/ready, https://qgeo.tech/health/quality]
     rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
-    host_identity: qdev-release-agent:vps-main
+    host_identity: qdev-release-agent:qazgeo-primary-187
     owner: QazGeo
     admission_ledger: managed-production

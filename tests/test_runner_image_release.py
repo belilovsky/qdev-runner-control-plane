@@ -89,9 +89,7 @@ def test_valid_manifest_covers_all_executor_images() -> None:
         ),
     ],
 )
-def test_manifest_rejects_unverified_release_evidence(
-    mutate: object, message: str
-) -> None:
+def test_manifest_rejects_unverified_release_evidence(mutate: object, message: str) -> None:
     value = manifest()
     mutate(value)  # type: ignore[operator]
 

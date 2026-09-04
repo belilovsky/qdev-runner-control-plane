@@ -27,9 +27,7 @@ from .release_lane import ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v1"
-ALLOWED_ACTIONS = frozenset(
-    {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
-)
+ALLOWED_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -87,9 +85,7 @@ class FleetBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_name: str = Field(alias="schema")
-    action: Literal[
-        "activate-controller", "enrol-host-agent", "restore-existing-worker"
-    ]
+    action: Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
     source_sha: str
     run_id: int = Field(ge=1)
     job_id: int = Field(ge=1)
@@ -310,9 +306,7 @@ class FleetBootstrapPolicy:
         ):
             raise FleetBootstrapError("bootstrap worker is not allowlisted")
 
-    def validate_oidc_claims(
-        self, claims: dict[str, Any], request: FleetBootstrapRequest
-    ) -> None:
+    def validate_oidc_claims(self, claims: dict[str, Any], request: FleetBootstrapRequest) -> None:
         """Bind the OIDC claim to one immutable workflow attempt.
 
         The JWT signature and standard temporal checks are performed by the
@@ -321,8 +315,7 @@ class FleetBootstrapPolicy:
         run, job-attempt and audience binding.
         """
         expected_workflow_ref = (
-            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/"
-            f"{self.identity.branch}"
+            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/{self.identity.branch}"
         )
         attempt = claims.get("run_attempt")
         if isinstance(attempt, bool) or str(attempt) != str(request.attempt):
@@ -397,8 +390,7 @@ class BootstrapOperationStore:
     @staticmethod
     def _validate_result(result: dict[str, Any]) -> None:
         if not isinstance(result, dict) or any(
-            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key)
-            for key in result
+            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key) for key in result
         ):
             raise FleetBootstrapError("bootstrap operation result is not safe to persist")
         for value in result.values():

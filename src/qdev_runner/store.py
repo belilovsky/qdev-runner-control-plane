@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import SCHEMA_V2, ClaimScope
+from .claim_scope import MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION, SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     claimed_at REAL,
     completed_at REAL,
     result TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    infra_retries INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at);
 
@@ -113,14 +114,30 @@ class Store:
         self.path = path
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
-            }
-            if "claim_scope_id" not in columns:
-                connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
+            self._migrate_schema(connection)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             self._repair_invalid_queue_timestamps(connection)
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        """Apply additive migrations to databases created by older brokers.
+
+        Production broker databases outlive controller releases.  Every
+        migration is therefore presence-checked before ALTER so a restart is
+        safe when a previous attempt committed the column just before losing
+        its process.  The QGeo lane only needs the durable retry counter; the
+        check deliberately leaves unrelated newer tables untouched.
+        """
+        columns = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "claim_scope_id" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
+        if "infra_retries" not in columns:
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN infra_retries INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _repair_invalid_queue_timestamps(self, connection: sqlite3.Connection) -> None:
         """Restore FIFO ordering for legacy rows written with invalid timestamps.
@@ -254,7 +271,11 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             profile_heads: dict[str, int] = {}
-            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            if (
+                claim_scope is not None
+                and claim_scope.schema == SCHEMA_V2
+                and claim_scope.fifo_exception != MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+            ):
                 # v2 scopes may authorize independent profiles concurrently, but
                 # may never skip the oldest pending job within any one profile.
                 # Keep this guard in the durable claim path as well as the
@@ -279,6 +300,7 @@ class Store:
                 if (
                     claim_scope is not None
                     and claim_scope.schema == SCHEMA_V2
+                    and claim_scope.fifo_exception != MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
                     and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
                 ):
                     continue
