@@ -195,6 +195,8 @@ class ManagedReleaseLedger:
             raise ManagedReleaseLedgerError("managed release CI runs are invalid")
         result: list[dict[str, str]] = []
         run_ids: set[str] = set()
+        provider_bindings: set[tuple[str, str, str, str]] = set()
+        provider_jobs: set[tuple[str, str, str]] = set()
         for item in value:
             if not isinstance(item, dict):
                 raise ManagedReleaseLedgerError("managed release CI run state is invalid")
@@ -206,7 +208,6 @@ class ManagedReleaseLedger:
                 or not isinstance(item["run_id"], str)
                 or not item["run_id"].isdigit()
                 or item["state"] not in {"queued", "in_progress", "terminal"}
-                or item["run_id"] in run_ids
             ):
                 raise ManagedReleaseLedgerError("managed release CI run state is invalid")
             if project_id == "qazgeo" and (
@@ -219,6 +220,24 @@ class ManagedReleaseLedger:
                 or int(item["attempt"]) < 1
             ):
                 raise ManagedReleaseLedgerError("managed release CI provider binding is invalid")
+            if project_id == "qazgeo":
+                binding = (
+                    item["repository"],
+                    item["run_id"],
+                    item["attempt"],
+                    item["job_id"],
+                )
+                job = (item["repository"], item["run_id"], item["job_id"])
+                # A workflow run may legitimately contain several jobs.  Keep
+                # each concrete provider job/attempt binding unique, while
+                # refusing a second record for the same job that could make
+                # admission ambiguous.
+                if binding in provider_bindings or job in provider_jobs:
+                    raise ManagedReleaseLedgerError("managed release CI run state is invalid")
+                provider_bindings.add(binding)
+                provider_jobs.add(job)
+            elif item["run_id"] in run_ids:
+                raise ManagedReleaseLedgerError("managed release CI run state is invalid")
             run_ids.add(item["run_id"])
             result.append({str(key): str(value) for key, value in item.items()})
         return tuple(result)

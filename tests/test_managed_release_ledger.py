@@ -42,6 +42,20 @@ def test_qazgeo_ledger_admits_only_its_exact_candidate_and_existing_runs() -> No
             "job_id": "100915081363",
             "attempt": "1",
         },
+        {
+            "run_id": "33838251934",
+            "state": "queued",
+            "repository": "belilovsky/qazgeo",
+            "job_id": "100982561858",
+            "attempt": "1",
+        },
+        {
+            "run_id": "33838251934",
+            "state": "queued",
+            "repository": "belilovsky/qazgeo",
+            "job_id": "100982561902",
+            "attempt": "1",
+        },
     )
     with pytest.raises(ManagedReleaseLedgerError, match="tuple"):
         ledger.validate_admission(
@@ -85,6 +99,42 @@ def test_qazgeo_ledger_rejects_a_replacement_or_duplicate_ci_run(tmp_path: Path)
     document = yaml.safe_load(_ledger_path().read_text(encoding="utf-8"))
     document["entries"]["qazgeo"]["ci_runs"].append({"run_id": "33838251934", "state": "terminal"})
     path = tmp_path / "ledger.yml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(ManagedReleaseLedgerError, match="CI run"):
+        ManagedReleaseLedger(path)
+
+
+def test_qazgeo_ledger_accepts_distinct_jobs_in_one_workflow_run(tmp_path: Path) -> None:
+    document = yaml.safe_load(_ledger_path().read_text(encoding="utf-8"))
+    document["entries"]["qazgeo"]["ci_runs"].append(
+        {
+            "run_id": "33838251934",
+            "state": "queued",
+            "repository": "belilovsky/qazgeo",
+            "job_id": "100999999999",
+            "attempt": "1",
+        }
+    )
+    path = tmp_path / "multi-job-ledger.yml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    ledger = ManagedReleaseLedger(path)
+    assert len(ledger.entries[0].ci_runs) == 5
+
+
+def test_qazgeo_ledger_rejects_duplicate_provider_job_binding(tmp_path: Path) -> None:
+    document = yaml.safe_load(_ledger_path().read_text(encoding="utf-8"))
+    document["entries"]["qazgeo"]["ci_runs"].append(
+        {
+            "run_id": "33838251934",
+            "state": "queued",
+            "repository": "belilovsky/qazgeo",
+            "job_id": "100915082535",
+            "attempt": "1",
+        }
+    )
+    path = tmp_path / "duplicate-job-ledger.yml"
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
 
     with pytest.raises(ManagedReleaseLedgerError, match="CI run"):

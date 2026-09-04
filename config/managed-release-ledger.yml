@@ -17,6 +17,16 @@ entries:
         repository: belilovsky/qazgeo
         job_id: "100915081363"
         attempt: "1"
+      - run_id: "33838251934"
+        state: queued
+        repository: belilovsky/qazgeo
+        job_id: "100982561858"
+        attempt: "1"
+      - run_id: "33838251934"
+        state: queued
+        repository: belilovsky/qazgeo
+        job_id: "100982561902"
+        attempt: "1"
     artifact:
       state: blocked
       receipt_uri: null
