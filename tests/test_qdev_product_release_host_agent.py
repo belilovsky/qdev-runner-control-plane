@@ -16,7 +16,7 @@ SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
 
 
-@pytest.mark.parametrize("name", ["qaz-fund", "qaz-events"])
+@pytest.mark.parametrize("name", ["qaz-fund", "qaz-events", "qmt"])
 def test_product_agent_binds_jobs_to_fixed_lane_and_registry(name: str) -> None:
     profile = AGENT.PROFILES[name]
     reference = f"registry.ci.qdev.run/{profile.repository}@{DIGEST}"
@@ -43,6 +43,10 @@ def test_product_agent_is_no_build_and_proves_public_identity() -> None:
     assert '"--pull", "never"' in script
     assert "https://qaz.fund/.well-known/release.json" in script
     assert "https://qaz.events/.well-known/qdev-ecosystem.json" in script
+    assert "https://qmt.digital/release.json" in script
+    assert "qdev-release-qmt" in script
+    assert "QMT_IMAGE" in script
+    assert "preloaded_image_required" in script
     assert "docker system prune" not in script
     assert "docker image prune" not in script
     assert "runtime_proof(profile, active)" in script

@@ -274,9 +274,14 @@ def validate_runtime_receipt(
         raise ReleaseLaneError("runtime receipt does not bind verified release tuple")
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
+    if not isinstance(readiness, dict):
+        raise ReleaseLaneError("runtime receipt readiness is invalid")
+    if lane.project_id == "qaz-tours":
+        readiness_valid = readiness.get("qazgeo") in {"ok", "degraded"}
+    else:
+        readiness_valid = readiness.get("local") == "ok" and readiness.get("public") == "ok"
     if (
-        not isinstance(readiness, dict)
-        or readiness.get("qazgeo") not in {"ok", "degraded"}
+        not readiness_valid
         or not isinstance(rollback, dict)
         or rollback.get("verified") is not True
         or not _is_sha(rollback.get("source_sha"))
