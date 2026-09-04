@@ -113,6 +113,20 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "action",
         "fifo_preserved",
     },
+    "fleet-bootstrap-recovery": {
+        "kind",
+        "observed_at",
+        "status",
+        "operation_status",
+        "idempotency_key",
+        "request_fingerprint",
+        "worker_name",
+        "target_id",
+        "service_unit",
+        "active_jobs",
+        "error_code",
+        "result",
+    },
 }
 
 
@@ -269,6 +283,25 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or value["fifo_preserved"] is not True
     ):
         raise ValueError("stale-job recovery payload is invalid")
+    if kind == "fleet-bootstrap-recovery" and (
+        value["status"]
+        not in {"completed", "access_blocked", "active_work", "target_unregistered", "failed"}
+        or value["operation_status"] not in {"pending", "completed"}
+        or not isinstance(value["idempotency_key"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value["idempotency_key"])
+        or not isinstance(value["request_fingerprint"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["request_fingerprint"])
+        or not isinstance(value["worker_name"], str)
+        or not _WORKER_NAME.fullmatch(value["worker_name"])
+        or (value["target_id"] is not None and not isinstance(value["target_id"], str))
+        or (value["service_unit"] is not None and not isinstance(value["service_unit"], str))
+        or isinstance(value["active_jobs"], bool)
+        or not isinstance(value["active_jobs"], int)
+        or value["active_jobs"] < 0
+        or (value["error_code"] is not None and not isinstance(value["error_code"], str))
+        or (value["result"] is not None and not isinstance(value["result"], dict))
+    ):
+        raise ValueError("fleet bootstrap recovery payload is invalid")
     return value
 
 

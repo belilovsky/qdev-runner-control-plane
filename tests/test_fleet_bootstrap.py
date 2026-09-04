@@ -72,6 +72,23 @@ def test_bootstrap_policy_accepts_standard_workflow_without_job_workflow_ref() -
     policy.validate_oidc_claims(claims, _request())
 
 
+def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    request = _request(
+        action="restore-existing-worker",
+        release_lane=None,
+        worker_name="qdev-platform-ci-187",
+    )
+    policy.validate(request)
+    target = policy.worker_target("qdev-platform-ci-187")
+    assert target is not None
+    assert target.target_id == (
+        "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187"
+    )
+    assert target.service_unit.endswith(".service")
+    assert target.host_binding == "controller-registry"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
