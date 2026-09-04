@@ -17,6 +17,7 @@ RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
 
 
 def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest:
+    activation = FleetBootstrapPolicy(POLICY, RELEASE_LANES).activation
     return FleetBootstrapRequest.model_validate(
         {
             "schema": REQUEST_SCHEMA,
@@ -26,10 +27,8 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
             "job_id": 456,
             "attempt": 1,
             "claim_ttl_seconds": 300,
-            "controller_revision": "d3341e9f0d900d7dc023dfb2e95efd45ef45d8cd",
-            "controller_release_digest": (
-                "sha256:14c5a8b506947c18c55646e36bfec077885a63a8a272b5aea1112d31266e969f"
-            ),
+            "controller_revision": activation.revision,
+            "controller_release_digest": activation.release_digest,
             "release_lane": None,
             "worker_name": worker_name,
         }
