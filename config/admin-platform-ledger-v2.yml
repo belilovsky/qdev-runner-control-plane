@@ -3,23 +3,30 @@ program:
   id: qdev-admin-platform-wave-1
   owner: QDev
   status: active
-  updated_at: 2026-09-04T00:00:00Z
+  updated_at: 2026-09-04T11:24:00Z
 active_candidate: avds-admin-shell
 prerequisites:
   controller:
-    state: live_accepted
-    receipt_uri: receipts/controller-release-f9109e3-receipt.json
+    state: candidate
+    receipt_uri: null
   qaz_admin_kit:
     state: ci_passed
-    receipt_uri: https://ci.qdev.run/artifacts/qaz-admin-kit/0.4.7/receipt.json
+    receipt_uri: https://github.com/belilovsky/qaz-admin-kit/releases/tag/v0.4.8
   avds_admin_shell:
     state: ci_queued
-    receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402
+    receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622
   compatibility_matrix:
     state: candidate
     receipt_uri: null
 history: []
 attempts:
+  - attempt_id: controller-admin-platform-lanes-20260904
+    release_id: controller-admin-platform-lanes-20260904
+    state: candidate
+    started_at: 2026-09-04T11:24:00Z
+    finished_at: null
+    receipt_uri: null
+    reason: candidate includes managed registry v2, fixed native lanes and guarded host adapters; exact-SHA CI and activation pending
   - attempt_id: controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     release_id: qdev-controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     state: live_accepted
@@ -30,10 +37,10 @@ attempts:
 entries:
   avds-admin-shell:
     project_id: avds-admin-shell
-    source_sha: 975a725fd96edff73f3f171f155362e97482177e
+    source_sha: 2cfe7848199ac9bf84cf60de746f202457e99f27
     status: ci_queued
     artifact: {state: blocked, receipt_uri: null}
-    ci: {state: ci_queued, receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402}
+    ci: {state: ci_queued, receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622}
     deploy: {state: blocked, receipt_uri: null}
     browser: {state: blocked, receipt_uri: null}
     observation: {state: blocked, receipt_uri: null}
@@ -41,6 +48,13 @@ entries:
     rollback: {state: blocked, receipt_uri: null}
     prerequisites: {controller: live_accepted, qaz_admin_kit: ci_passed}
     attempts:
+      - attempt_id: avds-admin-shell-33854194622
+        release_id: avds-admin-shell-33854194622
+        state: ci_queued
+        started_at: 2026-09-04T08:35:44Z
+        finished_at: null
+        receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622
+        reason: replacement candidate for the terminal setup failure of run 33665883402
       - attempt_id: avds-admin-shell-33665883402
         release_id: avds-admin-shell-33665883402
         state: rolled_back

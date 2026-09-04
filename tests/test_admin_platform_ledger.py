@@ -69,4 +69,4 @@ def test_v2_snapshot_is_json_serializable_when_yaml_resolves_timestamps() -> Non
 
     encoded = json.dumps(ledger.snapshot(), sort_keys=True)
 
-    assert "2026-09-04T00:00:00Z" in encoded
+    assert "2026-09-04T11:24:00Z" in encoded

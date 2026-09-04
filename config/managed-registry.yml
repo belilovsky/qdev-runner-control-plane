@@ -4,11 +4,11 @@ entries:
     project_id: avds-admin-shell
     kind: package
     repository: belilovsky/av-platform-core
-    canonical_ref: admin-shell-v0.2.0
+    canonical_ref: admin-shell-v0.2.1
     artifact_repository: ghcr.io/belilovsky/av-platform-core
     allowed_profiles: [qdev-ci]
     native_release_profile: github-actions-package
-    runtime_endpoints: [https://ci.qdev.run/artifacts/avds/admin-shell/0.2.0/]
+    runtime_endpoints: [https://ci.qdev.run/artifacts/avds/admin-shell/0.2.1/]
     rollback_reference: admin-shell-v0.1.0
     host_identity: qdev-artifact-publisher:avds
     owner: QDev AVDS
