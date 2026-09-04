@@ -3,7 +3,7 @@ program:
   id: qdev-admin-platform-wave-1
   owner: QDev
   status: blocked
-  updated_at: 2026-09-04T15:09:42Z
+  updated_at: 2026-09-04T15:10:43Z
 active_candidate: avds-admin-shell
 prerequisites:
   controller:
@@ -24,9 +24,9 @@ attempts:
     release_id: controller-admin-platform-lanes-20260904
     state: blocked
     started_at: 2026-09-04T11:24:00Z
-    finished_at: 2026-09-04T15:09:42Z
+    finished_at: 2026-09-04T15:10:43Z
     receipt_uri: receipts/admin-platform-controller-blocker-20260904T150942Z.json
-    reason: exact-SHA CI was admitted by GitHub but failed before job start because account billing/spending limit is blocked; runtime remains on a different revision and worker admission is unavailable
+    reason: candidate 81c376f exact-SHA CI was admitted by GitHub but failed before job start because account billing/spending limit is blocked; current follow-up candidate adds the prerequisite admission gate and needs its own terminal CI
   - attempt_id: controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     release_id: qdev-controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     state: live_accepted
