@@ -1219,17 +1219,24 @@ def create_app(
         allowed_statuses = {"queued", "in_progress", "completed"}
         if run_status not in allowed_statuses or job_status not in allowed_statuses:
             raise HTTPException(status_code=409, detail="GitHub workflow state is not admissible")
-        if (run_status == "completed") != (job_status == "completed"):
-            raise HTTPException(status_code=409, detail="GitHub workflow state is inconsistent")
         run_conclusion = _provider_conclusion(provider_run.get("conclusion"))
         job_conclusion = _provider_conclusion(provider_job.get("conclusion"))
+        accepted_conclusions = {"success", "neutral", "skipped"}
+        # GitHub can report an individual job as completed while the workflow
+        # aggregate is still queued (the remaining jobs have not started).
+        # That is a valid observation, not a forged or contradictory tuple.
+        # Conversely, a completed aggregate with a non-terminal job is not
+        # admissible: it would make the candidate appear complete while a
+        # required job is still running.
+        if run_status == "completed" and job_status != "completed":
+            raise HTTPException(status_code=409, detail="GitHub workflow state is inconsistent")
+        if job_status == "completed" and job_conclusion not in accepted_conclusions:
+            raise HTTPException(status_code=409, detail="GitHub workflow job did not pass")
         if run_status == "completed":
-            accepted_conclusions = {"success", "neutral", "skipped"}
-            if (
-                run_conclusion not in accepted_conclusions
-                or job_conclusion not in accepted_conclusions
-            ):
+            if run_conclusion not in accepted_conclusions:
                 raise HTTPException(status_code=409, detail="GitHub workflow job did not pass")
+            state = "terminal"
+        elif job_status == "completed":
             state = "terminal"
         else:
             state = "in_progress" if "in_progress" in {run_status, job_status} else "queued"

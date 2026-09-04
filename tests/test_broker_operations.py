@@ -641,6 +641,38 @@ def test_qgeo_ci_registration_rejects_provider_sha_mismatch(tmp_path: Path) -> N
     assert "provider tuple" in response.json()["detail"]
 
 
+def test_qgeo_ci_registration_allows_completed_job_while_run_aggregate_is_queued(
+    tmp_path: Path,
+) -> None:
+    main_run_id, main_job_id, _ = (33870997811, 101016693706, "qdev-ci")
+    github = QGeoFakeGitHub(
+        event="push",
+        branch="main",
+        run_status="queued",
+        run_conclusion=None,
+        job_status="completed",
+        job_conclusion="success",
+        run_id=main_run_id,
+    )
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, ((main_run_id, main_job_id, "qdev-ci"),), branch="main")
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json={
+            "repository": "belilovsky/qazgeo",
+            "source_sha": QGEO_SOURCE_SHA,
+            "run_id": main_run_id,
+            "attempt": 1,
+            "job_id": main_job_id,
+        },
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["provider"]["run_status"] == "queued"
+    assert payload["provider"]["job_status"] == "completed"
+
+
 def test_qgeo_ci_reconcile_promotes_all_bindings_and_is_idempotent(tmp_path: Path) -> None:
     client = _app(tmp_path, github=QGeoFakeGitHub(), include_qgeo=True)
     _seed_qgeo_jobs(client)
