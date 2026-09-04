@@ -221,6 +221,14 @@ sudo scripts/activate_controller_release.sh \
   /opt/qdev-runner-control-plane/releases/REVISION
 ```
 
+Forward activation also requires
+`QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION` to equal the signed active runtime
+revision. A host-local release lock serializes activation and rollback, and the
+expected revision is checked again immediately before configuration mutation.
+If another release has changed the runtime, the stale transaction stops without
+changing the current release. The controller-owned rollback helper remains able
+to restore a previously staged revision under the same lock.
+
 Activation requires at least 30 GiB free disk, less than 85% disk use, at
 least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
 atomically changes `current`, refreshes the repository inventory and runner

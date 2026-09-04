@@ -119,6 +119,53 @@ def test_capacity_override_sends_exact_source_binding(
     }
 
 
+def test_capacity_override_cancel_requires_exact_operation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "cancel",
+            "srv1879763-light-primary",
+            "--operation-id",
+            "operation-123",
+        ]
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "DELETE"
+    assert captured["path"].endswith(
+        "/workers/srv1879763-light-primary/capacity-override"
+        "?operation_id=operation-123"
+    )
+
+
+def test_queue_audit_uses_signed_durable_queue_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+
+    assert operator.run(["queue-audit"]) == {"schema": "qdev-controller-receipt-v2"}
+    assert captured == {
+        "method": "GET",
+        "path": "/internal/v1/operations/jobs/pending",
+    }
+
+
 def test_recover_existing_worker_uses_controller_execution_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -194,6 +194,24 @@ def test_v2_rejects_automatic_declared_recovery_workflow(tmp_path: Path) -> None
     assert "recovery-workflow-not-manual-only" in result.stdout
 
 
+def test_v2_accepts_manual_recovery_inputs_but_not_an_extra_trigger(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    workflow = root / ".github/workflows/runner-smoke.yml"
+    trigger = (
+        "on:\n  workflow_dispatch:\n    inputs:\n      execution_lane:\n"
+        "        type: choice\n        options: [hosted, recovery]\n"
+        "        default: hosted\n"
+    )
+    load_installer().install(root)
+    workflow.write_text(trigger + "jobs: {}\n", encoding="utf-8")
+    assert run_guard(root).returncode == 0
+    for event in ("push", "pull_request", "workflow_run", "schedule"):
+        workflow.write_text(trigger + f"  {event}:\njobs: {{}}\n", encoding="utf-8")
+        result = run_guard(root)
+        assert result.returncode == 1
+        assert "recovery-workflow-not-manual-only" in result.stdout
+
+
 def test_v2_allows_ghcr_only_in_declared_non_pr_release_workflow(
     tmp_path: Path,
 ) -> None:

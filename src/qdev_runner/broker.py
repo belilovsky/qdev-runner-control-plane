@@ -45,6 +45,7 @@ from .operations import (
     HARD_MAX_DISK_USED_PCT,
     HARD_MIN_FREE_GIB,
     MAX_OVERRIDE_SECONDS,
+    CapacityOverrideConflict,
     OperationStore,
 )
 from .policy import Policy, PolicyError
@@ -325,6 +326,37 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return attempt if attempt > 0 else None
+
+
+def _pending_job_tuple(row: dict[str, Any], profile: str) -> dict[str, Any]:
+    return {
+        "repository": str(row.get("repository") or "").lower(),
+        "run_id": int(row.get("run_id") or 0),
+        "job_id": int(row.get("job_id") or 0),
+        "attempt": _job_attempt(row),
+        "exact_sha": str(row.get("head_sha") or "").lower(),
+        "profile": profile,
+        "state": "pending",
+        "created_at": float(row.get("created_at") or 0),
+    }
+
+
+def durable_profile_heads(
+    pending_jobs: list[dict[str, Any]], policy: Policy
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Return one immutable durable FIFO head per valid profile without mutation."""
+    heads: dict[str, dict[str, Any]] = {}
+    unclassified: list[int] = []
+    for row in pending_jobs:
+        try:
+            profile = policy.profile_for_labels(
+                str(row["repository"]), _json_strings(row["labels_json"])
+            )
+        except (KeyError, PolicyError):
+            unclassified.append(int(row["job_id"]))
+            continue
+        heads.setdefault(profile.name, _pending_job_tuple(row, profile.name))
+    return [heads[name] for name in sorted(heads)], unclassified
 
 
 def _worker_audit(
@@ -1548,6 +1580,26 @@ def create_app(
                 status_code=409,
                 detail="repository-scoped capacity override requires exactly one profile",
             )
+        profile_heads, _ = durable_profile_heads(store.pending_jobs(), policy)
+        fifo_head = next(
+            (item for item in profile_heads if item["profile"] == requested_profiles[0]),
+            None,
+        )
+        if fifo_head is None:
+            raise HTTPException(status_code=409, detail="profile has no durable FIFO head")
+        if fifo_head["attempt"] is None:
+            raise HTTPException(
+                status_code=409,
+                detail="profile FIFO head has no immutable provider attempt",
+            )
+        if (
+            fifo_head["repository"] != repository_name
+            or fifo_head["exact_sha"] != request.head_sha
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="capacity override target is not the durable FIFO head",
+            )
         baseline = audit["baseline_capacity"]
         raw = audit["raw_capacity"]
         blockers = {str(value) for value in baseline.get("blockers", [])}
@@ -1586,29 +1638,35 @@ def create_app(
             is not None
         ):
             raise HTTPException(status_code=409, detail="capacity override is already active")
-        directive = operation_store.create_capacity_override(
-            worker_name=worker_name,
-            repository=repository_name,
-            head_sha=request.head_sha,
-            profiles=requested_profiles,
-            min_disk_free_gib=request.min_disk_free_gib,
-            max_disk_used_pct=request.max_disk_used_pct,
-            owner=request.owner,
-            reason=request.reason,
-            duration_seconds=request.duration_seconds,
-        )
+        try:
+            directive = operation_store.create_capacity_override(
+                worker_name=worker_name,
+                repository=repository_name,
+                head_sha=request.head_sha,
+                profiles=requested_profiles,
+                min_disk_free_gib=request.min_disk_free_gib,
+                max_disk_used_pct=request.max_disk_used_pct,
+                owner=request.owner,
+                reason=request.reason,
+                duration_seconds=request.duration_seconds,
+                registered_profiles=registered_profiles,
+            )
+        except CapacityOverrideConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         payload = {
             "kind": "capacity-override-created",
             "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "worker_audit": audit,
             "operation": directive.model_dump(mode="json", by_alias=True),
             "required_free_gib": round(required_free_gib, 3),
+            "immutable_tuple": fifo_head,
         }
         return operation_store.receipt(payload)
 
     @app.delete("/internal/v1/operations/workers/{worker_name}/capacity-override")
     def cancel_capacity_override(
         worker_name: str,
+        operation_id: str = Query(min_length=1, max_length=128),
         x_qdev_operator_token: str | None = Header(default=None),
         x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
@@ -1616,17 +1674,41 @@ def create_app(
             x_qdev_operator_token, x_qdev_operator_mtls_identity
         )
         worker, audit = current_worker(worker_name)
-        directive = operation_store.cancel_capacity_override(
-            worker_name,
-            registered_profiles=_json_strings(worker.get("profiles_json")),
-        )
+        try:
+            directive = operation_store.cancel_capacity_override(
+                worker_name,
+                expected_operation_id=operation_id,
+                registered_profiles=_json_strings(worker.get("profiles_json")),
+            )
+        except CapacityOverrideConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         payload = {
             "kind": "capacity-override-cancelled",
             "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "worker_audit": audit,
-            "operation": (directive.model_dump(mode="json", by_alias=True) if directive else None),
+            "operation": directive.model_dump(mode="json", by_alias=True),
         }
         return operation_store.receipt(payload)
+
+    @app.get("/internal/v1/operations/jobs/pending")
+    def audit_pending_jobs(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        pending_jobs = store.pending_jobs()
+        profile_heads, unclassified = durable_profile_heads(pending_jobs, policy)
+        return operation_store.receipt(
+            {
+                "kind": "durable-queue-audit",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "pending": len(pending_jobs),
+                "profile_heads": profile_heads,
+                "unclassified": unclassified,
+            }
+        )
 
     @app.get("/internal/v1/operations/jobs/stale")
     def audit_stale_jobs(

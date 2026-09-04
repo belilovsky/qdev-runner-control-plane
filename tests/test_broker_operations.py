@@ -724,6 +724,13 @@ def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -
 def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client)
+    _seed_pending_job(
+        client,
+        42,
+        "qazshield-head",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+    )
 
     unauthorized = client.get("/internal/v1/operations/workers")
     assert unauthorized.status_code == 401
@@ -778,6 +785,68 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert isinstance(directive, dict)
     assert directive["operation_id"] == operation["operation_id"]
     assert directive["signature"] == operation["signature"]
+
+    changed = client.delete(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override"
+        "?operation_id=foreign-operation",
+        headers=OPERATOR_HEADERS,
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "capacity override operation changed"
+    assert _heartbeat(client)["capacity_override"]["operation_id"] == operation["operation_id"]
+
+    cancelled = client.delete(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override"
+        f"?operation_id={operation['operation_id']}",
+        headers=OPERATOR_HEADERS,
+    )
+    assert cancelled.status_code == 200
+    cancelled_payload = verify_controller_receipt(
+        cancelled.json(), receipt_key=RECEIPT_KEY
+    )["payload"]
+    assert cancelled_payload["operation"]["operation_id"] == operation["operation_id"]
+    assert cancelled_payload["operation"]["status"] == "cancelled"
+
+
+def test_durable_queue_audit_is_signed_and_reports_profile_heads(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _seed_pending_job(
+        client,
+        42,
+        "oldest-docker",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+    )
+    _seed_pending_job(
+        client,
+        43,
+        "later-docker",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+    )
+
+    response = client.get(
+        "/internal/v1/operations/jobs/pending",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["kind"] == "durable-queue-audit"
+    assert payload["pending"] == 2
+    assert payload["unclassified"] == []
+    assert payload["profile_heads"] == [
+        {
+            "repository": "belilovsky/qazshield",
+            "run_id": 84000000042,
+            "job_id": 42,
+            "attempt": 1,
+            "exact_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "state": "pending",
+            "created_at": payload["profile_heads"][0]["created_at"],
+        }
+    ]
 
 
 def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: Path) -> None:
@@ -1054,6 +1123,13 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
 def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, disk_free_gib=17.0)
+    _seed_pending_job(
+        client,
+        42,
+        "qazlake-head",
+        repository="belilovsky/qazlake",
+        head_sha="a" * 40,
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
@@ -1126,24 +1202,10 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             repository="belilovsky/qazshield",
             repository_id=1,
             installation_id=2,
-            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+            labels=("self-hosted", "Linux", "X64", "qdev-ci"),
             head_sha="a" * 40,
             head_branch="main",
-            payload={},
-        )
-    )
-    assert store.enqueue(
-        QueuedJob(
-            delivery_id="old-target",
-            job_id=101,
-            run_id=84,
-            repository="belilovsky/qazlake",
-            repository_id=2,
-            installation_id=2,
-            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
-            head_sha="a" * 40,
-            head_branch="main",
-            payload={},
+            payload={"workflow_job": {"run_attempt": 1}},
         )
     )
     assert store.enqueue(
@@ -1157,7 +1219,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
             head_sha="b" * 40,
             head_branch="candidate",
-            payload={},
+            payload={"workflow_job": {"run_attempt": 1}},
         )
     )
     override_response = client.post(
@@ -1228,7 +1290,47 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     assert accepted.json()["job_id"] == 102
     assert accepted.json()["repository"] == "belilovsky/qazlake"
     assert store.job_status(100) == "pending"
-    assert store.job_status(101) == "pending"
+
+
+def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    _seed_pending_job(
+        client,
+        101,
+        "fifo-head",
+        repository="belilovsky/qazlake",
+        head_sha="a" * 40,
+    )
+    _seed_pending_job(
+        client,
+        102,
+        "later-target",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazlake",
+            "head_sha": "b" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "must not leapfrog FIFO",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "capacity override target is not the durable FIFO head"
+    assert client.app.state.operations.active(
+        WORKER_NAME,
+        registered_profiles=("qdev-ci", "qdev-ci-docker"),
+    ) is None
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:

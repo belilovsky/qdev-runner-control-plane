@@ -130,6 +130,25 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     )
 
 
+def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
+    assert "forward activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
+    assert 'release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/' in script
+    assert "flock -n 9" in script
+    assert "read_active_release_revision()" in script
+    assert "qdev-controller-release-status-v1" in script
+    assert "controller release compare-and-swap rejected" in script
+    assert script.count("assert_expected_current_revision") == 3
+    assert script.index("assert_expected_current_revision\n# Forward activation") < script.index(
+        'install -d -o "$runtime_uid" -g "$runtime_gid"'
+    )
+    assert script.index("# Recheck at the last non-mutating boundary") < script.index(
+        'install -m 0644 -- "$release/inventory/repos.json"'
+    )
+
+
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 

@@ -6,6 +6,8 @@ on:
       - ".github/**"
       - "AGENTS.md"
   push:
+    branches:
+      - main
     paths:
       - ".github/**"
       - "AGENTS.md"
