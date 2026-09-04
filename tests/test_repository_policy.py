@@ -173,6 +173,108 @@ jobs:
     assert run_guard(root).returncode == 0
 
 
+def test_v2_allows_manual_recovery_inputs(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/runner-smoke.yml").write_text(
+        """on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        required: true
+jobs:
+  recovery:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def recovery_ci_alternative(root: Path, body: str) -> None:
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "recovery_ci_alternative:\n"
+        + body,
+        encoding="utf-8",
+    )
+
+
+def test_v2_accepts_explicit_exact_receipt_recovery_alternative(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    recovery_ci_alternative(
+        root,
+        "  enabled: true\n"
+        "  receipt_schema: qdev-controller-receipt-v2\n"
+        "  enforcement: enforced\n"
+        "  requires_exact_binding: true\n",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_recovery_ci_alternative_fails_closed_when_disabled_or_unbound(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    recovery_ci_alternative(
+        root,
+        "  enabled: false\n"
+        "  receipt_schema: qdev-controller-receipt-v1\n"
+        "  enforcement: advisory\n"
+        "  requires_exact_binding: false\n",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    for marker in (
+        "recovery-ci-alternative-not-enabled",
+        "recovery-ci-alternative-invalid-receipt-schema",
+        "recovery-ci-alternative-not-enforced",
+        "recovery-ci-alternative-not-exact",
+    ):
+        assert marker in result.stdout
+
+
+def test_recovery_ci_alternative_rejects_inline_and_unknown_contract_values(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "recovery_ci_alternative: true\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "recovery-ci-alternative-not-enabled" in result.stdout
+    assert "recovery-ci-alternative-unknown-key __invalid__" in result.stdout
+
+    root = hosted_repository(tmp_path / "nested", "jobs: {}\n")
+    recovery_ci_alternative(
+        root,
+        "  enabled: true\n"
+        "  receipt_schema: qdev-controller-receipt-v2\n"
+        "  enforcement: enforced\n"
+        "  requires_exact_binding: true\n"
+        "  issuer: forged\n",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "recovery-ci-alternative-unknown-key issuer" in result.stdout
+
+
 def test_v2_rejects_self_hosted_job_outside_declared_recovery_workflow(
     tmp_path: Path,
 ) -> None:

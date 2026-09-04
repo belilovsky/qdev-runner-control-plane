@@ -22,5 +22,10 @@
   separate from the general CI pool.
 - Any new or changed workflow must pass the hosted `qdev-runner-contract`
   check. Recovery acceptance additionally requires `runner-smoke` on the same
-  default-branch SHA.
+  default-branch SHA. A recovery run alone never substitutes for hosted
+  checks; only an explicitly enabled repository policy may accept a terminal
+  full recovery run together with a signed, enforced
+  `qdev-controller-receipt-v2` bound exactly to repository, SHA, run/job/
+  attempt, profile, and artifact digest. Missing or mismatched evidence stays
+  pending.
 <!-- qdev-runner-policy:end -->

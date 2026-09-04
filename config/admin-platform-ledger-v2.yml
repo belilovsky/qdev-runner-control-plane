@@ -2,24 +2,31 @@ schema_version: qdev-admin-platform-ledger-v2
 program:
   id: qdev-admin-platform-wave-1
   owner: QDev
-  status: active
-  updated_at: 2026-09-04T00:00:00Z
+  status: blocked
+  updated_at: 2026-09-04T15:24:36Z
 active_candidate: avds-admin-shell
 prerequisites:
   controller:
-    state: live_accepted
-    receipt_uri: receipts/controller-release-f9109e3-receipt.json
+    state: blocked
+    receipt_uri: receipts/admin-platform-controller-blocker-20260904T152436Z.json
   qaz_admin_kit:
     state: ci_passed
-    receipt_uri: https://ci.qdev.run/artifacts/qaz-admin-kit/0.4.7/receipt.json
+    receipt_uri: https://github.com/belilovsky/qaz-admin-kit/releases/tag/v0.4.8
   avds_admin_shell:
     state: ci_queued
-    receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402
+    receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622
   compatibility_matrix:
-    state: candidate
+    state: blocked
     receipt_uri: null
 history: []
 attempts:
+  - attempt_id: controller-admin-platform-lanes-20260904
+    release_id: controller-admin-platform-lanes-20260904
+    state: blocked
+    started_at: 2026-09-04T11:24:00Z
+    finished_at: 2026-09-04T15:24:36Z
+    receipt_uri: receipts/admin-platform-controller-blocker-20260904T152436Z.json
+    reason: candidate 678cfb6 exact-SHA CI run 33888610923 completed but failed before job start because account billing/spending limit is blocked; runtime is still on 02df7f and no signed claim or eligible worker is available
   - attempt_id: controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     release_id: qdev-controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     state: live_accepted
@@ -30,10 +37,10 @@ attempts:
 entries:
   avds-admin-shell:
     project_id: avds-admin-shell
-    source_sha: 975a725fd96edff73f3f171f155362e97482177e
+    source_sha: 2cfe7848199ac9bf84cf60de746f202457e99f27
     status: ci_queued
     artifact: {state: blocked, receipt_uri: null}
-    ci: {state: ci_queued, receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33665883402}
+    ci: {state: ci_queued, receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622}
     deploy: {state: blocked, receipt_uri: null}
     browser: {state: blocked, receipt_uri: null}
     observation: {state: blocked, receipt_uri: null}
@@ -41,6 +48,13 @@ entries:
     rollback: {state: blocked, receipt_uri: null}
     prerequisites: {controller: live_accepted, qaz_admin_kit: ci_passed}
     attempts:
+      - attempt_id: avds-admin-shell-33854194622
+        release_id: avds-admin-shell-33854194622
+        state: ci_queued
+        started_at: 2026-09-04T08:35:44Z
+        finished_at: null
+        receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622
+        reason: replacement candidate for the terminal setup failure of run 33665883402
       - attempt_id: avds-admin-shell-33665883402
         release_id: avds-admin-shell-33665883402
         state: rolled_back
@@ -59,7 +73,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {avds_admin_shell: blocked}
+    prerequisites: {avds_admin_shell: live_accepted}
     attempts: []
   cmnt:
     project_id: cmnt
@@ -72,7 +86,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {ortcom: blocked}
+    prerequisites: {ortcom: live_accepted}
     attempts: []
   total:
     project_id: total-kz
@@ -85,7 +99,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {cmnt: blocked}
+    prerequisites: {cmnt: live_accepted}
     attempts: []
   qazposter:
     project_id: qazposter
@@ -101,5 +115,5 @@ entries:
     observed_external_ci:
       run_id: '33783332177'
       state: queued
-    prerequisites: {total: blocked}
+    prerequisites: {total: live_accepted}
     attempts: []

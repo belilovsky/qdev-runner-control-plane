@@ -124,6 +124,26 @@ def test_agent_accepts_only_a_typed_native_receipt(monkeypatch: object) -> None:
         raise AssertionError("incomplete native receipt was accepted")
 
 
+def test_agent_rejects_blank_dependency_identity_keys() -> None:
+    profile = AGENT.PROFILES["cmnt"]
+    release = _release(profile)
+    evidence = {
+        "runtime_identity": {**release, "measured": True},
+        "dependency_identity": {" ": "1.31.1"},
+        "artifact_provenance": {
+            "qak_wheel_sha256": "d" * 64,
+            "avds_artifact_sha256": "e" * 64,
+            "avds_source_sha": "f" * 40,
+        },
+    }
+    try:
+        AGENT._runtime_evidence(evidence, profile, release)
+    except AGENT.AgentError as error:
+        assert "dependency identity" in str(error)
+    else:  # pragma: no cover - protects the fail-closed boundary
+        raise AssertionError("blank dependency identity key was accepted")
+
+
 def test_agent_cannot_be_reconfigured_with_host_paths() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "QDEV_RELEASE_STATE_PATH" not in source

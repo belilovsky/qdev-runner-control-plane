@@ -141,3 +141,11 @@ Example for an existing protected deploy workflow:
 release_registry_workflows:
   - deploy.yml
 ```
+
+The hosted checks remain the primary lane. A repository may explicitly declare
+`recovery_ci_alternative` in `.github/qdev-runner.yml` as a fail-closed release
+policy, but a recovery run alone never substitutes for hosted checks. The
+alternative is valid only with a terminal full recovery run and a signed
+`qdev-controller-receipt-v2` with `enforcement: enforced`, bound exactly to
+repository, source SHA, run/job/attempt, recovery profile, and artifact digest.
+A missing, stale, or mismatched receipt leaves release admission pending.

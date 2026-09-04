@@ -28,9 +28,9 @@ def _request(**overrides: object) -> FleetBootstrapRequest:
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": "f5fe4c2673a81fcb25d1d501314ec0ed2e6fdd4a",
+        "controller_revision": "10173d8f9652823dedbe94bb6c7a2cfadc51229b",
         "controller_release_digest": (
-            "sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3"
+            "sha256:2d4776db2ad60dc82b632441336dead0dd9d8b3c9a95ff7293773fb3c3d37515"
         ),
         "release_lane": None,
         "worker_name": None,
