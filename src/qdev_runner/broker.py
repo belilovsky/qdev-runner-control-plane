@@ -225,6 +225,18 @@ class FleetBootstrapRecoveryRequest(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
 
+class QGeoCIRegistrationRequest(BaseModel):
+    repository: str = Field(min_length=1, max_length=256)
+    source_sha: str = Field(min_length=40, max_length=40)
+    run_id: int = Field(gt=0)
+    attempt: int = Field(ge=1)
+    job_id: int = Field(gt=0)
+
+
+class QGeoCIReconcileRequest(BaseModel):
+    source_sha: str = Field(min_length=40, max_length=40)
+
+
 def verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
     if not signature or not signature.startswith("sha256="):
         return False
@@ -325,6 +337,23 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return attempt if attempt > 0 else None
+
+
+def _provider_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _provider_conclusion(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
 
 
 def _worker_audit(
@@ -1288,6 +1317,354 @@ def create_app(
             }
         )
 
+    @app.post("/internal/v1/operations/releases/qazgeo/ci-registration")
+    def register_qgeo_ci(
+        request: QGeoCIRegistrationRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Register one exact QGeo provider job from an admitted workflow.
+
+        The durable webhook row and fresh GitHub API observations are both
+        required.  Nothing in the request body can manufacture CI evidence;
+        the controller derives state from the provider and records only the
+        exact repository/run/attempt/job tuple in its managed ledger.
+        """
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        if request.repository != QGEO_REPOSITORY:
+            raise HTTPException(status_code=409, detail="managed release repository is not QGeo")
+        if not _GIT_REVISION.fullmatch(request.source_sha):
+            raise HTTPException(status_code=422, detail="source_sha must be a lowercase Git SHA")
+        ledger = managed_release_ledger()
+        try:
+            ledger_entry = ledger.validate_candidate("qazgeo", request.source_sha)
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=409, detail="managed QGeo candidate is not admitted"
+            ) from error
+
+        # The four bindings shipped with the recovery candidate are already
+        # observed PR jobs.  They must be allowed to finish exactly as they
+        # were created; only subsequently-created jobs are required to be the
+        # main push.  This keeps the allowlist strict while acknowledging that
+        # GitHub's PR API legitimately reports a feature branch and no ref.
+        pre_registered = any(
+            item.get("repository") == request.repository
+            and item.get("run_id") == str(request.run_id)
+            and item.get("attempt") == str(request.attempt)
+            and item.get("job_id") == str(request.job_id)
+            for item in ledger_entry.ci_runs
+        )
+
+        row = store.job(request.job_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="workflow job is not registered")
+        if (
+            str(row.get("repository")) != request.repository
+            or _provider_int(row.get("run_id")) != request.run_id
+            or str(row.get("head_sha")) != request.source_sha
+            or _job_attempt(row) != request.attempt
+        ):
+            raise HTTPException(status_code=409, detail="durable workflow job tuple does not match")
+        durable_branch = str(row.get("head_branch") or "")
+        if not durable_branch or (not pre_registered and durable_branch != "main"):
+            raise HTTPException(
+                status_code=409, detail="workflow job is not from an admitted branch"
+            )
+        try:
+            profile = policy.profile_for_labels(
+                request.repository, _json_strings(row.get("labels_json"))
+            )
+        except PolicyError as error:
+            raise HTTPException(
+                status_code=409, detail="workflow job profile is not admitted"
+            ) from error
+        if profile.name not in {"qdev-ci", "qdev-ci-docker"}:
+            raise HTTPException(status_code=409, detail="workflow job profile is not admitted")
+        try:
+            installation_id = int(row["installation_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=409, detail="workflow job installation is invalid"
+            ) from error
+        try:
+            provider_run = github.workflow_run(installation_id, request.repository, request.run_id)
+            provider_job = github.workflow_job(installation_id, request.repository, request.job_id)
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503, detail="GitHub provider observation failed"
+            ) from error
+        if not isinstance(provider_run, dict) or not isinstance(provider_job, dict):
+            raise HTTPException(status_code=503, detail="GitHub provider observation is invalid")
+
+        provider_run_id = _provider_int(provider_run.get("id"))
+        provider_job_id = _provider_int(provider_job.get("id"))
+        provider_job_run_id = _provider_int(provider_job.get("run_id"))
+        provider_attempt = _provider_int(provider_run.get("run_attempt"))
+        provider_job_attempt = (
+            _provider_int(provider_job.get("run_attempt"))
+            if provider_job.get("run_attempt") is not None
+            else provider_attempt
+        )
+        if (
+            provider_run_id != request.run_id
+            or provider_job_id != request.job_id
+            or provider_job_run_id != request.run_id
+            or str(provider_run.get("head_sha") or "") != request.source_sha
+            or provider_attempt != request.attempt
+            or provider_job_attempt != request.attempt
+        ):
+            raise HTTPException(status_code=409, detail="GitHub provider tuple does not match")
+
+        event = str(provider_run.get("event") or "")
+        ref = str(provider_run.get("ref") or "")
+        head_branch = str(provider_run.get("head_branch") or "")
+        if event == "push":
+            if head_branch != "main" and ref != "refs/heads/main":
+                raise HTTPException(
+                    status_code=409, detail="workflow run is not the QGeo main push"
+                )
+        elif event == "pull_request":
+            if not pre_registered or head_branch != durable_branch:
+                raise HTTPException(
+                    status_code=409,
+                    detail="workflow run is not an allowlisted QGeo recovery PR",
+                )
+        else:
+            raise HTTPException(status_code=409, detail="workflow run event is not admitted")
+        provider_job_sha = provider_job.get("head_sha")
+        if provider_job_sha is not None and str(provider_job_sha) != request.source_sha:
+            raise HTTPException(status_code=409, detail="GitHub workflow job SHA does not match")
+        provider_job_branch = provider_job.get("head_branch")
+        if provider_job_branch is not None:
+            expected_job_branch = durable_branch if pre_registered else "main"
+            if str(provider_job_branch) != expected_job_branch:
+                raise HTTPException(
+                    status_code=409, detail="GitHub workflow job branch does not match"
+                )
+        provider_labels = provider_job.get("labels")
+        labels_for_receipt: list[str] | None = None
+        if provider_labels is not None:
+            if not isinstance(provider_labels, (list, tuple)) or any(
+                not isinstance(label, str) for label in provider_labels
+            ):
+                raise HTTPException(status_code=409, detail="GitHub workflow labels are invalid")
+            labels_for_receipt = [str(label) for label in provider_labels]
+            try:
+                provider_profile = policy.profile_for_labels(
+                    request.repository, tuple(labels_for_receipt)
+                )
+            except PolicyError as error:
+                raise HTTPException(
+                    status_code=409, detail="GitHub workflow profile is invalid"
+                ) from error
+            if provider_profile.name != profile.name:
+                raise HTTPException(
+                    status_code=409, detail="GitHub workflow profile does not match"
+                )
+
+        run_status = str(provider_run.get("status") or "").lower()
+        job_status = str(provider_job.get("status") or "").lower()
+        allowed_statuses = {"queued", "in_progress", "completed"}
+        if run_status not in allowed_statuses or job_status not in allowed_statuses:
+            raise HTTPException(status_code=409, detail="GitHub workflow state is not admissible")
+        if (run_status == "completed") != (job_status == "completed"):
+            raise HTTPException(status_code=409, detail="GitHub workflow state is inconsistent")
+        run_conclusion = _provider_conclusion(provider_run.get("conclusion"))
+        job_conclusion = _provider_conclusion(provider_job.get("conclusion"))
+        if run_status == "completed":
+            accepted_conclusions = {"success", "neutral", "skipped"}
+            if (
+                run_conclusion not in accepted_conclusions
+                or job_conclusion not in accepted_conclusions
+            ):
+                raise HTTPException(status_code=409, detail="GitHub workflow job did not pass")
+            state = "terminal"
+        else:
+            state = "in_progress" if "in_progress" in {run_status, job_status} else "queued"
+
+        provider_receipt: dict[str, Any] = {
+            "run_id": request.run_id,
+            "job_id": request.job_id,
+            "attempt": request.attempt,
+            "event": event,
+            "ref": ref,
+            "head_branch": head_branch,
+            "head_sha": request.source_sha,
+            "run_status": run_status,
+            "run_conclusion": run_conclusion,
+            "job_status": job_status,
+            "job_conclusion": job_conclusion,
+        }
+        if labels_for_receipt is not None:
+            provider_receipt["labels"] = labels_for_receipt
+        try:
+            result = ledger.register_qgeo_ci_binding(
+                repository=request.repository,
+                source_sha=request.source_sha,
+                run_id=str(request.run_id),
+                attempt=str(request.attempt),
+                job_id=str(request.job_id),
+                state=state,
+            )
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=409, detail="managed CI binding was rejected"
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "managed-ci-registration",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "repository": request.repository,
+                "source_sha": request.source_sha,
+                "run_id": request.run_id,
+                "attempt": request.attempt,
+                "job_id": request.job_id,
+                "profile": profile.name,
+                "provider": provider_receipt,
+                "idempotent": bool(result["idempotent"]),
+                "backup_path": result["backup_path"],
+            }
+        )
+
+    @app.post("/internal/v1/operations/releases/qazgeo/ci-reconcile")
+    def reconcile_qgeo_ci(
+        request: QGeoCIReconcileRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Verify every allowlisted QGeo CI job and promote the ledger once."""
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        if not _GIT_REVISION.fullmatch(request.source_sha):
+            raise HTTPException(status_code=422, detail="source_sha must be a lowercase Git SHA")
+        ledger = managed_release_ledger()
+        try:
+            entry = ledger.validate_candidate("qazgeo", request.source_sha)
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=409, detail="managed QGeo candidate is not admitted"
+            ) from error
+
+        expected_bindings: list[dict[str, str]] = []
+        run_receipts: dict[int, dict[str, Any]] = {}
+        provider_runs: dict[int, dict[str, Any]] = {}
+        job_receipts: list[dict[str, Any]] = []
+        accepted_conclusions = {"success", "neutral", "skipped"}
+        for binding in entry.ci_runs:
+            try:
+                run_id = int(binding["run_id"])
+                attempt = int(binding["attempt"])
+                job_id = int(binding["job_id"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=409, detail="managed CI binding is invalid"
+                ) from error
+            row = store.job(job_id)
+            if row is None or (
+                str(row.get("repository")) != QGEO_REPOSITORY
+                or _provider_int(row.get("run_id")) != run_id
+                or str(row.get("head_sha")) != request.source_sha
+                or _job_attempt(row) != attempt
+            ):
+                raise HTTPException(status_code=409, detail="durable managed CI binding is missing")
+            try:
+                installation_id = int(row["installation_id"])
+                provider_run = provider_runs.get(run_id)
+                if provider_run is None:
+                    provider_run = github.workflow_run(installation_id, QGEO_REPOSITORY, run_id)
+                    if not isinstance(provider_run, dict):
+                        raise GitHubError("invalid workflow run response")
+                    provider_runs[run_id] = provider_run
+                provider_job = github.workflow_job(installation_id, QGEO_REPOSITORY, job_id)
+            except (KeyError, TypeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=409, detail="managed CI installation is invalid"
+                ) from error
+            except GitHubError as error:
+                raise HTTPException(
+                    status_code=503, detail="GitHub provider observation failed"
+                ) from error
+            if not isinstance(provider_job, dict):
+                raise HTTPException(
+                    status_code=503, detail="GitHub provider observation is invalid"
+                )
+            if (
+                _provider_int(provider_run.get("id")) != run_id
+                or str(provider_run.get("head_sha") or "") != request.source_sha
+                or _provider_int(provider_run.get("run_attempt")) != attempt
+                or _provider_int(provider_job.get("id")) != job_id
+                or _provider_int(provider_job.get("run_id")) != run_id
+            ):
+                raise HTTPException(status_code=409, detail="GitHub provider tuple does not match")
+            provider_job_attempt = provider_job.get("run_attempt")
+            if provider_job_attempt is not None and _provider_int(provider_job_attempt) != attempt:
+                raise HTTPException(
+                    status_code=409, detail="GitHub workflow job attempt does not match"
+                )
+            provider_job_sha = provider_job.get("head_sha")
+            if provider_job_sha is not None and str(provider_job_sha) != request.source_sha:
+                raise HTTPException(
+                    status_code=409, detail="GitHub workflow job SHA does not match"
+                )
+            run_status = str(provider_run.get("status") or "").lower()
+            job_status = str(provider_job.get("status") or "").lower()
+            if run_status != "completed" or job_status != "completed":
+                raise HTTPException(status_code=409, detail="managed CI is still running")
+            run_conclusion = _provider_conclusion(provider_run.get("conclusion"))
+            job_conclusion = _provider_conclusion(provider_job.get("conclusion"))
+            if (
+                run_conclusion not in accepted_conclusions
+                or job_conclusion not in accepted_conclusions
+            ):
+                raise HTTPException(status_code=409, detail="managed CI failed")
+            expected_bindings.append(dict(binding, state="terminal"))
+            run_receipts[run_id] = {
+                "run_id": run_id,
+                "attempt": attempt,
+                "head_sha": request.source_sha,
+                "status": run_status,
+                "conclusion": run_conclusion,
+            }
+            job_receipts.append(
+                {
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "attempt": attempt,
+                    "status": job_status,
+                    "conclusion": job_conclusion,
+                }
+            )
+        try:
+            result = ledger.reconcile_qgeo_ci_terminal(
+                source_sha=request.source_sha,
+                verified_bindings=expected_bindings,
+            )
+        except ManagedReleaseLedgerError as error:
+            raise HTTPException(
+                status_code=409, detail="managed CI reconciliation was rejected"
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "managed-ci-reconciliation",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "repository": QGEO_REPOSITORY,
+                "source_sha": request.source_sha,
+                "run_ids": sorted(run_receipts),
+                "bindings": expected_bindings,
+                "provider": {
+                    "runs": list(run_receipts.values()),
+                    "jobs": job_receipts,
+                },
+                "idempotent": bool(result["idempotent"]),
+                "backup_path": result["backup_path"],
+            }
+        )
     @app.post("/internal/v1/operations/jobs/{job_id}/claim-scope")
     def issue_fifo_claim_scope(
         job_id: int,

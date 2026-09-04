@@ -118,6 +118,30 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "error_code",
         "result",
     },
+    "managed-ci-registration": {
+        "kind",
+        "observed_at",
+        "repository",
+        "source_sha",
+        "run_id",
+        "attempt",
+        "job_id",
+        "profile",
+        "provider",
+        "idempotent",
+        "backup_path",
+    },
+    "managed-ci-reconciliation": {
+        "kind",
+        "observed_at",
+        "repository",
+        "source_sha",
+        "run_ids",
+        "bindings",
+        "provider",
+        "idempotent",
+        "backup_path",
+    },
 }
 
 
@@ -260,6 +284,39 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or (value["result"] is not None and not isinstance(value["result"], dict))
     ):
         raise ValueError("fleet bootstrap recovery payload is invalid")
+    if kind in {"managed-ci-registration", "managed-ci-reconciliation"} and (
+        value.get("repository") != "belilovsky/qazgeo"
+        or not isinstance(value.get("source_sha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", value["source_sha"])
+        or not isinstance(value.get("provider"), dict)
+        or not isinstance(value.get("idempotent"), bool)
+        or (value.get("backup_path") is not None and not isinstance(value["backup_path"], str))
+    ):
+        raise ValueError("managed CI payload is invalid")
+    if kind == "managed-ci-registration" and (
+        not isinstance(value.get("run_id"), int)
+        or isinstance(value["run_id"], bool)
+        or value["run_id"] <= 0
+        or not isinstance(value.get("attempt"), int)
+        or isinstance(value["attempt"], bool)
+        or value["attempt"] < 1
+        or not isinstance(value.get("job_id"), int)
+        or isinstance(value["job_id"], bool)
+        or value["job_id"] <= 0
+        or not isinstance(value.get("profile"), str)
+    ):
+        raise ValueError("managed CI registration payload is invalid")
+    if kind == "managed-ci-reconciliation" and (
+        not isinstance(value.get("run_ids"), list)
+        or any(
+            not isinstance(item, int) or isinstance(item, bool) or item <= 0
+            for item in value["run_ids"]
+        )
+        or len(value["run_ids"]) != len(set(value["run_ids"]))
+        or not isinstance(value.get("bindings"), list)
+        or any(not isinstance(item, dict) for item in value["bindings"])
+    ):
+        raise ValueError("managed CI reconciliation payload is invalid")
     return value
 
 

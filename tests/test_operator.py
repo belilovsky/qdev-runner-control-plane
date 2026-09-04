@@ -27,9 +27,7 @@ def test_claim_scope_uses_fifo_endpoint(
 
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
 
-    def fake_request(
-        settings: operator.OperatorSettings, **kwargs: Any
-    ) -> dict[str, Any]:
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
         captured["settings"] = settings
         captured.update(kwargs)
         return {"schema": "qdev-controller-receipt-v2"}
@@ -119,6 +117,63 @@ def test_recover_existing_worker_uses_controller_execution_endpoint(
     assert captured["path"] == "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
     assert captured["body"]["idempotency_key"] == "worker-recovery-001"
     assert captured["body"]["active_jobs"] == 0
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_path", "expected_body"),
+    [
+        (
+            "register-ci",
+            "/internal/v1/operations/releases/qazgeo/ci-registration",
+            {
+                "repository": "belilovsky/qazgeo",
+                "source_sha": "a" * 40,
+                "run_id": 33870997811,
+                "attempt": 1,
+                "job_id": 101016693706,
+            },
+        ),
+        (
+            "reconcile-ci",
+            "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+            {"source_sha": "a" * 40},
+        ),
+    ],
+)
+def test_qgeo_ci_commands_use_managed_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    expected_path: str,
+    expected_body: dict[str, Any],
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    arguments = [command, "--source-sha", "a" * 40]
+    if command == "register-ci":
+        arguments.extend(["--run-id", "33870997811", "--job-id", "101016693706"])
+
+    assert operator.run(arguments) == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == expected_path
+    assert captured["body"] == expected_body
+
+
+@pytest.mark.parametrize("command", ["register-ci", "reconcile-ci"])
+def test_qgeo_ci_commands_reject_non_lowercase_sha(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    arguments = [command, "--source-sha", "A" * 40]
+    if command == "register-ci":
+        arguments.extend(["--run-id", "1", "--job-id", "2"])
+    with pytest.raises(ValueError, match="invalid Git source SHA"):
+        operator.run(arguments)
 
 
 @pytest.mark.parametrize(
