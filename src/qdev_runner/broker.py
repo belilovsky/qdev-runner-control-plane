@@ -989,15 +989,21 @@ def create_app(
         require_operator_mtls(x_qdev_operator_mtls_identity)
         registry = managed_registry()
         ledger = admin_platform_ledger()
+        active_candidate = ledger.active_candidate
+        if active_candidate is None:
+            raise HTTPException(
+                status_code=503,
+                detail="admin platform has no active candidate",
+            )
         active_entry = next(
-            entry for entry in ledger.entries if entry.entry_id == ledger.active_candidate
+            entry for entry in ledger.entries if entry.entry_id == active_candidate
         )
         if active_entry.source_sha is None:
             raise HTTPException(
                 status_code=503,
                 detail="admin platform active candidate has no source SHA",
             )
-        active = ledger.validate_admission(ledger.active_candidate, active_entry.source_sha)
+        active = ledger.validate_admission(active_candidate, active_entry.source_sha)
         managed = registry.entry_for_id(active.entry_id)
         if managed is None or managed.project_id != active.project_id:
             raise HTTPException(

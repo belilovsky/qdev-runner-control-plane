@@ -119,7 +119,13 @@ class AdminPlatformLedger:
                 raise AdminPlatformLedgerError("admin platform ledger source SHA is invalid")
             if not isinstance(status, str) or status not in STATUSES:
                 raise AdminPlatformLedgerError("admin platform ledger status is invalid")
-            stages = ("artifact", "ci", "deploy", "live_acceptance", "rollback")
+            stages: tuple[str, ...] = (
+                "artifact",
+                "ci",
+                "deploy",
+                "live_acceptance",
+                "rollback",
+            )
             if schema_version == SCHEMA_V2:
                 stages += ("browser", "observation")
             for stage in stages:
