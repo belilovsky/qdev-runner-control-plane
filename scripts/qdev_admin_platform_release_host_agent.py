@@ -553,7 +553,11 @@ def _runtime_evidence(
     ):
         raise AgentError("native runtime identity is not measured or does not match release")
     if not dependencies or any(
-        not isinstance(value, str) or not value for value in dependencies.values()
+        not isinstance(key, str)
+        or not key.strip()
+        or not isinstance(value, str)
+        or not value.strip()
+        for key, value in dependencies.items()
     ):
         raise AgentError("native dependency identity is incomplete")
     if set(provenance) != {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}:
@@ -680,6 +684,10 @@ def rollback_remote(
 ) -> dict[str, Any]:
     invoke_native(profile, "rollback", restored)
     native = native_receipt(profile, restored)
+    # A typed native response alone is not enough for a managed rollback:
+    # prove that the restored process reports the exact tuple and verified
+    # QAK/AVDS provenance before asking the controller to fence the attempt.
+    _runtime_evidence(native, profile, restored)
     receipt = {
         "schema": ROLLBACK_RECEIPT_SCHEMA,
         "status": "rolled_back",

@@ -43,6 +43,8 @@ RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
 HOST_HEARTBEAT_SCHEMA = "qdev-release-host-agent-heartbeat-v1"
 RUNTIME_RECEIPT_SCHEMA = "qdev-controller-release-runtime-receipt-v1"
 ROLLBACK_RECEIPT_SCHEMA = "qdev-controller-release-rollback-receipt-v1"
+NATIVE_RECEIPT_SCHEMA = "qdev-admin-platform-native-receipt-v1"
+OPERATION_SCHEMA = "qdev-controller-release-operation-v1"
 LEGACY_COMPATIBILITY_LANES = frozenset(
     {
         "qdev-release-qaz-tours",
@@ -486,6 +488,115 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         raise ReleaseLaneError("bootstrap heartbeat must use the current release as its anchor")
 
 
+def _validate_runtime_evidence(
+    document: dict[str, Any],
+    *,
+    source_sha: str,
+    artifact_digest: str,
+    artifact_ref: str,
+    label: str,
+) -> None:
+    """Validate measured identity and package provenance for a running release.
+
+    The host agent obtains these values from the running application and native
+    dispatcher.  Keeping this check shared by runtime and rollback receipts
+    prevents a rollback from being accepted on a typed-but-unmeasured claim.
+    """
+    runtime = document.get("runtime_identity")
+    dependencies = document.get("dependency_identity")
+    provenance = document.get("artifact_provenance")
+    if (
+        not isinstance(runtime, dict)
+        or not isinstance(dependencies, dict)
+        or not isinstance(provenance, dict)
+    ):
+        raise ReleaseLaneError(f"{label} receipt lacks runtime evidence")
+    if (
+        set(runtime) != {"source_sha", "artifact_digest", "artifact_ref", "measured"}
+        or runtime.get("source_sha") != source_sha
+        or runtime.get("artifact_digest") != artifact_digest
+        or runtime.get("artifact_ref") != artifact_ref
+        or runtime.get("measured") is not True
+    ):
+        raise ReleaseLaneError(f"{label} receipt does not contain measured identity")
+    if not dependencies or any(
+        not isinstance(key, str)
+        or not key.strip()
+        or not isinstance(value, str)
+        or not value.strip()
+        for key, value in dependencies.items()
+    ):
+        raise ReleaseLaneError(f"{label} dependency identity is invalid")
+    if set(provenance) != {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}:
+        raise ReleaseLaneError(f"{label} artifact provenance is incomplete")
+    for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
+        if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
+            provenance[field]
+        ):
+            raise ReleaseLaneError(f"{label} artifact provenance checksum is invalid")
+    if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
+        provenance["avds_source_sha"]
+    ):
+        raise ReleaseLaneError(f"{label} AVDS source binding is invalid")
+
+
+def validate_native_receipt(
+    receipt: dict[str, Any],
+    *,
+    lane: ReleaseLane,
+    source_sha: str,
+    artifact_digest: str,
+    artifact_ref: str,
+) -> None:
+    """Validate a product-owned native receipt for a release tuple."""
+    expected = {
+        "schema",
+        "project_id",
+        "native_host_adapter",
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+        "readiness",
+    }
+    evidence_fields = {"runtime_identity", "dependency_identity", "artifact_provenance"}
+    if (
+        not isinstance(receipt, dict)
+        or not expected.issubset(receipt)
+        or set(receipt) - (expected | evidence_fields)
+        or receipt.get("schema") != NATIVE_RECEIPT_SCHEMA
+        or receipt.get("project_id") != lane.project_id
+        or receipt.get("native_host_adapter") != lane.native_host_adapter
+        or receipt.get("source_sha") != source_sha
+        or receipt.get("artifact_digest") != artifact_digest
+        or receipt.get("artifact_ref") != artifact_ref
+    ):
+        raise ReleaseLaneError("native receipt does not bind the requested release tuple")
+    readiness = receipt.get("readiness")
+    allowed_readiness = {
+        name: ({"ok", "degraded"} if name == "qazgeo" else {"ok"})
+        for name in lane.required_readiness
+    }
+    if (
+        not isinstance(readiness, dict)
+        or set(readiness) != set(lane.required_readiness)
+        or any(
+            readiness.get(name) not in allowed_readiness[name]
+            for name in lane.required_readiness
+        )
+    ):
+        raise ReleaseLaneError("native receipt readiness is invalid")
+    if lane.canonical_repository is not None:
+        if not evidence_fields.issubset(receipt):
+            raise ReleaseLaneError("native receipt lacks runtime evidence")
+        _validate_runtime_evidence(
+            receipt,
+            source_sha=source_sha,
+            artifact_digest=artifact_digest,
+            artifact_ref=artifact_ref,
+            label="native",
+        )
+
+
 def validate_runtime_receipt(
     receipt: dict[str, Any],
     *,
@@ -529,33 +640,13 @@ def validate_runtime_receipt(
     if evidence_fields.intersection(receipt):
         if not evidence_fields.issubset(receipt):
             raise ReleaseLaneError("runtime identity evidence is incomplete")
-        runtime_identity = receipt["runtime_identity"]
-        if (
-            not isinstance(runtime_identity, dict)
-            or runtime_identity.get("source_sha") != source_sha
-            or runtime_identity.get("artifact_digest") != artifact_digest
-            or runtime_identity.get("artifact_ref") != artifact_ref
-            or runtime_identity.get("measured") is not True
-        ):
-            raise ReleaseLaneError("runtime receipt does not contain measured identity")
-        dependency_identity = receipt["dependency_identity"]
-        if not isinstance(dependency_identity, dict) or any(
-            not isinstance(value, str) or not value.strip()
-            for value in dependency_identity.values()
-        ):
-            raise ReleaseLaneError("runtime dependency identity is invalid")
-        provenance = receipt["artifact_provenance"]
-        if not isinstance(provenance, dict):
-            raise ReleaseLaneError("runtime artifact provenance is invalid")
-        for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
-            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
-                provenance[field]
-            ):
-                raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
-        if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
-            provenance["avds_source_sha"]
-        ):
-            raise ReleaseLaneError("runtime AVDS source binding is invalid")
+        _validate_runtime_evidence(
+            receipt,
+            source_sha=source_sha,
+            artifact_digest=artifact_digest,
+            artifact_ref=artifact_ref,
+            label="runtime",
+        )
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     if (
@@ -636,6 +727,36 @@ class ReleaseStore:
     def _operation_path(self, lane_name: str) -> Path:
         return self.operations_root / f"{self._safe_name(lane_name)}.json"
 
+    def _operation_history_path(self, lane_name: str) -> Path:
+        return self.operations_root / f"{self._safe_name(lane_name)}.jsonl"
+
+    @staticmethod
+    def _append_json_line(path: Path, value: dict[str, Any]) -> None:
+        """Append and fsync one non-sensitive operation event.
+
+        The JSONL history is intentionally separate from the compatibility
+        current-state file.  It makes an interrupted request auditable without
+        allowing a later phase to erase the earlier release/lease/fence
+        evidence.
+        """
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+                json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            if path.exists():
+                os.chmod(path, 0o600)
+
+    def _record_operation(self, lane_name: str, event: dict[str, Any]) -> None:
+        if event.get("schema") != OPERATION_SCHEMA:
+            raise ReleaseLaneError("release operation schema is invalid")
+        history = self._operation_history_path(lane_name)
+        self._append_json_line(history, event)
+        self._write(self._operation_path(lane_name), event)
+
     @contextmanager
     def _lock(self, name: str) -> Iterator[None]:
         path = self.locks_root / f"{self._safe_name(name)}.lock"
@@ -708,10 +829,10 @@ class ReleaseStore:
                 "status": "accepted",
                 "accepted_at": time.time(),
             }
-            self._write(
-                self._operation_path(lane.name),
+            self._record_operation(
+                lane.name,
                 {
-                    "schema": "qdev-controller-release-operation-v1",
+                    "schema": OPERATION_SCHEMA,
                     "release_id": job["release_id"],
                     "lease_id": job["lease_id"],
                     "fence": job["fence"],
@@ -732,6 +853,18 @@ class ReleaseStore:
                 job["status"] = "dispatched"
                 job["dispatched_at"] = time.time()
                 self._write(self._job_path(lane.name), job)
+                self._record_operation(
+                    lane.name,
+                    {
+                        "schema": OPERATION_SCHEMA,
+                        "release_id": job["release_id"],
+                        "lease_id": job.get("lease_id"),
+                        "fence": job.get("fence"),
+                        "operation_seq": job.get("operation_seq"),
+                        "phase": "dispatched",
+                        "updated_at": time.time(),
+                    },
+                )
             return job
 
     def complete(
@@ -759,6 +892,8 @@ class ReleaseStore:
                 if job.get("runtime_receipt") == receipt:
                     return job
                 raise ReleaseLaneError("release job was already completed with another receipt")
+            if lane.canonical_repository is not None and job.get("status") != "dispatched":
+                raise ReleaseLaneError("managed release job was not dispatched")
             if job.get("status") not in {"accepted", "dispatched"}:
                 raise ReleaseLaneError("release job is not active")
             validate_runtime_receipt(
@@ -773,10 +908,10 @@ class ReleaseStore:
             job["runtime_receipt"] = receipt
             job["operation_phase"] = "verified"
             self._write(self._job_path(lane.name), job)
-            self._write(
-                self._operation_path(lane.name),
+            self._record_operation(
+                lane.name,
                 {
-                    "schema": "qdev-controller-release-operation-v1",
+                    "schema": OPERATION_SCHEMA,
                     "release_id": job["release_id"],
                     "lease_id": job.get("lease_id"),
                     "fence": job.get("fence"),
@@ -813,6 +948,8 @@ class ReleaseStore:
                 if job.get("rollback_receipt") == receipt:
                     return job
                 raise ReleaseLaneError("release rollback already has another receipt")
+            if lane.canonical_repository is not None and job.get("status") != "dispatched":
+                raise ReleaseLaneError("managed release job was not dispatched")
             if job.get("status") not in {"accepted", "dispatched"}:
                 raise ReleaseLaneError("release job cannot be rolled back")
             required_receipt = {
@@ -863,24 +1000,21 @@ class ReleaseStore:
                 raise ReleaseLaneError("rollback artifact identity is invalid")
             if _release_tuple == failed_tuple:
                 raise ReleaseLaneError("rollback must restore a different immutable release")
-            native = receipt["native_receipt"]
-            if (
-                native.get("schema") != "qdev-admin-platform-native-receipt-v1"
-                or native.get("project_id") != lane.project_id
-                or native.get("native_host_adapter") != lane.native_host_adapter
-                or native.get("source_sha") != restored["source_sha"]
-                or native.get("artifact_digest") != restored["artifact_digest"]
-                or native.get("artifact_ref") != restored["artifact_ref"]
-            ):
-                raise ReleaseLaneError("rollback native identity is not proven")
+            validate_native_receipt(
+                receipt["native_receipt"],
+                lane=lane,
+                source_sha=restored["source_sha"],
+                artifact_digest=restored["artifact_digest"],
+                artifact_ref=restored["artifact_ref"],
+            )
             job["status"] = "rolled_back"
             job["rollback_receipt"] = receipt
             job["rolled_back_at"] = time.time()
             self._write(self._job_path(lane.name), job)
-            self._write(
-                self._operation_path(lane.name),
+            self._record_operation(
+                lane.name,
                 {
-                    "schema": "qdev-controller-release-operation-v1",
+                    "schema": OPERATION_SCHEMA,
                     "release_id": release_id,
                     "lease_id": job.get("lease_id"),
                     "fence": job.get("fence"),
