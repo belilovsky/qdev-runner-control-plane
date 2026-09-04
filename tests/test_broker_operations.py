@@ -147,6 +147,12 @@ def _app(
         ),
         encoding="utf-8",
     )
+    managed_release_ledger = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
+    if include_qgeo:
+        managed_release_ledger = tmp_path / "managed-release-ledger.yml"
+        managed_release_ledger.write_bytes(
+            (Path(__file__).parents[1] / "config" / "managed-release-ledger.yml").read_bytes()
+        )
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -167,9 +173,7 @@ def _app(
         admin_platform_ledger_path=(
             Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
         ),
-        managed_release_ledger_path=(
-            Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
-        ),
+        managed_release_ledger_path=(managed_release_ledger),
         release_jobs_root=tmp_path / "release-jobs",
     )
     app = create_app(
@@ -472,6 +476,215 @@ class FakeGitHub:
         labels: tuple[str, ...],
     ) -> str:
         return "signed-jit-config"
+
+
+QGEO_SOURCE_SHA = "8bfd4e5bb7da5c7c99fd12865fb56d88fc5c9d7d"
+QGEO_PR_BRANCH = "codex/qgeo-unified-recovery-20260904"
+QGEO_CI_BINDINGS = (
+    (33838251934, 100915082535, "qdev-ci"),
+    (33838251867, 100915081363, "qdev-ci"),
+    (33838251934, 100982561858, "qdev-ci"),
+    (33838251934, 100982561902, "qdev-ci-docker"),
+)
+
+
+class QGeoFakeGitHub:
+    def __init__(
+        self,
+        *,
+        event: str = "pull_request",
+        branch: str = QGEO_PR_BRANCH,
+        run_status: str = "completed",
+        run_conclusion: str | None = "success",
+        job_status: str = "completed",
+        job_conclusion: str | None = "success",
+        head_sha: str = QGEO_SOURCE_SHA,
+        run_id: int = 0,
+        profile: str = "qdev-ci",
+    ) -> None:
+        self.event = event
+        self.branch = branch
+        self.run_status = run_status
+        self.run_conclusion = run_conclusion
+        self.job_status = job_status
+        self.job_conclusion = job_conclusion
+        self.head_sha = head_sha
+        self.run_id = run_id
+        self.profile = profile
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, object]:
+        return {
+            "id": run_id,
+            "head_sha": self.head_sha,
+            "run_attempt": 1,
+            "status": self.run_status,
+            "conclusion": self.run_conclusion,
+            "event": self.event,
+            "ref": "refs/heads/main" if self.event == "push" else None,
+            "head_branch": self.branch,
+        }
+
+    def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, object]:
+        binding = next((item for item in QGEO_CI_BINDINGS if item[1] == job_id), None)
+        run_id = binding[0] if binding is not None else self.run_id
+        profile = binding[2] if binding is not None else self.profile
+        return {
+            "id": job_id,
+            "run_id": run_id,
+            "run_attempt": 1,
+            "head_sha": self.head_sha,
+            "head_branch": self.branch,
+            "status": self.job_status,
+            "conclusion": self.job_conclusion,
+            "labels": ["self-hosted", "Linux", "X64", profile],
+        }
+
+
+def _seed_qgeo_jobs(
+    client: TestClient,
+    bindings: tuple[tuple[int, int, str], ...] = QGEO_CI_BINDINGS,
+    *,
+    branch: str = QGEO_PR_BRANCH,
+) -> None:
+    store: Store = client.app.state.store
+    for index, (run_id, job_id, profile) in enumerate(bindings):
+        queued = QueuedJob(
+            delivery_id=f"qgeo-delivery-{job_id}",
+            job_id=job_id,
+            run_id=run_id,
+            repository="belilovsky/qazgeo",
+            repository_id=4,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", profile),
+            head_sha=QGEO_SOURCE_SHA,
+            head_branch=branch,
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+        assert store.enqueue(queued) is True, index
+
+
+def test_qgeo_ci_registration_accepts_allowlisted_pr_and_main_push_idempotently(
+    tmp_path: Path,
+) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, QGEO_CI_BINDINGS[:1])
+    body = {
+        "repository": "belilovsky/qazgeo",
+        "source_sha": QGEO_SOURCE_SHA,
+        "run_id": QGEO_CI_BINDINGS[0][0],
+        "attempt": 1,
+        "job_id": QGEO_CI_BINDINGS[0][1],
+    }
+
+    first = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert first.status_code == 200, first.text
+    first_payload = verify_controller_receipt(first.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert first_payload["idempotent"] is True
+    assert first_payload["provider"]["event"] == "pull_request"
+
+    repeated = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+    main_run_id, main_job_id, _ = (33870997811, 101016693706, "qdev-ci")
+    main_github = QGeoFakeGitHub(event="push", branch="main", run_id=main_run_id)
+    main_tmp_path = tmp_path / "main"
+    main_tmp_path.mkdir()
+    main_client = _app(main_tmp_path, github=main_github, include_qgeo=True)
+    _seed_qgeo_jobs(main_client, ((main_run_id, main_job_id, "qdev-ci"),), branch="main")
+    main_body = {
+        "repository": "belilovsky/qazgeo",
+        "source_sha": QGEO_SOURCE_SHA,
+        "run_id": main_run_id,
+        "attempt": 1,
+        "job_id": main_job_id,
+    }
+    main = main_client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=main_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert main.status_code == 200, main.text
+    main_payload = verify_controller_receipt(main.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert main_payload["idempotent"] is False
+    assert main_payload["provider"]["event"] == "push"
+
+
+def test_qgeo_ci_registration_rejects_provider_sha_mismatch(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub(head_sha="f" * 40)
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, QGEO_CI_BINDINGS[:1])
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json={
+            "repository": "belilovsky/qazgeo",
+            "source_sha": QGEO_SOURCE_SHA,
+            "run_id": QGEO_CI_BINDINGS[0][0],
+            "attempt": 1,
+            "job_id": QGEO_CI_BINDINGS[0][1],
+        },
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 409
+    assert "provider tuple" in response.json()["detail"]
+
+
+def test_qgeo_ci_reconcile_promotes_all_bindings_and_is_idempotent(tmp_path: Path) -> None:
+    client = _app(tmp_path, github=QGeoFakeGitHub(), include_qgeo=True)
+    _seed_qgeo_jobs(client)
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["idempotent"] is False
+    assert payload["run_ids"] == [33838251867, 33838251934]
+    assert len(payload["bindings"]) == 4
+    ledger = yaml.safe_load(client.app.state.settings.managed_release_ledger_path.read_text())
+    entry = ledger["entries"]["qazgeo"]
+    assert entry["status"] == "ci_passed"
+    assert all(item["state"] == "terminal" for item in entry["ci_runs"])
+
+    repeated = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+
+def test_qgeo_ci_reconcile_waits_for_provider_terminal_state(tmp_path: Path) -> None:
+    client = _app(
+        tmp_path,
+        github=QGeoFakeGitHub(run_status="in_progress", job_status="queued"),
+        include_qgeo=True,
+    )
+    _seed_qgeo_jobs(client)
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "managed CI is still running"
 
 
 def _seed_stale_running_job(client: TestClient) -> float:

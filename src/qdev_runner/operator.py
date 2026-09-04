@@ -19,6 +19,7 @@ _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _ENDPOINT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
 OPERATOR_MTLS_IDENTITY = "qdev-fleet-operations"
 
 
@@ -45,6 +46,12 @@ def _certificate_sha256(value: str) -> str:
     if not _SHA256.fullmatch(normalized):
         raise ValueError("invalid worker certificate SHA-256")
     return normalized
+
+
+def _git_revision(value: str) -> str:
+    if not _GIT_REVISION.fullmatch(value):
+        raise ValueError("invalid Git source SHA")
+    return value
 
 
 def _required(name: str) -> str:
@@ -213,6 +220,20 @@ def build_parser() -> argparse.ArgumentParser:
     claim_scope.add_argument("--worker-certificate-sha256", required=True)
     claim_scope.add_argument("--correlation-id", required=True)
     claim_scope.add_argument("--duration-seconds", type=int, default=900)
+
+    register_ci = commands.add_parser(
+        "register-ci", help="Register one verified QGeo main-push workflow job"
+    )
+    register_ci.add_argument("--repository", default="belilovsky/qazgeo")
+    register_ci.add_argument("--source-sha", required=True)
+    register_ci.add_argument("--run-id", type=int, required=True)
+    register_ci.add_argument("--attempt", type=int, default=1)
+    register_ci.add_argument("--job-id", type=int, required=True)
+
+    reconcile_ci = commands.add_parser(
+        "reconcile-ci", help="Reconcile all allowlisted QGeo CI jobs"
+    )
+    reconcile_ci.add_argument("--source-sha", required=True)
     return parser
 
 
@@ -298,6 +319,30 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "correlation_id": correlation_id,
                 "duration_seconds": arguments.duration_seconds,
             },
+        )
+    if arguments.command == "register-ci":
+        source_sha = _git_revision(arguments.source_sha)
+        if arguments.run_id <= 0 or arguments.attempt < 1 or arguments.job_id <= 0:
+            raise ValueError("invalid QGeo CI tuple")
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/releases/qazgeo/ci-registration",
+            body={
+                "repository": arguments.repository,
+                "source_sha": source_sha,
+                "run_id": arguments.run_id,
+                "attempt": arguments.attempt,
+                "job_id": arguments.job_id,
+            },
+        )
+    if arguments.command == "reconcile-ci":
+        source_sha = _git_revision(arguments.source_sha)
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/releases/qazgeo/ci-reconcile",
+            body={"source_sha": source_sha},
         )
     raise AssertionError("unreachable command")
 
