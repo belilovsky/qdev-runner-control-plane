@@ -140,11 +140,11 @@ def controller_request(
     method: str,
     path: str,
     body: Mapping[str, Any] | None = None,
-    mtls_identity: str | None = None,
 ) -> dict[str, Any]:
-    headers = {"X-QDev-Operator-Token": settings.operator_token}
-    if mtls_identity is not None:
-        headers["X-QDev-Operator-mTLS-Identity"] = mtls_identity
+    headers = {
+        "X-QDev-Operator-Token": settings.operator_token,
+        "X-QDev-Operator-mTLS-Identity": OPERATOR_MTLS_IDENTITY,
+    }
     with httpx.Client(
         base_url=settings.controller_url,
         headers=headers,
@@ -232,7 +232,6 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             settings,
             method="GET",
             path="/internal/v1/operations/admin-platform",
-            mtls_identity=OPERATOR_MTLS_IDENTITY,
         )
     if arguments.command == "override":
         worker = _worker_name(arguments.worker)
@@ -299,7 +298,6 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "correlation_id": correlation_id,
                 "duration_seconds": arguments.duration_seconds,
             },
-            mtls_identity=OPERATOR_MTLS_IDENTITY,
         )
     raise AssertionError("unreachable command")
 
