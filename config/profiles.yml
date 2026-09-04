@@ -44,6 +44,11 @@ repository_admission_disk_mb:
   # 4.5 GiB hard free-space floor and workflow preflight remain enforced.
   belilovsky/tokaev-module:
     qdev-ci-docker: 12288
+  # QazPolit declares a 12 GiB exact-SHA Docker release lane. Keep this
+  # repository-specific admission bound below the profile default while the
+  # worker's independent hard floor remains enforced during execution.
+  belilovsky/qazpolit:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]

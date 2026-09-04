@@ -72,7 +72,7 @@ belilovsky/qazlake	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazlake-api	true	main	qdev-ci	6	0	0	0	0
 belilovsky/qazlost	true	main	qdev-ci	4	1	0	0	0
 belilovsky/qazpipe	true	main	qdev-ci	5	0	0	0	0
-belilovsky/qazpolit	true	main	qdev-ci	4	0	0	0	0
+belilovsky/qazpolit	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazposter	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazshield	true	main	qdev-ci,qdev-ci-docker	8	0	0	0	2
 belilovsky/qazstack	true	main	qdev-ci	6	0	1	0	0
