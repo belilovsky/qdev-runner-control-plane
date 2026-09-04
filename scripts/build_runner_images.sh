@@ -3,7 +3,7 @@ set -euo pipefail
 
 engine="${QDEV_CONTAINER_ENGINE:-docker}"
 registry="${QDEV_REGISTRY:-registry.ci.qdev.run/qdev}"
-version="${QDEV_RUNNER_VERSION:-2.337.0-r4}"
+version="${QDEV_RUNNER_VERSION:-2.337.0-r5}"
 
 "$engine" build --pull --target general \
   --tag "${registry}/actions-runner:${version}" images/runner

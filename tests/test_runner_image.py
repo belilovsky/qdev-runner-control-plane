@@ -41,7 +41,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert 'QDEV_RUNNER_VERSION:-2.337.0-r4' in builder
+    assert 'QDEV_RUNNER_VERSION:-2.337.0-r5' in builder
 
 
 def test_actions_runner_release_and_digest_are_current_and_pinned() -> None:
@@ -52,6 +52,22 @@ def test_actions_runner_release_and_digest_are_current_and_pinned() -> None:
         "ARG RUNNER_SHA256="
         "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
     ) in dockerfile
+
+
+def test_embedded_node_runtimes_replace_npm_with_pinned_verified_release() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    installer = (ROOT / "images/runner/install-pinned-npm.sh").read_text(encoding="utf-8")
+
+    assert "ARG NPM_VERSION=11.19.1" in dockerfile
+    assert (
+        "ARG NPM_SHA512="
+        "4faecce0be70366d1c67b1012c4adc1246354a6cc45bf589f92003073b05518d"
+        "547403df1475c542d67a4845e22b4fafcd7cac0af02c7a96cc6814f09eb003fb"
+    ) in dockerfile
+    assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node20") == 2
+    assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node24") == 2
+    assert "sha512sum --check" in installer
+    assert 'test "${actual_version}" = "${npm_version}"' in installer
 
 
 def test_docker_profile_has_compose_plugin() -> None:
