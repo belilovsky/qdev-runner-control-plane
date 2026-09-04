@@ -84,9 +84,7 @@ class AdminPlatformLedger:
                 "attempts",
                 "entries",
             }
-            if not required_v2.issubset(document) or set(document) - (
-                required_v2 | {"program"}
-            ):
+            if not required_v2.issubset(document) or set(document) - (required_v2 | {"program"}):
                 raise AdminPlatformLedgerError("admin platform ledger v2 shape is invalid")
             self._validate_v2_program(document)
         self.schema_version = str(schema_version)
@@ -256,6 +254,26 @@ class AdminPlatformLedger:
         if entry.status not in ACTIVE_STATUSES or entry.source_sha != exact_sha:
             raise AdminPlatformLedgerError("admin platform candidate tuple is not admitted")
         return entry
+
+    def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
+        """Classify a queued managed job without weakening direct admission.
+
+        The active admin-platform tuple remains fail-closed through
+        :meth:`validate_admission`.  This observational form is used only
+        while scanning unrelated FIFO rows: a stale or superseded admin
+        candidate is recorded as skipped rather than allowing it to hold an
+        otherwise independent profile queue forever.
+        """
+        entry = self._by_entry_id.get(entry_id)
+        if (
+            entry is None
+            or self.active_candidate != entry_id
+            or entry.status not in ACTIVE_STATUSES
+        ):
+            return False, "admin-platform-candidate-not-active"
+        if entry.source_sha != exact_sha:
+            return False, "admin-platform-candidate-tuple-not-admitted"
+        return True, None
 
     @staticmethod
     def _validate_stage(value: Any) -> None:

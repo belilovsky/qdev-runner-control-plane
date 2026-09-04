@@ -12,6 +12,7 @@ from qdev_runner.operations import (
     OperationStore,
     payload_digest,
     sign_payload,
+    validate_controller_receipt_payload,
     verify_capacity_override,
 )
 from qdev_runner.operator import validate_receipt_file, verify_controller_receipt
@@ -163,17 +164,77 @@ def test_controller_receipt_v1_is_legacy_unverified_and_v2_rejects_unknown_paylo
         "payload": payload,
         "digest": digest,
     }
-    legacy = legacy_unsigned | {
-        "signature": sign_payload(legacy_unsigned, "receipt-signing-key")
-    }
+    legacy = legacy_unsigned | {"signature": sign_payload(legacy_unsigned, "receipt-signing-key")}
     with pytest.raises(ValueError, match="legacy_unverified"):
         verify_controller_receipt(legacy, receipt_key="receipt-signing-key")
     assert (
-        verify_controller_receipt(
-            legacy, receipt_key="receipt-signing-key", allow_legacy=True
-        )
+        verify_controller_receipt(legacy, receipt_key="receipt-signing-key", allow_legacy=True)
         == legacy
     )
+
+
+def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
+    payload = {
+        "kind": "fifo-claim-scope-issued",
+        "operator_session": "verified",
+        "mtls_identity": "qdev-fleet-operations",
+        "idempotent": False,
+        "replaced_expired_scope": False,
+        "rolled_over_terminal_scope": False,
+        "rebound_legacy_scope": False,
+        "claim_scope": {},
+        "immutable_tuple": {},
+        "fifo_skipped": [
+            {
+                "job_id": 41,
+                "repository": "belilovsky/qazposter",
+                "run_id": 84000000041,
+                "head_sha": "a" * 40,
+                "profile": "qdev-ci-docker",
+                "managed_registry_entry": "qazposter",
+                "reason": "manual-bypass",
+            }
+        ],
+        "managed_registry_entry": None,
+        "admission_ledger": None,
+        "admin_platform_ledger_entry": None,
+        "managed_release_ledger_entry": None,
+        "worker": {},
+    }
+    with pytest.raises(ValueError, match="fifo skip item"):
+        validate_controller_receipt_payload(payload)
+
+
+def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
+    payload = {
+        "kind": "fifo-claim-scope-issued",
+        "operator_session": "verified",
+        "mtls_identity": "qdev-fleet-operations",
+        "idempotent": False,
+        "replaced_expired_scope": False,
+        "rolled_over_terminal_scope": False,
+        "rebound_legacy_scope": False,
+        "claim_scope": {},
+        "immutable_tuple": {},
+        "fifo_skipped": [
+            {
+                "job_id": 41,
+                "repository": "belilovsky/qazposter",
+                "run_id": 84000000041,
+                "head_sha": "a" * 40,
+                "profile": "qdev-ci-docker",
+                "managed_registry_entry": "qazposter",
+                "reason": [],
+            }
+        ],
+        "managed_registry_entry": None,
+        "admission_ledger": None,
+        "admin_platform_ledger_entry": None,
+        "managed_release_ledger_entry": None,
+        "worker": {},
+    }
+    with pytest.raises(ValueError, match="fifo skip item"):
+        validate_controller_receipt_payload(payload)
 
 
 def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -> None:
