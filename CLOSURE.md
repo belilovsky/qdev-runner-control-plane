@@ -39,3 +39,38 @@ pytest -q                           252 passed, 2 warnings
 ## Closure rule
 
 The work is not `complete` until the two existing runners are online/idle with completed controller receipts, QazStack scan runtime proof is available, a real QazLake snapshot produces a public-verified QazReport catalog, and a fresh Platform candidate has a green release workflow, matching live SHA, route/artifact checks, and a retained rollback target.
+
+## Pass 1 reconciliation — 2026-09-04 (current host state)
+
+The previous entries above are historical evidence from the earlier controller
+release. The following read-only reconciliation is the evidence used for the
+current closure decision:
+
+- The existing controller host `srv1879763` (`186.240.148.129`) reports active
+  release revision `02df7f891b7e0118b5231a3c7f7f4abc4a5a0064` with release digest
+  `25455cdb089b0da9815ee229fedfc4e516ff50f48fd19abaf352903b60ff7d0b`, activated
+  at `2026-09-04T14:45:09Z`. That private release revision is not resolvable as
+  a GitHub commit and is therefore not treated as source identity.
+- The controller audit at `2026-09-04T15:43:46Z` is signed and enforced. It
+  reports `pending=105`; the fresh primary has `active_jobs=0` but is blocked by
+  measured `disk_used_pct` and `disk_free_gib`, while the reserve is occupied.
+  The named recovery adapter `/usr/local/sbin/qdev-fleet-worker-recovery` is
+  absent on the host.
+- Replaying the scoped administrative recovery requests for
+  `qdev-platform-ci-187` and `qdev-qazstack-01` remains idempotent and returns
+  `status=access_blocked`, `operation_status=pending`, and
+  `error_code=recovery_adapter_unavailable`. No direct host service start,
+  runner recreation, queue mutation, lease mutation, or manual job operation
+  was performed.
+- GitHub still reports both existing targets offline and idle: platform runner
+  `id=278` (`qdev-platform-ci-187`) and QazStack runner `id=21`
+  (`qdev-qazstack-01`). The first has a disabled/guarded service on its host;
+  the second has no registered service or runner directory on the inspected
+  host. This is an external registration/adapter blocker, not a completed
+  recovery.
+
+The controller implementation and its canonical fixture suite remain green on
+the exact merged source tree (`origin/main` `21b23e25ed45a547ad460e4bc412a4949a909c3f3`),
+but provider jobs cannot supply a green admission while the recovery adapter
+and GitHub capacity are unavailable. The closure status therefore remains
+`access_blocked` for this pass.
