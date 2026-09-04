@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-08-31T13:31:45.071802+00:00",
+  "generated_at": "2026-09-04T08:16:23.905169+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
   "runner_repository_count": 96,
@@ -3612,7 +3612,8 @@
       "archived": false,
       "default_branch": "master",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
       "workflow_count": 7,
       "workflow_files": [
