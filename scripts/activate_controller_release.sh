@@ -14,6 +14,7 @@ release_root=/opt/qdev-runner-control-plane
 operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
 release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"
 release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
+release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/qdev-controller-release.lock}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
 release="$(realpath -e -- "$1")"
@@ -29,6 +30,61 @@ if [[ "$legacy_rollback" != true && "$legacy_rollback" != false ]]; then
   printf 'QDEV_CONTROLLER_LEGACY_ROLLBACK must be true or false\n' >&2
   exit 64
 fi
+expected_current_revision="${QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION:-}"
+if [[ "$legacy_rollback" != true && ! "$expected_current_revision" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'forward activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION\n' >&2
+  exit 64
+fi
+
+# Serialize activation and rollback so two otherwise valid release
+# transactions cannot change the current symlink or its evidence concurrently.
+exec 9>"$release_lock_path"
+if ! flock -n 9; then
+  printf 'another controller release transaction owns %s\n' "$release_lock_path" >&2
+  exit 75
+fi
+
+read_active_release_revision() {
+  python3 - "$release_status_path" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+revision = payload.get("revision")
+if (
+    payload.get("schema") != "qdev-controller-release-status-v1"
+    or payload.get("state") != "active"
+    or not isinstance(revision, str)
+    or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+):
+    raise SystemExit(1)
+print(revision)
+PY
+}
+
+assert_expected_current_revision() {
+  [[ "$legacy_rollback" != true ]] || return 0
+  local observed_revision
+  if ! observed_revision="$(read_active_release_revision)"; then
+    printf 'active controller release status is unavailable or invalid\n' >&2
+    exit 75
+  fi
+  if [[ "$observed_revision" != "$expected_current_revision" ]]; then
+    printf 'controller release compare-and-swap rejected expected=%s observed=%s\n' \
+      "$expected_current_revision" "$observed_revision" >&2
+    exit 75
+  fi
+}
+
+# Fail before capacity work, backups or any configuration mutation if this
+# transaction was prepared against a controller runtime that is no longer live.
+assert_expected_current_revision
 # Forward activation is fail-closed on the Admin Platform v2 ledger and its
 # fixed product adapters.  The explicit legacy flag is reserved for the
 # controller-owned rollback helper restoring an older controller release.
@@ -284,6 +340,9 @@ restore_operator_identity_metadata() {
   done < "$operator_identity_metadata_backup"
 }
 
+# Recheck at the last non-mutating boundary. The process lock prevents another
+# conforming activation from racing the configuration writes that follow.
+assert_expected_current_revision
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
