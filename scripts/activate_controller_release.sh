@@ -43,6 +43,7 @@ required=(
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   scripts/qdev_product_release_host_agent.py \
+  deploy/qdev-release-qazgeo.service \
   deploy/qdev-release-qaz-tours.service \
   deploy/qdev-release-qaz-fund.service \
   deploy/qdev-release-qaz-events.service \
@@ -232,6 +233,7 @@ digest_files=(
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
     "$release/scripts/qdev_product_release_host_agent.py" \
+    "$release/deploy/qdev-release-qazgeo.service" \
     "$release/deploy/qdev-release-qaz-fund.service" \
     "$release/deploy/qdev-release-qaz-events.service" \
     "$release/deploy/qdev-release-qmt.service" \
