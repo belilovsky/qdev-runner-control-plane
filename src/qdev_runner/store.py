@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import SCHEMA_V2, ClaimScope
+from .claim_scope import MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION, SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -254,7 +254,11 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             profile_heads: dict[str, int] = {}
-            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            if (
+                claim_scope is not None
+                and claim_scope.schema == SCHEMA_V2
+                and claim_scope.fifo_exception != MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+            ):
                 # v2 scopes may authorize independent profiles concurrently, but
                 # may never skip the oldest pending job within any one profile.
                 # Keep this guard in the durable claim path as well as the
@@ -279,6 +283,7 @@ class Store:
                 if (
                     claim_scope is not None
                     and claim_scope.schema == SCHEMA_V2
+                    and claim_scope.fifo_exception != MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
                     and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
                 ):
                     continue
