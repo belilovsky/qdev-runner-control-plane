@@ -61,8 +61,8 @@ def test_embedded_node_runtimes_replace_npm_with_pinned_verified_release() -> No
     assert "ARG NPM_VERSION=11.19.1" in dockerfile
     assert (
         "ARG NPM_SHA512="
-        "4faecce0be70366d1c67b1012c4adc1246354a6cc45bf589f92003073b05518d"
-        "547403df1475c542d67a4845e22b4fafcd7cac0af02c7a96cc6814f09eb003fb"
+        "cedb312b1b7f92421a02cfb68b4194e88f8346651dacd6acc5364a25ef5309d4"
+        "a32b19616a1ff8aff865e7280c0fa5c0835a99f5cd93368991e2a80ec9da75d2"
     ) in dockerfile
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node20") == 2
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node24") == 2
