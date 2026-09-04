@@ -424,8 +424,9 @@ class GitHubAppClient:
         never an arbitrary workflow file or shell command.
         """
 
-        response = self._client.post(
-            f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}/rerun",
+        response = self._request(
+            "POST",
+            f"/repos/{repository}/actions/jobs/{job_id}/rerun",
             headers=self._headers(self.installation_token(installation_id)),
         )
         if response.status_code not in {201, 202}:
@@ -448,16 +449,16 @@ class GitHubAppClient:
     ) -> dict[str, Any]:
         """Dispatch a registered workflow file on an exact branch/ref."""
 
-        response = self._client.post(
-            (
-                f"{self.api_url}/repos/{repository}/actions/workflows/"
-                f"{quote(workflow, safe='')}/dispatches"
-            ),
+        response = self._request(
+            "POST",
+            f"/repos/{repository}/actions/workflows/{quote(workflow, safe='')}/dispatches",
             headers=self._headers(self.installation_token(installation_id)),
             json={"ref": ref, "inputs": inputs or {}},
         )
         if response.status_code != 204:
-            raise GitHubError(f"workflow dispatch failed: {response.status_code}")
+            raise GitHubError(
+                f"workflow dispatch failed: {response.status_code} {response.text[:300]}"
+            )
         return {
             "status_code": response.status_code,
             "request_id": response.headers.get("x-github-request-id"),
@@ -485,13 +486,16 @@ class GitHubAppClient:
             params["branch"] = branch
         if event:
             params["event"] = event
-        response = self._client.get(
-            f"{self.api_url}{path}",
+        response = self._request(
+            "GET",
+            path,
             headers=self._headers(self.installation_token(installation_id)),
             params=params,
         )
         if response.status_code != 200:
-            raise GitHubError(f"workflow runs request failed: {response.status_code}")
+            raise GitHubError(
+                f"workflow runs request failed: {response.status_code} {response.text[:300]}"
+            )
         data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
             raise GitHubError("workflow runs response is malformed")
@@ -526,12 +530,15 @@ class GitHubAppClient:
         reconcile the exact commit instead of guessing from a branch.
         """
 
-        response = self._client.get(
-            f"{self.api_url}/repos/{repository}/commits/{quote(ref, safe='')}",
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/commits/{quote(ref, safe='')}",
             headers=self._headers(self.installation_token(installation_id)),
         )
         if response.status_code != 200:
-            raise GitHubError(f"ref lookup failed: {response.status_code}")
+            raise GitHubError(
+                f"ref lookup failed: {response.status_code} {response.text[:300]}"
+            )
         data = response.json()
         sha = data.get("sha") if isinstance(data, dict) else None
         if not isinstance(sha, str):

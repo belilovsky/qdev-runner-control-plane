@@ -41,11 +41,12 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy-broker-internal-1" not in script
     assert 'docker image tag "$previous_public_image"' in script
     assert 'docker image tag "$previous_internal_image"' in script
-    assert 'rollback_public_ref="qdev-runner-rollback-public:$$"' in script
-    assert 'rollback_internal_ref="qdev-runner-rollback-internal:$$"' in script
-    assert 'docker image tag "$rollback_public_ref" "$previous_public_ref"' in script
-    assert 'docker image tag "$rollback_internal_ref" "$previous_internal_ref"' in script
-    assert "cleanup_rollback_images" in script
+    assert 'backup_tag_prefix="qdev-runner-rollback:${BASHPID}"' in script
+    assert 'previous_public_backup_ref="${backup_tag_prefix}-public"' in script
+    assert 'previous_internal_backup_ref="${backup_tag_prefix}-internal"' in script
+    assert 'docker image tag "$previous_public_backup_ref" "$previous_public_ref"' in script
+    assert 'docker image tag "$previous_internal_backup_ref" "$previous_internal_ref"' in script
+    assert "cleanup_backup_tags" in script
     assert "config/profiles.yml" in script
     assert "config/release-lanes.yml" in script
     assert "config/fleet-bootstrap.yml" in script
