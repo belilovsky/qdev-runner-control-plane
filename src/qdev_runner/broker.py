@@ -442,6 +442,20 @@ def create_app(
                 detail="qdev-fleet-operations mTLS identity required",
             )
 
+    def require_operator_session(
+        token: str | None, mtls_identity: str | None
+    ) -> OperationStore:
+        """Require the controller-issued fleet-operations session on every operator route.
+
+        The edge authenticates the client certificate and injects this identity;
+        the bearer token alone is deliberately never sufficient for a capacity
+        operation or an audit receipt that can authorize one.
+        """
+
+        operation_store = require_operator(token)
+        require_operator_mtls(mtls_identity)
+        return operation_store
+
     def release_policy() -> ReleaseLanePolicy:
         try:
             return ReleaseLanePolicy(settings.release_lanes_path)
@@ -835,8 +849,11 @@ def create_app(
     @app.get("/internal/v1/operations/controller-release")
     def operation_controller_release(
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         return operation_store.receipt(
             {
                 "kind": "controller-release-audit",
@@ -901,8 +918,11 @@ def create_app(
     @app.get("/internal/v1/operations/workers")
     def operation_workers(
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         snapshot = store.health()
         observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         payload = {
@@ -930,14 +950,11 @@ def create_app(
         direct broker mutation from the operator endpoint.
         """
 
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         if request.job_id != job_id:
             raise HTTPException(status_code=422, detail="path and payload job_id must match")
-        if x_qdev_operator_mtls_identity != "qdev-fleet-operations":
-            raise HTTPException(
-                status_code=403,
-                detail="qdev-fleet-operations mTLS identity required",
-            )
         certificate_sha256 = request.worker_certificate_sha256.lower()
         if not _SHA256_DIGEST.fullmatch(certificate_sha256):
             raise HTTPException(
@@ -1196,8 +1213,11 @@ def create_app(
         worker_name: str,
         request: CapacityOverrideRequest,
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         worker, audit = current_worker(worker_name)
         registered_profiles = _json_strings(worker.get("profiles_json"))
         requested_profiles = tuple(dict.fromkeys(request.profiles))
@@ -1280,8 +1300,11 @@ def create_app(
     def cancel_capacity_override(
         worker_name: str,
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         worker, audit = current_worker(worker_name)
         directive = operation_store.cancel_capacity_override(
             worker_name,
@@ -1299,8 +1322,11 @@ def create_app(
     def audit_stale_jobs(
         worker_timeout_seconds: int = Query(default=300, ge=300, le=3600),
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         candidates = [_stale_job_tuple(row) for row in store.stale_jobs(worker_timeout_seconds)]
         payload = {
             "kind": "stale-job-audit",
@@ -1316,8 +1342,11 @@ def create_app(
         job_id: int,
         request: StaleJobRecoveryRequest,
         x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        operation_store = require_operator(x_qdev_operator_token)
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
         row = next(
             (
                 candidate

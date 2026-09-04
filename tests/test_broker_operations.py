@@ -21,6 +21,10 @@ RECEIPT_KEY = "receipt-key"
 DIRECTIVE_KEY = "directive-key"
 WORKER_TOKEN = "worker-token"  # noqa: S105 - inert test fixture
 WORKER_NAME = "srv1879763-light-primary"
+OPERATOR_HEADERS = {
+    "X-QDev-Operator-Token": OPERATOR_TOKEN,
+    "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
+}
 
 
 def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
@@ -480,7 +484,7 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     assert unauthorized.status_code == 401
     response = client.get(
         "/internal/v1/operations/controller-release",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
     )
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["kind"] == "controller-release-audit"
@@ -584,10 +588,24 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
 
     unauthorized = client.get("/internal/v1/operations/workers")
     assert unauthorized.status_code == 401
+    missing_identity = client.get(
+        "/internal/v1/operations/workers",
+        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+    )
+    assert missing_identity.status_code == 403
+    assert missing_identity.json()["detail"] == "qdev-fleet-operations mTLS identity required"
+    wrong_identity = client.get(
+        "/internal/v1/operations/workers",
+        headers={
+            "X-QDev-Operator-Token": OPERATOR_TOKEN,
+            "X-QDev-Operator-mTLS-Identity": "untrusted-operator",
+        },
+    )
+    assert wrong_identity.status_code == 403
 
     audit_response = client.get(
         "/internal/v1/operations/workers",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
     )
     assert audit_response.status_code == 200
     audit = verify_controller_receipt(audit_response.json(), receipt_key=RECEIPT_KEY)
@@ -596,7 +614,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
 
     override_response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazshield",
             "profiles": ["qdev-ci-docker"],
@@ -626,10 +644,7 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
     _seed_pending_job(client, 42, "delivery-42")
     _seed_pending_job(client, 43, "delivery-43")
-    headers = {
-        "X-QDev-Operator-Token": OPERATOR_TOKEN,
-        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
-    }
+    headers = OPERATOR_HEADERS
     request = {
         "job_id": 42,
         "worker_name": WORKER_NAME,
@@ -702,10 +717,7 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
     _seed_pending_job(client, 42, "delivery-42")
     _seed_pending_job(client, 43, "delivery-43")
-    headers = {
-        "X-QDev-Operator-Token": OPERATOR_TOKEN,
-        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
-    }
+    headers = OPERATOR_HEADERS
     request = {
         "job_id": 42,
         "worker_name": WORKER_NAME,
@@ -742,10 +754,7 @@ def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_p
     client = _app(tmp_path)
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
     _seed_pending_job(client, 42, "delivery-42")
-    headers = {
-        "X-QDev-Operator-Token": OPERATOR_TOKEN,
-        "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
-    }
+    headers = OPERATOR_HEADERS
     request = {
         "job_id": 42,
         "worker_name": WORKER_NAME,
@@ -808,7 +817,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazshield",
             "profiles": ["qdev-ci-docker"],
@@ -830,7 +839,7 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazlake",
             "profiles": ["qdev-ci-docker"],
@@ -881,7 +890,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     )
     override_response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazlake",
             "profiles": ["qdev-ci-docker"],
@@ -940,7 +949,7 @@ def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
 
     response = client.get(
         "/internal/v1/operations/jobs/stale?worker_timeout_seconds=300",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
     )
 
     assert response.status_code == 200
@@ -962,7 +971,7 @@ def test_stale_queued_provider_job_is_released_without_losing_fifo(
 
     response = client.post(
         "/internal/v1/operations/jobs/42/recover-stale",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "worker_timeout_seconds": 300,
             "owner": "portfolio-ci",
@@ -986,7 +995,7 @@ def test_stale_provider_active_job_is_never_released(tmp_path: Path) -> None:
 
     response = client.post(
         "/internal/v1/operations/jobs/42/recover-stale",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "worker_timeout_seconds": 300,
             "owner": "portfolio-ci",
@@ -1005,7 +1014,7 @@ def test_stale_job_with_provider_sha_mismatch_is_never_released(tmp_path: Path) 
 
     response = client.post(
         "/internal/v1/operations/jobs/42/recover-stale",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "worker_timeout_seconds": 300,
             "owner": "portfolio-ci",
@@ -1024,7 +1033,7 @@ def test_stale_job_with_provider_job_run_mismatch_is_never_released(tmp_path: Pa
 
     response = client.post(
         "/internal/v1/operations/jobs/42/recover-stale",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "worker_timeout_seconds": 300,
             "owner": "portfolio-ci",
@@ -1046,7 +1055,7 @@ def test_stale_provider_completed_job_is_closed_not_requeued(tmp_path: Path) -> 
 
     response = client.post(
         "/internal/v1/operations/jobs/42/recover-stale",
-        headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        headers=OPERATOR_HEADERS,
         json={
             "worker_timeout_seconds": 300,
             "owner": "portfolio-ci",

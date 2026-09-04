@@ -18,7 +18,7 @@ def _settings() -> operator.OperatorSettings:
     )
 
 
-def test_claim_scope_uses_fifo_endpoint_with_bound_operator_identity(
+def test_claim_scope_uses_fifo_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -58,7 +58,6 @@ def test_claim_scope_uses_fifo_endpoint_with_bound_operator_identity(
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
     assert captured["path"] == "/internal/v1/operations/jobs/42/claim-scope"
-    assert captured["mtls_identity"] == "qdev-fleet-operations"
     assert captured["body"] == {
         "job_id": 42,
         "worker_name": "srv1879763-light-primary",
@@ -145,3 +144,55 @@ def test_tls_context_keeps_system_roots_and_adds_controller_ca(
     assert context is created[0]
     assert context.verify_locations == ["/inert/controller-ca.pem"]
     assert context.cert_chain == ("/inert/operator-cert.pem", "/inert/operator-key.pem")
+
+
+def test_controller_request_binds_the_fixed_fleet_mtls_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class StubResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"schema": "qdev-controller-receipt-v2"}
+
+    class StubClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self) -> StubClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def request(self, method: str, path: str, *, json: dict[str, str]) -> StubResponse:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = json
+            return StubResponse()
+
+    monkeypatch.setattr(operator, "_tls_context", lambda settings: object())
+    monkeypatch.setattr(operator.httpx, "Client", StubClient)
+    monkeypatch.setattr(
+        operator,
+        "verify_controller_receipt",
+        lambda document, *, receipt_key: document,
+    )
+
+    result = operator.controller_request(
+        _settings(),
+        method="GET",
+        path="/internal/v1/operations/workers",
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/internal/v1/operations/workers"
+    assert captured["body"] is None
+    assert captured["client_kwargs"]["headers"] == {
+        "X-QDev-Operator-Token": "inert-operator-token",
+        "X-QDev-Operator-mTLS-Identity": operator.OPERATOR_MTLS_IDENTITY,
+    }
