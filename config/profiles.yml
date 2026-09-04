@@ -3,6 +3,12 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
+  # QDEV's qdev-ci lane only checks its runner contract and environment.
+  # The ~20.4 MiB checkout has no build or package-install workload here.
+  # 8 GiB conservatively allows cold Actions/Python expansion (not measured
+  # peak usage). Its separate browser lane and 4.5 GiB running floor remain.
+  belilovsky/qdev-run-site:
+    qdev-ci: 8192
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
