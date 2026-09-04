@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,25 @@ STATUSES = frozenset(
 ACTIVE_STATUSES = frozenset({"candidate", "ci_queued", "ci_passed", "deploying"})
 TERMINAL_STATUSES = frozenset({"live_accepted", "rolled_back"})
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert YAML-native timestamp values to deterministic JSON scalars.
+
+    ``yaml.safe_load`` intentionally resolves unquoted ISO timestamps to
+    ``datetime``/``date`` instances.  Ledger snapshots are signed controller
+    receipts, so they must have exactly the same JSON representation whether
+    they came from YAML or an already materialized document.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 class AdminPlatformLedgerError(ValueError):
@@ -226,7 +246,7 @@ class AdminPlatformLedger:
             if entry.entry_id == "qazposter":
                 item["observed_external_ci"] = dict(source["observed_external_ci"])
             document["entries"].append(item)
-        return document
+        return _json_safe(document)
 
     def validate_admission(self, entry_id: str, exact_sha: str) -> AdminPlatformLedgerEntry:
         """Require the next controller claim to match the one active candidate."""

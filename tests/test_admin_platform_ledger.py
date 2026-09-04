@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,10 @@ from qdev_runner.admin_platform_ledger import AdminPlatformLedger, AdminPlatform
 
 def _ledger_path() -> Path:
     return Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
+
+
+def _ledger_v2_path() -> Path:
+    return Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
 
 
 def test_ledger_keeps_one_active_candidate_and_the_required_order() -> None:
@@ -43,3 +48,11 @@ def test_ledger_admits_only_the_active_exact_source_tuple() -> None:
         ledger.validate_admission("ortcom", "a" * 40)
     with pytest.raises(AdminPlatformLedgerError, match="tuple"):
         ledger.validate_admission("avds-admin-shell", "a" * 40)
+
+
+def test_v2_snapshot_is_json_serializable_when_yaml_resolves_timestamps() -> None:
+    ledger = AdminPlatformLedger(_ledger_v2_path())
+
+    encoded = json.dumps(ledger.snapshot(), sort_keys=True)
+
+    assert "2026-09-04T00:00:00Z" in encoded
