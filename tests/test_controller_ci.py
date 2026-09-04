@@ -82,6 +82,11 @@ def test_every_lane_uses_full_shared_suite() -> None:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
 
 
+def test_runner_contract_push_is_limited_to_default_branch() -> None:
+    workflow = (ROOT / ".github/workflows/qdev-runner-contract.yml").read_text()
+    assert "push:\n    branches:\n      - main" in workflow
+
+
 def test_runtime_gate_cannot_resolve_missing_dependencies_from_dev_environment() -> None:
     script = (ROOT / "scripts/verify_runtime_install.py").read_text()
     assert "venv.EnvBuilder(with_pip=True)" in script
