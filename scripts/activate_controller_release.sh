@@ -283,15 +283,18 @@ install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
 install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml
-install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
-# Keep the v1 source in the release for compatibility/audit, but make the
-# validated v2 ledger the runtime projection.  The existing backup/rollback
-# path restores the previous release's ledger atomically if activation fails.
-if [[ -f "$release/config/admin-platform-ledger-v2.yml" ]]; then
+# v1 remains packaged for explicitly requested legacy rollback only.  Forward
+# activation must install the validated v2 projection directly; installing v1
+# first creates a brief downgrade window and can leave an older runtime
+# projection behind if activation is interrupted between the two writes.
+if [[ "$legacy_rollback" == true ]]; then
+  install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
+else
+  [[ -f "$release/config/admin-platform-ledger-v2.yml" ]] || {
+    printf 'forward activation requires config/admin-platform-ledger-v2.yml\n' >&2
+    exit 66
+  }
   install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" /etc/qdev-runner/admin-platform-ledger.yml
-elif [[ "$legacy_rollback" != true ]]; then
-  printf 'forward activation requires config/admin-platform-ledger-v2.yml\n' >&2
-  exit 66
 fi
 install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml
 activate_link "$release"

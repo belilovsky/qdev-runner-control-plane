@@ -55,9 +55,20 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml' in script
+    assert 'if [[ "$legacy_rollback" == true ]]; then' in script
     assert (
-        '"$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml'
+        'install -m 0644 -- "$release/config/admin-platform-ledger.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
         in script
+    )
+    assert (
+        'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
+        in script
+    )
+    assert script.index('if [[ "$legacy_rollback" == true ]]; then') < script.index(
+        'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
+        '/etc/qdev-runner/admin-platform-ledger.yml'
     )
     assert (
         '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
