@@ -30,6 +30,20 @@ repository_admission_disk_mb:
   # for every other repository.
   belilovsky/adilet-digest-studio:
     qdev-ci-docker: 12288
+  # QGeo's recovery image is a small 142 MiB compressed runtime on the
+  # production target; its qdev-ci-docker lane runs the pinned dependency and
+  # PostGIS checks before publishing one immutable image. Reserve 15 GiB for
+  # this repository only after the measured recovery cleanup; the worker's
+  # independent 4.5 GiB free-space floor and workflow preflight remain active.
+  belilovsky/qazgeo:
+    qdev-ci-docker: 15360
+  # Qaz.Vision's release image has a measured 201 MiB compressed runtime and
+  # its candidate checkout is 331 MiB. Its Docker lane is a single slim
+  # Python image build with no nested services; reserve the supported 12 GiB
+  # repository minimum after that measurement. The worker's independent
+  # 4.5 GiB hard free-space floor and workflow preflight remain enforced.
+  belilovsky/tokaev-module:
+    qdev-ci-docker: 12288
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
