@@ -46,6 +46,10 @@ class ControllerTransportError(AgentError):
     """The controller outcome is unknown and must be reconciled before retry."""
 
 
+class ControllerOutcomeUnresolved(AgentError):
+    """The native outcome cannot yet be safely classified as accepted or failed."""
+
+
 @dataclass(frozen=True)
 class Profile:
     name: str
@@ -840,7 +844,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                         lease_id=lease_id,
                         fence=fence,
                     )
-                except ControllerTransportError as reconcile_error:
+                except (ControllerTransportError, AgentError) as reconcile_error:
                     # Both completion and reconciliation are unknown.  Do
                     # not mutate the native release blindly; the next run
                     # can reconcile using the durable journal and lease.
@@ -851,11 +855,11 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                         lease_id=lease_id,
                         fence=fence,
                     )
-                    raise AgentError(
+                    raise ControllerOutcomeUnresolved(
                         "controller completion outcome is unresolved"
                     ) from reconcile_error
                 if reconciled.get("status") not in {"completed", "verified"}:
-                    raise AgentError(
+                    raise ControllerOutcomeUnresolved(
                         "controller completion was not accepted"
                     ) from error
             _write_journal(
@@ -865,6 +869,12 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 lease_id=lease_id,
                 fence=fence,
             )
+        except ControllerOutcomeUnresolved:
+            # The native dispatcher may already have promoted the candidate,
+            # while the controller response is still unknown.  A rollback is
+            # another irreversible native mutation and must wait for a later
+            # controller reconciliation; the durable journal is the handoff.
+            raise
         except AgentError as error:
             if release_attempted:
                 try:
