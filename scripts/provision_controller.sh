@@ -36,6 +36,7 @@ install -d -o 9020 -g 9020 -m 0750 /var/log/qdev-runner
 install -m 0644 deploy/qdev-runner-broker.service /etc/systemd/system/qdev-runner-broker.service
 install -m 0644 deploy/qdev-artifact-retention.service /etc/systemd/system/qdev-artifact-retention.service
 install -m 0644 deploy/qdev-artifact-retention.timer /etc/systemd/system/qdev-artifact-retention.timer
+install -m 0644 config/fleet-bootstrap.yml /etc/qdev-runner/fleet-bootstrap.yml
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 printf 'controller provisioning complete; install broker.env, GitHub App key and mTLS files before start\n'
