@@ -426,6 +426,7 @@ class FakeGitHub:
         return {
             "id": job_id,
             "run_id": self.job_run_id,
+            "head_sha": self.head_sha,
             "status": self.job_status,
             "conclusion": self.job_conclusion,
         }
@@ -1190,7 +1191,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     assert missing_binding.json()["detail"] == "capacity override binding rejected"
     assert wrong_repository.status_code == 403
     assert wrong_repository.json()["detail"] == "capacity override binding rejected"
-    assert accepted.status_code == 200
+    assert accepted.status_code == 200, accepted.text
     assert accepted.json()["job_id"] == 101
     assert accepted.json()["repository"] == "belilovsky/qazlake"
     assert store.job_status(100) == "pending"

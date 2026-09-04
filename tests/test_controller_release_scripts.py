@@ -134,6 +134,7 @@ def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert 'QDEV_CONTROLLER_LEGACY_ROLLBACK="$legacy_rollback"' in script
 
 
 def test_controller_compose_project_is_namespaced() -> None:

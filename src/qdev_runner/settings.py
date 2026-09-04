@@ -51,6 +51,9 @@ class BrokerSettings:
     database_path: Path
     artifact_root: Path
     claim_scopes_path: Path = Path("/etc/qdev-runner/claim-scopes.json")
+    operator_group: str = "qdev-ci-operators"
+    scheduler_enabled: bool = False
+    scheduler_poll_seconds: float = 15.0
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
     registry_url: str = "registry.ci.qdev.run"
@@ -83,6 +86,17 @@ class BrokerSettings:
         "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
     )
     fleet_recovery_executable: Path = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
+    # The Platform proxy proves that an incoming operator request crossed the
+    # authenticated server-to-server hop.  Keep this separate from worker and
+    # artifact credentials; it is never returned to a browser.
+    operator_proxy_secret: str | None = None
+    operator_origin: str | None = None
+    # Legacy local OIDC headers are an explicit development-only escape hatch.
+    # Production must authenticate the Platform-to-controller hop with the
+    # server-side proxy secret instead of trusting client-supplied identity
+    # headers or loopback source addresses.
+    allow_legacy_local_oidc: bool = False
+    max_artifact_bytes: int = 250 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -99,6 +113,13 @@ class BrokerSettings:
             ),
             claim_scopes_path=Path(
                 os.environ.get("QDEV_CLAIM_SCOPES", "/etc/qdev-runner/claim-scopes.json")
+            ),
+            operator_group=os.environ.get("QDEV_OPERATOR_GROUP", "qdev-ci-operators").strip()
+            or "qdev-ci-operators",
+            scheduler_enabled=os.environ.get("QDEV_SCHEDULER_ENABLED", "0").strip().lower()
+            not in {"0", "false", "no", "off"},
+            scheduler_poll_seconds=max(
+                5.0, float(os.environ.get("QDEV_SCHEDULER_POLL_SECONDS", "15"))
             ),
             github_api_url=os.environ.get("QDEV_GITHUB_API_URL", "https://api.github.com"),
             github_api_version=os.environ.get("QDEV_GITHUB_API_VERSION", "2026-03-10"),
@@ -177,6 +198,22 @@ class BrokerSettings:
                     "QDEV_FLEET_RECOVERY_EXECUTABLE",
                     "/usr/local/sbin/qdev-fleet-worker-recovery",
                 )
+            ),
+            operator_proxy_secret=(
+                os.environ.get("QDEV_OPERATOR_PROXY_SECRET", "").strip() or None
+            ),
+            operator_origin=os.environ.get("QDEV_OPERATOR_ORIGIN", "").strip() or None,
+            allow_legacy_local_oidc=os.environ.get(
+                "QDEV_ALLOW_LEGACY_LOCAL_OIDC", "0"
+            ).strip().lower()
+            not in {"0", "false", "no", "off"},
+            max_artifact_bytes=max(
+                1,
+                int(
+                    os.environ.get(
+                        "QDEV_MAX_ARTIFACT_BYTES", str(250 * 1024 * 1024)
+                    )
+                ),
             ),
         )
 

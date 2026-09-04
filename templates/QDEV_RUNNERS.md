@@ -103,6 +103,13 @@ and is removed with the runner container and private env-file after the job.
 - Upload transient evidence through `.github/scripts/qdev-upload-artifact.sh`.
   Artifact names must start with an ASCII letter or digit and contain only
   letters, digits, `.`, `_`, or `-` (maximum 128 characters).
+- Publish the normalized `qdev-test-run-v1` receipt after the native test
+  command with `.github/scripts/qdev-upload-test-report.sh`. The workflow must
+  run that step with `if: always()`, set `QDEV_TEST_REPORT` to the generated
+  JSON file, and use the short-lived `QDEV_ARTIFACT_TOKEN`, repository, SHA and
+  numeric job identity injected by the controller. The helper is not a test
+  runner and never accepts arbitrary commands or sends worker credentials to a
+  browser.
   Artifacts are addressed by repository, SHA, and job, checked with SHA-256,
   and retained according to `.github/qdev-runner.yml`.
 - Push OCI images required by CI to `registry.ci.qdev.run`; deployment images

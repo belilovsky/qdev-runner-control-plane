@@ -535,6 +535,7 @@ class Worker:
     ) -> None:
         async with self.semaphore:
             detail = ""
+            infrastructure_error = False
             try:
                 self.write_runner_environment(job)
                 if job["profile"]["name"] == "qdev-ci-docker":
@@ -559,6 +560,7 @@ class Worker:
                 LOGGER.exception("runner setup failed job=%s", job["job_id"])
                 detail = str(error)[-2000:]
                 exit_code = 125
+                infrastructure_error = True
             finally:
                 await self.stop_runner_container(job)
                 if job["profile"]["name"] == "qdev-ci-docker":
@@ -571,6 +573,7 @@ class Worker:
                     "worker_name": self.settings.worker_name,
                     "job_id": job["job_id"],
                     "runner_exit_code": exit_code,
+                    "infrastructure_error": infrastructure_error,
                     "detail": detail,
                 },
             )
