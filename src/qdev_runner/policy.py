@@ -75,14 +75,6 @@ class Policy:
                 # free-space floor, so the reservation may follow a measured
                 # small workload without weakening the independent floor.
                 minimum_disk_mb = min(profile.disk_mb, 4 * 1024)
-                # QDEV's ordinary lane is a dependency-free contract check,
-                # while its browser/build work remains on qdev-ci-browser.
-                # Keep this repository-specific exception bounded to 8 GiB.
-                if (repository_name, profile_key) == (
-                    "belilovsky/qdev-run-site",
-                    "qdev-ci",
-                ):
-                    minimum_disk_mb = min(profile.disk_mb, 8 * 1024)
                 if not minimum_disk_mb <= raw_disk_mb < profile.disk_mb:
                     raise PolicyError(
                         "repository admission override must be below the profile default "

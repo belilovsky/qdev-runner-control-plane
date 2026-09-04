@@ -136,7 +136,7 @@ def test_repository_profile_disk_override_rejects_disallowed_profile(
         Policy(inventory, profiles)
 
 
-@pytest.mark.parametrize("disk_mb", [8192, 10240])
+@pytest.mark.parametrize("disk_mb", [4096, 8192, 10240])
 def test_qdevrun_ordinary_admission_is_explicit_and_bounded(
     policy_files: tuple[Path, Path], disk_mb: int
 ) -> None:
@@ -157,7 +157,7 @@ def test_qdevrun_ordinary_admission_is_explicit_and_bounded(
     assert policy.repositories == before.repositories
 
 
-@pytest.mark.parametrize("disk_mb", [0, -1, 4096, 8191, 12288, 16384, True, 8.0])
+@pytest.mark.parametrize("disk_mb", [0, -1, 4095, 12288, 16384, True, 8.0])
 def test_qdevrun_ordinary_admission_rejects_invalid_budgets(
     policy_files: tuple[Path, Path], disk_mb: int
 ) -> None:
@@ -180,6 +180,6 @@ def test_source_config_only_changes_qdevrun_ordinary_admission() -> None:
         for key, value in policy.repository_profile_disk_mb.items()
         if key[0] == "belilovsky/qdev-run-site"
     }
-    assert qdevrun_overrides == {("belilovsky/qdev-run-site", "qdev-ci"): 8192}
+    assert qdevrun_overrides == {("belilovsky/qdev-run-site", "qdev-ci"): 4096}
     assert policy.profiles["qdev-ci"].disk_mb == 12288
     assert policy.profiles["qdev-ci-browser"].disk_mb == 5120
