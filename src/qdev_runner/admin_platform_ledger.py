@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -246,7 +246,7 @@ class AdminPlatformLedger:
             if entry.entry_id == "qazposter":
                 item["observed_external_ci"] = dict(source["observed_external_ci"])
             document["entries"].append(item)
-        return _json_safe(document)
+        return cast(dict[str, Any], _json_safe(document))
 
     def validate_admission(self, entry_id: str, exact_sha: str) -> AdminPlatformLedgerEntry:
         """Require the next controller claim to match the one active candidate."""
