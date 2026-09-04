@@ -34,6 +34,14 @@ entry has a terminal receipt.
    identity, route/browser evidence, rollback result and health window before
    moving the ledger to the next candidate.
 
+The FIFO scan is fail-closed for the active admin-platform candidate itself,
+but a stale or superseded admin-platform row must not indefinitely block an
+unrelated repository in the same profile. Such rows are omitted only from the
+observational queue scan and are retained in the signed `fifo_skipped` receipt
+with their exact tuple and a machine-checked reason. A direct claim for the
+stale row remains rejected until its ledger entry is explicitly active again;
+the broker never mutates or silently requeues that row.
+
 ## Product lane enrollment
 
 `qdev-release-ortcom`, `qdev-release-cmnt`, `qdev-release-total`, and
