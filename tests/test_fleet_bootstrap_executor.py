@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     BootstrapOperationStore,
@@ -14,6 +16,7 @@ from qdev_runner.fleet_bootstrap_executor import execute_existing_worker_recover
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "fleet-bootstrap.yml"
 RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
+_ACTIVATION = yaml.safe_load(POLICY.read_text(encoding="utf-8"))["activation"]
 
 
 def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest:
@@ -26,10 +29,8 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
             "job_id": 456,
             "attempt": 1,
             "claim_ttl_seconds": 300,
-            "controller_revision": "d3341e9f0d900d7dc023dfb2e95efd45ef45d8cd",
-            "controller_release_digest": (
-                "sha256:14c5a8b506947c18c55646e36bfec077885a63a8a272b5aea1112d31266e969f"
-            ),
+            "controller_revision": _ACTIVATION["controller_revision"],
+            "controller_release_digest": _ACTIVATION["controller_release_digest"],
             "release_lane": None,
             "worker_name": worker_name,
         }

@@ -27,6 +27,19 @@ OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
+_FLEET_BOOTSTRAP_POLICY = (
+    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
+)
+
+
+def _fleet_bootstrap_activation() -> dict[str, str]:
+    activation = yaml.safe_load(
+        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
+    )["activation"]
+    return {
+        "controller_revision": str(activation["controller_revision"]),
+        "controller_release_digest": str(activation["controller_release_digest"]),
+    }
 
 
 def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
@@ -572,6 +585,7 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     tmp_path: Path,
 ) -> None:
     client = _app(tmp_path)
+    activation = _fleet_bootstrap_activation()
     request = {
         "schema": "qdev-fleet-bootstrap-request-v1",
         "action": "restore-existing-worker",
@@ -580,10 +594,8 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": "d3341e9f0d900d7dc023dfb2e95efd45ef45d8cd",
-        "controller_release_digest": (
-            "sha256:14c5a8b506947c18c55646e36bfec077885a63a8a272b5aea1112d31266e969f"
-        ),
+        "controller_revision": activation["controller_revision"],
+        "controller_release_digest": activation["controller_release_digest"],
         "release_lane": None,
         "worker_name": "qdev-platform-ci-187",
     }
