@@ -5,7 +5,12 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
+from qdev_runner.claim_scope import (
+    MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    SCHEMA_V2,
+    ClaimScope,
+    ScopedJob,
+)
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
 
@@ -204,6 +209,83 @@ def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
     assert store.job_status(101) == "pending"
+
+
+def test_managed_exact_candidate_scope_can_claim_its_exact_job_behind_backlog(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("older", 100, repository="belilovsky/qazlake", head_sha="a" * 40))
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazgeo",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="qgeo-recovery-20260904",
+        worker_name="qgeo-primary",
+        tier="primary",
+        repository="belilovsky/qazgeo",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazgeo",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    )
+
+    claimed = store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope)
+
+    assert claimed is not None and claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+
+
+def test_managed_exact_candidate_scope_still_cannot_claim_a_foreign_job(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "foreign",
+            100,
+            repository="belilovsky/qazgeo",
+            head_sha="c" * 40,
+            run_id=200,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="qgeo-recovery-20260904",
+        worker_name="qgeo-primary",
+        tier="primary",
+        repository="belilovsky/qazgeo",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazgeo",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    )
+
+    assert store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
 
 
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
 from .claim_scope import (
+    MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
@@ -1068,6 +1069,12 @@ def create_app(
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        # The two QGeo workflow jobs were admitted before the controller was
+        # restored and are deliberately not being requeued or duplicated.  A
+        # signed managed-production ledger entry may therefore opt these exact
+        # immutable tuples into a narrow recovery lane.  This does not create
+        # a general priority queue: every other scope remains strict FIFO.
+        managed_exact_candidate_fifo = managed_release_ledger_entry == "qazgeo"
         profile_queue: list[dict[str, Any]] = []
         for queued in store.pending_jobs():
             try:
@@ -1078,7 +1085,9 @@ def create_app(
                 continue
             if queued_profile.name == profile.name:
                 profile_queue.append(queued)
-        if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
+        if not managed_exact_candidate_fifo and (
+            not profile_queue or int(profile_queue[0]["job_id"]) != job_id
+        ):
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
 
         try:
@@ -1093,6 +1102,9 @@ def create_app(
         rolled_over_terminal_scope = False
         rebound_legacy_scope = False
         retained_jobs: tuple[ScopedJob, ...] = ()
+        fifo_exception: str | None = (
+            MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION if managed_exact_candidate_fifo else None
+        )
         if existing is not None:
             same_scope = (
                 existing.schema == SCHEMA_V2
@@ -1187,6 +1199,7 @@ def create_app(
                     )
                 rolled_over_terminal_scope = True
                 retained_jobs = existing.jobs
+                fifo_exception = existing.fifo_exception or fifo_exception
             elif not (
                 existing.schema == SCHEMA_V2
                 and existing.worker_name == request.worker_name
@@ -1224,6 +1237,7 @@ def create_app(
             worker_certificate_sha256=certificate_sha256,
             expires_at=datetime.now(UTC) + timedelta(seconds=request.duration_seconds),
             jobs=retained_jobs + (scoped_job,),
+            fifo_exception=fifo_exception,
         )
         try:
             upsert_claim_scope(settings.claim_scopes_path, scope)
