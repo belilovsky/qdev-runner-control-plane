@@ -13,6 +13,8 @@ fi
 release_root=/opt/qdev-runner-control-plane
 operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
 release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"
+managed_release_ledger_path="${QDEV_MANAGED_RELEASE_LEDGER:-/var/lib/qdev-runner/controller-state/managed-release-ledger.yml}"
+managed_release_ledger_root="$(dirname -- "$managed_release_ledger_path")"
 release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
@@ -81,7 +83,7 @@ release_status_directory="$(dirname -- "$release_status_path")"
   printf 'controller runtime uid/gid must be numeric\n' >&2
   exit 64
 }
-for durable_root in "$operations_root" "$release_jobs_root"; do
+for durable_root in "$operations_root" "$release_jobs_root" "$managed_release_ledger_root"; do
   install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700 -- "$durable_root"
   if [[ "$(stat -c %u -- "$durable_root")" != "$runtime_uid" ||
         "$(stat -c %g -- "$durable_root")" != "$runtime_gid" ]]; then
@@ -89,6 +91,20 @@ for durable_root in "$operations_root" "$release_jobs_root"; do
     exit 73
   fi
 done
+if [[ -e "$managed_release_ledger_path" && ! -f "$managed_release_ledger_path" ]]; then
+  printf 'managed-release ledger path is not a regular file: %s\n' "$managed_release_ledger_path" >&2
+  exit 73
+fi
+if [[ ! -e "$managed_release_ledger_path" ]]; then
+  # Seed mutable state exactly once from the signed release configuration.
+  # Subsequent controller activations must preserve registrations and receipts
+  # accumulated by the running broker.
+  install -o "$runtime_uid" -g "$runtime_gid" -m 0600 -- \
+    "$release/config/managed-release-ledger.yml" "$managed_release_ledger_path"
+else
+  chown "$runtime_uid:$runtime_gid" -- "$managed_release_ledger_path"
+  chmod 0600 -- "$managed_release_ledger_path"
+fi
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
