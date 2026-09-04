@@ -29,9 +29,9 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-fund
-    canonical_repository: belilovsky/qaz-fund
+    canonical_repository: belilovsky/grant-radar-public
     artifact_ref_prefix: registry.ci.qdev.run/qaz-fund
-    native_host_adapter: legacy-compose-v1
+    native_host_adapter: product-compose-v2
     runtime_endpoints: [https://qaz.fund/.well-known/release.json]
     rollback_reference: qdev-release-host-state-v1
     required_readiness: [local, public]
@@ -43,9 +43,9 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-events
-    canonical_repository: belilovsky/qaz-events
+    canonical_repository: belilovsky/ideo-calendar
     artifact_ref_prefix: registry.ci.qdev.run/qaz-events
-    native_host_adapter: legacy-compose-v1
+    native_host_adapter: product-compose-v2
     runtime_endpoints: [https://qaz.events/.well-known/qdev-ecosystem.json]
     rollback_reference: qdev-release-host-state-v1
     required_readiness: [local, public]
@@ -59,10 +59,12 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: kaztilshi
-    # QMT predates the source-bound v2 registry. It remains a deliberately
-    # compatibility-only lane until its canonical repository is recorded.
-    # The policy parser recognizes this exact legacy-shaped entry rather than
-    # inventing a source binding for an already live product.
+    canonical_repository: belilovsky/kazakh-translate
+    artifact_ref_prefix: registry.ci.qdev.run/kaztilshi
+    native_host_adapter: product-compose-v2
+    runtime_endpoints: [https://qmt.digital/release.json]
+    rollback_reference: qdev-release-host-state-v1
+    required_readiness: [local, startup, public]
   qdev-release-ortcom:
     project_id: ortcom
     placement: ortcom-production-controller

@@ -12,13 +12,19 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import tempfile
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from .bootstrap_authority import (
+    VerifiedBootstrapOperation,
+    renew_bootstrap_operation,
+    verify_directive,
+)
 from .fleet_bootstrap import (
     BootstrapOperationStore,
     FleetBootstrapError,
@@ -27,6 +33,7 @@ from .fleet_bootstrap import (
     WorkerRecoveryTarget,
     bootstrap_request_fingerprint,
 )
+from .store import Store
 
 RECOVERY_RESULT_SCHEMA = "qdev-fleet-worker-recovery-result-v1"
 RECOVERY_RECEIPT_SCHEMA = "qdev-fleet-worker-recovery-receipt-v1"
@@ -54,6 +61,7 @@ class RecoveryExecution:
     service_unit: str | None
     error_code: str | None = None
     result: dict[str, Any] | None = None
+    active_jobs: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -65,6 +73,7 @@ class RecoveryExecution:
             "worker_name": self.worker_name,
             "target_id": self.target_id,
             "service_unit": self.service_unit,
+            "active_jobs": self.active_jobs,
         }
         if self.error_code is not None:
             value["error_code"] = self.error_code
@@ -86,11 +95,20 @@ def _safe_adapter_result(value: object) -> dict[str, Any] | None:
 
 
 def _adapter_path(value: Path | None) -> Path | None:
-    candidate = value
-    if candidate is None:
-        configured = os.environ.get("QDEV_FLEET_RECOVERY_EXECUTABLE", "").strip()
-        candidate = Path(configured) if configured else _DEFAULT_ADAPTER
-    if not candidate.is_absolute() or not candidate.is_file() or not os.access(candidate, os.X_OK):
+    candidate = value or _DEFAULT_ADAPTER
+    if not candidate.is_absolute():
+        return None
+    try:
+        for path in (candidate, *candidate.parents):
+            metadata = path.lstat()
+            if metadata.st_uid != 0 or metadata.st_mode & 0o022 or stat.S_ISLNK(metadata.st_mode):
+                return None
+            expected = stat.S_ISREG if path == candidate else stat.S_ISDIR
+            if not expected(metadata.st_mode):
+                return None
+        if not os.access(candidate, os.X_OK):
+            return None
+    except OSError:
         return None
     return candidate
 
@@ -98,13 +116,15 @@ def _adapter_path(value: Path | None) -> Path | None:
 def _invoke_adapter(
     adapter: Path,
     *,
+    operation: VerifiedBootstrapOperation,
     request: FleetBootstrapRequest,
     target: WorkerRecoveryTarget,
     active_jobs: int,
     timeout_seconds: float,
 ) -> tuple[str, dict[str, Any] | None]:
     envelope = {
-        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "schema": "qdev-fleet-worker-recovery-request-v2",
+        "operation": operation.directive,
         "request": request.model_dump(mode="json", by_alias=True),
         "target": {
             "worker_name": target.worker_name,
@@ -140,6 +160,7 @@ def _invoke_adapter(
         "service_unit",
         "active_jobs",
         "result",
+        "operation_fence",
     }:
         return "failed", {"error_code": "adapter_response_invalid"}
     if (
@@ -148,7 +169,9 @@ def _invoke_adapter(
         or raw.get("worker_name") != target.worker_name
         or raw.get("target_id") != target.target_id
         or raw.get("service_unit") != target.service_unit
+        or type(raw.get("active_jobs")) is not int
         or raw.get("active_jobs") != 0
+        or raw.get("operation_fence") != operation.fence
     ):
         return "failed", {"error_code": "adapter_identity_mismatch"}
     result = _safe_adapter_result(raw.get("result"))
@@ -178,6 +201,11 @@ def _persist_receipt(path: Path, receipt: dict[str, Any]) -> None:
             os.fsync(stream.fileno())
         try:
             os.link(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         except FileExistsError:
             # Another identical idempotent invocation won the race.  Compare
             # bytes and never overwrite its receipt.
@@ -196,9 +224,80 @@ def execute_existing_worker_recovery(
     *,
     policy: FleetBootstrapPolicy,
     store: BootstrapOperationStore,
+    operation: VerifiedBootstrapOperation,
+    signing_key: str,
+    controller_store: Store,
+    adapter: Path | None = None,
+    timeout_seconds: float = 120,
+    receipt_path: Path | None = None,
+) -> RecoveryExecution:
+    """Verify authority and fence the target before any privileged side effect."""
+    operation = verify_directive(operation.directive, policy=policy, signing_key=signing_key)
+    request = operation.request
+    if request.action != "restore-existing-worker" or request.worker_name is None:
+        raise FleetBootstrapError("executor accepts only existing-worker recovery")
+    with store.execution_lock():
+        operation = verify_directive(operation.directive, policy=policy, signing_key=signing_key)
+        authority_path = store.path.with_suffix(".authority.json")
+        try:
+            original_authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            original_authority = None
+        except (OSError, json.JSONDecodeError) as error:
+            raise FleetBootstrapError("bootstrap authority journal is unreadable") from error
+        if original_authority is not None:
+            admitted = operation
+            operation = renew_bootstrap_operation(
+                original_authority, admitted, policy=policy, signing_key=signing_key,
+            )
+            # Keep every fresh workflow attempt independently auditable without
+            # changing the immutable intent or the privileged adapter's fence.
+            audit_path = store.path.with_suffix(f".admission-{admitted.fence}.json")
+            # One attempt can mint multiple equivalent short-lived credentials;
+            # audit the immutable identity rather than its changing timestamps.
+            _persist_receipt(audit_path, {
+                "original_fence": operation.fence,
+                "admission_fence": admitted.fence,
+                "request": admitted.request.model_dump(mode="json", by_alias=True),
+            })
+        else:
+            _persist_receipt(authority_path, operation.directive)
+        request = operation.request
+        if request.action != "restore-existing-worker" or request.worker_name is None:
+            raise FleetBootstrapError("executor accepts only existing-worker recovery")
+        record = store.begin(operation.idempotency_key, request)
+        # A completed replay never restarts a worker, including after a crash
+        # between durable completion and releasing its scheduling hold.
+        active_jobs = 0
+        observed = record.status == "completed"
+        resolved_adapter = _adapter_path(adapter) if record.status != "completed" else None
+        if record.status != "completed" and resolved_adapter is not None:
+            active_jobs = controller_store.acquire_recovery_hold(
+                request.worker_name, operation.fence,
+            )
+            observed = True
+        result = _execute_existing_worker_recovery(
+            policy=policy, store=store, request=request, operation=operation,
+            idempotency_key=operation.idempotency_key, active_jobs=active_jobs,
+            adapter=resolved_adapter, signing_key=signing_key,
+            timeout_seconds=timeout_seconds, receipt_path=receipt_path,
+        )
+        if result.operation_status == "completed":
+            controller_store.release_recovery_hold(request.worker_name, operation.fence)
+        # An uncertain adapter result leaves the hold in place. Recovery must
+        # retry the same signed operation/fence, never silently resume scheduling.
+        return replace(result, active_jobs=active_jobs if observed else None)
+
+
+def _execute_existing_worker_recovery(
+    *,
+    policy: FleetBootstrapPolicy,
+    store: BootstrapOperationStore,
     request: FleetBootstrapRequest,
+    operation: VerifiedBootstrapOperation,
     idempotency_key: str,
     active_jobs: int,
+    signing_key: str,
     adapter: Path | None = None,
     timeout_seconds: float = 120,
     receipt_path: Path | None = None,
@@ -219,7 +318,8 @@ def execute_existing_worker_recovery(
     target = policy.worker_target(request.worker_name)
 
     def finish(value: RecoveryExecution) -> RecoveryExecution:
-        if receipt_path is not None:
+        value = replace(value, active_jobs=active_jobs)
+        if receipt_path is not None and value.operation_status == "completed":
             _persist_receipt(receipt_path, value.as_dict())
         return value
 
@@ -264,8 +364,10 @@ def execute_existing_worker_recovery(
                 error_code="active_work",
             )
         )
-    adapter_path = _adapter_path(adapter)
-    if adapter_path is None:
+    # The outer boundary resolves the root-owned path exactly once and acquires
+    # the durable scheduler hold before passing it here. Never re-discover it:
+    # an adapter installed mid-request must not skip hold acquisition.
+    if adapter is None:
         return finish(
             RecoveryExecution(
                 status="access_blocked",
@@ -278,8 +380,12 @@ def execute_existing_worker_recovery(
                 error_code="recovery_adapter_unavailable",
             )
         )
+    # No privileged side effect may start after its short-lived authority expires.
+    # SQLite hold acquisition and journal I/O may have waited past the TTL.
+    operation = verify_directive(operation.directive, policy=policy, signing_key=signing_key)
     adapter_status, adapter_result = _invoke_adapter(
-        adapter_path,
+        adapter,
+        operation=operation,
         request=request,
         target=target,
         active_jobs=active_jobs,
@@ -308,8 +414,9 @@ def execute_existing_worker_recovery(
         "adapter_status": adapter_status,
         "active_jobs": active_jobs,
     }
-    if adapter_result:
-        completion_result.update(adapter_result)
+    # Adapter output may not overwrite controller-verified identity fields.
+    # Its bounded result was validated above; immutable identities come only
+    # from the registered target and the signed operation.
     completed = store.complete(idempotency_key, request, completion_result)
     return finish(
         RecoveryExecution(

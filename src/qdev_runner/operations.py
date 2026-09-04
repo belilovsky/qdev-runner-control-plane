@@ -372,9 +372,12 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or not _WORKER_NAME.fullmatch(value["worker_name"])
         or (value["target_id"] is not None and not isinstance(value["target_id"], str))
         or (value["service_unit"] is not None and not isinstance(value["service_unit"], str))
-        or isinstance(value["active_jobs"], bool)
-        or not isinstance(value["active_jobs"], int)
-        or value["active_jobs"] < 0
+        or (value["active_jobs"] is None and value["status"] == "completed")
+        or (value["active_jobs"] is not None and (
+            isinstance(value["active_jobs"], bool)
+            or not isinstance(value["active_jobs"], int)
+            or value["active_jobs"] < 0
+        ))
         or (value["error_code"] is not None and not isinstance(value["error_code"], str))
         or (value["result"] is not None and not isinstance(value["result"], dict))
     ):

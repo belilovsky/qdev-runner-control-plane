@@ -584,7 +584,11 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    from bootstrap_support import GitHub, Verifier, register
+
+    client = _app(tmp_path, github=GitHub())
+    client.app.state.bootstrap_oidc_verifier = Verifier()
+    register(client.app.state.store)
     activation = _fleet_bootstrap_activation()
     request = {
         "schema": "qdev-fleet-bootstrap-request-v1",
@@ -602,7 +606,6 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     body = {
         "request": request,
         "idempotency_key": "worker-recovery-001",
-        "active_jobs": 0,
         "timeout_seconds": 5,
     }
     path = "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
@@ -616,7 +619,10 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         == 403
     )
 
-    response = client.post(path, json=body, headers=OPERATOR_HEADERS)
+    assert client.post(path, json=body, headers=OPERATOR_HEADERS).status_code == 401
+    headers = {**OPERATOR_HEADERS, "X-QDev-Bootstrap-OIDC": "synthetic-oidc"}
+    assert client.post(path, json={**body, "active_jobs": 0}, headers=headers).status_code == 422
+    response = client.post(path, json=body, headers=headers)
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     payload = receipt["payload"]
@@ -625,9 +631,9 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     assert payload["operation_status"] == "pending"
     assert payload["worker_name"] == "qdev-platform-ci-187"
     assert payload["target_id"].endswith("qdev-platform-ci-187")
-    assert payload["active_jobs"] == 0
+    assert payload["active_jobs"] is None
     private_receipt = tmp_path / "fleet-bootstrap-receipts" / "worker-recovery-001.json"
-    assert json.loads(private_receipt.read_text(encoding="utf-8"))["status"] == "access_blocked"
+    assert not private_receipt.exists()
 
 
 def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(

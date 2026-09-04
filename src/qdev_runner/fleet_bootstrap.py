@@ -15,7 +15,8 @@ import json
 import os
 import re
 import tempfile
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TextIO
@@ -91,10 +92,10 @@ class FleetBootstrapRequest(BaseModel):
         "activate-controller", "enrol-host-agent", "restore-existing-worker"
     ]
     source_sha: str
-    run_id: int = Field(ge=1)
-    job_id: int = Field(ge=1)
-    attempt: int = Field(ge=1)
-    claim_ttl_seconds: int = Field(ge=1)
+    run_id: int = Field(ge=1, strict=True)
+    job_id: int = Field(ge=1, strict=True)
+    attempt: int = Field(ge=1, strict=True)
+    claim_ttl_seconds: int = Field(ge=1, strict=True)
     controller_revision: str
     controller_release_digest: str
     release_lane: str | None = None
@@ -406,10 +407,10 @@ class BootstrapOperationStore:
                 raise FleetBootstrapError("bootstrap operation result is not safe to persist")
 
     def _read_unlocked(self) -> BootstrapOperationRecord | None:
-        if not self.path.exists():
-            return None
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
         except (OSError, json.JSONDecodeError) as exc:
             raise FleetBootstrapError("bootstrap operation state is unreadable") from exc
         if not isinstance(raw, dict) or raw.get("schema") != "qdev-fleet-bootstrap-operation-v1":
@@ -447,6 +448,11 @@ class BootstrapOperationStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
+            directory = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         except OSError as exc:
             with suppress(OSError):
                 os.unlink(temporary)
@@ -455,8 +461,22 @@ class BootstrapOperationStore:
     def _locked(self) -> TextIO:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.lock_path.open("a+", encoding="utf-8")
+        os.fchmod(handle.fileno(), 0o600)
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
+
+    @contextmanager
+    def execution_lock(self) -> Iterator[None]:
+        """Serialize the entire side effect, not only the preceding journal write."""
+        path = self.path.with_name(f".{self.path.name}.execution.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def begin(
         self, idempotency_key: str, request: FleetBootstrapRequest

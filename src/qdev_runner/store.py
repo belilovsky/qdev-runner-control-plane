@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS workers (
     last_seen REAL NOT NULL,
     detail_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS worker_recovery_holds (
+    worker_name TEXT PRIMARY KEY REFERENCES workers(name),
+    operation_fence TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -200,6 +205,9 @@ class Store:
             """
             SELECT profiles_json, active_jobs, last_seen, detail_json
             FROM workers WHERE last_seen>=?
+            AND NOT EXISTS (
+                SELECT 1 FROM worker_recovery_holds WHERE worker_name=workers.name
+            )
             """,
             (cutoff,),
         ).fetchall()
@@ -235,6 +243,11 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM worker_recovery_holds WHERE worker_name=?", (worker_name,)
+            ).fetchone():
+                connection.execute("COMMIT")
+                return None
             self._repair_invalid_queue_timestamps(connection)
             selected = None
             selected_profile = None
@@ -501,6 +514,46 @@ class Store:
             )
         return updated.rowcount == 1
 
+    def acquire_recovery_hold(self, worker_name: str, operation_fence: str) -> int:
+        """Fence an existing worker and atomically observe all controller-owned work.
+
+        No queue rows are modified. A hold survives a broker crash; only the
+        same operation may resume or release it. The host must independently
+        verify that no runner/job process is active before a service restart.
+        """
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            worker = connection.execute(
+                "SELECT active_jobs FROM workers WHERE name=?", (worker_name,)
+            ).fetchone()
+            if worker is None:
+                raise ValueError("recovery worker is not registered")
+            hold = connection.execute(
+                "SELECT operation_fence FROM worker_recovery_holds WHERE worker_name=?",
+                (worker_name,),
+            ).fetchone()
+            if hold is not None and hold["operation_fence"] != operation_fence:
+                raise ValueError("worker recovery is already fenced")
+            running = connection.execute(
+                "SELECT COUNT(*) FROM jobs WHERE worker_name=? "
+                "AND status IN ('claimed','running')", (worker_name,),
+            ).fetchone()[0]
+            active = max(int(worker["active_jobs"]), int(running))
+            if active == 0:
+                connection.execute(
+                    "INSERT OR IGNORE INTO worker_recovery_holds VALUES(?,?,?)",
+                    (worker_name, operation_fence, time.time()),
+                )
+            connection.execute("COMMIT")
+            return active
+
+    def release_recovery_hold(self, worker_name: str, operation_fence: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM worker_recovery_holds WHERE worker_name=? AND operation_fence=?",
+                (worker_name, operation_fence),
+            )
+
     def health(self) -> dict[str, Any]:
         with self.connect() as connection:
             counts = {
@@ -508,6 +561,10 @@ class Store:
                 for row in connection.execute(
                     "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
                 ).fetchall()
+            }
+            held_workers = {
+                row[0]
+                for row in connection.execute("SELECT worker_name FROM worker_recovery_holds")
             }
             workers = []
             for row in connection.execute(
@@ -517,7 +574,8 @@ class Store:
                 concurrency = _worker_concurrency(detail)
                 active_jobs = int(row["active_jobs"])
                 slots_available = max(0, concurrency - active_jobs)
-                capacity_allowed = detail.get("allowed", True) is True
+                recovery_held = row["name"] in held_workers
+                capacity_allowed = detail.get("allowed", True) is True and not recovery_held
                 workers.append(
                     dict(row)
                     | {
@@ -526,6 +584,7 @@ class Store:
                         "concurrency": concurrency,
                         "slots_available": slots_available,
                         "available": capacity_allowed and slots_available > 0,
+                        "recovery_held": recovery_held,
                     }
                 )
         return {"jobs": counts, "workers": workers, "now": time.time()}

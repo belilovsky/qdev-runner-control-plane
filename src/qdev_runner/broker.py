@@ -17,6 +17,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
+from .bootstrap_authority import authorize_bootstrap
 from .claim_scope import (
     SCHEMA_V2,
     ClaimScope,
@@ -222,7 +223,6 @@ class FleetBootstrapRecoveryRequest(BaseModel):
 
     request: dict[str, Any] = Field(min_length=1)
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
-    active_jobs: int = Field(ge=0)
     timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
 
@@ -442,6 +442,7 @@ def create_app(
     policy: Policy | None = None,
     github: GitHubAppClient | None = None,
     github_actions_oidc_verifier: GitHubActionsArtifactOIDCVerifier | None = None,
+    bootstrap_oidc_verifier: GitHubActionsArtifactOIDCVerifier | None = None,
 ) -> FastAPI:
     settings = settings or BrokerSettings.from_env()
     store = store or Store(settings.database_path)
@@ -487,6 +488,10 @@ def create_app(
     app.state.policy = policy
     app.state.github = github
     app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
+    app.state.bootstrap_oidc_verifier = (
+        bootstrap_oidc_verifier
+        or GitHubActionsArtifactOIDCVerifier(audience="qdev-fleet-bootstrap-v1")
+    )
     app.state.operations = operations
     release_store: ReleaseStore | None = None
 
@@ -899,6 +904,7 @@ def create_app(
     def release_host_job_status(
         placement: str,
         release_id: str,
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
@@ -906,7 +912,7 @@ def create_app(
         """Return controller state to a host agent reconciling a lost response."""
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -950,13 +956,14 @@ def create_app(
         placement: str,
         release_id: str,
         receipt: dict[str, Any],
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -1162,6 +1169,7 @@ def create_app(
         request: FleetBootstrapRecoveryRequest,
         x_qdev_operator_token: str | None = Header(default=None),
         x_qdev_operator_mtls_identity: str | None = Header(default=None),
+        x_qdev_bootstrap_oidc: str | None = Header(default=None),
     ) -> dict[str, Any]:
         """Run one controller-owned recovery for an allowlisted existing worker.
 
@@ -1177,9 +1185,17 @@ def create_app(
         operation_store = require_operator_session(
             x_qdev_operator_token, x_qdev_operator_mtls_identity
         )
+        if not x_qdev_bootstrap_oidc:
+            raise HTTPException(status_code=401, detail="bootstrap workflow identity is required")
         try:
             bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
             policy_value = fleet_bootstrap_policy()
+            operation = authorize_bootstrap(
+                token=x_qdev_bootstrap_oidc, request=bootstrap_request,
+                idempotency_key=request.idempotency_key, policy=policy_value,
+                verifier=app.state.bootstrap_oidc_verifier, github=github,
+                controller_store=store, signing_key=settings.operator_directive_key or "",
+            )
             operation_path = (
                 settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
             )
@@ -1187,13 +1203,17 @@ def create_app(
             execution = execute_existing_worker_recovery(
                 policy=policy_value,
                 store=BootstrapOperationStore(operation_path),
-                request=bootstrap_request,
-                idempotency_key=request.idempotency_key,
-                active_jobs=request.active_jobs,
+                operation=operation,
+                signing_key=settings.operator_directive_key or "",
+                controller_store=store,
                 adapter=settings.fleet_recovery_executable,
                 timeout_seconds=request.timeout_seconds,
                 receipt_path=receipt_path,
             )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503, detail="bootstrap identity service unavailable",
+            ) from error
         except (FleetBootstrapError, ValidationError, ValueError) as error:
             raise HTTPException(
                 status_code=422,
@@ -1210,7 +1230,7 @@ def create_app(
                 "worker_name": execution.worker_name,
                 "target_id": execution.target_id,
                 "service_unit": execution.service_unit,
-                "active_jobs": request.active_jobs,
+                "active_jobs": execution.active_jobs,
                 "error_code": execution.error_code,
                 "result": execution.result,
             }
