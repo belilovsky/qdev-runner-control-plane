@@ -132,3 +132,13 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: belilovsky/qazgeo
+    canonical_repository: belilovsky/qazgeo
+    artifact_ref_prefix: registry.ci.qdev.run/belilovsky/qazgeo
+    native_host_adapter: qazgeo-native-immutable-release-v1
+    runtime_endpoints:
+      - https://qgeo.tech/health
+      - https://qgeo.tech/health/live
+      - https://qgeo.tech/health/ready
+      - https://qgeo.tech/health/quality
+    rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
+    required_readiness: [db, postgis, martin, photon, redis, app]

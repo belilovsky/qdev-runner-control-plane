@@ -30,6 +30,9 @@ from urllib.parse import urlsplit
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_LEASE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_FENCE = re.compile(r"^[0-9a-f]{24,128}$")
 STATE_SCHEMA = "qdev-release-host-state-v1"
 
 
@@ -66,6 +69,15 @@ class Profile:
     rollback_static_directory: Path | None = None
     rollback_image_reference: str | None = None
     rollback_release: dict[str, str] | None = None
+    # QGeo installs the pinned QazStack source tree directly rather than a
+    # wheel.  The runtime receipt therefore carries a deterministic source
+    # manifest digest for this lane.
+    qazstack_source_directory: Path | None = None
+    qazstack_version: str | None = None
+    qazstack_source_ref: str | None = None
+    qazstack_wheel_path: Path | None = None
+    avds_source_sha: str | None = None
+    avds_artifact_sha256: str | None = None
 
 
 PROFILES = {
@@ -172,6 +184,12 @@ PROFILES = {
                 "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
             ),
         },
+        qazstack_source_directory=Path("/opt/qazstack-releases/v1.21.1/src/qazstack"),
+        qazstack_version="1.21.1",
+        qazstack_source_ref="dc5f7927896b0b6f9c1a2e2ec1a978c1cb2ead8e",
+        qazstack_wheel_path=None,
+        avds_source_sha="370740e5df68b96a985b0194da3aa4c47a5b3b47",
+        avds_artifact_sha256=("747fb0409e302a8e2c66306c27c8fc33c7c55d90b2b0cb4b2462d02c62ad5d64"),
     ),
 }
 
@@ -344,8 +362,24 @@ def _run(
 
 
 def request(
-    config: Config, method: str, path: str, payload: dict[str, Any] | None = None
+    config: Config,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
+    if headers is not None:
+        allowed = {"X-QDev-Release-Lease", "X-QDev-Release-Fence"}
+        if set(headers) - allowed:
+            raise AgentError("controller request contains a non-compiled header")
+        for name, value in headers.items():
+            if not isinstance(value, str):
+                raise AgentError("controller request header is invalid")
+            if name == "X-QDev-Release-Lease" and not _LEASE.fullmatch(value):
+                raise AgentError("controller release lease is invalid")
+            if name == "X-QDev-Release-Fence" and not _FENCE.fullmatch(value):
+                raise AgentError("controller release fence is invalid")
     command = [
         "curl",
         "--silent",
@@ -370,6 +404,11 @@ def request(
     if payload is not None:
         command[2:2] = ["--header", "content-type: application/json", "--data-binary", "@-"]
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    if headers:
+        insert_at = 1
+        for name, value in headers.items():
+            command[insert_at:insert_at] = ["--header", f"{name}: {value}"]
+            insert_at += 2
     output = _run(command, input_bytes=body)
     raw_body, _, raw_status = output.rpartition(b"\n")
     try:
@@ -405,9 +444,11 @@ def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str
         "artifact_digest",
         "artifact_ref",
     }
+    optional = {"lease_id", "fence"}
     if (
         not isinstance(document, dict)
-        or set(document) != required
+        or not required.issubset(document)
+        or set(document) - required - optional
         or document.get("schema") != "qdev-release-host-agent-job-v1"
     ):
         raise AgentError("controller release job shape is invalid")
@@ -420,10 +461,34 @@ def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str
     release_id = document.get("release_id")
     if not isinstance(release_id, str) or not release_id:
         raise AgentError("controller release job id is invalid")
+    lease_id = document.get("lease_id")
+    fence = document.get("fence")
+    if lease_id is not None and (not isinstance(lease_id, str) or not _LEASE.fullmatch(lease_id)):
+        raise AgentError("controller release lease is invalid")
+    if fence is not None and (not isinstance(fence, str) or not _FENCE.fullmatch(fence)):
+        raise AgentError("controller release fence is invalid")
+    if profile.project == "qazgeo" and (lease_id is None or fence is None):
+        raise AgentError("QGeo managed release fencing is missing")
     return release_id, _release(
         {key: document.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
+
+
+def _job_fencing(document: object, profile: Profile) -> tuple[str | None, str | None]:
+    """Return the controller lease/fence after the job has been validated."""
+    if not isinstance(document, dict):
+        raise AgentError("controller release job is invalid")
+    lease_id = document.get("lease_id")
+    fence = document.get("fence")
+    if profile.project == "qazgeo" and (
+        not isinstance(lease_id, str)
+        or not _LEASE.fullmatch(lease_id)
+        or not isinstance(fence, str)
+        or not _FENCE.fullmatch(fence)
+    ):
+        raise AgentError("QGeo managed release fencing is missing")
+    return lease_id, fence
 
 
 def verify_image(release: dict[str, str], profile: Profile) -> None:
@@ -444,10 +509,14 @@ def verify_image(release: dict[str, str], profile: Profile) -> None:
             ]
         )
     )
-    expected_digest_ref = f"qazgeo-app@{release['artifact_digest']}"
-    if not isinstance(digests, list) or not (
-        release["artifact_ref"] in digests or expected_digest_ref in digests
-    ):
+    expected_refs = {release["artifact_ref"]}
+    # The recovery image is intentionally kept under its historical local
+    # tag.  Docker reports that tag's repository digest as ``qazgeo-app@…``;
+    # accepting it is limited to the compiled rollback tuple and never
+    # weakens candidate registry binding.
+    if _is_profile_rollback(release, profile):
+        expected_refs.add(f"qazgeo-app@{release['artifact_digest']}")
+    if not isinstance(digests, list) or not expected_refs.intersection(digests):
         raise AgentError("pulled image does not retain requested immutable reference")
     revision = (
         _run(
@@ -467,7 +536,7 @@ def verify_image(release: dict[str, str], profile: Profile) -> None:
         raise AgentError("OCI image source revision does not match controller job")
 
 
-def _static_manifest(directory: Path, release: dict[str, str]) -> tuple[dict[str, str], str]:
+def _static_manifest(directory: Path, release: dict[str, str]) -> tuple[dict[str, Any], str]:
     """Return a deterministic file manifest and its digest for a static tree."""
     files: list[dict[str, str]] = []
     for path in sorted(directory.rglob("*")):
@@ -488,6 +557,154 @@ def _static_manifest(directory: Path, release: dict[str, str]) -> tuple[dict[str
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return payload, hashlib.sha256(encoded).hexdigest()
+
+
+def _directory_manifest_digest(directory: Path) -> str:
+    """Hash a canonical directory without following links.
+
+    QazStack is mounted from a controller-pinned source checkout.  A content
+    manifest is the truthful provenance for that source install; hashing the
+    path and each file digest keeps the result stable across hosts while
+    detecting both content and file-set changes.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        raise AgentError("pinned source directory is unavailable")
+    files: list[dict[str, str]] = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise AgentError("pinned source directory contains a symlink")
+        if not path.is_file():
+            continue
+        files.append(
+            {
+                "path": path.relative_to(directory).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    if not files:
+        raise AgentError("pinned source directory is empty")
+    encoded = json.dumps(
+        {"schema": "qdev-source-directory-manifest-v1", "files": files},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _compose_container(profile: Profile, service: str) -> tuple[str, dict[str, Any]]:
+    """Return the unique running Compose container for a compiled service."""
+    ids = [
+        item.strip()
+        for item in _run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"label=com.docker.compose.project={profile.name}",
+                "--filter",
+                f"label=com.docker.compose.service={service}",
+                "--format",
+                "{{.ID}}",
+            ]
+        )
+        .decode()
+        .splitlines()
+        if item.strip()
+    ]
+    if len(ids) != 1:
+        raise AgentError(f"QGeo service {service} does not have one running container")
+    try:
+        inspected = json.loads(_run(["docker", "inspect", ids[0]]))
+    except json.JSONDecodeError as error:
+        raise AgentError(f"QGeo service {service} inspection is not JSON") from error
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise AgentError(f"QGeo service {service} inspection is invalid")
+    container = inspected[0]
+    state = container.get("State")
+    if not isinstance(state, dict) or state.get("Running") is not True:
+        raise AgentError(f"QGeo service {service} is not running")
+    return ids[0], container
+
+
+def _running_image_identity(profile: Profile, release: dict[str, str]) -> dict[str, Any]:
+    """Prove the exact immutable image currently serving the app service."""
+    container_id, container = _compose_container(profile, "app")
+    config = container.get("Config")
+    if not isinstance(config, dict) or not isinstance(config.get("Image"), str):
+        raise AgentError("QGeo app container image identity is unavailable")
+    configured_image = config["Image"]
+    expected_image = release["artifact_ref"]
+    if _is_profile_rollback(release, profile) and profile.rollback_image_reference:
+        expected_image = profile.rollback_image_reference
+    if configured_image != expected_image:
+        raise AgentError("QGeo app container is running a different image reference")
+    try:
+        inspected_image = json.loads(_run(["docker", "image", "inspect", configured_image]))
+    except json.JSONDecodeError as error:
+        raise AgentError("QGeo app image inspection is not JSON") from error
+    if not isinstance(inspected_image, list) or len(inspected_image) != 1:
+        raise AgentError("QGeo app image inspection is invalid")
+    image = inspected_image[0]
+    if not isinstance(image, dict):
+        raise AgentError("QGeo app image identity is invalid")
+    repo_digests = image.get("RepoDigests")
+    expected_refs = {release["artifact_ref"]}
+    if _is_profile_rollback(release, profile):
+        expected_refs.add(f"qazgeo-app@{release['artifact_digest']}")
+    if not isinstance(repo_digests, list) or not expected_refs.intersection(repo_digests):
+        raise AgentError("QGeo app image digest is not the requested immutable digest")
+    image_config = image.get("Config")
+    image_labels = image_config.get("Labels") if isinstance(image_config, dict) else None
+    container_labels = config.get("Labels")
+    labels = image_labels if isinstance(image_labels, dict) else container_labels
+    if (
+        not isinstance(labels, dict)
+        or labels.get("org.opencontainers.image.revision") != release["source_sha"]
+    ):
+        raise AgentError("QGeo app OCI source revision does not match release")
+    image_id = image.get("Id") or container.get("Image")
+    if not isinstance(image_id, str) or not image_id:
+        raise AgentError("QGeo app image ID is unavailable")
+    return {
+        "source_sha": release["source_sha"],
+        "artifact_digest": release["artifact_digest"],
+        "artifact_ref": release["artifact_ref"],
+        "measured": True,
+        "container_id": container_id,
+        "config_image": configured_image,
+        "image_id": image_id,
+        "image_repo_digests": sorted(str(item) for item in repo_digests),
+    }
+
+
+def _qgeo_artifact_provenance(profile: Profile) -> dict[str, str]:
+    if profile.qazstack_source_directory is None or not profile.qazstack_source_ref:
+        raise AgentError("QGeo QazStack source binding is not compiled")
+    if profile.qazstack_version is None:
+        raise AgentError("QGeo QazStack version is not compiled")
+    provenance: dict[str, str] = {
+        "qazstack_source_sha": profile.qazstack_source_ref,
+        "qazstack_version": profile.qazstack_version,
+        "qazstack_source_manifest_sha256": _directory_manifest_digest(
+            profile.qazstack_source_directory
+        ),
+    }
+    if profile.qazstack_wheel_path is not None:
+        wheel = profile.qazstack_wheel_path
+        if wheel.is_symlink() or not wheel.is_file():
+            raise AgentError("QGeo QazStack wheel is unavailable")
+        provenance["qak_wheel_sha256"] = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    if profile.avds_source_sha is None or not _SHA.fullmatch(profile.avds_source_sha):
+        raise AgentError("QGeo AVDS source binding is not compiled")
+    if profile.avds_artifact_sha256 is None or not _HEX64.fullmatch(profile.avds_artifact_sha256):
+        raise AgentError("QGeo AVDS artifact binding is not compiled")
+    provenance.update(
+        {
+            "avds_source_sha": profile.avds_source_sha,
+            "avds_artifact_sha256": profile.avds_artifact_sha256,
+        }
+    )
+    return provenance
 
 
 def materialize_static(release: dict[str, str], profile: Profile) -> dict[str, str] | None:
@@ -607,6 +824,11 @@ def _compose(profile: Profile, release: dict[str, str]) -> None:
     environment[profile.image_environment] = image_reference
     if static_directory is not None:
         environment["QAZGEO_STATIC_DIR"] = str(static_directory)
+    if profile.project == "qazgeo":
+        if profile.qazstack_source_directory is None:
+            raise AgentError("QGeo QazStack source directory is not compiled")
+        environment["QAZGEO_SOURCE_REVISION"] = release["source_sha"]
+        environment["QAZSTACK_SOURCE_DIR"] = str(profile.qazstack_source_directory)
     command = [
         "docker",
         "compose",
@@ -634,7 +856,11 @@ def _read_path(document: object, path: tuple[str, ...]) -> object:
     return value
 
 
-def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
+def runtime_proof(
+    profile: Profile,
+    release: dict[str, str],
+    static_bundle: dict[str, str] | None = None,
+) -> dict[str, Any]:
     local = json.loads(
         _run(
             [
@@ -652,7 +878,7 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
     )
     if not isinstance(local, dict) or local.get("status") != "ok":
         raise AgentError("local readiness is not truthful")
-    readiness = {"local": "ok"}
+    readiness: dict[str, str] = {"local": "ok"}
     if profile.local_readiness_url is not None:
         local_readiness = json.loads(
             _run(
@@ -704,6 +930,7 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
         or public.get("artifactDigest") != release["artifact_digest"]
     ):
         raise AgentError("public QAZ.FUND artifact identity does not match promoted image")
+    proof: dict[str, Any] = {}
     if profile.project == "qazgeo":
         dependency_values = {
             "db": local.get("db_connected"),
@@ -713,25 +940,57 @@ def runtime_proof(profile: Profile, release: dict[str, str]) -> dict[str, str]:
         }
         if any(value is not True for value in dependency_values.values()):
             raise AgentError("QGeo local dependency readiness is not truthful")
-        redis_state = (
-            _run(
-                [
-                    "docker",
-                    "inspect",
-                    "qazgeo_redis",
-                    "--format",
-                    "{{.State.Health.Status}}",
-                ]
-            )
-            .decode()
-            .strip()
-        )
-        if redis_state != "healthy":
+        dependencies: dict[str, str] = {}
+        for service in ("db", "martin", "photon", "redis", "app"):
+            _, container = _compose_container(profile, service)
+            image_id = container.get("Image")
+            if not isinstance(image_id, str) or not image_id.strip():
+                raise AgentError(f"QGeo service {service} image identity is unavailable")
+            dependencies[service] = image_id
+        dependencies["postgis"] = dependencies["db"]
+        redis_container_id = _compose_container(profile, "redis")[0]
+        redis_inspection = json.loads(_run(["docker", "inspect", redis_container_id]))
+        if not isinstance(redis_inspection, list) or len(redis_inspection) != 1:
+            raise AgentError("QGeo Redis inspection is invalid")
+        redis_document = redis_inspection[0]
+        redis_state = redis_document.get("State") if isinstance(redis_document, dict) else None
+        redis_health = redis_state.get("Health") if isinstance(redis_state, dict) else None
+        if not isinstance(redis_health, dict) or redis_health.get("Status") != "healthy":
             raise AgentError("QGeo Redis readiness is not truthful")
         readiness.update({key: "ok" for key in dependency_values})
         readiness["redis"] = "ok"
+        readiness["app"] = "ok"
+        proof["runtime_identity"] = _running_image_identity(profile, release)
+        proof["dependency_identity"] = dependencies
+        proof["artifact_provenance"] = _qgeo_artifact_provenance(profile)
+        if not _is_profile_rollback(release, profile):
+            if static_bundle is None:
+                if profile.static_directory_root is None:
+                    raise AgentError("QGeo static root is not compiled")
+                target = profile.static_directory_root / release["source_sha"]
+                manifest_path = (
+                    profile.static_directory_root.parent
+                    / "manifests"
+                    / (f"{release['source_sha']}.json")
+                )
+                if not target.is_dir() or not manifest_path.is_file():
+                    raise AgentError("QGeo static release proof is unavailable")
+                bundle, digest = _static_manifest(target, release)
+                try:
+                    recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise AgentError("QGeo static manifest is unreadable") from error
+                if (
+                    not isinstance(recorded, dict)
+                    or recorded.get("bundle") != bundle
+                    or recorded.get("manifest_digest") != digest
+                ):
+                    raise AgentError("QGeo static release proof does not match candidate")
+                static_bundle = {"digest": f"sha256:{digest}", "manifest": str(manifest_path)}
+            proof["static_bundle"] = static_bundle
     readiness["public"] = "ok"
-    return readiness
+    proof["readiness"] = readiness
+    return proof
 
 
 def complete(
@@ -740,8 +999,22 @@ def complete(
     release_id: str,
     release: dict[str, str],
     rollback: dict[str, str],
-    readiness: dict[str, str],
-) -> None:
+    readiness: dict[str, Any] | None = None,
+    *,
+    proof: dict[str, Any] | None = None,
+    static_bundle: dict[str, str] | None = None,
+    lease_id: str | None = None,
+    fence: str | None = None,
+) -> dict[str, Any]:
+    evidence = dict(proof or {})
+    if readiness is None:
+        readiness = evidence.pop("readiness", None)
+    else:
+        evidence.pop("readiness", None)
+    if not isinstance(readiness, dict):
+        raise AgentError("runtime readiness proof is missing")
+    if static_bundle is not None:
+        evidence["static_bundle"] = static_bundle
     receipt = {
         "schema": "qdev-controller-release-runtime-receipt-v1",
         "status": "verified",
@@ -753,15 +1026,84 @@ def complete(
         "readiness": readiness,
         "rollback": {"verified": True, **rollback},
     }
+    receipt.update(evidence)
+    headers = {
+        name: value
+        for name, value in (
+            ("X-QDev-Release-Lease", lease_id),
+            ("X-QDev-Release-Fence", fence),
+        )
+        if value is not None
+    }
     status, _ = request(
         config,
         "POST",
         f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete"
         f"?release_lane={profile.lane}",
         receipt,
+        headers=headers,
     )
     if status != 200:
         raise AgentError("controller rejected verified runtime receipt")
+    return receipt
+
+
+def rollback_remote(
+    config: Config,
+    profile: Profile,
+    release_id: str,
+    candidate: dict[str, str],
+    restored: dict[str, str],
+    *,
+    lease_id: str | None = None,
+    fence: str | None = None,
+) -> dict[str, Any]:
+    """Restore the compiled previous tuple and record a managed rollback."""
+    # Keep the active alias explicit: rollback validates the restored active
+    # runtime through the same runtime_proof(profile, active) contract used by
+    # normal completion.
+    active = restored
+    _compose(profile, active)
+    # A rollback receipt is accepted only after the restored runtime proves
+    # its own source/digest and dependency chain.  This check intentionally
+    # does not submit a second runtime-complete receipt for the failed job.
+    runtime_proof(profile, active)
+    native = {
+        "schema": "qdev-admin-platform-native-receipt-v1",
+        "project_id": profile.project,
+        "native_host_adapter": "qazgeo-native-immutable-release-v1",
+        **active,
+    }
+    receipt: dict[str, Any] = {
+        "schema": "qdev-controller-release-rollback-receipt-v1",
+        "status": "rolled_back",
+        "project_id": profile.project,
+        "release_lane": profile.lane,
+        "placement": profile.placement,
+        "release_id": release_id,
+        "failed_release": candidate,
+        "restored_release": restored,
+        "native_receipt": native,
+    }
+    headers = {
+        name: value
+        for name, value in (
+            ("X-QDev-Release-Lease", lease_id),
+            ("X-QDev-Release-Fence", fence),
+        )
+        if value is not None
+    }
+    status, _ = request(
+        config,
+        "POST",
+        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/rollback"
+        f"?release_lane={profile.lane}",
+        receipt,
+        headers=headers,
+    )
+    if status != 200:
+        raise AgentError("controller rejected rollback receipt")
+    return receipt
 
 
 def run_once(config: Config, profile: Profile) -> dict[str, Any]:
@@ -791,16 +1133,43 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             return {"status": "idle", "capacity_free_gib": beat["capacity_free_gib"]}
         if status != 200:
             raise AgentError("controller job poll was rejected")
-        release_id, release = validate_job(json.loads(body), profile)
+        job_document = json.loads(body)
+        release_id, release = validate_job(job_document, profile)
+        lease_id, fence = _job_fencing(job_document, profile)
+        attempted = False
         try:
+            attempted = True
             verify_image(release, profile)
-            materialize_static(release, profile)
+            static_bundle = materialize_static(release, profile)
             _compose(profile, release)
-            readiness = runtime_proof(profile, release)
-            complete(config, profile, release_id, release, active, readiness)
+            proof = runtime_proof(profile, release, static_bundle)
+            complete(
+                config,
+                profile,
+                release_id,
+                release,
+                active,
+                proof=proof,
+                static_bundle=static_bundle,
+                lease_id=lease_id,
+                fence=fence,
+            )
         except AgentError:
-            _compose(profile, active)
-            runtime_proof(profile, active)
+            if attempted and profile.project == "qazgeo":
+                try:
+                    rollback_remote(
+                        config,
+                        profile,
+                        release_id,
+                        release,
+                        active,
+                        lease_id=lease_id,
+                        fence=fence,
+                    )
+                except AgentError as rollback_error:
+                    raise AgentError(
+                        "candidate release failed and managed rollback failed"
+                    ) from rollback_error
             raise
         write_state(config.state_path, release, active)
         return {"status": "verified", "release_id": release_id, **release}

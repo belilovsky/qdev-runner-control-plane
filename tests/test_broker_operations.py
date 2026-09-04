@@ -127,33 +127,52 @@ def _app(
         encoding="utf-8",
     )
     release_lanes = tmp_path / "release-lanes.yml"
-    release_lanes.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "qdev-release-lanes-v1",
-                "lanes": {
-                    "qdev-release-qaz-tours": {
-                        "project_id": "qaz-tours",
-                        "placement": "vps-hostinger-186",
-                        "client_mtls_identity": "qdev-release-client:qaz-tours",
-                        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
-                        "minimum_free_gib": 60,
-                        "heartbeat_ttl_seconds": 90,
-                        "artifact_repository": "qaz-tours",
-                    },
-                    "qdev-release-qmt": {
-                        "project_id": "kaztilshi",
-                        "placement": "srv138jump",
-                        "client_mtls_identity": "qdev-release-client:kaztilshi",
-                        "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
-                        "minimum_free_gib": 20,
-                        "heartbeat_ttl_seconds": 90,
-                        "artifact_repository": "kaztilshi",
-                    },
-                },
+    lane_document: dict[str, Any] = {
+        "schema_version": "qdev-release-lanes-v2" if include_qgeo else "qdev-release-lanes-v1",
+        "lanes": {
+            "qdev-release-qaz-tours": {
+                "project_id": "qaz-tours",
+                "placement": "vps-hostinger-186",
+                "client_mtls_identity": "qdev-release-client:qaz-tours",
+                "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+                "minimum_free_gib": 60,
+                "heartbeat_ttl_seconds": 90,
+                "artifact_repository": "qaz-tours",
             },
-            sort_keys=True,
-        ),
+            "qdev-release-qmt": {
+                "project_id": "kaztilshi",
+                "placement": "srv138jump",
+                "client_mtls_identity": "qdev-release-client:kaztilshi",
+                "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
+                "minimum_free_gib": 20,
+                "heartbeat_ttl_seconds": 90,
+                "artifact_repository": "kaztilshi",
+            },
+        },
+    }
+    if include_qgeo:
+        lane_document["lanes"]["qdev-release-qazgeo"] = {
+            "project_id": "qazgeo",
+            "placement": "qazgeo-primary-187",
+            "client_mtls_identity": "qdev-release-client:qazgeo",
+            "host_agent_mtls_identity": "qdev-host-agent:qazgeo-primary-187",
+            "minimum_free_gib": 20,
+            "heartbeat_ttl_seconds": 90,
+            "artifact_repository": "belilovsky/qazgeo",
+            "canonical_repository": "belilovsky/qazgeo",
+            "artifact_ref_prefix": "registry.ci.qdev.run/belilovsky/qazgeo",
+            "native_host_adapter": "qazgeo-native-immutable-release-v1",
+            "runtime_endpoints": [
+                "https://qgeo.tech/health",
+                "https://qgeo.tech/health/live",
+                "https://qgeo.tech/health/ready",
+                "https://qgeo.tech/health/quality",
+            ],
+            "rollback_reference": "controller-verified immutable runtime rollback receipt",
+            "required_readiness": ["db", "postgis", "martin", "photon", "redis", "app"],
+        }
+    release_lanes.write_text(
+        yaml.safe_dump(lane_document, sort_keys=True),
         encoding="utf-8",
     )
     managed_release_ledger = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
@@ -862,7 +881,10 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    # The bootstrap policy now enrols the managed QGeo lane; include its
+    # explicit legacy-shaped test lane so worker recovery remains a valid
+    # controller-only operation in this fixture.
+    client = _app(tmp_path, include_qgeo=True)
     request = {
         "schema": "qdev-fleet-bootstrap-request-v1",
         "action": "restore-existing-worker",
@@ -885,9 +907,7 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         "timeout_seconds": 5,
     }
     path = "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
-    assert (
-        client.post(path, json=body).status_code == 401
-    )
+    assert client.post(path, json=body).status_code == 401
     assert (
         client.post(
             path,

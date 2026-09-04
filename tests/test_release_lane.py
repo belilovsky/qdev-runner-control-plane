@@ -68,6 +68,11 @@ def _candidate_request(*, evidence: dict | None = None) -> ReleaseAdmissionReque
                 "source_sha": QGEO_SHA,
                 "artifact_digest": QGEO_DIGEST,
                 "artifact_ref": QGEO_REF,
+                "repository": "belilovsky/qazgeo",
+                "workflow": "CI – QazGeo",
+                "job": "docker-build",
+                "attempt": 1,
+                "runner_profile": "qdev-ci-docker",
                 "evidence": evidence,
             },
         }
@@ -169,6 +174,32 @@ def test_qgeo_runtime_receipt_requires_all_dependencies() -> None:
             "martin": "ok",
             "photon": "ok",
             "redis": "ok",
+            "app": "ok",
+        },
+        "runtime_identity": {
+            "source_sha": QGEO_SHA,
+            "artifact_digest": QGEO_DIGEST,
+            "artifact_ref": QGEO_REF,
+            "measured": True,
+        },
+        "dependency_identity": {
+            "db": "postgres:16",
+            "postgis": "postgis:3.5",
+            "martin": "martin:1.0",
+            "photon": "photon:0.1",
+            "redis": "redis:7",
+            "app": QGEO_SHA,
+        },
+        "artifact_provenance": {
+            "qak_wheel_sha256": "c" * 64,
+            "qazstack_source_sha": "f" * 40,
+            "qazstack_version": "1.21.1",
+            "avds_artifact_sha256": "d" * 64,
+            "avds_source_sha": "e" * 40,
+        },
+        "static_bundle": {
+            "digest": "sha256:" + "b" * 64,
+            "manifest": "/opt/qazgeo/manifests/test.json",
         },
         "rollback": {
             "verified": True,
@@ -221,6 +252,32 @@ def test_release_admission_is_idempotent_after_verified_result(tmp_path: Path) -
             "martin": "ok",
             "photon": "ok",
             "redis": "ok",
+            "app": "ok",
+        },
+        "runtime_identity": {
+            "source_sha": QGEO_SHA,
+            "artifact_digest": QGEO_DIGEST,
+            "artifact_ref": QGEO_REF,
+            "measured": True,
+        },
+        "dependency_identity": {
+            "db": "postgres:16",
+            "postgis": "postgis:3.5",
+            "martin": "martin:1.0",
+            "photon": "photon:0.1",
+            "redis": "redis:7",
+            "app": QGEO_SHA,
+        },
+        "artifact_provenance": {
+            "qak_wheel_sha256": "c" * 64,
+            "qazstack_source_sha": "f" * 40,
+            "qazstack_version": "1.21.1",
+            "avds_artifact_sha256": "d" * 64,
+            "avds_source_sha": "e" * 40,
+        },
+        "static_bundle": {
+            "digest": "sha256:" + "b" * 64,
+            "manifest": "/opt/qazgeo/manifests/test.json",
         },
         "rollback": {
             "verified": True,
@@ -229,7 +286,13 @@ def test_release_admission_is_idempotent_after_verified_result(tmp_path: Path) -
             "artifact_ref": ROLLBACK_REF,
         },
     }
-    completed = store.complete(lane, str(first["release_id"]), runtime_receipt)
+    completed = store.complete(
+        lane,
+        str(first["release_id"]),
+        runtime_receipt,
+        lease_id=str(first["lease_id"]),
+        fence=str(first["fence"]),
+    )
     repeated, idempotent = store.admit(request, lane)
     assert idempotent is True
     assert repeated["release_id"] == completed["release_id"]

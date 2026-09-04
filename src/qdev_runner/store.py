@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     claimed_at REAL,
     completed_at REAL,
     result TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    infra_retries INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at);
 
@@ -113,14 +114,30 @@ class Store:
         self.path = path
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
-            }
-            if "claim_scope_id" not in columns:
-                connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
+            self._migrate_schema(connection)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             self._repair_invalid_queue_timestamps(connection)
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        """Apply additive migrations to databases created by older brokers.
+
+        Production broker databases outlive controller releases.  Every
+        migration is therefore presence-checked before ALTER so a restart is
+        safe when a previous attempt committed the column just before losing
+        its process.  The QGeo lane only needs the durable retry counter; the
+        check deliberately leaves unrelated newer tables untouched.
+        """
+        columns = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "claim_scope_id" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN claim_scope_id TEXT")
+        if "infra_retries" not in columns:
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN infra_retries INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _repair_invalid_queue_timestamps(self, connection: sqlite3.Connection) -> None:
         """Restore FIFO ordering for legacy rows written with invalid timestamps.
