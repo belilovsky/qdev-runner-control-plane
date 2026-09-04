@@ -184,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = commands.add_parser("override", help="Create one expiring disk-only override")
     create.add_argument("worker")
     create.add_argument("--repository", required=True)
+    create.add_argument("--head-sha", required=True)
     create.add_argument("--profile", action="append", required=True, dest="profiles")
     create.add_argument("--min-disk-free-gib", type=float, default=4.5)
     create.add_argument("--max-disk-used-pct", type=float, default=95.0)
@@ -257,6 +258,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             path=f"/internal/v1/operations/workers/{worker}/capacity-override",
             body={
                 "repository": arguments.repository,
+                "head_sha": arguments.head_sha,
                 "profiles": arguments.profiles,
                 "min_disk_free_gib": arguments.min_disk_free_gib,
                 "max_disk_used_pct": arguments.max_disk_used_pct,

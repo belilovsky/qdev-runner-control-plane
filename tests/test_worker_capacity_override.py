@@ -116,6 +116,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -136,6 +137,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.max_disk_used_pct == 95
         assert state.directive_id == directive.operation_id
         assert state.directive_repository == "belilovsky/qazshield"
+        assert state.directive_head_sha == "a" * 40
         assert state.directive_expires_at is not None
     finally:
         await worker.close()
@@ -151,6 +153,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -187,6 +190,7 @@ async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -222,6 +226,7 @@ async def test_worker_rejects_tampered_or_non_disk_override(tmp_path: Path) -> N
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
         repository="belilovsky/qazshield",
+        head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
         max_disk_used_pct=95,
@@ -290,6 +295,7 @@ async def test_worker_claim_sends_verified_capacity_binding(tmp_path: Path) -> N
         assert payload["profiles"] == ["qdev-ci-docker"]
         assert payload["capacity_directive_id"] == "operation-123"
         assert payload["capacity_repository"] == "belilovsky/qazlake"
+        assert payload["capacity_head_sha"] == "b" * 40
         return httpx.Response(status_code=204)
 
     await worker.client.aclose()
@@ -304,6 +310,7 @@ async def test_worker_claim_sends_verified_capacity_binding(tmp_path: Path) -> N
             min_disk_free_gib=4.5,
             capacity_directive_id="operation-123",
             capacity_repository="belilovsky/qazlake",
+            capacity_head_sha="b" * 40,
         )
         assert claimed is None
     finally:
