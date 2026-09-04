@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import pytest
 from qdev_runner.operations import (
     HARD_MAX_DISK_USED_PCT,
     HARD_MIN_FREE_GIB,
+    CapacityOverrideConflict,
     OperationStore,
     payload_digest,
     sign_payload,
@@ -65,10 +68,10 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
 
     cancelled = operation_store.cancel_capacity_override(
         "srv1879763-light-primary",
+        expected_operation_id=directive.operation_id,
         registered_profiles=("qdev-ci", "qdev-ci-docker", "qdev-ci-browser"),
         now=now + timedelta(minutes=2),
     )
-    assert cancelled is not None
     assert cancelled.status == "cancelled"
     assert (
         operation_store.active(
@@ -78,6 +81,86 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
         )
         is None
     )
+
+
+def test_capacity_override_cancel_is_compare_and_swap(
+    operation_store: OperationStore,
+) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    directive = operation_store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+        profiles=("qdev-ci",),
+        min_disk_free_gib=HARD_MIN_FREE_GIB,
+        max_disk_used_pct=HARD_MAX_DISK_USED_PCT,
+        owner="qdev-fleet-operations",
+        reason="compare-and-swap regression",
+        duration_seconds=600,
+        now=now,
+    )
+
+    with pytest.raises(CapacityOverrideConflict, match="operation changed"):
+        operation_store.cancel_capacity_override(
+            "srv1879763-light-primary",
+            expected_operation_id="foreign-operation",
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+            now=now + timedelta(minutes=1),
+        )
+
+    assert (
+        operation_store.active(
+            "srv1879763-light-primary",
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+            now=now + timedelta(minutes=1),
+        )
+        == directive
+    )
+
+
+def test_concurrent_capacity_override_create_has_one_winner(
+    operation_store: OperationStore,
+) -> None:
+    now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
+    barrier = threading.Barrier(2)
+
+    def create(repository: str) -> str:
+        barrier.wait(timeout=5)
+        try:
+            directive = operation_store.create_capacity_override(
+                worker_name="srv1879763-light-primary",
+                repository=repository,
+                head_sha="a" * 40,
+                profiles=("qdev-ci",),
+                min_disk_free_gib=HARD_MIN_FREE_GIB,
+                max_disk_used_pct=HARD_MAX_DISK_USED_PCT,
+                owner="qdev-fleet-operations",
+                reason="concurrent create regression",
+                duration_seconds=600,
+                registered_profiles=("qdev-ci", "qdev-ci-docker"),
+                now=now,
+            )
+        except CapacityOverrideConflict:
+            return "conflict"
+        return directive.repository
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                create,
+                ("belilovsky/qazshield", "belilovsky/qazgeo"),
+            )
+        )
+
+    assert results.count("conflict") == 1
+    winner = next(result for result in results if result != "conflict")
+    active = operation_store.active(
+        "srv1879763-light-primary",
+        registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        now=now + timedelta(seconds=1),
+    )
+    assert active is not None
+    assert active.repository == winner
 
 
 def test_capacity_override_rejects_tamper_profile_mismatch_and_expiry(
@@ -174,6 +257,32 @@ def test_controller_receipt_v1_is_legacy_unverified_and_v2_rejects_unknown_paylo
         verify_controller_receipt(legacy, receipt_key="receipt-signing-key", allow_legacy=True)
         == legacy
     )
+
+
+def test_capacity_override_receipt_requires_full_immutable_fifo_tuple() -> None:
+    payload = {
+        "kind": "capacity-override-created",
+        "observed_at": "2026-08-31T08:00:00Z",
+        "worker_audit": {},
+        "operation": {},
+        "required_free_gib": 8.0,
+        "immutable_tuple": {
+            "repository": "belilovsky/qazshield",
+            "run_id": 84_000_000_042,
+            "job_id": 42,
+            "attempt": 1,
+            "exact_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "state": "pending",
+            "created_at": 1_777_777_777.0,
+        },
+    }
+    assert validate_controller_receipt_payload(payload) == payload
+
+    with pytest.raises(ValueError, match="durable queue head"):
+        validate_controller_receipt_payload(
+            payload | {"immutable_tuple": payload["immutable_tuple"] | {"attempt": None}}
+        )
 
 
 def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:

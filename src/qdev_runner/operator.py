@@ -194,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     cancel = commands.add_parser("cancel", help="Cancel the active override for a worker")
     cancel.add_argument("worker")
+    cancel.add_argument("--operation-id", required=True)
+
+    commands.add_parser("queue-audit", help="Read signed durable FIFO profile heads")
 
     stale_audit = commands.add_parser(
         "stale-audit", help="Read signed stale-job candidates without mutation"
@@ -269,10 +272,20 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
     if arguments.command == "cancel":
         worker = _worker_name(arguments.worker)
+        operation_id = _scope_id(arguments.operation_id)
         return controller_request(
             settings,
             method="DELETE",
-            path=f"/internal/v1/operations/workers/{worker}/capacity-override",
+            path=(
+                f"/internal/v1/operations/workers/{worker}/capacity-override"
+                f"?operation_id={operation_id}"
+            ),
+        )
+    if arguments.command == "queue-audit":
+        return controller_request(
+            settings,
+            method="GET",
+            path="/internal/v1/operations/jobs/pending",
         )
     if arguments.command == "stale-audit":
         return controller_request(

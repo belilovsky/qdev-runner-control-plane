@@ -84,7 +84,7 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     assert store.claim("worker-2", ("qdev-ci",)) is None
 
 
-def test_repository_bound_claim_cannot_take_older_foreign_job(tmp_path: Path) -> None:
+def test_repository_bound_claim_cannot_leapfrog_profile_fifo(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     assert store.enqueue(job("foreign", 100, repository="belilovsky/qazstack"))
     assert store.enqueue(job("target", 101, repository="belilovsky/qazlake"))
@@ -95,9 +95,17 @@ def test_repository_bound_claim_cannot_take_older_foreign_job(tmp_path: Path) ->
         repository="belilovsky/qazlake",
     )
 
-    assert claimed is not None
-    assert claimed["job_id"] == 101
+    assert claimed is None
     assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+    head = store.claim(
+        "worker-1",
+        ("qdev-ci",),
+        repository="belilovsky/qazstack",
+    )
+    assert head is not None
+    assert head["job_id"] == 100
 
 
 def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) -> None:

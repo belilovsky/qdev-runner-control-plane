@@ -76,6 +76,7 @@ export QDEV_OPERATOR_MTLS_CA=/secure/controller-ca.pem
 export QDEV_OPERATOR_MTLS_CERT=/secure/operator.pem
 export QDEV_OPERATOR_MTLS_KEY=/secure/operator-key.pem
 qdev-runner-operator audit > worker-audit-receipt.json
+qdev-runner-operator queue-audit > durable-queue-audit-receipt.json
 ```
 
 An override is admitted only for a fresh, idle worker with a registered
@@ -94,8 +95,14 @@ qdev-runner-operator override srv1879763-light-primary \
   --reason 'bounded exact-SHA FIFO recovery' \
   > capacity-override-receipt.json
 qdev-runner-operator cancel srv1879763-light-primary \
+  --operation-id "$OPERATION_ID_FROM_CREATE_RECEIPT" \
   > capacity-override-cancelled-receipt.json
 ```
+
+Creation is serialized per worker and must name the signed durable FIFO head.
+Cancellation is compare-and-swap: if another controller transaction has
+replaced the operation ID, it returns a conflict and leaves that operation
+untouched.
 
 ## Stale-job reconciliation
 

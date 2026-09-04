@@ -255,7 +255,12 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             profile_heads: dict[str, int] = {}
-            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            enforce_profile_fifo = bool(
+                (claim_scope is not None and claim_scope.schema == SCHEMA_V2)
+                or repository is not None
+                or head_sha is not None
+            )
+            if enforce_profile_fifo:
                 # v2 scopes may authorize independent profiles concurrently, but
                 # may never skip the oldest pending job within any one profile.
                 # Keep this guard in the durable claim path as well as the
@@ -280,8 +285,7 @@ class Store:
                 if matching_profile is None:
                     continue
                 if (
-                    claim_scope is not None
-                    and claim_scope.schema == SCHEMA_V2
+                    enforce_profile_fifo
                     and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
                 ):
                     continue

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -78,6 +81,13 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "admission",
     },
     "worker-audit": {"kind", "observed_at", "workers", "pending"},
+    "durable-queue-audit": {
+        "kind",
+        "observed_at",
+        "pending",
+        "profile_heads",
+        "unclassified",
+    },
     "fifo-claim-scope-issued": {
         "kind",
         "operator_session",
@@ -98,6 +108,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "worker_audit",
         "operation",
         "required_free_gib",
+        "immutable_tuple",
     },
     "capacity-override-cancelled": {"kind", "observed_at", "worker_audit", "operation"},
     "stale-job-audit": {
@@ -132,6 +143,48 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "result",
     },
 }
+
+
+def _validate_durable_queue_head(value: Any, *, require_attempt: bool = False) -> None:
+    if not isinstance(value, dict) or set(value) != {
+        "repository",
+        "run_id",
+        "job_id",
+        "attempt",
+        "exact_sha",
+        "profile",
+        "state",
+        "created_at",
+    }:
+        raise ValueError("durable queue head is invalid")
+    if (
+        not isinstance(value["repository"], str)
+        or not _REPOSITORY.fullmatch(value["repository"])
+        or isinstance(value["run_id"], bool)
+        or not isinstance(value["run_id"], int)
+        or value["run_id"] <= 0
+        or isinstance(value["job_id"], bool)
+        or not isinstance(value["job_id"], int)
+        or value["job_id"] <= 0
+        or (
+            value["attempt"] is not None
+            and (
+                isinstance(value["attempt"], bool)
+                or not isinstance(value["attempt"], int)
+                or value["attempt"] <= 0
+            )
+        )
+        or (require_attempt and value["attempt"] is None)
+        or not isinstance(value["exact_sha"], str)
+        or not _SOURCE_SHA.fullmatch(value["exact_sha"])
+        or not isinstance(value["profile"], str)
+        or not _WORKER_NAME.fullmatch(value["profile"])
+        or value["state"] != "pending"
+        or isinstance(value["created_at"], bool)
+        or not isinstance(value["created_at"], (int, float))
+        or value["created_at"] <= 0
+    ):
+        raise ValueError("durable queue head is invalid")
 
 
 def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -172,6 +225,23 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or value["pending"] < 0
     ):
         raise ValueError("worker audit payload is invalid")
+    if kind == "durable-queue-audit" and (
+        not isinstance(value["pending"], int)
+        or value["pending"] < 0
+        or not isinstance(value["profile_heads"], list)
+        or not isinstance(value["unclassified"], list)
+        or len(value["profile_heads"]) > 512
+        or len(value["unclassified"]) > 512
+    ):
+        raise ValueError("durable queue audit payload is invalid")
+    if kind == "durable-queue-audit":
+        for item in value["profile_heads"]:
+            _validate_durable_queue_head(item)
+        if any(
+            isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0
+            for job_id in value["unclassified"]
+        ):
+            raise ValueError("durable queue audit unclassified jobs are invalid")
     if kind == "fifo-claim-scope-issued" and (
         value["operator_session"] != "verified"
         or not isinstance(value["mtls_identity"], str)
@@ -266,8 +336,11 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
     if kind == "capacity-override-created" and (
         not isinstance(value["operation"], dict)
         or not isinstance(value["required_free_gib"], (int, float))
+        or not isinstance(value["immutable_tuple"], dict)
     ):
         raise ValueError("capacity override creation payload is invalid")
+    if kind == "capacity-override-created":
+        _validate_durable_queue_head(value["immutable_tuple"], require_attempt=True)
     if kind == "capacity-override-cancelled" and not (
         isinstance(value["operation"], dict) or value["operation"] is None
     ):
@@ -332,6 +405,10 @@ class CapacityOverrideDirective(BaseModel):
         return self.model_dump(mode="json", by_alias=True, exclude={"signature"})
 
 
+class CapacityOverrideConflict(RuntimeError):
+    """The active directive changed across an operator transaction."""
+
+
 def verify_capacity_override(
     payload: Mapping[str, Any],
     *,
@@ -380,6 +457,7 @@ class OperationStore:
         self.root = root
         self.worker_signing_key = worker_signing_key
         self.receipt_signing_key = receipt_signing_key
+        self._process_lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True)
         self.root.chmod(0o700)
 
@@ -387,6 +465,19 @@ class OperationStore:
         if not _WORKER_NAME.fullmatch(worker_name):
             raise ValueError("invalid worker name")
         return self.root / f"{worker_name}.json"
+
+    @contextmanager
+    def _worker_lock(self, worker_name: str) -> Iterator[None]:
+        self._path(worker_name)
+        lock_path = self.root / f".{worker_name}.lock"
+        with self._process_lock:
+            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def _write(self, worker_name: str, payload: Mapping[str, Any]) -> None:
         path = self._path(worker_name)
@@ -440,6 +531,7 @@ class OperationStore:
         owner: str,
         reason: str,
         duration_seconds: int,
+        registered_profiles: tuple[str, ...] | None = None,
         now: datetime | None = None,
     ) -> CapacityOverrideDirective:
         if not profiles:
@@ -455,54 +547,68 @@ class OperationStore:
         if not owner.strip() or not reason.strip():
             raise ValueError("owner and reason are required")
         issued_at = now or utc_now()
-        unsigned: dict[str, Any] = {
-            "schema": "qdev-capacity-override-v2",
-            "operation_id": str(uuid4()),
-            "worker_name": worker_name,
-            "repository": repository.strip().lower(),
-            "head_sha": head_sha.strip().lower(),
-            "profiles": list(dict.fromkeys(profiles)),
-            "min_disk_free_gib": min_disk_free_gib,
-            "max_disk_used_pct": max_disk_used_pct,
-            "owner": owner.strip(),
-            "reason": reason.strip(),
-            "issued_at": format_utc(issued_at),
-            "expires_at": format_utc(issued_at + timedelta(seconds=duration_seconds)),
-            "status": "active",
-            "cancelled_at": None,
-        }
-        normalized = CapacityOverrideDirective.model_validate(
-            unsigned | {"signature": "0" * 64}
-        ).unsigned()
-        directive = CapacityOverrideDirective.model_validate(
-            normalized | {"signature": sign_payload(normalized, self.worker_signing_key)}
-        )
-        self._write(worker_name, directive.model_dump(mode="json", by_alias=True))
-        return directive
+        with self._worker_lock(worker_name):
+            if self.active(
+                worker_name,
+                registered_profiles=registered_profiles or profiles,
+                now=issued_at,
+            ) is not None:
+                raise CapacityOverrideConflict("capacity override is already active")
+            unsigned: dict[str, Any] = {
+                "schema": "qdev-capacity-override-v2",
+                "operation_id": str(uuid4()),
+                "worker_name": worker_name,
+                "repository": repository.strip().lower(),
+                "head_sha": head_sha.strip().lower(),
+                "profiles": list(dict.fromkeys(profiles)),
+                "min_disk_free_gib": min_disk_free_gib,
+                "max_disk_used_pct": max_disk_used_pct,
+                "owner": owner.strip(),
+                "reason": reason.strip(),
+                "issued_at": format_utc(issued_at),
+                "expires_at": format_utc(issued_at + timedelta(seconds=duration_seconds)),
+                "status": "active",
+                "cancelled_at": None,
+            }
+            normalized = CapacityOverrideDirective.model_validate(
+                unsigned | {"signature": "0" * 64}
+            ).unsigned()
+            directive = CapacityOverrideDirective.model_validate(
+                normalized | {"signature": sign_payload(normalized, self.worker_signing_key)}
+            )
+            self._write(worker_name, directive.model_dump(mode="json", by_alias=True))
+            return directive
 
     def cancel_capacity_override(
         self,
         worker_name: str,
         *,
+        expected_operation_id: str,
         registered_profiles: tuple[str, ...],
         now: datetime | None = None,
-    ) -> CapacityOverrideDirective | None:
-        directive = self.active(
-            worker_name,
-            registered_profiles=registered_profiles,
-            now=now,
-        )
-        if directive is None:
-            return None
-        unsigned = directive.unsigned() | {
-            "status": "cancelled",
-            "cancelled_at": format_utc(now or utc_now()),
-        }
-        cancelled = CapacityOverrideDirective.model_validate(
-            unsigned | {"signature": sign_payload(unsigned, self.worker_signing_key)}
-        )
-        self._write(worker_name, cancelled.model_dump(mode="json", by_alias=True))
-        return cancelled
+    ) -> CapacityOverrideDirective:
+        if not expected_operation_id.strip():
+            raise ValueError("expected operation ID is required")
+        checked_at = now or utc_now()
+        with self._worker_lock(worker_name):
+            directive = self.active(
+                worker_name,
+                registered_profiles=registered_profiles,
+                now=checked_at,
+            )
+            if directive is None:
+                raise CapacityOverrideConflict("capacity override is not active")
+            if not hmac.compare_digest(directive.operation_id, expected_operation_id):
+                raise CapacityOverrideConflict("capacity override operation changed")
+            unsigned = directive.unsigned() | {
+                "status": "cancelled",
+                "cancelled_at": format_utc(checked_at),
+            }
+            cancelled = CapacityOverrideDirective.model_validate(
+                unsigned | {"signature": sign_payload(unsigned, self.worker_signing_key)}
+            )
+            self._write(worker_name, cancelled.model_dump(mode="json", by_alias=True))
+            return cancelled
 
     def receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         checked_payload = validate_controller_receipt_payload(payload)
