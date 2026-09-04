@@ -58,17 +58,15 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'if [[ "$legacy_rollback" == true ]]; then' in script
     assert (
         'install -m 0644 -- "$release/config/admin-platform-ledger.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
-        in script
+        "/etc/qdev-runner/admin-platform-ledger.yml" in script
     )
     assert (
         'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
-        in script
+        "/etc/qdev-runner/admin-platform-ledger.yml" in script
     )
     assert script.index('if [[ "$legacy_rollback" == true ]]; then') < script.index(
         'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
+        "/etc/qdev-runner/admin-platform-ledger.yml"
     )
     assert (
         '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
@@ -133,8 +131,9 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 
-    assert "QDEV_CONTROLLER_NO_BUILD=true" in script
-    assert 'QDEV_CONTROLLER_LEGACY_ROLLBACK="$legacy_rollback"' in script
+    assert '--rollback-transaction "$1"' in script
+    assert "TRANSACTION_ID" in script
+    assert "activate_controller_release.sh" not in script
 
 
 def test_controller_compose_project_is_namespaced() -> None:

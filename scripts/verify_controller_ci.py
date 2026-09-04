@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -12,6 +13,24 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def source_fingerprint(root: Path) -> str:
+    names = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root
+    )
+    digest = hashlib.sha256()
+    for name in sorted(set(names.split(b"\0")) - {b""}):
+        path = root / os.fsdecode(name)
+        digest.update(name + b"\0")
+        if path.is_symlink():
+            digest.update(b"link:" + os.fsencode(os.readlink(path)))
+        elif path.is_file():
+            digest.update(str(path.stat().st_mode & 0o111).encode() + b":" + path.read_bytes())
+        else:
+            digest.update(b"missing")
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
@@ -66,13 +85,20 @@ def main() -> int:
         validate_context(args.lane, dict(os.environ), sha)
     except ValueError as error:
         parser.error(str(error))
+    fingerprint = source_fingerprint(ROOT)
     for command in commands(sys.executable):
         subprocess.run(command, cwd=ROOT, check=True)
+    if (
+        source_fingerprint(ROOT) != fingerprint
+        or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip() != sha
+    ):
+        parser.error("source changed during CI; no success receipt may be issued")
     print(
         json.dumps(
             {
                 "schema": "qdev-controller-ci-execution-v1",
                 "sha": sha,
+                "source_fingerprint": fingerprint,
                 "source_scope": "working-tree" if dirty else "commit",
                 "dirty": dirty,
                 "lane": args.lane,

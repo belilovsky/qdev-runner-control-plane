@@ -89,3 +89,17 @@ def test_runtime_gate_cannot_resolve_missing_dependencies_from_dev_environment()
     assert '"requirements.runtime.txt"' in script
     assert '"pip", "check"' in script
     assert '"-I"' in script
+
+
+def test_fingerprint_detects_mid_run_source_change_and_missing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(CI.subprocess, "check_output", lambda *_a, **_k: b"source.py\0")
+    source = tmp_path / "source.py"
+    source.write_text("old\n")
+    before = CI.source_fingerprint(tmp_path)
+    source.write_text("changed\n")
+    assert CI.source_fingerprint(tmp_path) != before
+    source.unlink()
+    assert CI.source_fingerprint(tmp_path) != before

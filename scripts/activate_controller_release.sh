@@ -24,6 +24,20 @@ case "$release" in
     exit 64
     ;;
 esac
+# Forward activation is owned by the resumable exact-source transaction.
+# This is deliberately before any configuration or container mutation.
+transaction_dir="${QDEV_CONTROLLER_TRANSACTION_DIR:-}"
+[[ "$transaction_dir" == /var/lib/qdev-runner/controller-releases/* &&
+   -f "$transaction_dir/transaction.json" ]] || {
+  printf 'use release_controller_exact.py; durable release transaction is required\n' >&2
+  exit 64
+}
+python3 "$release/scripts/controller_release_guard.py" verify \
+  --root "$release" --revision "${QDEV_CONTROLLER_RELEASE_REVISION:?}" \
+  --digest "${QDEV_CONTROLLER_ARTIFACT_DIGEST:?}"
+python3 "$release/scripts/controller_release_guard.py" current \
+  --status "$release_status_path" --revision "${QDEV_CONTROLLER_EXPECTED_REVISION:?}" \
+  --digest "${QDEV_CONTROLLER_EXPECTED_DIGEST:?}"
 legacy_rollback="${QDEV_CONTROLLER_LEGACY_ROLLBACK:-false}"
 if [[ "$legacy_rollback" != true && "$legacy_rollback" != false ]]; then
   printf 'QDEV_CONTROLLER_LEGACY_ROLLBACK must be true or false\n' >&2
@@ -113,6 +127,10 @@ if [[ "$allow_build_capacity_override" != true && "$allow_build_capacity_overrid
 fi
 if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
   printf 'QDEV_CONTROLLER_HEALTH_CHECK_ATTEMPTS must be an integer from 30 to 180\n' >&2
+  exit 64
+fi
+if (( min_memory_gib < 4 || max_load_per_cpu > 2 || max_load_per_cpu < 1 )); then
+  printf 'disk-only controller override cannot relax memory or CPU gates\n' >&2
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
@@ -258,6 +276,10 @@ release_digest="$(
     sha256sum -- "$release_file" | awk '{print $1}'
   done | sha256sum | awk '{print $1}'
 )"
+# The v1 status interface is unchanged; the digest now binds every source file,
+# not only a subset of configuration files. The transaction retains the prior
+# digest verbatim for compatibility and rollback.
+release_digest="$QDEV_CONTROLLER_ARTIFACT_DIGEST"
 
 write_release_status() {
   local temporary_status
@@ -284,6 +306,9 @@ restore_operator_identity_metadata() {
   done < "$operator_identity_metadata_backup"
 }
 
+python3 "$release/scripts/controller_release_guard.py" current \
+  --status "$release_status_path" --revision "$QDEV_CONTROLLER_EXPECTED_REVISION" \
+  --digest "$QDEV_CONTROLLER_EXPECTED_DIGEST"
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json
 install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
@@ -305,6 +330,7 @@ install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
+compose+=(-f "$transaction_dir/candidate-compose.json")
 if [[ "$no_build" == true ]]; then
   compose_action=(up -d --force-recreate --no-build --no-deps broker-public broker-internal)
 else
@@ -349,6 +375,7 @@ rollback() {
     docker image tag "$rollback_internal_ref" "$previous_internal_ref"
   fi
   docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
+    -f "$transaction_dir/rollback-compose.json" \
     up -d --force-recreate --no-build --no-deps broker-public broker-internal
 }
 
