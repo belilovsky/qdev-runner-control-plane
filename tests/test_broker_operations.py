@@ -61,6 +61,14 @@ def _app(
             "default_branch": "main",
             "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
         },
+        {
+            "id": 5,
+            "full_name": "belilovsky/qazposter",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci", "qdev-ci-docker"],
+        },
     ]
     if include_qgeo:
         repositories.append(
@@ -85,6 +93,10 @@ def _app(
                     "belilovsky/qazshield": {"qdev-ci-docker": 15360},
                     "belilovsky/qazlake": {"qdev-ci-docker": 12288},
                     "belilovsky/example": {"qdev-ci-docker": 15360},
+                    "belilovsky/qazposter": {
+                        "qdev-ci": 12288,
+                        "qdev-ci-docker": 15360,
+                    },
                 },
                 "profiles": {
                     "qdev-ci": {
@@ -553,7 +565,14 @@ def _heartbeat(
     return response.json()
 
 
-def _seed_pending_job(client: TestClient, job_id: int, delivery_id: str) -> None:
+def _seed_pending_job(
+    client: TestClient,
+    job_id: int,
+    delivery_id: str,
+    *,
+    repository: str = "belilovsky/example",
+    head_sha: str = "a" * 40,
+) -> None:
     store: Store = client.app.state.store
     assert (
         store.enqueue(
@@ -561,11 +580,11 @@ def _seed_pending_job(client: TestClient, job_id: int, delivery_id: str) -> None
                 delivery_id=delivery_id,
                 job_id=job_id,
                 run_id=84000000000 + job_id,
-                repository="belilovsky/example",
+                repository=repository,
                 repository_id=1,
                 installation_id=2,
                 labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
-                head_sha="a" * 40,
+                head_sha=head_sha,
                 head_branch="main",
                 payload={"workflow_job": {"run_attempt": 1}},
             )
@@ -820,6 +839,82 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
     ]
     assert refreshed_payload["idempotent"] is False
     assert refreshed_payload["replaced_expired_scope"] is True
+
+
+def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
+    _seed_pending_job(
+        client,
+        41,
+        "delivery-41",
+        repository="belilovsky/qazposter",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(client, 42, "delivery-42")
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-after-stale-admin-row",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazposter",
+            "run_id": 84000000041,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazposter",
+            "reason": "admin-platform-candidate-not-active",
+        }
+    ]
+    assert payload["immutable_tuple"]["job_id"] == 42
+
+
+def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "delivery-41",
+        repository="belilovsky/qazposter",
+        head_sha="9ebf6718c2085d1a58f59323f37b1e1dd707225f",
+    )
+    request = {
+        "job_id": 41,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "stale-admin-row-direct",
+        "duration_seconds": 900,
+    }
+
+    response = client.post(
+        "/internal/v1/operations/jobs/41/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "admin platform candidate is not active"
 
 
 def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path: Path) -> None:

@@ -143,6 +143,26 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError("admin platform candidate tuple is not admitted")
         return entry
 
+    def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
+        """Classify a queued managed row without weakening direct admission.
+
+        The active admin-platform tuple remains fail-closed through
+        :meth:`validate_admission`.  This observational form is used only
+        while scanning unrelated FIFO rows: a stale or superseded candidate
+        is recorded as skipped instead of holding an independent profile
+        queue forever.
+        """
+        entry = self._by_entry_id.get(entry_id)
+        if (
+            entry is None
+            or self.active_candidate != entry_id
+            or entry.status not in ACTIVE_STATUSES
+        ):
+            return False, "admin-platform-candidate-not-active"
+        if entry.source_sha != exact_sha:
+            return False, "admin-platform-candidate-tuple-not-admitted"
+        return True, None
+
     @staticmethod
     def _validate_stage(value: Any) -> None:
         if not isinstance(value, dict) or set(value) != {"state", "receipt_uri"}:

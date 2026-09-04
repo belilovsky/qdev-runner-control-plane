@@ -60,6 +60,15 @@ it still depends on GitHub orchestration and the GitHub API.
   FIFO behavior. Scope documents are operational secrets only insofar as they
   describe an in-flight release and belong in `/etc/qdev-runner/`, never Git.
 
+  A queued managed row whose `admin-platform` ledger entry is no longer the
+  active exact tuple cannot hold an unrelated profile queue. During FIFO
+  scanning the broker records that row, its source tuple, and the explicit
+  `admin-platform-candidate-not-active` or
+  `admin-platform-candidate-tuple-not-admitted` reason in the signed
+  `fifo_skipped` receipt field, then continues to the next eligible row.
+  A direct claim request for that stale managed row still fails closed; this is
+  an observational queue repair, not a priority or requeue mechanism.
+
 The operating model, failure taxonomy, recovery sequence, and evidence
 contract are in `docs/github-actions-operating-model.md`.
 

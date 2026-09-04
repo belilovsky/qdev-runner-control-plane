@@ -34,6 +34,12 @@ entry has a terminal receipt.
    identity, route/browser evidence, rollback result and health window before
    moving the ledger to the next candidate.
 
+While scanning a profile FIFO, a queued managed row whose admin-platform
+ledger tuple is no longer active is retained as evidence in the signed
+`fifo_skipped` field and omitted from that unrelated profile's head selection.
+This is an observational stale-row skip only: a direct claim for the same row
+still fails closed, and malformed managed rows remain in the strict FIFO.
+
 ## Current AVDS gate
 
 The active entry is `avds-admin-shell`, source
