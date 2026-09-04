@@ -163,6 +163,7 @@ class ClaimRequest(BaseModel):
     min_disk_free_gib: float = Field(ge=0)
     capacity_directive_id: str | None = None
     capacity_repository: str | None = None
+    capacity_head_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
 
 class CompletionRequest(BaseModel):
@@ -184,6 +185,7 @@ class HeartbeatRequest(BaseModel):
 
 class CapacityOverrideRequest(BaseModel):
     repository: str = Field(min_length=1, max_length=256)
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     profiles: list[str] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
     max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
@@ -1587,6 +1589,7 @@ def create_app(
         directive = operation_store.create_capacity_override(
             worker_name=worker_name,
             repository=repository_name,
+            head_sha=request.head_sha,
             profiles=requested_profiles,
             min_disk_free_gib=request.min_disk_free_gib,
             max_disk_used_pct=request.max_disk_used_pct,
@@ -1823,12 +1826,17 @@ def create_app(
             if operations is not None
             else None
         )
-        supplied_override = bool(request.capacity_directive_id or request.capacity_repository)
+        supplied_override = bool(
+            request.capacity_directive_id
+            or request.capacity_repository
+            or request.capacity_head_sha
+        )
         if supplied_override and active_directive is None:
             raise HTTPException(status_code=403, detail="capacity override is not active")
         if active_directive is not None and (
             request.capacity_directive_id != active_directive.operation_id
             or (request.capacity_repository or "").lower() != active_directive.repository.lower()
+            or (request.capacity_head_sha or "").lower() != active_directive.head_sha.lower()
             or tuple(request.profiles) != active_directive.profiles
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
@@ -1843,6 +1851,7 @@ def create_app(
             repository_profile_disk_mb=policy.repository_profile_disk_mb,
             claim_scope=claim_scope,
             repository=repository,
+            head_sha=active_directive.head_sha if active_directive is not None else None,
         )
         if claimed is None:
             return Response(status_code=204)

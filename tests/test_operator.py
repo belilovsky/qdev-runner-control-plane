@@ -73,6 +73,52 @@ def test_claim_scope_uses_fifo_endpoint(
     }
 
 
+def test_capacity_override_sends_exact_source_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured["settings"] = settings
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "override",
+            "srv1879763-light-primary",
+            "--repository",
+            "belilovsky/qazlake",
+            "--head-sha",
+            "b" * 40,
+            "--profile",
+            "qdev-ci-docker",
+            "--owner",
+            "portfolio-ci",
+            "--reason",
+            "bounded exact-SHA recovery",
+        ]
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"].endswith(
+        "/workers/srv1879763-light-primary/capacity-override"
+    )
+    assert captured["body"] == {
+        "repository": "belilovsky/qazlake",
+        "head_sha": "b" * 40,
+        "profiles": ["qdev-ci-docker"],
+        "min_disk_free_gib": 4.5,
+        "max_disk_used_pct": 95.0,
+        "duration_seconds": 900,
+        "owner": "portfolio-ci",
+        "reason": "bounded exact-SHA recovery",
+    }
+
+
 def test_recover_existing_worker_uses_controller_execution_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

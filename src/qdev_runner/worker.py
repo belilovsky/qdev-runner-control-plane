@@ -36,6 +36,7 @@ class AdmissionState:
     max_disk_used_pct: float
     directive_id: str | None = None
     directive_repository: str | None = None
+    directive_head_sha: str | None = None
     directive_expires_at: datetime | None = None
 
 
@@ -137,6 +138,7 @@ class Worker:
             max_disk_used_pct=directive.max_disk_used_pct,
             directive_id=directive.operation_id,
             directive_repository=directive.repository,
+            directive_head_sha=directive.head_sha,
             directive_expires_at=parse_utc(directive.expires_at),
         )
 
@@ -158,6 +160,7 @@ class Worker:
                 "configured_claim_scope_id": self.settings.claim_scope_id,
                 "capacity_directive_id": state.directive_id,
                 "capacity_directive_repository": state.directive_repository,
+                "capacity_directive_head_sha": state.directive_head_sha,
                 "capacity_override_active": state.directive_id is not None,
                 "concurrency": self.settings.concurrency,
                 "slots_available": max(0, self.settings.concurrency - active_jobs),
@@ -209,6 +212,7 @@ class Worker:
         min_disk_free_gib: float | None = None,
         capacity_directive_id: str | None = None,
         capacity_repository: str | None = None,
+        capacity_head_sha: str | None = None,
     ) -> dict[str, Any] | None:
         response = await self.client.post(
             "/internal/v1/jobs/claim",
@@ -225,6 +229,7 @@ class Worker:
                 ),
                 "capacity_directive_id": capacity_directive_id,
                 "capacity_repository": capacity_repository,
+                "capacity_head_sha": capacity_head_sha,
             },
         )
         if response.status_code == 204:
@@ -586,6 +591,7 @@ class Worker:
                         min_disk_free_gib=admission.min_disk_free_gib,
                         capacity_directive_id=admission.directive_id,
                         capacity_repository=admission.directive_repository,
+                        capacity_head_sha=admission.directive_head_sha,
                     )
                     if job:
                         job_id = int(job["job_id"])

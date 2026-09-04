@@ -87,6 +87,7 @@ terminal result or let expiry restore normal thresholds:
 ```bash
 qdev-runner-operator override srv1879763-light-primary \
   --repository belilovsky/qazlake \
+  --head-sha 0123456789abcdef0123456789abcdef01234567 \
   --profile qdev-ci-docker \
   --min-disk-free-gib 4.5 --max-disk-used-pct 95 \
   --duration-seconds 900 --owner qdev-fleet-operations \
