@@ -15,6 +15,14 @@ def test_native_build_toolchain_is_in_general_and_browser_images() -> None:
     assert dockerfile.count("build-essential") == 2
 
 
+def test_general_image_supplies_native_postgresql_16_toolchain() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+
+    base, browser = dockerfile.split("FROM base AS general", maxsplit=1)
+    assert "postgresql-16" in base
+    assert "postgresql-16" not in browser
+
+
 def test_browser_image_pins_the_playwright_1_62_1_chromium_bundle() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
@@ -33,7 +41,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert 'QDEV_RUNNER_VERSION:-2.336.0-r2' in builder
+    assert 'QDEV_RUNNER_VERSION:-2.336.0-r3' in builder
 
 
 def test_docker_profile_has_compose_plugin() -> None:

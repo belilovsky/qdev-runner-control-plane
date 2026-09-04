@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from qdev_runner.runner_image_release import (
     REQUIRED_IMAGES,
     RunnerImageReleaseError,
     load,
     validate,
+    verify_evidence,
 )
 
 
@@ -89,9 +93,7 @@ def test_valid_manifest_covers_all_executor_images() -> None:
         ),
     ],
 )
-def test_manifest_rejects_unverified_release_evidence(
-    mutate: object, message: str
-) -> None:
+def test_manifest_rejects_unverified_release_evidence(mutate: object, message: str) -> None:
     value = manifest()
     mutate(value)  # type: ignore[operator]
 
@@ -120,3 +122,76 @@ def test_load_returns_the_raw_manifest_digest(tmp_path: Path) -> None:
 
     assert references["QDEV_RUNNER_DOCKER_IMAGE"].endswith("@" + digest("3"))
     assert manifest_digest.startswith("sha256:")
+
+
+def test_strict_evidence_verifies_digests_subject_and_ed25519_signature(tmp_path: Path) -> None:
+    value = manifest()
+    value["evidence_root"] = str(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    public_raw = key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    (tmp_path / "signing-public-key.pem").write_bytes(public_raw)
+    value["signing"] = {
+        "algorithm": "Ed25519",
+        "issuer": "https://ci.qdev.run",
+        "identity": "https://ci.qdev.run/runner-images",
+        "public_key_file": "signing-public-key.pem",
+        "public_key_sha256": "sha256:" + hashlib.sha256(public_raw).hexdigest(),
+    }
+    for index, raw_artifact in enumerate(value["artifacts"]):  # type: ignore[index,union-attr]
+        artifact_value = raw_artifact  # type: ignore[assignment]
+        prefix = f"image-{index}"
+        reference = artifact_value["reference"]
+        signature = artifact_value["signature"]
+        sbom = tmp_path / f"{prefix}.sbom.json"
+        security = tmp_path / f"{prefix}.security.json"
+        license_report = tmp_path / f"{prefix}.license.json"
+        provenance = tmp_path / f"{prefix}.provenance.json"
+        signature_file = tmp_path / f"{prefix}.provenance.sig"
+        sbom.write_text("{}\n", encoding="utf-8")
+        security.write_text("{}\n", encoding="utf-8")
+        license_report.write_text("{}\n", encoding="utf-8")
+
+        def digest_file(path: Path) -> str:
+            return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+        artifact_value["sbom_digest"] = digest_file(sbom)
+        artifact_value["vulnerability_review"]["report_digest"] = digest_file(security)
+        provenance_value = {
+            "subject": {
+                "environment_key": artifact_value["environment_key"],
+                "reference": reference,
+                "digest": signature["subject_digest"],
+            },
+            "scans": {
+                "sbom": digest_file(sbom),
+                "security": digest_file(security),
+                "license": digest_file(license_report),
+            },
+            "signing": {
+                "algorithm": "Ed25519",
+                "issuer": "https://ci.qdev.run",
+                "identity": "https://ci.qdev.run/runner-images",
+                "public_key_sha256": value["signing"]["public_key_sha256"],  # type: ignore[index]
+            },
+            "source_binding": {"revision": value["release_revision"]},
+        }
+        provenance_raw = (json.dumps(provenance_value, sort_keys=True) + "\n").encode()
+        provenance.write_bytes(provenance_raw)
+        signature_file.write_bytes(key.sign(provenance_raw))
+        artifact_value["provenance_digest"] = digest_file(provenance)
+        signature["evidence_digest"] = digest_file(signature_file)
+        artifact_value["evidence_files"] = {
+            "sbom": sbom.name,
+            "security": security.name,
+            "license": license_report.name,
+            "provenance": provenance.name,
+            "signature": signature_file.name,
+        }
+
+    verify_evidence(value)
+    (tmp_path / "image-0.provenance.sig").write_bytes(b"x" * 64)
+    with pytest.raises(RunnerImageReleaseError, match="signature digest mismatch"):
+        verify_evidence(value)

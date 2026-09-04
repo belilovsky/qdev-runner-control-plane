@@ -8,7 +8,7 @@ ARG RUNNER_SHA256
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
-      python3-venv rsync unzip xz-utils zip \
+      postgresql-16 python3-venv rsync unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash runner \
     && mkdir -p /home/runner/actions-runner \
