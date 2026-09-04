@@ -1,4 +1,4 @@
-schema_version: qdev-release-lanes-v1
+schema_version: qdev-release-lanes-v2
 lanes:
   qdev-release-qaz-tours:
     project_id: qaz-tours
@@ -13,6 +13,12 @@ lanes:
     minimum_free_gib: 60
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-tours
+    canonical_repository: belilovsky/qaz-tours
+    artifact_ref_prefix: registry.ci.qdev.run/qaz-tours
+    native_host_adapter: legacy-qaz-tours-v1
+    runtime_endpoints: [https://qaza.tours/.well-known/release.json]
+    rollback_reference: qdev-release-host-state-v1
+    required_readiness: [qazgeo]
   qdev-release-qaz-fund:
     project_id: qaz-fund
     placement: vps-apps-148
@@ -23,6 +29,12 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-fund
+    canonical_repository: belilovsky/qaz-fund
+    artifact_ref_prefix: registry.ci.qdev.run/qaz-fund
+    native_host_adapter: legacy-compose-v1
+    runtime_endpoints: [https://qaz.fund/.well-known/release.json]
+    rollback_reference: qdev-release-host-state-v1
+    required_readiness: [local, public]
   qdev-release-qaz-events:
     project_id: qaz-events
     placement: vps-main
@@ -31,6 +43,12 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: qaz-events
+    canonical_repository: belilovsky/qaz-events
+    artifact_ref_prefix: registry.ci.qdev.run/qaz-events
+    native_host_adapter: legacy-compose-v1
+    runtime_endpoints: [https://qaz.events/.well-known/qdev-ecosystem.json]
+    rollback_reference: qdev-release-host-state-v1
+    required_readiness: [local, public]
   qdev-release-qmt:
     project_id: kaztilshi
     placement: srv138jump
@@ -41,3 +59,63 @@ lanes:
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
     artifact_repository: kaztilshi
+    # QMT predates the source-bound v2 registry. It remains a deliberately
+    # compatibility-only lane until its canonical repository is recorded.
+    # The policy parser recognizes this exact legacy-shaped entry rather than
+    # inventing a source binding for an already live product.
+  qdev-release-ortcom:
+    project_id: ortcom
+    placement: ortcom-production-controller
+    client_mtls_identity: qdev-release-client:ortcom
+    host_agent_mtls_identity: qdev-host-agent:ortcom-production-controller
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: ortcom-kz
+    canonical_repository: belilovsky/ortcom-kz
+    artifact_ref_prefix: ghcr.io/belilovsky/ortcom-kz
+    native_host_adapter: ortcom-root-deploy-v1
+    runtime_endpoints: [https://ortcom.qdev.run/health, "https://ortcom.qdev.run/api/ready?deep=1", https://ortcom.qdev.run/release.json]
+    rollback_reference: deploy/ortcom-deploy transactional rollback
+    required_readiness: [native, public, identity]
+  qdev-release-cmnt:
+    project_id: cmnt
+    placement: cmnt-rolling-controller
+    client_mtls_identity: qdev-release-client:cmnt
+    host_agent_mtls_identity: qdev-host-agent:cmnt-rolling-controller
+    minimum_free_gib: 12
+    heartbeat_ttl_seconds: 90
+    artifact_repository: cmnt-web-admin
+    canonical_repository: belilovsky/cmnt-web
+    artifact_ref_prefix: ci.qdev.run/artifacts/cmnt-web-admin
+    native_host_adapter: cmnt-root-rolling-launcher-v1
+    runtime_endpoints: [https://cmnt.qdev.run/health]
+    rollback_reference: scripts/deploy_forward_only.sh native rollback receipt
+    required_readiness: [native, public, identity]
+  qdev-release-total:
+    project_id: total-kz
+    placement: total-qdev-origin
+    client_mtls_identity: qdev-release-client:total-kz
+    host_agent_mtls_identity: qdev-host-agent:total-qdev-origin
+    minimum_free_gib: 30
+    heartbeat_ttl_seconds: 90
+    artifact_repository: total-kz-admin
+    canonical_repository: belilovsky/total-kz
+    artifact_ref_prefix: ci.qdev.run/artifacts/total-kz-admin
+    native_host_adapter: total-qdev-native-release-v1
+    runtime_endpoints: [https://total.qdev.run/health, https://total.qdev.run/ready, https://total.qdev.run/release.json]
+    rollback_reference: deploy/total-kz/rollback-total-public.sh
+    required_readiness: [native, public, identity]
+  qdev-release-qazposter:
+    project_id: qazposter
+    placement: qazposter-production-controller
+    client_mtls_identity: qdev-release-client:qazposter
+    host_agent_mtls_identity: qdev-host-agent:qazposter-production-controller
+    minimum_free_gib: 12
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qazposter-admin
+    canonical_repository: belilovsky/qazposter
+    artifact_ref_prefix: ci.qdev.run/artifacts/qazposter-admin
+    native_host_adapter: qazposter-native-release-v1
+    runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
+    rollback_reference: immutable previous-binary rollback contract
+    required_readiness: [native, public, identity]

@@ -28,6 +28,11 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+_CANONICAL_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,38}/[a-z0-9][a-z0-9_.-]{0,99}$")
+_ARTIFACT_PREFIX = re.compile(
+    r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
+)
+_NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -76,6 +81,12 @@ class ReleaseLane:
     minimum_free_gib: float
     heartbeat_ttl_seconds: int
     artifact_repository: str
+    canonical_repository: str | None
+    artifact_ref_prefix: str
+    native_host_adapter: str
+    runtime_endpoints: tuple[str, ...]
+    rollback_reference: str
+    required_readiness: tuple[str, ...]
 
 
 class ReleaseLanePolicy:
@@ -86,7 +97,8 @@ class ReleaseLanePolicy:
             raise ReleaseLaneError("release lane policy is unavailable") from exc
         if not isinstance(document, dict) or set(document) != {"schema_version", "lanes"}:
             raise ReleaseLaneError("release lane policy shape is invalid")
-        if document["schema_version"] != "qdev-release-lanes-v1":
+        schema_version = document["schema_version"]
+        if schema_version not in {"qdev-release-lanes-v1", "qdev-release-lanes-v2"}:
             raise ReleaseLaneError("release lane policy schema is invalid")
         raw_lanes = document["lanes"]
         if not isinstance(raw_lanes, dict) or not raw_lanes:
@@ -97,7 +109,7 @@ class ReleaseLanePolicy:
                 raise ReleaseLaneError("release lane name is invalid")
             if not isinstance(raw, dict):
                 raise ReleaseLaneError("release lane entry is invalid")
-            expected = {
+            legacy_expected = {
                 "project_id",
                 "placement",
                 "client_mtls_identity",
@@ -106,6 +118,22 @@ class ReleaseLanePolicy:
                 "heartbeat_ttl_seconds",
                 "artifact_repository",
             }
+            v2_expected = legacy_expected | {
+                "canonical_repository",
+                "artifact_ref_prefix",
+                "native_host_adapter",
+                "runtime_endpoints",
+                "rollback_reference",
+                "required_readiness",
+            }
+            # A v2 policy may retain a pre-existing lane whose source binding
+            # has not yet been verified. Treat only the exact legacy shape as
+            # compatibility data; new Admin Platform lanes must be complete v2
+            # records and cannot silently lose their bindings.
+            is_legacy_entry = set(raw) == legacy_expected
+            expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
+            if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
+                expected = legacy_expected
             if set(raw) != expected:
                 raise ReleaseLaneError("release lane fields are invalid")
             try:
@@ -127,6 +155,53 @@ class ReleaseLanePolicy:
                 or not _ARTIFACT_REPOSITORY.fullmatch(str(raw["artifact_repository"]))
             ):
                 raise ReleaseLaneError("release lane values are invalid")
+            if schema_version == "qdev-release-lanes-v1" or is_legacy_entry:
+                canonical_repository: str | None = None
+                artifact_ref_prefix = f"registry.ci.qdev.run/{raw['artifact_repository']}"
+                native_host_adapter = "legacy-compose-v1"
+                runtime_endpoints: tuple[str, ...] = ()
+                rollback_reference = "legacy-controller-state"
+                required_readiness = ("qazgeo",)
+            else:
+                raw_endpoints = raw["runtime_endpoints"]
+                raw_readiness = raw["required_readiness"]
+                if (
+                    not isinstance(raw["canonical_repository"], str)
+                    or not _CANONICAL_REPOSITORY.fullmatch(raw["canonical_repository"])
+                    or not isinstance(raw["artifact_ref_prefix"], str)
+                    or not _ARTIFACT_PREFIX.fullmatch(raw["artifact_ref_prefix"])
+                    or not isinstance(raw["native_host_adapter"], str)
+                    or not _NATIVE_ADAPTER.fullmatch(raw["native_host_adapter"])
+                    or not isinstance(raw_endpoints, list)
+                    or not raw_endpoints
+                    or not all(
+                        isinstance(endpoint, str)
+                        and endpoint.startswith("https://")
+                        and "#" not in endpoint
+                        for endpoint in raw_endpoints
+                    )
+                    or not isinstance(raw["rollback_reference"], str)
+                    or not raw["rollback_reference"].strip()
+                    or not isinstance(raw_readiness, list)
+                    or not raw_readiness
+                    or len(raw_readiness) != len(set(raw_readiness))
+                    or not all(
+                        isinstance(item, str) and _SEGMENT.fullmatch(item)
+                        for item in raw_readiness
+                    )
+                ):
+                    raise ReleaseLaneError("release lane v2 values are invalid")
+                canonical_repository = raw["canonical_repository"]
+                artifact_ref_prefix = raw["artifact_ref_prefix"]
+                native_host_adapter = raw["native_host_adapter"]
+                runtime_endpoints = tuple(raw_endpoints)
+                rollback_reference = raw["rollback_reference"].strip()
+                required_readiness = tuple(raw_readiness)
+                if name == "qdev-release-total" and (
+                    canonical_repository != "belilovsky/total-kz"
+                    or any("total.kz" in endpoint for endpoint in runtime_endpoints)
+                ):
+                    raise ReleaseLaneError("Total lane must bind only total.qdev.run")
             lanes[name] = ReleaseLane(
                 name=name,
                 project_id=str(raw["project_id"]),
@@ -136,6 +211,12 @@ class ReleaseLanePolicy:
                 minimum_free_gib=minimum_free_gib,
                 heartbeat_ttl_seconds=heartbeat_ttl_seconds,
                 artifact_repository=str(raw["artifact_repository"]),
+                canonical_repository=canonical_repository,
+                artifact_ref_prefix=artifact_ref_prefix,
+                native_host_adapter=native_host_adapter,
+                runtime_endpoints=runtime_endpoints,
+                rollback_reference=rollback_reference,
+                required_readiness=required_readiness,
             )
         self._lanes = lanes
 
@@ -161,7 +242,7 @@ def _is_digest(value: object) -> bool:
 
 
 def _is_lane_artifact_ref(value: object, digest: str, lane: ReleaseLane) -> bool:
-    return value == f"registry.ci.qdev.run/{lane.artifact_repository}@{digest}"
+    return value == f"{lane.artifact_ref_prefix}@{digest}"
 
 
 def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
@@ -274,14 +355,12 @@ def validate_runtime_receipt(
         raise ReleaseLaneError("runtime receipt does not bind verified release tuple")
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
-    if not isinstance(readiness, dict):
-        raise ReleaseLaneError("runtime receipt readiness is invalid")
-    if lane.project_id == "qaz-tours":
-        readiness_valid = readiness.get("qazgeo") in {"ok", "degraded"}
-    else:
-        readiness_valid = readiness.get("local") == "ok" and readiness.get("public") == "ok"
     if (
-        not readiness_valid
+        not isinstance(readiness, dict)
+        or any(
+            readiness.get(name) not in ({"ok", "degraded"} if name == "qazgeo" else {"ok"})
+            for name in lane.required_readiness
+        )
         or not isinstance(rollback, dict)
         or rollback.get("verified") is not True
         or not _is_sha(rollback.get("source_sha"))

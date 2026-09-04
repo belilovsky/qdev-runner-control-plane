@@ -125,6 +125,13 @@ are reported and left unchanged.
 - `https://ci.qdev.run/artifacts/...` — checksum-verified, short-lived artifacts.
 - `https://registry.ci.qdev.run/v2/` — private OCI registry.
 
+The controller also exposes four Admin Platform mTLS lanes:
+`qdev-release-ortcom`, `qdev-release-cmnt`, `qdev-release-total`, and
+`qdev-release-qazposter`. Each is bound in `release-lanes.yml` to one
+canonical repository, artifact prefix, mTLS placement, runtime endpoint set,
+native host adapter and rollback reference. The Total lane contains only
+`total.qdev.run`; `total.kz` is not a controller target.
+
 ### Qaz.Tours immutable host agent
 
 `qdev-release-qaz-tours` is a controller-owned release lane for the existing
@@ -172,6 +179,26 @@ host-agent path. The agent uses the controller-owned fixed overlay, requires
 the image to already be present locally, and never builds or pulls on the
 production host. It completes a job only after `/release.json` proves QMT
 `4.4.1`, matching source and runtime revisions, and `identityStatus=verified`.
+
+### Admin Platform native host agents
+
+ORTCOM, CMNT, Total and QazPoster use the separate,
+profile-compiled `scripts/qdev_admin_platform_release_host_agent.py` and the
+matching one-shot unit under `deploy/`. The agent accepts no host path,
+registry, public URL, command or rollback target from configuration or a
+controller request. It invokes only the matching root-owned dispatcher under
+`/usr/local/sbin/`, then requires the adapter's typed native receipt to bind
+source SHA, artifact digest, artifact reference and `native`, `public`, and
+`identity` readiness.
+
+QDev Fleet enrolls a lane only after it has installed the product's reviewed
+native release, rollback and receipt dispatchers, a distinct verified active
+and rollback tuple at `/var/lib/qdev-release-agents/admin-platform/`, and the
+private mTLS configuration at `/etc/qdev-release-agents/admin-platform.env`.
+Controller activation ships policy and unit definitions only: it never
+installs a product dispatcher, starts a host unit, uses SSH, or creates a host
+path. An absent dispatcher, state proof or mTLS enrollment leaves the lane
+closed.
 
 ## Guarded controller release
 
