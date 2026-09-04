@@ -59,6 +59,10 @@ class BrokerSettings:
     operator_token: str | None = None
     operator_receipt_key: str | None = None
     operator_directive_key: str | None = None
+    # Optional controller-to-broker claim key.  When configured, every v2
+    # release admission must carry a controller-signed immutable claim.  The
+    # key never travels in a request or appears in a receipt.
+    controller_claim_key: str | None = None
     operations_root: Path = Path("/var/lib/qdev-runner/operations")
     controller_release_status_path: Path = Path("/etc/qdev-runner/controller-release.json")
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
@@ -96,6 +100,9 @@ class BrokerSettings:
             operator_receipt_key=(os.environ.get("QDEV_OPERATOR_RECEIPT_KEY", "").strip() or None),
             operator_directive_key=(
                 os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
+            ),
+            controller_claim_key=(
+                os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None
             ),
             operations_root=Path(
                 os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")

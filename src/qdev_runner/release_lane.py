@@ -10,6 +10,8 @@ promoted the exact immutable tuple.
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -33,11 +35,23 @@ _ARTIFACT_PREFIX = re.compile(
     r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
 )
 _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
+_CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
+_RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
 HOST_HEARTBEAT_SCHEMA = "qdev-release-host-agent-heartbeat-v1"
 RUNTIME_RECEIPT_SCHEMA = "qdev-controller-release-runtime-receipt-v1"
+ROLLBACK_RECEIPT_SCHEMA = "qdev-controller-release-rollback-receipt-v1"
+LEGACY_COMPATIBILITY_LANES = frozenset(
+    {
+        "qdev-release-qaz-tours",
+        "qdev-release-qaz-fund",
+        "qdev-release-qaz-events",
+        "qdev-release-qmt",
+    }
+)
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ReleaseLaneError(RuntimeError):
@@ -55,6 +69,12 @@ class ReleaseAdmissionRequest(BaseModel):
     artifact_digest: str
     artifact_ref: str
     candidate_receipt: dict[str, Any]
+    # A controller-issued claim is optional for the published legacy lanes and
+    # mandatory whenever the deployment edge is configured with a claim key.
+    # Keeping it in the typed request prevents callers from smuggling an
+    # unvalidated claim through an arbitrary JSON field.
+    controller_claim: dict[str, Any] | None = None
+    controller_claim_signature: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class HostHeartbeatRequest(BaseModel):
@@ -69,6 +89,7 @@ class HostHeartbeatRequest(BaseModel):
     capacity_free_gib: float = Field(ge=0)
     active_release: dict[str, Any]
     rollback: dict[str, Any]
+    bootstrap: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +154,8 @@ class ReleaseLanePolicy:
             is_legacy_entry = set(raw) == legacy_expected
             expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
             if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
+                if name not in LEGACY_COMPATIBILITY_LANES:
+                    raise ReleaseLaneError("legacy release lane is not an explicit compatibility lane")
                 expected = legacy_expected
             if set(raw) != expected:
                 raise ReleaseLaneError("release lane fields are invalid")
@@ -259,16 +282,30 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
             "release artifact reference is not immutable or does not match digest"
         )
     receipt = request.candidate_receipt
+    base_fields = {
+        "schema",
+        "status",
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+    }
+    optional_fields = {
+        "artifact_type",
+        "artifact_uri",
+        "archive_sha256",
+        "payload_sha256",
+        "ci_receipt_uri",
+        "source_receipt_uri",
+        "repository",
+        "workflow",
+        "job",
+        "attempt",
+        "runner_profile",
+    }
     if (
         not isinstance(receipt, dict)
-        or set(receipt)
-        != {
-            "schema",
-            "status",
-            "source_sha",
-            "artifact_digest",
-            "artifact_ref",
-        }
+        or not base_fields.issubset(receipt)
+        or set(receipt) - (base_fields | optional_fields)
         or receipt.get("schema") != "qdev-release-candidate-receipt-v1"
         or receipt.get("status") != "passed"
         or receipt.get("source_sha") != request.source_sha
@@ -276,6 +313,117 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         or receipt.get("artifact_ref") != request.artifact_ref
     ):
         raise ReleaseLaneError("completed candidate receipt does not bind immutable release tuple")
+    artifact_type = receipt.get("artifact_type", "oci")
+    if artifact_type not in {"oci", "http-archive"}:
+        raise ReleaseLaneError("candidate artifact type is invalid")
+    artifact_uri = receipt.get("artifact_uri")
+    if artifact_type == "http-archive":
+        if (
+            not isinstance(artifact_uri, str)
+            or not artifact_uri.startswith("https://")
+            or "#" in artifact_uri
+        ):
+            raise ReleaseLaneError("HTTP archive artifact URI must be HTTPS")
+        for field in ("archive_sha256", "payload_sha256"):
+            if not isinstance(receipt.get(field), str) or not _HEX64.fullmatch(receipt[field]):
+                raise ReleaseLaneError("HTTP archive checksums are incomplete")
+    elif artifact_uri is not None and (
+        not isinstance(artifact_uri, str) or not artifact_uri.startswith("https://")
+    ):
+        raise ReleaseLaneError("OCI artifact URI must be HTTPS when supplied")
+    if lane.canonical_repository is not None:
+        scope_fields = {"repository", "workflow", "job", "attempt", "runner_profile"}
+        if not scope_fields.issubset(receipt):
+            raise ReleaseLaneError("managed candidate receipt is missing CI claim scope")
+        if receipt.get("repository") != lane.canonical_repository:
+            raise ReleaseLaneError("candidate repository does not match managed lane")
+        for field in ("workflow", "job"):
+            if not isinstance(receipt.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(
+                receipt[field]
+            ):
+                raise ReleaseLaneError("candidate CI scope value is invalid")
+        attempt = receipt.get("attempt")
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt <= 0:
+            raise ReleaseLaneError("candidate CI attempt is invalid")
+        if receipt.get("runner_profile") not in _RUNNER_PROFILES:
+            raise ReleaseLaneError("candidate runner profile is not allowlisted")
+
+
+def controller_claim_payload(
+    request: ReleaseAdmissionRequest, lane: ReleaseLane
+) -> dict[str, Any]:
+    """Return the canonical fields covered by a controller-signed claim."""
+    receipt = request.candidate_receipt
+    scope = {
+        "repository": receipt.get("repository"),
+        "exact_sha": request.source_sha,
+        "workflow": receipt.get("workflow"),
+        "job": receipt.get("job"),
+        "attempt": receipt.get("attempt"),
+        "runner_profile": receipt.get("runner_profile"),
+    }
+    return {
+        "schema": "qdev-controller-release-claim-v1",
+        "release_lane": lane.name,
+        "project_id": lane.project_id,
+        "placement": lane.placement,
+        "source_sha": request.source_sha,
+        "artifact_digest": request.artifact_digest,
+        "artifact_ref": request.artifact_ref,
+        "scope": scope,
+    }
+
+
+def validate_controller_claim(
+    request: ReleaseAdmissionRequest,
+    lane: ReleaseLane,
+    *,
+    signing_key: str | None,
+) -> None:
+    """Validate a bounded claim, if the controller is configured to require one.
+
+    The key is read only from controller process configuration.  It is never
+    accepted in the request, so a product cannot self-authorise a release.
+    """
+    if signing_key is None:
+        if lane.canonical_repository is not None:
+            raise ReleaseLaneError("controller claim key is unavailable for managed lane")
+        return
+    claim = request.controller_claim
+    signature = request.controller_claim_signature
+    expected = controller_claim_payload(request, lane)
+    if not isinstance(claim, dict) or set(claim) != set(expected):
+        raise ReleaseLaneError("controller-signed claim is missing or malformed")
+    if claim != expected or not isinstance(signature, str):
+        raise ReleaseLaneError("controller-signed claim does not bind release tuple")
+    scope = claim.get("scope")
+    if not isinstance(scope, dict) or set(scope) != {
+        "repository",
+        "exact_sha",
+        "workflow",
+        "job",
+        "attempt",
+        "runner_profile",
+    }:
+        raise ReleaseLaneError("controller-signed claim scope is invalid")
+    if lane.canonical_repository is not None:
+        if (
+            scope.get("repository") != lane.canonical_repository
+            or scope.get("exact_sha") != request.source_sha
+            or not isinstance(scope.get("workflow"), str)
+            or not _CI_SCOPE_VALUE.fullmatch(scope["workflow"])
+            or not isinstance(scope.get("job"), str)
+            or not _CI_SCOPE_VALUE.fullmatch(scope["job"])
+            or not isinstance(scope.get("attempt"), int)
+            or isinstance(scope.get("attempt"), bool)
+            or scope["attempt"] <= 0
+            or scope.get("runner_profile") not in _RUNNER_PROFILES
+        ):
+            raise ReleaseLaneError("controller-signed claim scope is invalid")
+    canonical = json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    calculated = hmac.new(signing_key.encode(), canonical, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated, signature):
+        raise ReleaseLaneError("controller-signed claim signature is invalid")
 
 
 def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) -> None:
@@ -290,32 +438,38 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         raise ReleaseLaneError("host-agent is not ready for a release")
     active = request.active_release
     rollback = request.rollback
-    if (
-        not isinstance(active, dict)
-        or set(active) != {"source_sha", "artifact_digest", "artifact_ref"}
-        or not isinstance(rollback, dict)
-        or set(rollback) != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
-        or not _is_sha(active.get("source_sha"))
-        or not _is_digest(active.get("artifact_digest"))
-        or not _is_lane_artifact_ref(active.get("artifact_ref"), active["artifact_digest"], lane)
-        or rollback.get("verified") is not True
-        or not _is_sha(rollback.get("source_sha"))
-        or not _is_digest(rollback.get("artifact_digest"))
-        or not _is_lane_artifact_ref(
+    active_valid = (
+        isinstance(active, dict)
+        and set(active) == {"source_sha", "artifact_digest", "artifact_ref"}
+        and _is_sha(active.get("source_sha"))
+        and _is_digest(active.get("artifact_digest"))
+        and _is_lane_artifact_ref(active.get("artifact_ref"), active["artifact_digest"], lane)
+    )
+    rollback_valid = (
+        isinstance(rollback, dict)
+        and set(rollback) == {"verified", "source_sha", "artifact_digest", "artifact_ref"}
+        and rollback.get("verified") is True
+        and _is_sha(rollback.get("source_sha"))
+        and _is_digest(rollback.get("artifact_digest"))
+        and _is_lane_artifact_ref(
             rollback.get("artifact_ref"), rollback["artifact_digest"], lane
         )
-        or (
-            rollback.get("source_sha"),
-            rollback.get("artifact_digest"),
-            rollback.get("artifact_ref"),
-        )
-        == (
-            active.get("source_sha"),
-            active.get("artifact_digest"),
-            active.get("artifact_ref"),
-        )
-    ):
+    )
+    if not active_valid or not rollback_valid:
         raise ReleaseLaneError("host-agent rollback proof is invalid")
+    same_tuple = (
+        active.get("source_sha"),
+        active.get("artifact_digest"),
+        active.get("artifact_ref"),
+    ) == (
+        rollback.get("source_sha"),
+        rollback.get("artifact_digest"),
+        rollback.get("artifact_ref"),
+    )
+    if not request.bootstrap and same_tuple:
+        raise ReleaseLaneError("host-agent rollback must be a distinct immutable tuple")
+    if request.bootstrap and not same_tuple:
+        raise ReleaseLaneError("bootstrap heartbeat must use the current release as its anchor")
 
 
 def validate_runtime_receipt(
@@ -339,7 +493,9 @@ def validate_runtime_receipt(
         "readiness",
         "rollback",
     }
-    if set(receipt) != expected:
+    if not expected.issubset(receipt) or set(receipt) - (
+        expected | {"runtime_identity", "dependency_identity", "artifact_provenance"}
+    ):
         raise ReleaseLaneError("runtime receipt fields are invalid")
     if (
         receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
@@ -353,6 +509,37 @@ def validate_runtime_receipt(
         or receipt.get("health") != "ok"
     ):
         raise ReleaseLaneError("runtime receipt does not bind verified release tuple")
+    evidence_fields = {"runtime_identity", "dependency_identity", "artifact_provenance"}
+    if lane.canonical_repository is not None and not evidence_fields.issubset(receipt):
+        raise ReleaseLaneError("runtime identity evidence is required for managed release lanes")
+    if evidence_fields.intersection(receipt):
+        if not evidence_fields.issubset(receipt):
+            raise ReleaseLaneError("runtime identity evidence is incomplete")
+        runtime_identity = receipt["runtime_identity"]
+        if (
+            not isinstance(runtime_identity, dict)
+            or runtime_identity.get("source_sha") != source_sha
+            or runtime_identity.get("artifact_digest") != artifact_digest
+            or runtime_identity.get("artifact_ref") != artifact_ref
+            or runtime_identity.get("measured") is not True
+        ):
+            raise ReleaseLaneError("runtime receipt does not contain measured identity")
+        dependency_identity = receipt["dependency_identity"]
+        if not isinstance(dependency_identity, dict) or any(
+            not isinstance(value, str) or not value.strip()
+            for value in dependency_identity.values()
+        ):
+            raise ReleaseLaneError("runtime dependency identity is invalid")
+        provenance = receipt["artifact_provenance"]
+        if not isinstance(provenance, dict):
+            raise ReleaseLaneError("runtime artifact provenance is invalid")
+        for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
+            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(provenance[field]):
+                raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
+        if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
+            provenance["avds_source_sha"]
+        ):
+            raise ReleaseLaneError("runtime AVDS source binding is invalid")
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     if (
@@ -381,7 +568,8 @@ class ReleaseStore:
         self.agents_root = root / "agents"
         self.jobs_root = root / "jobs"
         self.locks_root = root / "locks"
-        for path in (self.root, self.agents_root, self.jobs_root, self.locks_root):
+        self.operations_root = root / "operations"
+        for path in (self.root, self.agents_root, self.jobs_root, self.locks_root, self.operations_root):
             path.mkdir(parents=True, exist_ok=True)
             path.chmod(0o700)
 
@@ -422,6 +610,9 @@ class ReleaseStore:
 
     def _previous_path(self, lane_name: str) -> Path:
         return self.jobs_root / f"{self._safe_name(lane_name)}.previous.json"
+
+    def _operation_path(self, lane_name: str) -> Path:
+        return self.operations_root / f"{self._safe_name(lane_name)}.json"
 
     @contextmanager
     def _lock(self, name: str) -> Iterator[None]:
@@ -480,6 +671,11 @@ class ReleaseStore:
                 self._write(self._previous_path(lane.name), current)
             job = {
                 "release_id": secrets.token_urlsafe(18),
+                "lease_id": secrets.token_urlsafe(18),
+                "fence": secrets.token_hex(12),
+                "operation_seq": int((current or {}).get("operation_seq", 0)) + 1
+                if isinstance(current, dict)
+                else 1,
                 "release_lane": lane.name,
                 "project_id": lane.project_id,
                 "placement": lane.placement,
@@ -490,6 +686,18 @@ class ReleaseStore:
                 "status": "accepted",
                 "accepted_at": time.time(),
             }
+            self._write(
+                self._operation_path(lane.name),
+                {
+                    "schema": "qdev-controller-release-operation-v1",
+                    "release_id": job["release_id"],
+                    "lease_id": job["lease_id"],
+                    "fence": job["fence"],
+                    "operation_seq": job["operation_seq"],
+                    "phase": "accepted",
+                    "updated_at": time.time(),
+                },
+            )
             self._write(self._job_path(lane.name), job)
             return job, False
 
@@ -505,11 +713,31 @@ class ReleaseStore:
             return job
 
     def complete(
-        self, lane: ReleaseLane, release_id: str, receipt: dict[str, Any]
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        receipt: dict[str, Any],
+        *,
+        lease_id: str | None = None,
+        fence: str | None = None,
     ) -> dict[str, Any]:
         with self._lock(lane.name):
-            job = self._active_job_unlocked(lane)
+            job = self._read(self._job_path(lane.name))
             if job is None or job.get("release_id") != release_id:
+                raise ReleaseLaneError("release job is not active")
+            if lane.canonical_repository is not None and not lease_id:
+                raise ReleaseLaneError("managed release lease is required")
+            if lane.canonical_repository is not None and not fence:
+                raise ReleaseLaneError("managed release fence is required")
+            if lease_id is not None and lease_id != job.get("lease_id"):
+                raise ReleaseLaneError("release lease does not match job")
+            if fence is not None and fence != job.get("fence"):
+                raise ReleaseLaneError("release fence does not match job")
+            if job.get("status") == "verified":
+                if job.get("runtime_receipt") == receipt:
+                    return job
+                raise ReleaseLaneError("release job was already completed with another receipt")
+            if job.get("status") not in {"accepted", "dispatched"}:
                 raise ReleaseLaneError("release job is not active")
             validate_runtime_receipt(
                 receipt,
@@ -521,7 +749,117 @@ class ReleaseStore:
             job["status"] = "verified"
             job["verified_at"] = time.time()
             job["runtime_receipt"] = receipt
+            job["operation_phase"] = "verified"
             self._write(self._job_path(lane.name), job)
+            self._write(
+                self._operation_path(lane.name),
+                {
+                    "schema": "qdev-controller-release-operation-v1",
+                    "release_id": job["release_id"],
+                    "lease_id": job.get("lease_id"),
+                    "fence": job.get("fence"),
+                    "operation_seq": job.get("operation_seq"),
+                    "phase": "verified",
+                    "updated_at": time.time(),
+                },
+            )
+            return job
+
+    def rollback(
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        receipt: dict[str, Any],
+        *,
+        lease_id: str | None = None,
+        fence: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an idempotent native rollback acknowledgement."""
+        with self._lock(lane.name):
+            job = self._read(self._job_path(lane.name))
+            if job is None or job.get("release_id") != release_id:
+                raise ReleaseLaneError("release job is not found")
+            if lane.canonical_repository is not None and not lease_id:
+                raise ReleaseLaneError("managed rollback lease is required")
+            if lane.canonical_repository is not None and not fence:
+                raise ReleaseLaneError("managed rollback fence is required")
+            if lease_id is not None and lease_id != job.get("lease_id"):
+                raise ReleaseLaneError("release lease does not match job")
+            if fence is not None and fence != job.get("fence"):
+                raise ReleaseLaneError("release fence does not match job")
+            if job.get("status") == "rolled_back":
+                if job.get("rollback_receipt") == receipt:
+                    return job
+                raise ReleaseLaneError("release rollback already has another receipt")
+            if job.get("status") not in {"accepted", "dispatched"}:
+                raise ReleaseLaneError("release job cannot be rolled back")
+            required_receipt = {
+                "schema",
+                "status",
+                "project_id",
+                "release_lane",
+                "placement",
+                "release_id",
+                "failed_release",
+                "restored_release",
+                "native_receipt",
+            }
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != required_receipt
+                or receipt.get("schema") != ROLLBACK_RECEIPT_SCHEMA
+                or receipt.get("status") != "rolled_back"
+                or receipt.get("release_id") != release_id
+                or receipt.get("project_id") != lane.project_id
+                or receipt.get("release_lane") != lane.name
+                or receipt.get("placement") != lane.placement
+                or not isinstance(receipt.get("failed_release"), dict)
+                or not isinstance(receipt.get("restored_release"), dict)
+                or not isinstance(receipt.get("native_receipt"), dict)
+            ):
+                raise ReleaseLaneError("rollback receipt is invalid")
+            failed = receipt["failed_release"]
+            failed_tuple = {
+                key: failed.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")
+            }
+            if failed_tuple != {
+                key: job.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")
+            }:
+                raise ReleaseLaneError("rollback receipt does not bind failed release")
+            restored = receipt["restored_release"]
+            _release_tuple = {key: restored.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}
+            if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(_release_tuple["artifact_digest"]):
+                raise ReleaseLaneError("rollback release identity is invalid")
+            if not _is_lane_artifact_ref(restored.get("artifact_ref"), restored["artifact_digest"], lane):
+                raise ReleaseLaneError("rollback artifact identity is invalid")
+            if _release_tuple == failed_tuple:
+                raise ReleaseLaneError("rollback must restore a different immutable release")
+            native = receipt["native_receipt"]
+            if (
+                native.get("schema") != "qdev-admin-platform-native-receipt-v1"
+                or native.get("project_id") != lane.project_id
+                or native.get("native_host_adapter") != lane.native_host_adapter
+                or native.get("source_sha") != restored["source_sha"]
+                or native.get("artifact_digest") != restored["artifact_digest"]
+                or native.get("artifact_ref") != restored["artifact_ref"]
+            ):
+                raise ReleaseLaneError("rollback native identity is not proven")
+            job["status"] = "rolled_back"
+            job["rollback_receipt"] = receipt
+            job["rolled_back_at"] = time.time()
+            self._write(self._job_path(lane.name), job)
+            self._write(
+                self._operation_path(lane.name),
+                {
+                    "schema": "qdev-controller-release-operation-v1",
+                    "release_id": release_id,
+                    "lease_id": job.get("lease_id"),
+                    "fence": job.get("fence"),
+                    "operation_seq": job.get("operation_seq"),
+                    "phase": "rolled_back",
+                    "updated_at": time.time(),
+                },
+            )
             return job
 
     def job(self, lane: ReleaseLane, release_id: str) -> dict[str, Any] | None:

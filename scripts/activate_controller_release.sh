@@ -31,6 +31,7 @@ for required in \
   config/release-lanes.yml \
   config/managed-registry.yml \
   config/admin-platform-ledger.yml \
+  config/admin-platform-ledger-v2.yml \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   scripts/qdev_product_release_host_agent.py \
@@ -206,6 +207,7 @@ release_digest="$(
     "$release/config/release-lanes.yml" \
     "$release/config/managed-registry.yml" \
     "$release/config/admin-platform-ledger.yml" \
+    "$release/config/admin-platform-ledger-v2.yml" \
     "$release/scripts/provision_operator_identity.sh" \
     "$release/scripts/qaz_tours_release_host_agent.py" \
     "$release/deploy/qdev-release-qaz-tours.service" \
@@ -255,6 +257,10 @@ install -m 0644 -- "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml
 install -m 0644 -- "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml
 install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml
 install -m 0644 -- "$release/config/admin-platform-ledger.yml" /etc/qdev-runner/admin-platform-ledger.yml
+# Keep the v1 source in the release for compatibility/audit, but make the
+# validated v2 ledger the runtime projection.  The existing backup/rollback
+# path restores the previous release's ledger atomically if activation fails.
+install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" /etc/qdev-runner/admin-platform-ledger.yml
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")

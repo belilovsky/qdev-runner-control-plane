@@ -48,6 +48,7 @@ from .release_lane import (
     ReleaseLanePolicy,
     ReleaseStore,
     admission_receipt,
+    validate_controller_claim,
     validate_candidate,
     validate_host_heartbeat,
 )
@@ -507,9 +508,12 @@ def create_app(
             "capacity_free_gib",
             "active_release",
             "rollback",
+            "bootstrap",
         }
         try:
-            return HostHeartbeatRequest.model_validate({name: record[name] for name in fields})
+            return HostHeartbeatRequest.model_validate(
+                {name: record.get(name, False) if name == "bootstrap" else record[name] for name in fields}
+            )
         except (KeyError, ValueError) as error:
             raise HTTPException(
                 status_code=409, detail="host-agent heartbeat is invalid"
@@ -704,6 +708,9 @@ def create_app(
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         try:
             validate_candidate(request, lane)
+            validate_controller_claim(
+                request, lane, signing_key=settings.controller_claim_key
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
@@ -739,14 +746,19 @@ def create_app(
             "source_sha": job["source_sha"],
             "artifact_digest": job["artifact_digest"],
             "artifact_ref": job["artifact_ref"],
+            "lease_id": job["lease_id"],
+            "fence": job["fence"],
         }
 
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/receipt")
     def complete_release_host_job(
         placement: str,
         release_id: str,
         receipt: dict[str, Any],
         x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
@@ -757,10 +769,99 @@ def create_app(
             ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
         try:
-            job = release_state().complete(lane, release_id, receipt)
+            job = release_state().complete(
+                lane,
+                release_id,
+                receipt,
+                lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="runtime receipt was rejected") from error
         return dict(job["runtime_receipt"])
+
+    @app.get("/internal/v1/release-hosts/{placement}/jobs/{release_id}")
+    def release_host_job_status(
+        placement: str,
+        release_id: str,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Return controller state to a host agent reconciling a lost response."""
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        job = release_state().job(lane, release_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="release job was not found")
+        # A managed host may reconcile only the operation it was admitted for.
+        # Legacy lanes retain their historical status-only read path, while
+        # v2 lanes require both durable fencing values to prevent a stale
+        # worker from learning or acting on another attempt's outcome.
+        if lane.canonical_repository is not None:
+            if (
+                not x_qdev_release_lease
+                or not x_qdev_release_fence
+                or x_qdev_release_lease != job.get("lease_id")
+                or x_qdev_release_fence != job.get("fence")
+            ):
+                raise HTTPException(status_code=409, detail="release lease is stale")
+        elif (
+            x_qdev_release_lease is not None
+            and x_qdev_release_lease != job.get("lease_id")
+        ) or (
+            x_qdev_release_fence is not None
+            and x_qdev_release_fence != job.get("fence")
+        ):
+            raise HTTPException(status_code=409, detail="release lease is stale")
+        return {
+            "schema": "qdev-controller-release-status-v1",
+            "release_id": release_id,
+            "status": job["status"],
+            "release_lane": lane.name,
+            "project_id": lane.project_id,
+            "placement": lane.placement,
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+            "artifact_ref": job["artifact_ref"],
+            "runtime_receipt": job.get("runtime_receipt"),
+            "rollback_receipt": job.get("rollback_receipt"),
+        }
+
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/rollback")
+    def rollback_release_host_job(
+        placement: str,
+        release_id: str,
+        receipt: dict[str, Any],
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_placement(placement)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        try:
+            job = release_state().rollback(
+                lane,
+                release_id,
+                receipt,
+                lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence,
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="rollback receipt was rejected") from error
+        return dict(job["rollback_receipt"])
 
     @app.get("/internal/v1/releases/qaz-tours/{release_id}")
     def qaz_tours_release_status(
@@ -807,6 +908,9 @@ def create_app(
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
         try:
             validate_candidate(request, lane)
+            validate_controller_claim(
+                request, lane, signing_key=settings.controller_claim_key
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
