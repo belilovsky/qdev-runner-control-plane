@@ -184,6 +184,12 @@ class AdminPlatformLedger:
         )
         self.history = list(document.get("history", [])) if schema_version == SCHEMA_V2 else []
         self.attempts = list(document.get("attempts", [])) if schema_version == SCHEMA_V2 else []
+        if schema_version == SCHEMA_V2:
+            # References are checked only after all entries are known.  This
+            # prevents a misspelled predecessor from silently becoming a
+            # permanently-ready gate.
+            for entry_id, raw in normalized_entries.items():
+                self._validate_prerequisite_references(raw.get("prerequisites", {}), entry_id)
         self._raw_entries = {
             entry_id: {
                 stage: dict(normalized_entries[entry_id][stage])
@@ -201,6 +207,17 @@ class AdminPlatformLedger:
             | (
                 {"observed_external_ci": dict(normalized_entries[entry_id]["observed_external_ci"])}
                 if entry_id == "qazposter"
+                else {}
+            )
+            | (
+                {
+                    "prerequisites": dict(normalized_entries[entry_id].get("prerequisites", {})),
+                    "attempts": [
+                        dict(attempt)
+                        for attempt in normalized_entries[entry_id].get("attempts", [])
+                    ],
+                }
+                if schema_version == SCHEMA_V2
                 else {}
             )
             for entry_id in ORDER
@@ -243,6 +260,9 @@ class AdminPlatformLedger:
                     item[stage] = dict(source[stage])
             if entry.entry_id == "qazposter":
                 item["observed_external_ci"] = dict(source["observed_external_ci"])
+            if self.schema_version == SCHEMA_V2:
+                item["prerequisites"] = dict(source.get("prerequisites", {}))
+                item["attempts"] = [dict(attempt) for attempt in source.get("attempts", [])]
             document["entries"].append(item)
         return cast(dict[str, Any], _json_safe(document))
 
@@ -253,6 +273,7 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError("admin platform candidate is not active")
         if entry.status not in ACTIVE_STATUSES or entry.source_sha != exact_sha:
             raise AdminPlatformLedgerError("admin platform candidate tuple is not admitted")
+        self._require_prerequisites(entry_id)
         return entry
 
     def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
@@ -273,7 +294,48 @@ class AdminPlatformLedger:
             return False, "admin-platform-candidate-not-active"
         if entry.source_sha != exact_sha:
             return False, "admin-platform-candidate-tuple-not-admitted"
+        ready, reason = self._prerequisites_ready(entry_id)
+        if not ready:
+            return False, reason
         return True, None
+
+    def _prerequisite_state(self, key: str) -> str | None:
+        """Resolve a prerequisite to its currently observed state.
+
+        Top-level package/controller gates take precedence.  Product gates
+        may be written with either the descriptor's underscore spelling or
+        the ledger entry's hyphen spelling; both resolve to the same entry.
+        """
+        stage = self.prerequisites.get(key)
+        if stage is not None:
+            if isinstance(stage, dict):
+                value = stage.get("state")
+                return value if isinstance(value, str) else None
+            return stage if isinstance(stage, str) else None
+        entry = self._by_entry_id.get(key)
+        if entry is None:
+            entry = self._by_entry_id.get(key.replace("_", "-"))
+        if entry is not None:
+            return entry.status
+        return None
+
+    def _entry_prerequisites(self, entry_id: str) -> dict[str, Any]:
+        source = self._raw_entries.get(entry_id, {})
+        value = source.get("prerequisites", {})
+        return value if isinstance(value, dict) else {}
+
+    def _prerequisites_ready(self, entry_id: str) -> tuple[bool, str | None]:
+        for key, expected in self._entry_prerequisites(entry_id).items():
+            expected_state = expected.get("state") if isinstance(expected, dict) else expected
+            actual_state = self._prerequisite_state(key)
+            if actual_state != expected_state:
+                return False, f"admin-platform-prerequisite-not-ready:{key}"
+        return True, None
+
+    def _require_prerequisites(self, entry_id: str) -> None:
+        ready, reason = self._prerequisites_ready(entry_id)
+        if not ready:
+            raise AdminPlatformLedgerError(reason or "admin platform prerequisites are not ready")
 
     @staticmethod
     def _validate_stage(value: Any) -> None:
@@ -331,6 +393,18 @@ class AdminPlatformLedger:
                 raise AdminPlatformLedgerError(f"{entry_id} prerequisite state is invalid")
             if isinstance(state, dict):
                 cls._validate_stage(state)
+
+    def _validate_prerequisite_references(self, value: Any, entry_id: str) -> None:
+        """Reject prerequisite identities that cannot be observed locally."""
+        if not isinstance(value, dict):
+            raise AdminPlatformLedgerError(f"{entry_id} prerequisites are invalid")
+        known = set(self.prerequisites) | set(self._by_entry_id)
+        known |= {item.replace("-", "_") for item in self._by_entry_id}
+        for prerequisite in value:
+            if prerequisite not in known:
+                raise AdminPlatformLedgerError(
+                    f"{entry_id} prerequisite reference is unknown: {prerequisite}"
+                )
 
     @classmethod
     def _validate_v2_program(cls, document: dict[str, Any]) -> None:

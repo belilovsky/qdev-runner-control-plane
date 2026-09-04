@@ -70,3 +70,46 @@ def test_v2_snapshot_is_json_serializable_when_yaml_resolves_timestamps() -> Non
     encoded = json.dumps(ledger.snapshot(), sort_keys=True)
 
     assert "2026-09-04T11:24:00Z" in encoded
+
+
+def test_v2_admission_is_fail_closed_until_declared_prerequisites_are_ready() -> None:
+    ledger = AdminPlatformLedger(_ledger_v2_path())
+
+    assert ledger.classify_admission(
+        "avds-admin-shell", "2cfe7848199ac9bf84cf60de746f202457e99f27"
+    ) == (False, "admin-platform-prerequisite-not-ready:controller")
+    with pytest.raises(
+        AdminPlatformLedgerError,
+        match="admin-platform-prerequisite-not-ready:controller",
+    ):
+        ledger.validate_admission(
+            "avds-admin-shell", "2cfe7848199ac9bf84cf60de746f202457e99f27"
+        )
+
+    snapshot = ledger.snapshot()
+    avds = next(item for item in snapshot["entries"] if item["entry_id"] == "avds-admin-shell")
+    assert avds["prerequisites"] == {"controller": "live_accepted", "qaz_admin_kit": "ci_passed"}
+
+
+def test_v2_admission_accepts_a_ready_prerequisite_chain(tmp_path: Path) -> None:
+    document = yaml.safe_load(_ledger_v2_path().read_text(encoding="utf-8"))
+    document["prerequisites"]["controller"]["state"] = "live_accepted"
+    document["prerequisites"]["controller"]["receipt_uri"] = "receipts/controller.json"
+    document["entries"]["avds-admin-shell"]["status"] = "ci_queued"
+    path = tmp_path / "ledger.yml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    ledger = AdminPlatformLedger(path)
+    assert ledger.classify_admission(
+        "avds-admin-shell", "2cfe7848199ac9bf84cf60de746f202457e99f27"
+    ) == (True, None)
+
+
+def test_v2_rejects_an_unknown_prerequisite_reference(tmp_path: Path) -> None:
+    document = yaml.safe_load(_ledger_v2_path().read_text(encoding="utf-8"))
+    document["entries"]["ortcom"]["prerequisites"] = {"not-a-real-stage": "live_accepted"}
+    path = tmp_path / "ledger.yml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AdminPlatformLedgerError, match="prerequisite reference is unknown"):
+        AdminPlatformLedger(path)

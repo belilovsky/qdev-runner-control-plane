@@ -2,13 +2,13 @@ schema_version: qdev-admin-platform-ledger-v2
 program:
   id: qdev-admin-platform-wave-1
   owner: QDev
-  status: active
-  updated_at: 2026-09-04T11:24:00Z
+  status: blocked
+  updated_at: 2026-09-04T15:09:42Z
 active_candidate: avds-admin-shell
 prerequisites:
   controller:
-    state: candidate
-    receipt_uri: null
+    state: blocked
+    receipt_uri: receipts/admin-platform-controller-blocker-20260904T150942Z.json
   qaz_admin_kit:
     state: ci_passed
     receipt_uri: https://github.com/belilovsky/qaz-admin-kit/releases/tag/v0.4.8
@@ -16,17 +16,17 @@ prerequisites:
     state: ci_queued
     receipt_uri: https://github.com/belilovsky/av-platform-core/actions/runs/33854194622
   compatibility_matrix:
-    state: candidate
+    state: blocked
     receipt_uri: null
 history: []
 attempts:
   - attempt_id: controller-admin-platform-lanes-20260904
     release_id: controller-admin-platform-lanes-20260904
-    state: candidate
+    state: blocked
     started_at: 2026-09-04T11:24:00Z
-    finished_at: null
-    receipt_uri: null
-    reason: candidate includes managed registry v2, fixed native lanes and guarded host adapters; exact-SHA CI and activation pending
+    finished_at: 2026-09-04T15:09:42Z
+    receipt_uri: receipts/admin-platform-controller-blocker-20260904T150942Z.json
+    reason: exact-SHA CI was admitted by GitHub but failed before job start because account billing/spending limit is blocked; runtime remains on a different revision and worker admission is unavailable
   - attempt_id: controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     release_id: qdev-controller-f9109e3a66d8d92bf499cb19d60655cd5e77db2c
     state: live_accepted
@@ -73,7 +73,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {avds_admin_shell: blocked}
+    prerequisites: {avds_admin_shell: live_accepted}
     attempts: []
   cmnt:
     project_id: cmnt
@@ -86,7 +86,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {ortcom: blocked}
+    prerequisites: {ortcom: live_accepted}
     attempts: []
   total:
     project_id: total-kz
@@ -99,7 +99,7 @@ entries:
     observation: {state: blocked, receipt_uri: null}
     live_acceptance: {state: blocked, receipt_uri: null}
     rollback: {state: blocked, receipt_uri: null}
-    prerequisites: {cmnt: blocked}
+    prerequisites: {cmnt: live_accepted}
     attempts: []
   qazposter:
     project_id: qazposter
@@ -115,5 +115,5 @@ entries:
     observed_external_ci:
       run_id: '33783332177'
       state: queued
-    prerequisites: {total: blocked}
+    prerequisites: {total: live_accepted}
     attempts: []
