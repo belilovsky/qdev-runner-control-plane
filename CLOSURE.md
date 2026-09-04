@@ -74,3 +74,30 @@ the exact merged source tree (`origin/main` `21b23e25ed45a547ad460e4bc412a4949a9
 but provider jobs cannot supply a green admission while the recovery adapter
 and GitHub capacity are unavailable. The closure status therefore remains
 `access_blocked` for this pass.
+
+## Pass 1 controller activation — 2026-09-04T16:56:44Z
+
+The existing controller host was activated through its native atomic helper
+from the exact release tree `60f79d5c229418eb72502cd88c6b71d997062095` (the
+merged recovery implementation; no new host, runner, queue, lease, or job was
+created). The helper reported:
+
+```text
+controller_release_active=/opt/qdev-runner-control-plane/releases/60f79d5c229418eb72502cd88c6b71d997062095 previous=/opt/qdev-runner-control-plane/releases/02df7f891b7e0118b5231a3c7f7f4abc4a5a0064
+controller_release_receipt=active revision=60f79d5c229418eb72502cd88c6b71d997062095 digest=dfdd995a0735fe373be311a4521336cf0c82229bfe5ed02d72ad8326c290b3b4
+```
+
+Post-activation status is `state=active` with the same revision and digest;
+the broker health endpoint is `ok=true`, the executor module imports from the
+active installation, and two existing workers are active. Profile admission
+still reports `no-fresh-eligible-worker` with zero primary/reserve slots. The
+required `/usr/local/sbin/qdev-fleet-worker-recovery` adapter remains absent;
+both existing recovery receipts therefore remain
+`status=access_blocked`, `operation_status=pending`,
+`error_code=recovery_adapter_unavailable`. GitHub still reports both named
+runner targets offline/idle. No direct SSH/systemd fallback or manual queue,
+lease, or job mutation was used.
+
+This is a successful controller-release activation but not completed runner
+recovery; Pass 1 remains `access_blocked` until the registered adapter and
+target records are available through the existing control plane.
