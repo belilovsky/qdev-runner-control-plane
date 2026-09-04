@@ -1,11 +1,16 @@
 # syntax=docker/dockerfile:1.7
 ARG RUNNER_VERSION=2.337.0
 ARG RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+ARG NPM_VERSION=11.19.1
+ARG NPM_SHA512=4faecce0be70366d1c67b1012c4adc1246354a6cc45bf589f92003073b05518d547403df1475c542d67a4845e22b4fafcd7cac0af02c7a96cc6814f09eb003fb
 
 FROM ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS base
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
+ARG NPM_VERSION
+ARG NPM_SHA512
 ENV DEBIAN_FRONTEND=noninteractive
+COPY install-pinned-npm.sh /usr/local/bin/install-pinned-npm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git git-lfs gnupg jq lsb-release openssh-client python3 python3-pip \
       postgresql-16 python3-venv rsync unzip xz-utils zip \
@@ -18,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "${RUNNER_SHA256}  /tmp/runner.tar.gz" | sha256sum --check - \
     && tar -xzf /tmp/runner.tar.gz -C /home/runner/actions-runner \
     && rm /tmp/runner.tar.gz \
+    && chmod 0555 /usr/local/bin/install-pinned-npm \
+    && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node20 "${NPM_VERSION}" "${NPM_SHA512}" \
+    && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node24 "${NPM_VERSION}" "${NPM_SHA512}" \
     && /home/runner/actions-runner/bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 COPY entrypoint.sh /usr/local/bin/qdev-runner-entrypoint
@@ -34,6 +42,9 @@ FROM base AS general
 FROM mcr.microsoft.com/playwright@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac AS browser
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
+ARG NPM_VERSION
+ARG NPM_SHA512
+COPY install-pinned-npm.sh /usr/local/bin/install-pinned-npm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl git git-lfs jq lsb-release openssh-client python3 python3-pip python3-venv \
       rsync unzip xz-utils zip \
@@ -46,6 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "${RUNNER_SHA256}  /tmp/runner.tar.gz" | sha256sum --check - \
     && tar -xzf /tmp/runner.tar.gz -C /home/runner/actions-runner \
     && rm /tmp/runner.tar.gz \
+    && chmod 0555 /usr/local/bin/install-pinned-npm \
+    && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node20 "${NPM_VERSION}" "${NPM_SHA512}" \
+    && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node24 "${NPM_VERSION}" "${NPM_SHA512}" \
     && /home/runner/actions-runner/bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 COPY entrypoint.sh /usr/local/bin/qdev-runner-entrypoint
