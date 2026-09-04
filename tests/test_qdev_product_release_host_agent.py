@@ -50,3 +50,23 @@ def test_product_agent_is_no_build_and_proves_public_identity() -> None:
     assert "docker system prune" not in script
     assert "docker image prune" not in script
     assert "runtime_proof(profile, active)" in script
+
+
+def test_qmt_requires_a_preloaded_digest_and_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = AGENT.PROFILES["qmt"]
+    release = {
+        "source_sha": SHA,
+        "artifact_digest": DIGEST,
+        "artifact_ref": f"registry.ci.qdev.run/kaztilshi@{DIGEST}",
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> bytes:
+        commands.append(command)
+        if any("RepoDigests" in token for token in command):
+            return f'["{release["artifact_ref"]}"]'.encode()
+        return SHA.encode()
+
+    monkeypatch.setattr(AGENT, "_run", fake_run)
+    AGENT.verify_image(release, profile)
+    assert ["docker", "pull", release["artifact_ref"]] not in commands
