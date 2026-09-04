@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -22,6 +24,50 @@ def api(endpoint: str) -> Any:
     return json.loads(command("gh", "api", endpoint))
 
 
+def contract_endpoint(full_name: str, ref: str | None = None) -> str:
+    endpoint = f"/repos/{full_name}/contents/.github/qdev-runner.yml"
+    if ref:
+        endpoint += f"?ref={ref}"
+    return endpoint
+
+
+def declared_profiles(full_name: str, ref: str | None = None) -> set[str]:
+    """Read the repository contract before inferring workflow text markers."""
+
+    try:
+        content_data = api(contract_endpoint(full_name, ref))
+    except subprocess.CalledProcessError:
+        # Legacy repositories without the contract remain on the conservative
+        # default profile until they are deliberately migrated.
+        return set()
+
+    try:
+        contract = yaml.safe_load(
+            base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
+        )
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        raise RuntimeError(
+            f"{full_name}: invalid .github/qdev-runner.yml: {exc}"
+        ) from exc
+
+    if not isinstance(contract, dict):
+        raise RuntimeError(f"{full_name}: runner contract must be a YAML mapping")
+    raw_profiles = contract.get("profiles", [])
+    if not isinstance(raw_profiles, list) or any(
+        not isinstance(profile, str) or not profile.strip() for profile in raw_profiles
+    ):
+        raise RuntimeError(f"{full_name}: runner contract profiles must be a list of names")
+    profiles = {profile.strip() for profile in raw_profiles}
+    supported = {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+    unknown = profiles - supported
+    if unknown:
+        raise RuntimeError(
+            f"{full_name}: runner contract declares unsupported profiles: "
+            + ", ".join(sorted(unknown))
+        )
+    return profiles
+
+
 def inspect_repo(repo: dict[str, Any], ref: str | None = None) -> dict[str, Any] | None:
     full_name = repo["nameWithOwner"]
     metadata = api(f"/repos/{full_name}")
@@ -32,6 +78,7 @@ def inspect_repo(repo: dict[str, Any], ref: str | None = None) -> dict[str, Any]
     if not workflows:
         return None
     profiles = {"qdev-ci"}
+    profiles.update(declared_profiles(full_name, ref))
     workflow_files: list[dict[str, Any]] = []
     try:
         contents_endpoint = f"/repos/{full_name}/contents/.github/workflows"
