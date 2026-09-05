@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.broker import create_app
+from qdev_runner.fleet_host_dispatch import FleetHostDispatchSpool
 from qdev_runner.models import QueuedJob
 from qdev_runner.operations import OperationStore
 from qdev_runner.operator import verify_controller_receipt
@@ -929,7 +931,7 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
 
 
 def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = _app(tmp_path)
     activation = _fleet_bootstrap_activation()
@@ -984,6 +986,40 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
         tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json"
     ).exists()
 
+    incoming = tmp_path / "fleet-host-dispatch" / "incoming"
+    results = tmp_path / "fleet-host-dispatch" / "results"
+    incoming.mkdir(parents=True)
+    results.mkdir()
+    incoming.chmod(0o700)
+    results.chmod(0o750)
+    monkeypatch.setattr(
+        "qdev_runner.broker.FleetHostDispatchSpool",
+        lambda request_root, result_root: FleetHostDispatchSpool(
+            request_root,
+            result_root,
+            result_uid=os.geteuid(),
+        ),
+    )
+    queued_body = activation_body | {
+        "idempotency_key": "controller-activation-queued-001"
+    }
+    queued_response = client.post(
+        activation_path,
+        json=queued_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert queued_response.status_code == 200
+    queued_receipt = verify_controller_receipt(
+        queued_response.json(), receipt_key=RECEIPT_KEY
+    )
+    queued_execution = queued_receipt["payload"]["execution"]
+    assert queued_execution["status"] == "queued"
+    assert queued_execution["operation_status"] == "pending"
+    assert queued_execution["error_code"] is None
+    assert (
+        incoming / "controller-activation-queued-001.json"
+    ).is_file()
+
     enrolment_path = "/internal/v1/operations/fleet-bootstrap/enrol-host-agent"
     enrolment_body = {
         "request": base_request
@@ -1005,14 +1041,12 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     )
     enrolment_execution = enrolment_receipt["payload"]["execution"]
     assert enrolment_execution["action"] == "enrol-host-agent"
-    assert enrolment_execution["status"] == "access_blocked"
+    assert enrolment_execution["status"] == "queued"
     assert enrolment_execution["operation_status"] == "pending"
-    assert enrolment_execution["error_code"] == "host_dispatch_unavailable"
+    assert enrolment_execution["error_code"] is None
     assert enrolment_execution["release_lane"] == "qdev-release-qmt"
     assert enrolment_execution["host_agent_mtls_identity"] == "qdev-host-agent:srv138jump"
-    assert not (
-        tmp_path / "fleet-bootstrap-receipts" / "host-enrolment-001.json"
-    ).exists()
+    assert (incoming / "host-enrolment-001.json").is_file()
 
     mismatched = client.post(
         activation_path,

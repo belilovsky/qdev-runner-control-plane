@@ -467,11 +467,36 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         host_identity = execution.get("host_agent_mtls_identity")
         error_code = execution.get("error_code")
         result = execution.get("result")
+        if status == "completed":
+            state_invalid = (
+                operation_status != "completed"
+                or error_code is not None
+                or not isinstance(result, dict)
+            )
+        elif status == "queued":
+            state_invalid = (
+                operation_status != "pending"
+                or error_code is not None
+                or result is not None
+            )
+        elif status in {"access_blocked", "failed"}:
+            state_invalid = (
+                operation_status != "pending"
+                or not isinstance(error_code, str)
+                or result is not None
+            )
+        elif status == "unknown":
+            state_invalid = (
+                operation_status != "unknown"
+                or error_code
+                != "operation_outcome_unknown_reconciliation_required"
+                or result is not None
+            )
+        else:
+            state_invalid = True
         if (
             execution.get("schema") != "qdev-fleet-bootstrap-execution-receipt-v1"
-            or status not in {"completed", "access_blocked", "failed"}
-            or operation_status not in {"pending", "completed"}
-            or (status == "completed") != (operation_status == "completed")
+            or state_invalid
             or action not in {"activate-controller", "enrol-host-agent"}
             or not isinstance(execution.get("idempotency_key"), str)
             or not re.fullmatch(
@@ -486,10 +511,6 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             or not re.fullmatch(
                 r"sha256:[0-9a-f]{64}", execution["controller_release_digest"]
             )
-            or (error_code is not None and not isinstance(error_code, str))
-            or (result is not None and not isinstance(result, dict))
-            or (status == "completed" and (error_code is not None or result is None))
-            or (status != "completed" and (not isinstance(error_code, str) or result is not None))
             or (
                 action == "activate-controller"
                 and (release_lane is not None or host_identity is not None)
