@@ -580,7 +580,7 @@ def activate(
     expected_artifact_digest: str,
     expected_release_digest: str,
     expected_previous_revision: str,
-    expected_previous_artifact_digest: str,
+    expected_previous_release_digest: str,
     candidate_image_ref: str,
 ) -> dict[str, Any]:
     # A persistent host lock covers the native child, snapshot and recovery.
@@ -607,14 +607,15 @@ def activate(
             or not _DIGEST.fullmatch(expected_artifact_digest)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_release_digest)
             or not _SHA.fullmatch(expected_previous_revision)
-            or not _DIGEST.fullmatch(expected_previous_artifact_digest)
+            or not _DIGEST.fullmatch(expected_previous_release_digest)
             or candidate_image_ref != f"{_CONTROLLER_IMAGE_REPOSITORY}@{expected_artifact_digest}"
         ):
             raise TransactionError("verified controller release tuple is invalid")
         current_status = _read(paths.config / "controller-release.json")
         if (
             current_status.get("revision") != expected_previous_revision
-            or current_status.get("artifact_digest") != expected_previous_artifact_digest
+            or current_status.get("release_digest")
+            != expected_previous_release_digest.removeprefix("sha256:")
         ):
             raise TransactionError("controller release compare-and-swap rejected")
         try:
@@ -719,8 +720,8 @@ def main() -> int:
             previous_revision = os.environ.get(
                 "QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION", ""
             )
-            previous_artifact_digest = os.environ.get(
-                "QDEV_CONTROLLER_EXPECTED_CURRENT_ARTIFACT_DIGEST", ""
+            previous_release_digest = os.environ.get(
+                "QDEV_CONTROLLER_EXPECTED_CURRENT_RELEASE_DIGEST", ""
             )
             candidate_image_ref = os.environ.get("QDEV_CONTROLLER_CANDIDATE_IMAGE", "")
             activate(
@@ -730,7 +731,7 @@ def main() -> int:
                 expected_artifact_digest=artifact_digest,
                 expected_release_digest=release_digest,
                 expected_previous_revision=previous_revision,
-                expected_previous_artifact_digest=previous_artifact_digest,
+                expected_previous_release_digest=previous_release_digest,
                 candidate_image_ref=candidate_image_ref,
             )
     except (TransactionError, OSError, ValueError, KeyError, TypeError):

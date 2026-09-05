@@ -16,7 +16,7 @@ REVISION_NEW = "2" * 40
 DIGEST_OLD = "3" * 64
 DIGEST_NEW = "4" * 64
 ARTIFACT_NEW = "sha256:" + "7" * 64
-ARTIFACT_OLD = "sha256:" + "8" * 64
+ROLLBACK_DIGEST = "sha256:" + DIGEST_OLD
 IMAGE_REF_NEW = "registry.ci.qdev.run/qdev-runner-control-plane@" + ARTIFACT_NEW
 IMAGE_PUBLIC = "sha256:" + "5" * 64
 IMAGE_INTERNAL = "sha256:" + "6" * 64
@@ -55,7 +55,6 @@ def _fixture(tmp_path: Path) -> tuple[transaction.Paths, Path, Path]:
         "schema": "qdev-controller-release-status-v1",
         "state": "active",
         "revision": REVISION_OLD,
-        "artifact_digest": ARTIFACT_OLD,
         "release_digest": DIGEST_OLD,
     }
     _write(config / "controller-release.json", json.dumps(status).encode())
@@ -159,7 +158,7 @@ def test_activate_failure_recovers_and_retains_checkpoint(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision=REVISION_OLD,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=IMAGE_REF_NEW,
         )
 
@@ -199,7 +198,7 @@ def test_activate_rejects_unbound_candidate_image_reference(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision=REVISION_OLD,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=image_ref,
         )
 
@@ -224,7 +223,7 @@ def test_activate_compare_and_swap_rejects_stale_previous_tuple_before_prepare(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision="9" * 40,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=IMAGE_REF_NEW,
         )
 
@@ -263,7 +262,7 @@ def test_activate_rejects_mismatched_release_digest_and_rolls_back(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision=REVISION_OLD,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=IMAGE_REF_NEW,
         )
     assert paths.current.resolve() == previous
@@ -304,7 +303,7 @@ def test_activate_accepts_only_the_exact_candidate_runtime_reference(
         expected_artifact_digest=ARTIFACT_NEW,
         expected_release_digest=DIGEST_NEW,
         expected_previous_revision=REVISION_OLD,
-        expected_previous_artifact_digest=ARTIFACT_OLD,
+        expected_previous_release_digest=ROLLBACK_DIGEST,
         candidate_image_ref=IMAGE_REF_NEW,
     )
 
@@ -354,7 +353,7 @@ def test_activate_rolls_back_when_runtime_reference_is_not_exact(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision=REVISION_OLD,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=IMAGE_REF_NEW,
         )
 
@@ -395,7 +394,7 @@ def test_pending_operation_is_recovered_before_new_prepare(
             expected_artifact_digest=ARTIFACT_NEW,
             expected_release_digest=DIGEST_NEW,
             expected_previous_revision=REVISION_OLD,
-            expected_previous_artifact_digest=ARTIFACT_OLD,
+            expected_previous_release_digest=ROLLBACK_DIGEST,
             candidate_image_ref=IMAGE_REF_NEW,
         )
     assert recovered == [pending["id"]]

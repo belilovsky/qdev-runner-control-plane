@@ -268,7 +268,7 @@ def execute(envelope: dict[str, Any], *, paths: Paths | None = None) -> dict[str
         expected_artifact_digest=image_digest,
         expected_release_digest=signed_bundle_digest,
         expected_previous_revision=rollback_revision,
-        expected_previous_artifact_digest=rollback_release_digest,
+        expected_previous_release_digest=rollback_release_digest,
         candidate_image_ref=reference,
     )
     try:

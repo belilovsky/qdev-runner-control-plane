@@ -12,8 +12,8 @@ activation:
   # circular future-commit SHA in the policy source.
   source_revision_binding: workflow-source
   artifact_ref_prefix: registry.ci.qdev.run/qdev-runner-control-plane
-  rollback_revision: 13a165e43b6dd61a3cbbb60ca487bb7edab10f37
-  rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
+  rollback_revision: 0a3f418bc45375f431481b60470cdf8bee218eae
+  rollback_release_digest: sha256:570e44d17fb99c927fffef2cc429fd411c2a3240ab9d7e15bc7c9065f8c2834e
 enrolment:
   lanes:
     - qdev-release-qmt

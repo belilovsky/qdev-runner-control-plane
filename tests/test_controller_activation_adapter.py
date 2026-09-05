@@ -166,7 +166,7 @@ def test_execute_pulls_exact_digest_and_binds_transaction(
     assert captured["expected_release_digest"] == BUNDLE_DIGEST
     assert captured["expected_previous_revision"] == envelope["target"]["rollback_revision"]
     assert (
-        captured["expected_previous_artifact_digest"]
+        captured["expected_previous_release_digest"]
         == envelope["target"]["rollback_release_digest"]
     )
     assert result["status"] == "completed"
