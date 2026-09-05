@@ -58,8 +58,10 @@ services:
       dockerfile: deploy/Dockerfile.broker
     restart: unless-stopped
     env_file:
-      - /etc/qdev-runner/broker.env
-      - /etc/qdev-runner/recovery-controller.env
+      - path: /etc/qdev-runner/broker.env
+        required: true
+      - path: /etc/qdev-runner/recovery-controller.env
+        required: false
     environment:
       PORT: "9443"
       QDEV_LISTEN_HOST: "0.0.0.0"
