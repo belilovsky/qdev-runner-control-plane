@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -60,6 +62,23 @@ def _keys(tmp_path: Path) -> tuple[Path, Path]:
     return private, public
 
 
+def _exact_expectations() -> dict[str, object]:
+    return {
+        "expected_repository_id": 1_357_887_516,
+        "expected_repository": "belilovsky/qazcoop",
+        "expected_ref": "refs/heads/codex/qazcoop-mvp",
+        "expected_sha": SOURCE_SHA,
+        "expected_controller_revision": CONTROLLER_SHA,
+        "expected_jobs": {
+            "reuse-first": "qdev-ci",
+            "postgres-migrations": "qdev-ci-docker",
+        },
+        "expected_workflow_run_id": 33_949_265_063,
+        "expected_workflow_run_attempt": 2,
+        "expected_job_ids": {"reuse-first": 101, "postgres-migrations": 102},
+    }
+
+
 def test_canonical_payload_has_stable_golden_bytes() -> None:
     assert canonical_payload({"z": "Қ", "a": [2, {"b": True}]}) == (
         '{"a":[2,{"b":true}],"z":"Қ"}'.encode()
@@ -80,6 +99,9 @@ def test_sign_and_verify_exact_admission(tmp_path: Path) -> None:
         expected_sha=SOURCE_SHA,
         expected_controller_revision=CONTROLLER_SHA,
         expected_jobs={"reuse-first": "qdev-ci", "postgres-migrations": "qdev-ci-docker"},
+        expected_workflow_run_id=33_949_265_063,
+        expected_workflow_run_attempt=2,
+        expected_job_ids={"reuse-first": 101, "postgres-migrations": 102},
     )
 
     assert verified["functional_source_sha"] == SOURCE_SHA
@@ -193,6 +215,24 @@ def test_private_key_permissions_fail_closed(tmp_path: Path) -> None:
         sign_payload(_payload(), private)
 
 
+def test_key_files_reject_symlinks_and_writable_public_key(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    private_link = tmp_path / "private-link.pem"
+    public_link = tmp_path / "public-link.pem"
+    private_link.symlink_to(private)
+    public_link.symlink_to(public)
+    with pytest.raises(ControllerAdmissionError, match="unavailable or invalid"):
+        sign_payload(_payload(), private_link)
+
+    receipt = sign_payload(_payload(), private)
+    with pytest.raises(ControllerAdmissionError, match="unavailable or invalid"):
+        verify_receipt(receipt, public_link, now=NOW)
+
+    public.chmod(0o666)
+    with pytest.raises(ControllerAdmissionError, match="group/world writable"):
+        verify_receipt(receipt, public, now=NOW)
+
+
 def test_load_json_rejects_duplicate_keys_and_constants(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.json"
     duplicate.write_text('{"a":1,"a":2}', encoding="utf-8")
@@ -250,10 +290,14 @@ def test_cli_sign_and_verify(tmp_path: Path, capsys: pytest.CaptureFixture[str])
             SOURCE_SHA,
             "--controller-revision",
             CONTROLLER_SHA,
+            "--workflow-run-id",
+            "33949265063",
+            "--workflow-run-attempt",
+            "2",
             "--require-job",
-            "reuse-first=qdev-ci",
+            "reuse-first=qdev-ci:101",
             "--require-job",
-            "postgres-migrations=qdev-ci-docker",
+            "postgres-migrations=qdev-ci-docker:102",
         ]
     ) == 0
     output = capsys.readouterr()
@@ -279,6 +323,7 @@ def test_consume_receipt_rejects_replay(tmp_path: Path) -> None:
         replay_store,
         consumer="qazcoop-release-1",
         now=NOW,
+        **cast(Any, _exact_expectations()),
     )
     assert replay_store.stat().st_mode & 0o777 == 0o600
     with pytest.raises(ControllerAdmissionError, match="already been consumed"):
@@ -288,6 +333,89 @@ def test_consume_receipt_rejects_replay(tmp_path: Path) -> None:
             replay_store,
             consumer="qazcoop-release-2",
             now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+
+
+def test_consume_requires_every_exact_binding(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+    with pytest.raises(ControllerAdmissionError, match="requires exact expectations"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            tmp_path / "state" / "consumed.sqlite3",
+            consumer="qazcoop-release-1",
+            now=NOW,
+        )
+
+
+def test_consume_rejects_wrong_workflow_and_job_id_bindings(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+    expectations = _exact_expectations()
+    expectations["expected_workflow_run_attempt"] = 3
+    with pytest.raises(ControllerAdmissionError, match="workflow run attempt"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            tmp_path / "state-a" / "consumed.sqlite3",
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, expectations),
+        )
+
+    expectations = _exact_expectations()
+    expectations["expected_job_ids"] = {
+        "reuse-first": 999,
+        "postgres-migrations": 102,
+    }
+    with pytest.raises(ControllerAdmissionError, match="job IDs"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            tmp_path / "state-b" / "consumed.sqlite3",
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, expectations),
+        )
+
+
+def test_consume_rejects_insecure_or_substituted_ledger(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+
+    insecure = tmp_path / "insecure" / "consumed.sqlite3"
+    insecure.parent.mkdir()
+    insecure.touch(mode=0o600)
+    insecure.chmod(0o666)
+    with pytest.raises(ControllerAdmissionError, match="owner-controlled file"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            insecure,
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+
+    substituted = tmp_path / "substituted" / "consumed.sqlite3"
+    substituted.parent.mkdir()
+    with sqlite3.connect(substituted) as connection:
+        connection.execute(
+            "CREATE TABLE consumed_receipts ("
+            "fingerprint TEXT, key_id TEXT, admission_id TEXT, claim_id TEXT, "
+            "functional_source_sha TEXT, consumer TEXT, consumed_at TEXT)"
+        )
+    os.chmod(substituted, 0o600)
+    with pytest.raises(ControllerAdmissionError, match="schema is invalid"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            substituted,
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
         )
 
 

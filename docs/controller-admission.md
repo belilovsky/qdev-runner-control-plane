@@ -42,14 +42,18 @@ qdev-controller-admission verify \
   --protected-ref refs/heads/codex/qazcoop-mvp \
   --functional-source-sha "$FUNCTIONAL_SOURCE_SHA" \
   --controller-revision "$CONTROLLER_REVISION" \
-  --require-job reuse-first=qdev-ci \
-  --require-job postgres-migrations=qdev-ci-docker \
+  --workflow-run-id "$WORKFLOW_RUN_ID" \
+  --workflow-run-attempt "$WORKFLOW_RUN_ATTEMPT" \
+  --require-job reuse-first=qdev-ci:"$REUSE_JOB_ID" \
+  --require-job postgres-migrations=qdev-ci-docker:"$MIGRATIONS_JOB_ID" \
   --consume-ledger /var/lib/qazcoop/release/consumed-admissions.sqlite3 \
   --consumer "$RELEASE_ID"
 ```
 
 Verification fails on malformed or duplicate JSON fields, an unknown key,
-tampering, a source or job mismatch, future or expired timestamps, and replay
-of a receipt, admission ID, or claim ID. The consuming verifier directory and
-ledger must be owned by the verifier account and must not be writable by group
-or other users.
+tampering, a source, workflow, profile or job-ID mismatch, future or expired
+timestamps, and replay of a receipt, admission ID, or claim ID. Consumption
+requires all exact repository, ref, source, controller, workflow and job
+expectations. The trust key, consuming verifier directory and ledger must be
+trusted regular files and must not be writable by group or other users; an
+unexpected ledger schema also fails closed.

@@ -155,16 +155,54 @@ def public_key_id(key: Ed25519PublicKey) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def _load_private_key(path: Path) -> Ed25519PrivateKey:
-    if path.is_symlink():
-        raise ControllerAdmissionError("admission private key must not be a symlink")
+def _read_trusted_key_file(
+    path: Path,
+    *,
+    label: str,
+    owner_only: bool,
+) -> bytes:
+    """Read one regular, non-symlink key through the verified descriptor."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        mode = path.stat().st_mode & 0o777
-        key = serialization.load_pem_private_key(path.read_bytes(), password=None)
-    except (OSError, ValueError) as error:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ControllerAdmissionError(f"{label} is unavailable or invalid") from error
+    try:
+        status = os.fstat(descriptor)
+        mode = stat.S_IMODE(status.st_mode)
+        allowed_owners = {os.geteuid(), 0}
+        if not stat.S_ISREG(status.st_mode) or status.st_uid not in allowed_owners:
+            raise ControllerAdmissionError(
+                f"{label} must be a trusted regular file"
+            )
+        if owner_only:
+            if mode & 0o077:
+                raise ControllerAdmissionError(f"{label} must be owner-only")
+        elif mode & 0o022:
+            raise ControllerAdmissionError(f"{label} must not be group/world writable")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            return stream.read()
+    except OSError as error:
+        raise ControllerAdmissionError(f"{label} is unavailable or invalid") from error
+    finally:
+        os.close(descriptor)
+
+
+def _load_private_key(path: Path) -> Ed25519PrivateKey:
+    try:
+        key = serialization.load_pem_private_key(
+            _read_trusted_key_file(
+                path,
+                label="admission private key",
+                owner_only=True,
+            ),
+            password=None,
+        )
+    except ControllerAdmissionError:
+        raise
+    except ValueError as error:
         raise ControllerAdmissionError("admission private key is unavailable or invalid") from error
-    if mode & 0o077:
-        raise ControllerAdmissionError("admission private key must be owner-only")
     if not isinstance(key, Ed25519PrivateKey):
         raise ControllerAdmissionError("admission private key is not Ed25519")
     return key
@@ -172,8 +210,16 @@ def _load_private_key(path: Path) -> Ed25519PrivateKey:
 
 def _load_public_key(path: Path) -> Ed25519PublicKey:
     try:
-        key = serialization.load_pem_public_key(path.read_bytes())
-    except (OSError, ValueError) as error:
+        key = serialization.load_pem_public_key(
+            _read_trusted_key_file(
+                path,
+                label="admission public key",
+                owner_only=False,
+            )
+        )
+    except ControllerAdmissionError:
+        raise
+    except ValueError as error:
         raise ControllerAdmissionError("admission public key is unavailable or invalid") from error
     if not isinstance(key, Ed25519PublicKey):
         raise ControllerAdmissionError("admission public key is not Ed25519")
@@ -320,20 +366,39 @@ def sign_payload(
     }
 
 
-def _expected_jobs(value: Sequence[str] | None) -> dict[str, str] | None:
+def _expected_jobs(
+    value: Sequence[str] | None,
+) -> tuple[dict[str, str] | None, dict[str, int] | None]:
     if value is None:
-        return None
+        return None, None
     expected: dict[str, str] = {}
+    expected_ids: dict[str, int] = {}
+    all_have_ids = True
     for item in value:
-        name, separator, profile = item.partition("=")
+        name, separator, binding = item.partition("=")
+        profile, id_separator, job_id_text = binding.partition(":")
         if not separator or not _IDENTIFIER.fullmatch(name) or not _PROFILE.fullmatch(profile):
-            raise ControllerAdmissionError("expected job must use NAME=CONTROLLER_PROFILE")
+            raise ControllerAdmissionError(
+                "expected job must use NAME=CONTROLLER_PROFILE[:JOB_ID]"
+            )
         if name in expected:
             raise ControllerAdmissionError("expected jobs contain a duplicate name")
         expected[name] = profile
+        if id_separator:
+            try:
+                job_id = int(job_id_text)
+            except ValueError as error:
+                raise ControllerAdmissionError(
+                    "expected job ID must be a positive integer"
+                ) from error
+            expected_ids[name] = _positive_integer(job_id, "expected job ID")
+        else:
+            all_have_ids = False
     if not expected:
         raise ControllerAdmissionError("at least one expected job is required")
-    return expected
+    if expected_ids and not all_have_ids:
+        raise ControllerAdmissionError("expected jobs must either all include job IDs or none do")
+    return expected, expected_ids if all_have_ids else None
 
 
 def verify_receipt(
@@ -347,6 +412,9 @@ def verify_receipt(
     expected_sha: str | None = None,
     expected_controller_revision: str | None = None,
     expected_jobs: Mapping[str, str] | None = None,
+    expected_workflow_run_id: int | None = None,
+    expected_workflow_run_attempt: int | None = None,
+    expected_job_ids: Mapping[str, int] | None = None,
     clock_skew: timedelta = timedelta(seconds=60),
 ) -> dict[str, Any]:
     """Verify a receipt and optional exact release expectations."""
@@ -383,13 +451,17 @@ def verify_receipt(
     )
 
     repository = _mapping(payload["repository"], "payload.repository")
+    workflow = _mapping(payload["workflow"], "payload.workflow")
     workflow_jobs = _mapping_jobs(payload["required_jobs"])
+    workflow_job_ids = _mapping_job_ids(payload["required_jobs"])
     exact_expectations: tuple[tuple[str, object, object | None], ...] = (
         ("repository id", repository["id"], expected_repository_id),
         ("repository", repository["full_name"], expected_repository),
         ("protected ref", payload["protected_ref"], expected_ref),
         ("functional source SHA", payload["functional_source_sha"], expected_sha),
         ("controller revision", payload["controller_revision"], expected_controller_revision),
+        ("workflow run id", workflow["run_id"], expected_workflow_run_id),
+        ("workflow run attempt", workflow["run_attempt"], expected_workflow_run_attempt),
     )
     for label, actual, expected in exact_expectations:
         if expected is not None and actual != expected:
@@ -398,6 +470,10 @@ def verify_receipt(
         raise ControllerAdmissionError(
             "receipt required jobs do not match expected job/profile mapping"
         )
+    if expected_job_ids is not None and workflow_job_ids != dict(expected_job_ids):
+        raise ControllerAdmissionError(
+            "receipt required job IDs do not match expected job/ID mapping"
+        )
     return payload
 
 
@@ -405,6 +481,53 @@ def _mapping_jobs(value: object) -> dict[str, str]:
     if not isinstance(value, list):
         raise ControllerAdmissionError("payload.required_jobs must be a list")
     return {str(job["name"]): str(job["controller_profile"]) for job in value}
+
+
+def _mapping_job_ids(value: object) -> dict[str, int]:
+    if not isinstance(value, list):
+        raise ControllerAdmissionError("payload.required_jobs must be a list")
+    return {str(job["name"]): int(job["job_id"]) for job in value}
+
+
+def _validate_replay_store_schema(connection: sqlite3.Connection) -> None:
+    columns = connection.execute("PRAGMA table_info(consumed_receipts)").fetchall()
+    expected_columns = [
+        ("fingerprint", "TEXT", 0, 1),
+        ("key_id", "TEXT", 1, 0),
+        ("admission_id", "TEXT", 1, 0),
+        ("claim_id", "TEXT", 1, 0),
+        ("functional_source_sha", "TEXT", 1, 0),
+        ("consumer", "TEXT", 1, 0),
+        ("consumed_at", "TEXT", 1, 0),
+    ]
+    actual_columns = [
+        (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in columns
+    ]
+    if actual_columns != expected_columns:
+        raise ControllerAdmissionError("receipt replay store schema is invalid")
+
+    unique_columns: set[tuple[str, ...]] = set()
+    for index in connection.execute("PRAGMA index_list(consumed_receipts)").fetchall():
+        if int(index[2]) != 1 or int(index[4]) != 0:
+            continue
+        index_name = str(index[1]).replace('"', '""')
+        rows = connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
+        unique_columns.add(tuple(str(row[2]) for row in rows))
+    required_unique_columns = {
+        ("fingerprint",),
+        ("key_id", "admission_id"),
+        ("key_id", "claim_id"),
+    }
+    if unique_columns != required_unique_columns:
+        raise ControllerAdmissionError("receipt replay store uniqueness is invalid")
+
+    triggers = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+        "AND tbl_name = 'consumed_receipts'"
+    ).fetchall()
+    if triggers:
+        raise ControllerAdmissionError("receipt replay store must not contain triggers")
 
 
 def _consume_verified_receipt(
@@ -442,7 +565,11 @@ def _consume_verified_receipt(
     try:
         replay_store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         parent_status = replay_store_path.parent.stat()
-        if parent_status.st_uid != os.geteuid() or parent_status.st_mode & 0o022:
+        if (
+            not stat.S_ISDIR(parent_status.st_mode)
+            or parent_status.st_uid not in {os.geteuid(), 0}
+            or parent_status.st_mode & 0o022
+        ):
             raise ControllerAdmissionError(
                 "receipt replay store directory is not owner-controlled"
             )
@@ -452,14 +579,18 @@ def _consume_verified_receipt(
         descriptor = os.open(replay_store_path, flags, 0o600)
         try:
             file_status = os.fstat(descriptor)
-            if not stat.S_ISREG(file_status.st_mode) or file_status.st_uid != os.geteuid():
+            if (
+                not stat.S_ISREG(file_status.st_mode)
+                or file_status.st_uid not in {os.geteuid(), 0}
+                or stat.S_IMODE(file_status.st_mode) & 0o077
+            ):
                 raise ControllerAdmissionError(
                     "receipt replay store is not an owner-controlled file"
                 )
         finally:
             os.close(descriptor)
-        os.chmod(replay_store_path, 0o600)
         with sqlite3.connect(replay_store_path, timeout=5) as connection:
+            connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute(
                 """
@@ -476,6 +607,7 @@ def _consume_verified_receipt(
                 )
                 """
             )
+            _validate_replay_store_schema(connection)
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
@@ -520,9 +652,35 @@ def verify_and_consume_receipt(
     expected_sha: str | None = None,
     expected_controller_revision: str | None = None,
     expected_jobs: Mapping[str, str] | None = None,
+    expected_workflow_run_id: int | None = None,
+    expected_workflow_run_attempt: int | None = None,
+    expected_job_ids: Mapping[str, int] | None = None,
     clock_skew: timedelta = timedelta(seconds=60),
 ) -> dict[str, Any]:
     """Verify exact bindings and atomically consume a release admission receipt."""
+
+    required_expectations = {
+        "expected_repository_id": expected_repository_id,
+        "expected_repository": expected_repository,
+        "expected_ref": expected_ref,
+        "expected_sha": expected_sha,
+        "expected_controller_revision": expected_controller_revision,
+        "expected_jobs": expected_jobs,
+        "expected_workflow_run_id": expected_workflow_run_id,
+        "expected_workflow_run_attempt": expected_workflow_run_attempt,
+        "expected_job_ids": expected_job_ids,
+    }
+    missing = [name for name, value in required_expectations.items() if value is None]
+    if missing:
+        raise ControllerAdmissionError(
+            "receipt consumption requires exact expectations: " + ", ".join(missing)
+        )
+    assert expected_jobs is not None
+    assert expected_job_ids is not None
+    if not expected_jobs or set(expected_jobs) != set(expected_job_ids):
+        raise ControllerAdmissionError(
+            "receipt consumption requires matching non-empty job profile and ID expectations"
+        )
 
     payload = verify_receipt(
         receipt,
@@ -534,6 +692,9 @@ def verify_and_consume_receipt(
         expected_sha=expected_sha,
         expected_controller_revision=expected_controller_revision,
         expected_jobs=expected_jobs,
+        expected_workflow_run_id=expected_workflow_run_id,
+        expected_workflow_run_attempt=expected_workflow_run_attempt,
+        expected_job_ids=expected_job_ids,
         clock_skew=clock_skew,
     )
     _consume_verified_receipt(
@@ -575,6 +736,8 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--protected-ref")
     verify.add_argument("--functional-source-sha")
     verify.add_argument("--controller-revision")
+    verify.add_argument("--workflow-run-id", type=int)
+    verify.add_argument("--workflow-run-attempt", type=int)
     verify.add_argument("--require-job", action="append")
     verify.add_argument("--consume-ledger", type=Path)
     verify.add_argument("--consumer")
@@ -601,6 +764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         else:
             receipt = load_json_strict(args.receipt)
+            expected_jobs, expected_job_ids = _expected_jobs(args.require_job)
             if (args.consume_ledger is None) != (args.consumer is None):
                 raise ControllerAdmissionError(
                     "--consume-ledger and --consumer must be provided together"
@@ -616,7 +780,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_ref=args.protected_ref,
                     expected_sha=args.functional_source_sha,
                     expected_controller_revision=args.controller_revision,
-                    expected_jobs=_expected_jobs(args.require_job),
+                    expected_jobs=expected_jobs,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_run_attempt=args.workflow_run_attempt,
+                    expected_job_ids=expected_job_ids,
                 )
             else:
                 payload = verify_receipt(
@@ -627,7 +794,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_ref=args.protected_ref,
                     expected_sha=args.functional_source_sha,
                     expected_controller_revision=args.controller_revision,
-                    expected_jobs=_expected_jobs(args.require_job),
+                    expected_jobs=expected_jobs,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_run_attempt=args.workflow_run_attempt,
+                    expected_job_ids=expected_job_ids,
                 )
             result = {
                 "state": "verified",
