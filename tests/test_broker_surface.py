@@ -101,5 +101,7 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
     assert 'QDEV_RECOVERY_AGENT_SIGNING_KEY: ""' in public
     assert 'QDEV_GITHUB_WEBHOOK_SECRET: ""' in internal
     assert "/etc/qdev-runner/recovery-controller.env" in internal
+    assert "path: /etc/qdev-runner/recovery-controller.env" in internal
+    assert "required: false" in internal
     assert "/etc/qdev-runner/recovery-controller.env" not in public
     assert "QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json" in internal
