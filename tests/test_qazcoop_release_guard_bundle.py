@@ -291,3 +291,16 @@ def test_directory_chain_accepts_fixed_owner_chain(tmp_path: Path) -> None:
         directory.chmod(0o755)
 
     installer._validate_directory_chain(hooks, anchor, uid=os.getuid())
+
+
+def test_version_tree_chain_rejects_replaceable_library_parent(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    anchor = tmp_path / "usr"
+    version_parent = anchor / "local" / "lib" / "qazcoop-release-guard"
+    version_parent.mkdir(parents=True)
+    for directory in (anchor, anchor / "local", version_parent):
+        directory.chmod(0o755)
+    (anchor / "local" / "lib").chmod(0o777)
+
+    with pytest.raises(ValueError, match="managed directory chain is unsafe"):
+        installer._validate_directory_chain(version_parent, anchor, uid=os.getuid())

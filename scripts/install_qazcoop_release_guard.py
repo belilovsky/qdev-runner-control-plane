@@ -508,6 +508,10 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
         if not version_parent.exists():
             version_parent.mkdir(parents=True, mode=0o755)
         _safe_root_directory(version_parent, mode=0o755)
+        # The launcher imports executable Python from this tree. Validate every
+        # ancestor back to /usr after creation so /usr/local or /usr/local/lib
+        # cannot be replaced by a less-trusted user between install and use.
+        _validate_directory_chain(version_parent, Path("/usr"))
         if not version_preexisting:
             version_tmp = Path(tempfile.mkdtemp(prefix=f".{revision}.", dir=version_parent))
             for directory in (version_tmp / "lib/qdev_runner", version_tmp / "bin"):
