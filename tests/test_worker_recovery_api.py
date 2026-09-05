@@ -44,6 +44,7 @@ PLATFORM_AGENT_CERTIFICATE = "b" * 64
 QAZSTACK_AGENT_CERTIFICATE = "c" * 64
 CONTROLLER_REVISION = "1" * 40
 CONTROLLER_RELEASE_DIGEST = "2" * 64
+ACTIVE_CONTROLLER_RELEASE_DIGEST = "sha256:" + CONTROLLER_RELEASE_DIGEST
 AGENT_RELEASE_DIGEST = "sha256:" + "3" * 64
 REGISTRATION_TOKEN = "github-registration-token-must-stay-agent-only"  # noqa: S105
 
@@ -168,7 +169,7 @@ def _settings(
                 "schema": "qdev-controller-release-status-v1",
                 "state": "active",
                 "revision": CONTROLLER_REVISION,
-                "release_digest": CONTROLLER_RELEASE_DIGEST,
+                "release_digest": ACTIVE_CONTROLLER_RELEASE_DIGEST,
                 "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             }
         ),
