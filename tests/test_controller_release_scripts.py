@@ -266,6 +266,20 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert service.count("--project-name qdev-runner") == 2
 
 
+def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
+    provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "qdev-worker-recovery-bindings-provision" in provision
+    assert "recovery-controller.env" in helper
+    assert "recovery-edge.env" in helper
+    assert '"QDEV_OPERATOR_PROXY_SECRET": proxy_secret' in helper
+    assert '"QDEV_RECOVERY_AGENT_SIGNING_KEY": signing_key' in helper
+    assert "secrets_rotated" in helper
+
+
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
