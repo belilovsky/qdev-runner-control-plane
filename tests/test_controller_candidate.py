@@ -20,6 +20,7 @@ RECEIPT_KEY = "controller-candidate-test-receipt-key"
 CURRENT_SHA = "8" * 40
 INTERMEDIATE_SHA = "a" * 40
 NEXT_SHA = "9" * 40
+LATER_SHA = "b" * 40
 
 
 def _template() -> Path:
@@ -271,6 +272,60 @@ def test_prepare_controller_candidate_supersedes_non_deployed_durable_candidate(
         "blocked",
         None,
     ]
+
+
+def test_prepare_controller_candidate_ignores_historical_lane_outcomes(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    digest, snapshot = state.current()
+    intermediate = AdminPlatformCandidate(**snapshot["active_candidate"])
+    ci_passed = state.record_result(
+        expected_sha256=digest,
+        receipt=_evidence(
+            signer,
+            candidate=intermediate,
+            observed_at=snapshot["program"]["updated_at"],
+            lane="ci",
+            outcome="passed",
+        ),
+    )
+    prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    result = prepare_controller_candidate(
+        source_sha=LATER_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert ci_passed.active_status == "ci_passed"
+    assert result["status"] == "completed"
+    _, current = state.current()
+    entry = current["entries"][0]
+    assert entry["attempts"][-2]["source_sha"] == NEXT_SHA
+    assert entry["attempts"][-2]["terminal_state"] == "blocked"
+    assert entry["results"][-2]["release_id"] == f"controller-v3-{NEXT_SHA}"
+    assert entry["results"][-2]["lane"] == "ci"
+    assert entry["results"][-2]["outcome"] == "blocked"
+    assert current["active_candidate"]["source_sha"] == LATER_SHA
 
 
 def test_prepare_controller_candidate_rejects_durable_candidate_with_deploy_evidence(
