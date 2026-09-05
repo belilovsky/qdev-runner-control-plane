@@ -268,3 +268,26 @@ def test_safe_root_directory_rejects_existing_symlink(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="managed directory is unsafe"):
         installer._safe_root_directory(link, mode=0o750)
+
+
+def test_directory_chain_rejects_replaceable_parent(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    anchor = tmp_path / "anchor"
+    repository = anchor / "qazcoop.git"
+    hooks = repository / "hooks"
+    hooks.mkdir(parents=True)
+    anchor.chmod(0o777)
+
+    with pytest.raises(ValueError, match="managed directory chain is unsafe"):
+        installer._validate_directory_chain(hooks, anchor, uid=os.getuid())
+
+
+def test_directory_chain_accepts_fixed_owner_chain(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    anchor = tmp_path / "anchor"
+    hooks = anchor / "qazcoop.git" / "hooks"
+    hooks.mkdir(parents=True)
+    for directory in (anchor, anchor / "qazcoop.git", hooks):
+        directory.chmod(0o755)
+
+    installer._validate_directory_chain(hooks, anchor, uid=os.getuid())

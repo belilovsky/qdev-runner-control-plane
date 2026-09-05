@@ -290,6 +290,24 @@ def _validate_root_directory(path: Path) -> None:
         raise ValueError(f"managed parent directory is unsafe: {path}")
 
 
+def _validate_directory_chain(path: Path, anchor: Path, *, uid: int = 0) -> None:
+    if path != anchor and anchor not in path.parents:
+        raise ValueError("managed directory chain is outside its trust anchor")
+    current = path
+    while True:
+        status = current.lstat()
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or stat.S_ISLNK(status.st_mode)
+            or status.st_uid != uid
+            or stat.S_IMODE(status.st_mode) & 0o022
+        ):
+            raise ValueError(f"managed directory chain is unsafe: {current}")
+        if current == anchor:
+            return
+        current = current.parent
+
+
 def _validate_installed_version(
     version_root: Path,
     manifest: dict[str, Any],
@@ -439,8 +457,12 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
     trust_root = trust_parent / "release-controller"
     launcher = Path("/usr/local/sbin/qdev-controller-verify-admission")
     hook = candidate / "hooks/update"
-    _validate_root_directory(hook.parent)
-    _validate_root_directory(launcher.parent)
+    # The hook's directory cannot be protected if a less-trusted owner can
+    # rename an ancestor after validation. The production bare repository and
+    # its /opt anchor are root-controlled; root compromise is outside this
+    # host-local guard's trust boundary.
+    _validate_directory_chain(hook.parent, Path("/opt"))
+    _validate_directory_chain(launcher.parent, Path("/usr"))
     _managed_file(hook, HOOK_MARKER, allow_legacy_hook=True)
     _managed_file(launcher, LAUNCHER_MARKER)
     version_preexisting = version_root.exists() or version_root.is_symlink()
