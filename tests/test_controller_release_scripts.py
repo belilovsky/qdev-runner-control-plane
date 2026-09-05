@@ -283,10 +283,12 @@ def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() ->
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
 
     assert "/etc/qdev-runner/controller-release.json:" not in compose
     assert "/etc/qdev-runner/admin-platform-ledger.yml:" not in compose
     assert "/var/lib/qdev-runner/controller-status:" in compose
+    assert "/var/lib/qdev-runner/controller-status:" in public
     assert "/var/lib/qdev-runner/admin-platform-state:" in compose
     assert "QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/" in compose
     assert "QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/" in compose
