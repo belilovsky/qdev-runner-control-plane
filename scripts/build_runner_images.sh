@@ -29,7 +29,11 @@ trap cleanup_browser_export EXIT
 # does not hide those bytes from layer-aware secret scanners.  Export the
 # validated final rootfs and import it as one new layer so the published image
 # cannot carry inaccessible credential material in its history.
-"$engine" build --pull --target browser \
+# Build the fully validated source rootfs directly. Building the scratch
+# `browser` target here would materialize a second copy of the whole
+# Playwright filesystem before the export/import flattening below, doubling
+# peak disk usage without changing the published artifact.
+"$engine" build --pull --target browser-build \
   --tag "${browser_staging_image}" images/runner
 browser_export_root=$(mktemp -d)
 browser_container=$("$engine" create "${browser_staging_image}")

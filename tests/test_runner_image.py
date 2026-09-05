@@ -68,6 +68,8 @@ def test_browser_release_is_flattened_before_publication() -> None:
     builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
 
     assert 'browser_staging_image="${browser_image}-rootfs"' in builder
+    assert '"$engine" build --pull --target browser-build' in builder
+    assert '"$engine" build --pull --target browser \\' not in builder
     assert '"$engine" export --output "${browser_export_root}/rootfs.tar"' in builder
     assert '"$engine" import' in builder
     assert "A Dockerfile whiteout" in builder
