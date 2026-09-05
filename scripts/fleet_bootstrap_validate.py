@@ -92,9 +92,13 @@ def _https_url(
     if allowed_host is not None and allowed_hosts is not None:
         raise BootstrapValidationError(f"{name} has conflicting host allowlists")
     if allowed_host is not None and parsed.hostname != allowed_host:
-        raise BootstrapValidationError(f"{name} host is not allowlisted")
+        raise BootstrapValidationError(
+            f"{name} host {parsed.hostname!r} is not allowlisted"
+        )
     if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
-        raise BootstrapValidationError(f"{name} host is not allowlisted")
+        raise BootstrapValidationError(
+            f"{name} host {parsed.hostname!r} is not allowlisted"
+        )
     return value
 
 
