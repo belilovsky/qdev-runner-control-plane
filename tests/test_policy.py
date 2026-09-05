@@ -185,6 +185,16 @@ def test_source_config_only_changes_qdevrun_ordinary_admission() -> None:
     assert policy.profiles["qdev-ci-browser"].disk_mb == 5120
 
 
+def test_source_config_bounds_qazknowledge_fifo_head_admission() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert policy.repository_profile_disk_mb[
+        ("belilovsky/qazknowledge", "qdev-ci")
+    ] == 4096
+    assert policy.profiles["qdev-ci"].disk_mb == 12288
+
+
 def test_policy_rejects_casefold_repository_collision(
     policy_files: tuple[Path, Path],
 ) -> None:

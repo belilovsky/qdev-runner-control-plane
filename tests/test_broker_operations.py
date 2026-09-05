@@ -1326,7 +1326,7 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
 
 
 def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub())
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
     stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
     _seed_pending_job(
@@ -1368,6 +1368,22 @@ def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Pat
         }
     ]
     assert payload["immutable_tuple"]["job_id"] == 42
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
 
 
 def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: Path) -> None:

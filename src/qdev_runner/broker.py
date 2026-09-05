@@ -760,6 +760,71 @@ def create_app(
                 status_code=503, detail="admin platform ledger is unavailable"
             ) from error
 
+    def admissible_profile_queue(
+        profile_name: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return one profile FIFO with only inactive admin candidates omitted.
+
+        The same fail-closed classification is used both when the operator
+        signs an exact scope and when the worker consumes it. Malformed managed
+        rows remain in FIFO, while an inactive admin-platform candidate cannot
+        indefinitely hold an unrelated profile queue.
+        """
+
+        profile_queue: list[dict[str, Any]] = []
+        fifo_skipped: list[dict[str, Any]] = []
+        queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        registry = managed_registry()
+        for queued in store.pending_jobs():
+            try:
+                queued_profile = policy.profile_for_labels(
+                    str(queued["repository"]), _json_strings(queued["labels_json"])
+                )
+            except PolicyError:
+                continue
+            if queued_profile.name != profile_name:
+                continue
+            try:
+                queued_managed = registry.validate_claim_if_managed(
+                    str(queued["repository"]), queued_profile.name
+                )
+            except ManagedRegistryError:
+                # Keep malformed managed rows in the strict queue. They must
+                # not be silently bypassed by this observational filter.
+                profile_queue.append(queued)
+                continue
+            if (
+                queued_managed is not None
+                and queued_managed.admission_ledger == "admin-platform"
+            ):
+                if queued_admin_platform_ledger is None:
+                    try:
+                        queued_admin_platform_ledger = admin_platform_ledger()
+                    except AdminPlatformLedgerError as exc:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"admin platform ledger unavailable: {exc}",
+                        ) from exc
+                admitted, reason = queued_admin_platform_ledger.classify_admission(
+                    queued_managed.entry_id, str(queued["head_sha"])
+                )
+                if not admitted:
+                    assert reason is not None
+                    fifo_skipped.append(
+                        {
+                            "job_id": int(queued["job_id"]),
+                            "repository": str(queued["repository"]),
+                            "run_id": int(queued["run_id"]),
+                            "head_sha": str(queued["head_sha"]),
+                            "profile": queued_profile.name,
+                            "managed_registry_entry": queued_managed.entry_id,
+                            "reason": reason,
+                        }
+                    )
+                    continue
+            profile_queue.append(queued)
+        return profile_queue, fifo_skipped
+
     def managed_release_ledger() -> ManagedReleaseLedger:
         try:
             return ManagedReleaseLedger(settings.managed_release_ledger_path)
@@ -1742,61 +1807,7 @@ def create_app(
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        profile_queue: list[dict[str, Any]] = []
-        fifo_skipped: list[dict[str, Any]] = []
-        queued_admin_platform_ledger: AdminPlatformLedger | None = None
-        for queued in store.pending_jobs():
-            try:
-                queued_profile = policy.profile_for_labels(
-                    str(queued["repository"]), _json_strings(queued["labels_json"])
-                )
-            except PolicyError:
-                continue
-            if queued_profile.name == profile.name:
-                try:
-                    queued_managed = managed_registry().validate_claim_if_managed(
-                        str(queued["repository"]), queued_profile.name
-                    )
-                except ManagedRegistryError:
-                    # Keep malformed managed rows in the strict queue.  They
-                    # must not be silently bypassed by this observational
-                    # stale-candidate filter.
-                    profile_queue.append(queued)
-                    continue
-                if (
-                    queued_managed is not None
-                    and queued_managed.admission_ledger == "admin-platform"
-                ):
-                    if queued_admin_platform_ledger is None:
-                        try:
-                            queued_admin_platform_ledger = admin_platform_ledger()
-                        except AdminPlatformLedgerError as exc:
-                            raise HTTPException(
-                                status_code=503,
-                                detail=f"admin platform ledger unavailable: {exc}",
-                            ) from exc
-                    admitted, reason = queued_admin_platform_ledger.classify_admission(
-                        queued_managed.entry_id, str(queued["head_sha"])
-                    )
-                    if not admitted:
-                        # This row is retained as evidence in the signed
-                        # receipt, but cannot hold an unrelated profile FIFO.
-                        # Direct requests for the same managed row still use
-                        # validate_admission above and remain fail-closed.
-                        assert reason is not None
-                        fifo_skipped.append(
-                            {
-                                "job_id": int(queued["job_id"]),
-                                "repository": str(queued["repository"]),
-                                "run_id": int(queued["run_id"]),
-                                "head_sha": str(queued["head_sha"]),
-                                "profile": queued_profile.name,
-                                "managed_registry_entry": queued_managed.entry_id,
-                                "reason": reason,
-                            }
-                        )
-                        continue
-                profile_queue.append(queued)
+        profile_queue, fifo_skipped = admissible_profile_queue(profile.name)
         if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
 
@@ -2413,6 +2424,13 @@ def create_app(
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
         repository = active_directive.repository if active_directive is not None else None
+        fifo_skip_job_ids = frozenset[int]()
+        if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            skipped: set[int] = set()
+            for profile_name in request.profiles:
+                _, profile_skipped = admissible_profile_queue(profile_name)
+                skipped.update(int(item["job_id"]) for item in profile_skipped)
+            fifo_skip_job_ids = frozenset(skipped)
         claimed = store.claim(
             request.worker_name,
             tuple(request.profiles),
@@ -2424,6 +2442,7 @@ def create_app(
             claim_scope=claim_scope,
             repository=repository,
             head_sha=active_directive.head_sha if active_directive is not None else None,
+            fifo_skip_job_ids=fifo_skip_job_ids,
         )
         if claimed is None:
             return Response(status_code=204)

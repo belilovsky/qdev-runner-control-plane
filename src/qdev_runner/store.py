@@ -810,7 +810,12 @@ class Store:
         head_sha: str | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
+        fifo_skip_job_ids: frozenset[int] = frozenset(),
     ) -> dict[str, Any] | None:
+        if fifo_skip_job_ids and (
+            claim_scope is None or claim_scope.schema != SCHEMA_V2
+        ):
+            raise ValueError("FIFO skips require an exact v2 claim scope")
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -849,6 +854,8 @@ class Store:
                 # controller endpoint: a worker must not be able to bypass FIFO
                 # by invoking the store directly.
                 for row in pending_rows:
+                    if int(row["job_id"]) in fifo_skip_job_ids:
+                        continue
                     # A capacity directive is already bound by the controller to
                     # one validated repository/SHA tuple.  Compute FIFO within
                     # that bounded candidate set; otherwise an older row that the
