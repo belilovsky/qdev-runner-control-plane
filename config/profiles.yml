@@ -17,6 +17,13 @@ repository_admission_disk_mb:
   # worker's independent 4.5 GiB running floor and all controller checks.
   belilovsky/qazposter:
     qdev-ci: 4096
+  # QazKnowledge's exact FIFO-head workflow has a 1.9 MiB source tree and one
+  # pinned development dependency (jsonschema). It checks JSON, compiles Python
+  # sources and runs the repository's deterministic unit/foundation tests; it
+  # does not build an image or launch services. Reserve 4 GiB for this exact
+  # repository/profile while retaining the worker's independent 4.5 GiB floor.
+  belilovsky/qazknowledge:
+    qdev-ci: 4096
   # Platform Portal's required qdev-runner-contract job is a bounded
   # dependency-free policy check: checkout, pinned Python 3.12 and one local
   # script. Reserve 4 GiB for that exact repository/profile while retaining
