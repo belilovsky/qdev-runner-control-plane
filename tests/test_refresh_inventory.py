@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import json
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -78,3 +80,110 @@ def test_declared_profiles_treat_missing_contract_as_legacy(
 
     monkeypatch.setattr(module, "api", missing)
     assert module.declared_profiles("belilovsky/legacy", ref="main") == set()
+
+
+def test_validate_add_candidate_rejects_identity_drift() -> None:
+    module = load_refresh_inventory()
+    repo = {
+        "id": 42,
+        "nameWithOwner": "belilovsky/qazcoop",
+        "owner": "belilovsky",
+        "isPrivate": True,
+        "isArchived": False,
+        "defaultBranchRef": {"name": "main"},
+    }
+
+    with pytest.raises(RuntimeError, match="default branch expected"):
+        module.validate_add_candidate(
+            repo,
+            owner="belilovsky",
+            expected_repository_id=42,
+            expected_full_name="belilovsky/qazcoop",
+            expected_default_branch="codex/qazcoop-mvp",
+        )
+
+
+def test_add_repository_preserves_existing_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_refresh_inventory()
+    inventory = tmp_path / "inventory"
+    inventory.mkdir()
+    original_record = {
+        "id": 1,
+        "full_name": "belilovsky/existing",
+        "private": True,
+        "archived": False,
+        "default_branch": "main",
+        "profiles": ["qdev-ci"],
+        "workflow_count": 1,
+        "workflow_files": [],
+        "preserved_extension": {"value": "exact"},
+    }
+    (inventory / "repos.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "qdev-runner-inventory-v1",
+                "generated_at": "2026-01-01T00:00:00Z",
+                "owner": "belilovsky",
+                "active_repository_count": 103,
+                "runner_repository_count": 1,
+                "repositories": [original_record],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        module,
+        "repository_metadata",
+        lambda _: {
+            "id": 42,
+            "nameWithOwner": "belilovsky/qazcoop",
+            "owner": "belilovsky",
+            "isPrivate": True,
+            "isArchived": False,
+            "defaultBranchRef": {"name": "codex/qazcoop-mvp"},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "inspect_repo",
+        lambda repo, ref: {
+            "id": repo["id"],
+            "full_name": repo["nameWithOwner"],
+            "private": True,
+            "archived": False,
+            "default_branch": "codex/qazcoop-mvp",
+            "profiles": ["qdev-ci"],
+            "workflow_count": 1,
+            "workflow_files": [],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "refresh_inventory.py",
+            "--add-repository",
+            "belilovsky/qazcoop",
+            "--ref",
+            "exact-sha",
+            "--expected-repository-id",
+            "42",
+            "--expected-full-name",
+            "belilovsky/qazcoop",
+            "--expected-default-branch",
+            "codex/qazcoop-mvp",
+            "--expected",
+            "2",
+        ],
+    )
+
+    module.main()
+
+    payload = json.loads((inventory / "repos.json").read_text(encoding="utf-8"))
+    assert payload["active_repository_count"] == 103
+    assert payload["runner_repository_count"] == 2
+    assert payload["repositories"][0] == original_record
+    assert payload["repositories"][1]["full_name"] == "belilovsky/qazcoop"
