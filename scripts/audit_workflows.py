@@ -227,11 +227,21 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
     contract_version = str(contract.get("schema_version") or "")
     if contract and contract_version not in {"qdev-runner-v1", "qdev-runner-v2"}:
         violations.append(violation(contract_path, 1, "invalid-contract-version"))
-    allow_hosted = contract_version == "qdev-runner-v2"
-    if allow_hosted and contract.get("execution_mode") != "github-hosted-primary":
+    execution_mode = str(contract.get("execution_mode") or "")
+    allow_hosted = (
+        contract_version == "qdev-runner-v2"
+        and execution_mode == "github-hosted-primary"
+    )
+    self_hosted_primary = (
+        contract_version == "qdev-runner-v2"
+        and execution_mode == "self-hosted-primary"
+    )
+    if contract_version == "qdev-runner-v2" and not (allow_hosted or self_hosted_primary):
         violations.append(violation(contract_path, 1, "invalid-execution-mode"))
     if allow_hosted and contract.get("self_hosted_recovery") is not True:
         violations.append(violation(contract_path, 1, "self-hosted-recovery-not-enabled"))
+    if self_hosted_primary and contract.get("self_hosted_recovery") is True:
+        violations.append(violation(contract_path, 1, "hosted-recovery-not-allowed"))
     allowed_profiles = set(contract.get("profiles", []))
     release_runners = {
         value

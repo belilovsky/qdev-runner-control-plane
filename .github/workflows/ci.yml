@@ -25,7 +25,7 @@ jobs:
       - Linux
       - X64
       - qdev-ci
-      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-verify"
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-controller-ci"
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -41,3 +41,30 @@ jobs:
           QDEV_EXPECTED_SHA: ${{ github.sha }}
           QDEV_MANAGED_CI: "true"
         run: python scripts/verify_controller_ci.py --lane managed
+      - name: Generate native test reports
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/controller
+          set +e
+          python -m coverage run -m pytest -q --junitxml=artifacts/controller/junit.xml
+          test_status=$?
+          python -m coverage xml -o artifacts/controller/coverage.xml
+          coverage_status=$?
+          set -e
+          if [ "$coverage_status" -ne 0 ] && [ "$test_status" -eq 0 ]; then
+            test_status="$coverage_status"
+          fi
+          exit "$test_status"
+      - name: Upload native test reports
+        if: always()
+        env:
+          QDEV_TEST_SUITE: controller
+          QDEV_TEST_ATTEMPT: ${{ github.run_attempt }}
+          QDEV_TEST_WORKFLOW: .github/workflows/ci.yml
+          QDEV_TEST_PROFILE: qdev-ci
+          QDEV_TEST_JUNIT: artifacts/controller/junit.xml
+          QDEV_TEST_COBERTURA: artifacts/controller/coverage.xml
+        run: .github/scripts/qdev-upload-test-report.sh
+>>>>>>> 7cab81e (feat: complete centralized test receipt controls)

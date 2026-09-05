@@ -1889,6 +1889,24 @@
           "artifact_refs": 0,
           "ghcr_refs": 0
         }
+      ],
+      "quality": {
+        "suites": [
+          {
+            "id": "platform",
+            "required": true,
+            "critical_scenarios": ["operator-quality-summary", "operator-retry"]
+          }
+        ]
+      },
+      "test_workflows": [
+        {
+          "path": ".github/workflows/quality.yml",
+          "suites": ["platform"],
+          "profile": "qdev-ci-browser",
+          "refs": ["master"],
+          "required": true
+        }
       ]
     },
     {
@@ -3173,6 +3191,24 @@
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0
+        }
+      ],
+      "quality": {
+        "suites": [
+          {
+            "id": "controller",
+            "required": true,
+            "critical_scenarios": ["receipt-integrity", "operator-retry"]
+          }
+        ]
+      },
+      "test_workflows": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "suites": ["controller"],
+          "profile": "qdev-ci",
+          "refs": ["main"],
+          "required": true
         }
       ]
     },

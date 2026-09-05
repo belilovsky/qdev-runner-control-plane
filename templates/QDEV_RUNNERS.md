@@ -1,19 +1,12 @@
 # QDev GitHub Actions execution
 
-Paid GitHub-hosted compute is the normal execution path. The centralized,
-ephemeral QDev runner pool is the explicit recovery path when the hosted
-compute or billing lane is unavailable. Both paths still depend on GitHub as
-the workflow orchestrator and on the GitHub API.
+The centralized, ephemeral QDev runner pool is the primary execution path.
+Paid GitHub-hosted compute is not a fallback: a capacity failure must remain
+visible as `runner_blocked` infrastructure state. GitHub remains the workflow
+orchestrator and API provider.
 
-Normal jobs use a static GitHub-hosted selector:
-
-```yaml
-runs-on: ubuntu-latest
-```
-
-Do not use a dynamic selector as an implicit fallback. A queued job cannot
-reliably change pools after dispatch. Keep a separately dispatchable recovery
-workflow or reusable workflow and record which lane ran the exact SHA.
+Every test-only job uses a static self-hosted selector and a unique lease label;
+do not use a dynamic selector as an implicit fallback.
 
 ## Recovery labels
 
@@ -138,10 +131,8 @@ Keep `.github/qdev-runner.yml`, this document, the root `AGENTS.md` policy, and
 python3 .github/scripts/qdev-runner-policy.py --root .
 ```
 
-The required `qdev-runner-contract` check runs on GitHub-hosted compute. QDev
-self-hosted profiles may appear only in filenames declared under
-`recovery_workflows`, and those workflows must be manual-only. The separate
-`runner-smoke` workflow proves the QDev recovery path. New repositories
+The required `qdev-runner-contract` check runs on the self-hosted QDev pool.
+The separate manual `runner-smoke` workflow proves the recovery path. New repositories
 must be registered through the canonical starter bundle in
 `belilovsky/qdev-runner-control-plane`; do not register a standalone runner.
 

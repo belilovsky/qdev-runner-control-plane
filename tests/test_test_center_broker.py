@@ -420,3 +420,29 @@ def test_conflicting_second_junit_is_rejected_without_overwriting_source(
     assert detail.status_code == 200
     assert len(detail.json()["reports"]) == 1
     assert detail.json()["reports"][0]["sha256"] == hashlib.sha256(first).hexdigest()
+
+
+def test_operator_report_download_is_id_bound_and_fail_closed(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings, _store, client, _github = _claimed_client(tmp_path, policy_files)
+    body = b"<testsuite><testcase name='ok'/></testsuite>"
+    uploaded = client.put(
+        f"/artifacts/belilovsky/private-repo/{SHA}/100/1/unit/junit.xml",
+        content=body,
+        headers=_upload_headers(settings, body, fmt="junit"),
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    report_id = uploaded.json()["test_report"]["id"]
+    operator = {"X-Qdev-Operator-Token": settings.operator_token}
+    downloaded = client.get(f"/operator/v1/test-reports/{report_id}", headers=operator)
+    assert downloaded.status_code == 200
+    assert downloaded.content == body
+    assert downloaded.headers["x-qdev-report-sha256"] == hashlib.sha256(body).hexdigest()
+    assert client.get("/operator/v1/test-reports/999999", headers=operator).status_code == 404
+    assert client.get(f"/operator/v1/test-reports/{report_id}").status_code == 401
+    target = settings.artifact_root.joinpath(
+        "belilovsky/private-repo", SHA, "100", "1", "unit", "junit.xml"
+    )
+    target.write_bytes(b"tampered")
+    assert client.get(f"/operator/v1/test-reports/{report_id}", headers=operator).status_code == 409

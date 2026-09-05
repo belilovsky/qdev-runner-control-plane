@@ -10,18 +10,18 @@ import re
 import secrets
 import ssl
 import stat
-from collections.abc import Callable
-from collections.abc import AsyncIterator
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-import time
-import uuid
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform import (
@@ -88,11 +88,6 @@ from .release_lane import (
 )
 from .settings import BrokerSettings
 from .store import Store
-from .worker_recovery import (
-    WorkerRecoveryConfigurationError,
-    WorkerRecoveryController,
-    WorkerRecoveryError,
-)
 from .test_reports import (
     MAX_REPORT_BYTES,
     TestReportError,
@@ -101,6 +96,11 @@ from .test_reports import (
     parse_junit,
     parse_lcov,
     report_digest,
+)
+from .worker_recovery import (
+    WorkerRecoveryConfigurationError,
+    WorkerRecoveryController,
+    WorkerRecoveryError,
 )
 
 LOGGER = logging.getLogger("qdev-runner-broker")
@@ -4329,6 +4329,67 @@ def create_app(
             "reports": store.test_reports_for_job(job_id),
             "retry_attempts": store.retry_attempts_for_job(job_id),
         }
+
+    @app.get("/operator/v1/test-reports/{report_id}")
+    def operator_test_report(
+        report_id: int,
+        request: Request,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_auth_request_user: str | None = Header(default=None),
+        x_auth_request_email: str | None = Header(default=None),
+        x_auth_request_groups: str | None = Header(default=None),
+    ) -> Response:
+        """Download a stored source report through its server-issued id.
+
+        The database row, not a path supplied by the caller, selects the
+        artifact.  Resolve it beneath the configured artifact root and verify
+        the recorded size and digest before serving it, so traversal, symlink
+        escape and interrupted writes fail closed.
+        """
+
+        require_operator(
+            request,
+            x_qdev_operator_token,
+            x_auth_request_user,
+            x_auth_request_email,
+            x_auth_request_groups,
+        )
+        if report_id < 1:
+            raise HTTPException(status_code=404, detail="report not found")
+        report = store.test_report(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        root = settings.artifact_root.resolve()
+        source = Path(str(report.get("storage_path") or ""))
+        try:
+            resolved = source.resolve(strict=True)
+        except (FileNotFoundError, OSError) as error:
+            raise HTTPException(status_code=404, detail="report is unavailable") from error
+        if not resolved.is_file() or not resolved.is_relative_to(root):
+            raise HTTPException(status_code=404, detail="report is unavailable")
+        try:
+            size = resolved.stat().st_size
+            digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        except OSError as error:
+            raise HTTPException(status_code=404, detail="report is unavailable") from error
+        if size != int(report.get("size") or -1) or not secrets.compare_digest(
+            digest, str(report.get("sha256") or "")
+        ):
+            raise HTTPException(status_code=409, detail="report integrity check failed")
+        media_type = {
+            "junit": "application/xml",
+            "cobertura": "application/xml",
+            "lcov": "text/plain",
+            "qdev-test-run": "application/json",
+            "json": "application/json",
+        }.get(str(report.get("format") or "").lower(), "application/octet-stream")
+        filename = Path(str(report.get("path") or "report")).name or "report"
+        return FileResponse(
+            resolved,
+            media_type=media_type,
+            filename=filename,
+            headers={"X-Qdev-Report-SHA256": str(report["sha256"])},
+        )
 
     @app.get("/operator/v1/test-summary")
     def operator_test_summary(

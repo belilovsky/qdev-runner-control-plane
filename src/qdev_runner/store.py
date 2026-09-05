@@ -535,6 +535,27 @@ CREATE TABLE IF NOT EXISTS test_reports (
 );
 CREATE INDEX IF NOT EXISTS test_reports_job_idx ON test_reports(job_id, created_at DESC);
 
+-- Measured coverage baselines are immutable observations.  A new main-branch
+-- commit creates a new row; re-delivery for the same commit/metric/scope is
+-- idempotent and conflicting measurements are rejected.
+CREATE TABLE IF NOT EXISTS coverage_baselines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    covered INTEGER NOT NULL CHECK(covered >= 0),
+    denominator INTEGER NOT NULL CHECK(denominator > 0),
+    percentage REAL NOT NULL CHECK(percentage >= 0 AND percentage <= 100),
+    measured_at TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    digest TEXT NOT NULL,
+    UNIQUE(repository, ref, metric, scope, commit_sha)
+);
+CREATE INDEX IF NOT EXISTS coverage_baselines_latest_idx
+    ON coverage_baselines(repository, ref, metric, scope, created_at DESC, id DESC);
+
 -- A dispatch intent is an outbox entry in the same durable store as the
 -- schedule.  It makes the gap between the SQLite commit and GitHub dispatch
 -- visible after a restart instead of losing a due run or blindly duplicating
@@ -1327,6 +1348,140 @@ class Store:
             value["coverage"] = coverage if isinstance(coverage, list) else [{"status": "unknown"}]
             result.append(value)
         return result
+
+    def test_report(self, report_id: int) -> dict[str, Any] | None:
+        """Return one source report by its server-issued identifier.
+
+        Callers must still authorize access and validate the resolved storage
+        path.  Keeping the lookup keyed by the database id prevents a client
+        from turning the report endpoint into an arbitrary file reader.
+        """
+
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM test_reports WHERE id=?", (int(report_id),)
+            ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        raw = value.pop("coverage_json", "[]")
+        try:
+            coverage = json.loads(raw) if raw else []
+        except (TypeError, json.JSONDecodeError):
+            coverage = [{"status": "unknown"}]
+        value["coverage"] = coverage if isinstance(coverage, list) else [{"status": "unknown"}]
+        return value
+
+    def record_coverage_baseline(
+        self,
+        *,
+        repository: str,
+        ref: str,
+        metric: str,
+        scope: str,
+        commit_sha: str,
+        covered: int,
+        denominator: int,
+        measured_at: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist one measured baseline with idempotent delivery semantics."""
+
+        if not isinstance(covered, int) or isinstance(covered, bool) or covered < 0:
+            raise ValueError("baseline covered count is invalid")
+        if (
+            not isinstance(denominator, int)
+            or isinstance(denominator, bool)
+            or denominator < 1
+            or covered > denominator
+        ):
+            raise ValueError("baseline denominator is invalid")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (repository, ref, metric, scope, commit_sha, measured_at)
+        ):
+            raise ValueError("baseline identity is invalid")
+        percentage = round(covered * 100 / denominator, 4)
+        digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "repository": repository,
+                    "ref": ref,
+                    "metric": metric,
+                    "scope": scope,
+                    "commit_sha": commit_sha,
+                    "covered": covered,
+                    "denominator": denominator,
+                    "percentage": percentage,
+                    "measured_at": measured_at,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT * FROM coverage_baselines WHERE repository=? AND ref=? "
+                    "AND metric=? AND scope=? AND commit_sha=?",
+                    (repository, ref, metric, scope, commit_sha),
+                ).fetchone()
+                if existing is not None:
+                    if str(existing["digest"]) != digest:
+                        raise ValueError("conflicting coverage baseline")
+                    connection.execute("COMMIT")
+                    return dict(existing), True
+                cursor = connection.execute(
+                    "INSERT INTO coverage_baselines(repository, ref, metric, scope, commit_sha, "
+                    "covered, denominator, percentage, measured_at, created_at, digest) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        repository,
+                        ref,
+                        metric,
+                        scope,
+                        commit_sha,
+                        covered,
+                        denominator,
+                        percentage,
+                        measured_at,
+                        now,
+                        digest,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM coverage_baselines WHERE id=?", (cursor.lastrowid,)
+                ).fetchone()
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        if row is None:  # pragma: no cover - sqlite guarantees the inserted row
+            raise RuntimeError("coverage baseline insert did not return a row")
+        return dict(row), False
+
+    def coverage_baselines(
+        self,
+        *,
+        repository: str | None = None,
+        ref: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM coverage_baselines"
+        clauses: list[str] = []
+        values: list[Any] = []
+        if repository is not None:
+            clauses.append("repository=?")
+            values.append(repository)
+        if ref is not None:
+            clauses.append("ref=?")
+            values.append(ref)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY repository, ref, metric, scope, created_at DESC, id DESC"
+        with self.connect() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
 
     def test_run_for_attempt(
         self, job_id: int, suite: str, attempt: int

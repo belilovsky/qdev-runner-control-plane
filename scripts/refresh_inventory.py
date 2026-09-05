@@ -258,6 +258,23 @@ def validate_refreshed_identity(
             f"expected id {expected_id}, got {refreshed.get('id')}"
         )
 
+def preserve_project_contract(
+    refreshed: dict[str, Any], previous: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Preserve controller-owned quality policy during GitHub refreshes.
+
+    The provider metadata is regenerated, while explicit test-only workflow
+    registrations and the optional quality/suites projection are signed
+    controller inputs.  A refresh must not silently erase those fields.
+    """
+
+    if not isinstance(previous, dict):
+        return refreshed
+    for key in ("test_workflows", "quality", "suites"):
+        if key in previous:
+            refreshed[key] = previous[key]
+    return refreshed
+
 
 def write_inventory(payload: dict[str, Any]) -> None:
     repositories = payload["repositories"]
@@ -449,7 +466,9 @@ def main() -> None:
                 validate_refreshed_identity(repo, item)
             except RuntimeError as exc:
                 parser.error(str(exc))
-            refreshed[item["full_name"]] = item
+            refreshed[item["full_name"]] = preserve_project_contract(
+                item, existing_by_name.get(item["full_name"])
+            )
         refreshed_merged: list[dict[str, Any]] = []
         for item in existing_repositories:
             # The shape check above narrows this at runtime; the explicit copy
@@ -495,13 +514,23 @@ def main() -> None:
         )
     )
     active = [repo for repo in repos if not repo["isArchived"]]
+    existing_payload = json.loads(
+        (ROOT / "inventory/repos.json").read_text(encoding="utf-8")
+    )
+    existing_by_name = {
+        str(item.get("full_name")): item
+        for item in existing_payload.get("repositories", [])
+        if isinstance(item, dict) and item.get("full_name")
+    }
     inspected: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(inspect_repo, repo) for repo in active]
         for future in as_completed(futures):
             item = future.result()
             if item:
-                inspected.append(item)
+                inspected.append(
+                    preserve_project_contract(item, existing_by_name.get(item["full_name"]))
+                )
     inspected.sort(key=lambda item: item["full_name"].lower())
     if len(inspected) != args.expected:
         raise SystemExit(
