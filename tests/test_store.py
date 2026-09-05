@@ -5,6 +5,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
@@ -257,6 +259,14 @@ def test_exact_capacity_directive_uses_fifo_within_its_validated_tuple(tmp_path:
     assert claimed is not None
     assert claimed["job_id"] == 101
     assert store.job_status(100) == "pending"
+
+
+def test_fifo_skip_requires_an_exact_v2_scope(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("older", 100))
+
+    with pytest.raises(ValueError, match="FIFO skips require an exact v2 claim scope"):
+        store.claim("worker-1", ("qdev-ci",), fifo_skip_job_ids=frozenset({100}))
 
 
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
