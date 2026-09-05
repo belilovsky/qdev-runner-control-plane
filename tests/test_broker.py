@@ -8,6 +8,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import (
@@ -96,6 +98,29 @@ def test_github_transport_errors_are_broker_recoverable(tmp_path: Path) -> None:
     )
     with pytest.raises(GitHubError, match="transport failure"):
         client._request("GET", "/rate_limit")
+    client.close()
+
+
+def test_repository_installation_is_resolved_with_app_identity(tmp_path: Path) -> None:
+    def github(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/belilovsky/example/installation"
+        assert request.headers["Authorization"].startswith("Bearer ")
+        return httpx.Response(200, json={"id": 155673413})
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_path = tmp_path / "app.pem"
+    key_path.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    client = GitHubAppClient(
+        "1", key_path, transport=httpx.MockTransport(github)
+    )
+    assert client.repository_installation("belilovsky/example") == 155673413
     client.close()
 
 

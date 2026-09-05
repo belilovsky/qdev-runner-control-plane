@@ -125,3 +125,24 @@ whose parent run is not terminal is released to the ordinary queue, preserving
 its original creation time and FIFO position. Validate saved receipts with
 `scripts/validate_operation_receipt.py`; a healthy heartbeat alone is never
 completion evidence.
+
+## Missed-webhook admission
+
+If GitHub shows a queued self-hosted job but the durable controller queue has
+no matching row, do not synthesize a webhook or insert into SQLite. Admit the
+one exact provider tuple through the GitHub App identity:
+
+```bash
+qdev-runner-operator admit-provider-job 123456789 \
+  --repository belilovsky/example --run-id 987654321 --attempt 1 \
+  --head-sha 0123456789abcdef0123456789abcdef01234567 \
+  --owner qdev-fleet-operations \
+  --reason 'GitHub App selection omitted the repository when queued' \
+  > provider-job-admission-receipt.json
+```
+
+The controller resolves the installation itself, fetches the job and parent
+run, re-applies repository/profile policy, and admits only a provider-queued
+exact `(repository, run, job, attempt, SHA)` tuple. The provider creation time
+becomes the durable queue time, preserving FIFO across the delivery gap.
+Completed, changed, unauthorized, or uninstalled tuples fail without mutation.

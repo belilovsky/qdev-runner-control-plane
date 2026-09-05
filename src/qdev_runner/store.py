@@ -174,6 +174,8 @@ class Store:
 
     def enqueue(self, job: QueuedJob) -> bool:
         now = time.time()
+        payload_json = json.dumps(job.payload, separators=(",", ":"))
+        created_at = _workflow_job_created_at(payload_json) or now
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -193,8 +195,8 @@ class Store:
                     json.dumps(job.labels),
                     job.head_sha,
                     job.head_branch,
-                    json.dumps(job.payload, separators=(",", ":")),
-                    now,
+                    payload_json,
+                    created_at,
                     now,
                 ),
             )

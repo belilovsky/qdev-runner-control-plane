@@ -236,6 +236,20 @@ class StaleJobRecoveryRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class ProviderJobAdmissionRequest(BaseModel):
+    """One operator-authorized recovery of a missed queued webhook."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(pattern=r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
+    run_id: int = Field(gt=0)
+    job_id: int = Field(gt=0)
+    attempt: int = Field(gt=0)
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    owner: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class FleetBootstrapRecoveryRequest(BaseModel):
     """Controller-observed request for one existing-worker recovery."""
 
@@ -1995,6 +2009,151 @@ def create_app(
             "candidates": candidates,
         }
         return operation_store.receipt(payload)
+
+    @app.post("/internal/v1/operations/jobs/admit-provider")
+    def admit_provider_job(
+        request: ProviderJobAdmissionRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Recover one queued job after a verified GitHub App delivery gap.
+
+        The GitHub App resolves its own installation and the provider supplies
+        every immutable field.  The caller can select only an exact tuple to
+        verify; it cannot supply installation identity, labels or FIFO time.
+        """
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        try:
+            repository_policy = policy.repository(request.repository)
+            installation_id = github.repository_installation(request.repository)
+            remote_job = github.workflow_job(
+                installation_id, request.repository, request.job_id
+            )
+            remote_run = github.workflow_run(
+                installation_id, request.repository, request.run_id
+            )
+            labels = tuple(str(label) for label in remote_job.get("labels", []))
+            profile = policy.profile_for_labels(request.repository, labels)
+            policy.authorize_run(request.repository, profile, remote_run)
+        except PolicyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503, detail="provider job admission verification failed"
+            ) from error
+
+        job_created_at = str(remote_job.get("created_at") or "")
+        try:
+            parsed_created_at = datetime.fromisoformat(job_created_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409, detail="provider job creation time is invalid"
+            ) from error
+        if parsed_created_at.tzinfo is None or parsed_created_at > datetime.now(UTC) + timedelta(
+            minutes=5
+        ):
+            raise HTTPException(status_code=409, detail="provider job creation time is invalid")
+
+        provider_tuple = {
+            "repository": request.repository,
+            "run_id": int(remote_run.get("id") or 0),
+            "job_run_id": int(remote_job.get("run_id") or 0),
+            "job_id": int(remote_job.get("id") or 0),
+            "job_attempt": int(remote_job.get("run_attempt") or 0),
+            "run_attempt": int(remote_run.get("run_attempt") or 0),
+            "exact_sha": str(remote_run.get("head_sha") or ""),
+            "job_sha": str(remote_job.get("head_sha") or ""),
+        }
+        expected_tuple = {
+            "repository": request.repository,
+            "run_id": request.run_id,
+            "job_run_id": request.run_id,
+            "job_id": request.job_id,
+            "job_attempt": request.attempt,
+            "run_attempt": request.attempt,
+            "exact_sha": request.head_sha,
+            "job_sha": request.head_sha,
+        }
+        job_status = str(remote_job.get("status") or "unknown")
+        run_status = str(remote_run.get("status") or "unknown")
+        if provider_tuple != expected_tuple:
+            raise HTTPException(
+                status_code=409, detail="provider immutable tuple does not match admission request"
+            )
+        if (
+            job_status != "queued"
+            or remote_job.get("conclusion") is not None
+            or run_status not in {"queued", "in_progress"}
+            or remote_run.get("conclusion") is not None
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="provider job state is not eligible for queued admission",
+            )
+
+        payload = {
+            "action": "queued",
+            "workflow_job": remote_job,
+            "repository": {
+                "id": repository_policy.repository_id,
+                "full_name": repository_policy.full_name,
+            },
+            "installation": {"id": installation_id},
+        }
+        queued = QueuedJob(
+            delivery_id=(
+                f"provider-reconcile:{request.repository}:{request.job_id}:"
+                f"{request.attempt}"
+            ),
+            job_id=request.job_id,
+            run_id=request.run_id,
+            repository=repository_policy.full_name,
+            repository_id=repository_policy.repository_id,
+            installation_id=installation_id,
+            labels=labels,
+            head_sha=request.head_sha,
+            head_branch=str(remote_job.get("head_branch") or ""),
+            payload=payload,
+        )
+        admitted = store.enqueue(queued)
+        if not admitted:
+            existing = store.job(request.job_id)
+            if not existing or (
+                int(existing["run_id"]) != request.run_id
+                or str(existing["repository"]) != repository_policy.full_name
+                or str(existing["head_sha"]) != request.head_sha
+                or _job_attempt(existing) != request.attempt
+            ):
+                raise HTTPException(
+                    status_code=409, detail="job ID is already bound to another tuple"
+                )
+
+        immutable_job = {
+            "repository": repository_policy.full_name,
+            "run_id": request.run_id,
+            "job_id": request.job_id,
+            "attempt": request.attempt,
+            "exact_sha": request.head_sha,
+            "profile": profile.name,
+        }
+        return operation_store.receipt(
+            {
+                "kind": "provider-job-admission",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "owner": request.owner,
+                "reason": request.reason,
+                "immutable_job": immutable_job,
+                "provider": {
+                    "job_status": job_status,
+                    "run_status": run_status,
+                    "job_created_at": job_created_at,
+                },
+                "admitted": admitted,
+                "fifo_preserved": True,
+            }
+        )
 
     @app.post("/internal/v1/operations/jobs/{job_id}/recover-stale")
     def recover_stale_job(

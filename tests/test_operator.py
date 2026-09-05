@@ -164,6 +164,52 @@ def test_queue_audit_uses_signed_durable_queue_endpoint(
     }
 
 
+def test_admit_provider_job_sends_exact_provider_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "admit-provider-job",
+            "42",
+            "--repository",
+            "belilovsky/example",
+            "--run-id",
+            "84",
+            "--attempt",
+            "1",
+            "--head-sha",
+            "a" * 40,
+            "--owner",
+            "portfolio-ci",
+            "--reason",
+            "recover exact missed webhook",
+        ]
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured == {
+        "method": "POST",
+        "path": "/internal/v1/operations/jobs/admit-provider",
+        "body": {
+            "repository": "belilovsky/example",
+            "run_id": 84,
+            "job_id": 42,
+            "attempt": 1,
+            "head_sha": "a" * 40,
+            "owner": "portfolio-ci",
+            "reason": "recover exact missed webhook",
+        },
+    }
+
+
 def test_recover_existing_worker_uses_controller_execution_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

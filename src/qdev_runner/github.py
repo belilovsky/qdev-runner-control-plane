@@ -84,6 +84,28 @@ class GitHubAppClient:
         self._token_cache[installation_id] = (token, time.time() + 3300)
         return token
 
+    def repository_installation(self, repository: str) -> int:
+        """Resolve a repository installation with the App identity itself.
+
+        This is intentionally not caller supplied: recovery admission must be
+        fenced by the App's current repository selection.
+        """
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/installation",
+            headers=self._headers(self._app_jwt()),
+        )
+        if response.status_code != 200:
+            raise GitHubError(
+                "repository installation request failed: "
+                f"{response.status_code} {response.text[:300]}"
+            )
+        data = response.json()
+        installation_id = data.get("id") if isinstance(data, dict) else None
+        if isinstance(installation_id, bool) or not isinstance(installation_id, int):
+            raise GitHubError("repository installation response is invalid")
+        return installation_id
+
     def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
         response = self._request(
             "GET",

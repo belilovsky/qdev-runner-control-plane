@@ -129,6 +129,16 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "action",
         "fifo_preserved",
     },
+    "provider-job-admission": {
+        "kind",
+        "observed_at",
+        "owner",
+        "reason",
+        "immutable_job",
+        "provider",
+        "admitted",
+        "fifo_preserved",
+    },
     "fleet-bootstrap-recovery": {
         "kind",
         "observed_at",
@@ -402,6 +412,46 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or value["fifo_preserved"] is not True
     ):
         raise ValueError("stale-job recovery payload is invalid")
+    if kind == "provider-job-admission" and (
+        not isinstance(value["immutable_job"], dict)
+        or set(value["immutable_job"])
+        != {"repository", "run_id", "job_id", "attempt", "exact_sha", "profile"}
+        or not isinstance(value["provider"], dict)
+        or set(value["provider"])
+        != {"job_status", "run_status", "job_created_at"}
+        or value["provider"]["job_status"] != "queued"
+        or value["provider"]["run_status"] not in {"queued", "in_progress"}
+        or not isinstance(value["provider"]["job_created_at"], str)
+        or not isinstance(value["owner"], str)
+        or not isinstance(value["reason"], str)
+        or not isinstance(value["admitted"], bool)
+        or value["fifo_preserved"] is not True
+    ):
+        raise ValueError("provider job admission payload is invalid")
+    if kind == "provider-job-admission":
+        immutable_job = value["immutable_job"]
+        provider = value["provider"]
+        if (
+            not _REPOSITORY.fullmatch(immutable_job["repository"])
+            or not isinstance(immutable_job["run_id"], int)
+            or isinstance(immutable_job["run_id"], bool)
+            or immutable_job["run_id"] <= 0
+            or not isinstance(immutable_job["job_id"], int)
+            or isinstance(immutable_job["job_id"], bool)
+            or immutable_job["job_id"] <= 0
+            or not isinstance(immutable_job["attempt"], int)
+            or isinstance(immutable_job["attempt"], bool)
+            or immutable_job["attempt"] <= 0
+            or not isinstance(immutable_job["exact_sha"], str)
+            or not _SOURCE_SHA.fullmatch(immutable_job["exact_sha"])
+            or not isinstance(immutable_job["profile"], str)
+            or not _WORKER_NAME.fullmatch(immutable_job["profile"])
+        ):
+            raise ValueError("provider job admission immutable tuple is invalid")
+        try:
+            parse_utc(provider["job_created_at"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("provider job admission timestamp is invalid") from error
     if kind == "fleet-bootstrap-recovery" and (
         value["status"]
         not in {"completed", "access_blocked", "active_work", "target_unregistered", "failed"}

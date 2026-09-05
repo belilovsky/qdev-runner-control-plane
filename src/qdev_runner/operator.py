@@ -215,6 +215,18 @@ def build_parser() -> argparse.ArgumentParser:
     recover_stale.add_argument("--owner", required=True)
     recover_stale.add_argument("--reason", required=True)
 
+    admit_provider = commands.add_parser(
+        "admit-provider-job",
+        help="Admit one provider-verified queued job whose webhook was missed",
+    )
+    admit_provider.add_argument("job_id", type=int)
+    admit_provider.add_argument("--repository", required=True)
+    admit_provider.add_argument("--run-id", required=True, type=int)
+    admit_provider.add_argument("--attempt", required=True, type=int)
+    admit_provider.add_argument("--head-sha", required=True)
+    admit_provider.add_argument("--owner", required=True)
+    admit_provider.add_argument("--reason", required=True)
+
     claim_scope = commands.add_parser(
         "claim-scope",
         help="Issue one FIFO-bound claim scope for an enrolled worker",
@@ -313,6 +325,21 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             path=f"/internal/v1/operations/jobs/{arguments.job_id}/recover-stale",
             body={
                 "worker_timeout_seconds": arguments.timeout_seconds,
+                "owner": arguments.owner,
+                "reason": arguments.reason,
+            },
+        )
+    if arguments.command == "admit-provider-job":
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/jobs/admit-provider",
+            body={
+                "repository": arguments.repository,
+                "run_id": arguments.run_id,
+                "job_id": arguments.job_id,
+                "attempt": arguments.attempt,
+                "head_sha": arguments.head_sha,
                 "owner": arguments.owner,
                 "reason": arguments.reason,
             },

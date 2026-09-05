@@ -553,10 +553,18 @@ class FakeGitHub:
         self.run_attempt = run_attempt
         self.job_run_id = job_run_id
 
+    def repository_installation(self, repository: str) -> int:
+        return 2
+
     def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, object]:
         return {
             "id": job_id,
             "run_id": self.job_run_id,
+            "run_attempt": self.run_attempt,
+            "head_sha": self.head_sha,
+            "head_branch": "main",
+            "created_at": "2020-09-04T05:00:00Z",
+            "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
             "status": self.job_status,
             "conclusion": self.job_conclusion,
         }
@@ -578,6 +586,87 @@ class FakeGitHub:
         labels: tuple[str, ...],
     ) -> str:
         return "signed-jit-config"
+
+
+def _provider_admission_request(**overrides: object) -> dict[str, object]:
+    return {
+        "repository": "belilovsky/example",
+        "run_id": 84,
+        "job_id": 42,
+        "attempt": 1,
+        "head_sha": "a" * 40,
+        "owner": "portfolio-ci",
+        "reason": "recover a provider-verified missed webhook",
+    } | overrides
+
+
+def test_provider_verified_job_admission_preserves_provider_fifo_time(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+
+    response = client.post(
+        "/internal/v1/operations/jobs/admit-provider",
+        headers=OPERATOR_HEADERS,
+        json=_provider_admission_request(),
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    assert receipt["payload"]["kind"] == "provider-job-admission"
+    assert receipt["payload"]["admitted"] is True
+    assert receipt["payload"]["immutable_job"] == {
+        "repository": "belilovsky/example",
+        "run_id": 84,
+        "job_id": 42,
+        "attempt": 1,
+        "exact_sha": "a" * 40,
+        "profile": "qdev-ci-docker",
+    }
+    row = client.app.state.store.job(42)
+    assert row is not None
+    assert row["status"] == "pending"
+    assert float(row["created_at"]) == datetime(
+        2020, 9, 4, 5, tzinfo=UTC
+    ).timestamp()
+
+    repeated = client.post(
+        "/internal/v1/operations/jobs/admit-provider",
+        headers=OPERATOR_HEADERS,
+        json=_provider_admission_request(),
+    )
+    assert repeated.status_code == 200
+    repeated_receipt = verify_controller_receipt(
+        repeated.json(), receipt_key=RECEIPT_KEY
+    )
+    assert repeated_receipt["payload"]["admitted"] is False
+
+
+def test_provider_job_admission_rejects_tuple_or_state_mismatch(tmp_path: Path) -> None:
+    mismatch_root = tmp_path / "mismatch"
+    mismatch_root.mkdir()
+    completed_root = tmp_path / "completed"
+    completed_root.mkdir()
+    mismatch = _app(mismatch_root, FakeGitHub(head_sha="b" * 40)).post(
+        "/internal/v1/operations/jobs/admit-provider",
+        headers=OPERATOR_HEADERS,
+        json=_provider_admission_request(),
+    )
+    completed = _app(
+        completed_root,
+        FakeGitHub(job_status="completed", job_conclusion="success"),
+    ).post(
+        "/internal/v1/operations/jobs/admit-provider",
+        headers=OPERATOR_HEADERS,
+        json=_provider_admission_request(),
+    )
+
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"] == (
+        "provider immutable tuple does not match admission request"
+    )
+    assert completed.status_code == 409
+    assert completed.json()["detail"] == (
+        "provider job state is not eligible for queued admission"
+    )
 
 
 def _seed_stale_running_job(client: TestClient) -> float:
