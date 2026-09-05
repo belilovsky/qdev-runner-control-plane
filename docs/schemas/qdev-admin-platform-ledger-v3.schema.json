@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-admin-platform-ledger-v3.schema.json",
+  "title": "QDev Admin Platform ledger v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "program", "active_stage", "active_candidate", "entries"],
+  "properties": {
+    "schema_version": {"const": "qdev-admin-platform-ledger-v3"},
+    "program": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner", "status", "updated_at"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "status": {"enum": ["active", "blocked", "complete"]},
+        "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "active_stage": {
+      "type": ["string", "null"],
+      "enum": [
+        "controller",
+        "avds-admin-shell",
+        "qaz-admin-kit",
+        "ortcom",
+        "cmnt",
+        "total",
+        "qazposter",
+        "platform-registry-qak-1",
+        null
+      ]
+    },
+    "active_candidate": {
+      "oneOf": [{"$ref": "#/$defs/candidate"}, {"type": "null"}]
+    },
+    "entries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controller",
+        "avds-admin-shell",
+        "qaz-admin-kit",
+        "ortcom",
+        "cmnt",
+        "total",
+        "qazposter",
+        "platform-registry-qak-1"
+      ],
+      "properties": {
+        "controller": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": []}}}
+          ]
+        },
+        "avds-admin-shell": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["controller"]}}}
+          ]
+        },
+        "qaz-admin-kit": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["avds-admin-shell"]}}}
+          ]
+        },
+        "ortcom": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["qaz-admin-kit"]}}}
+          ]
+        },
+        "cmnt": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["ortcom"]}}}
+          ]
+        },
+        "total": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["cmnt"]}}}
+          ]
+        },
+        "qazposter": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["total"]}}}
+          ]
+        },
+        "platform-registry-qak-1": {
+          "allOf": [
+            {"$ref": "#/$defs/entry"},
+            {"properties": {"prerequisites": {"const": ["qazposter"]}}}
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"program": {"properties": {"status": {"const": "complete"}}}}},
+      "then": {
+        "properties": {
+          "active_stage": {"type": "null"},
+          "active_candidate": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "active_stage": {"type": "string"},
+          "active_candidate": {"$ref": "#/$defs/candidate"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "reference": {
+      "type": "string",
+      "pattern": "^refs/(heads|tags)/[A-Za-z0-9._/-]+$"
+    },
+    "release_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "ci_queued",
+        "ci_passed",
+        "deploying",
+        "live_accepted",
+        "rolled_back",
+        "blocked"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id", "repository", "source_sha", "reference"],
+      "properties": {
+        "release_id": {"$ref": "#/$defs/release_id"},
+        "repository": {"$ref": "#/$defs/repository"},
+        "source_sha": {"$ref": "#/$defs/sha"},
+        "reference": {"$ref": "#/$defs/reference"}
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_id",
+        "source_sha",
+        "reference",
+        "started_at",
+        "finished_at",
+        "terminal_state",
+        "receipt_uri",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "release_id": {"$ref": "#/$defs/release_id"},
+        "source_sha": {"$ref": "#/$defs/sha"},
+        "reference": {"$ref": "#/$defs/reference"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {
+          "oneOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"}
+          ]
+        },
+        "terminal_state": {
+          "type": ["string", "null"],
+          "enum": ["live_accepted", "rolled_back", "blocked", null]
+        },
+        "receipt_uri": {"$ref": "#/$defs/receipt_uri"},
+        "receipt_sha256": {"$ref": "#/$defs/receipt_sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"terminal_state": {"type": "null"}}},
+          "then": {
+            "properties": {
+              "finished_at": {"type": "null"},
+              "receipt_uri": {"type": "null"},
+              "receipt_sha256": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "finished_at": {"type": "string", "format": "date-time"},
+              "receipt_uri": {"type": "string"},
+              "receipt_sha256": {"type": "string"}
+            }
+          }
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_id",
+        "lane",
+        "outcome",
+        "recorded_at",
+        "receipt_uri",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "release_id": {"$ref": "#/$defs/release_id"},
+        "lane": {
+          "enum": [
+            "source",
+            "ci",
+            "publication",
+            "deploy",
+            "browser",
+            "rollback",
+            "observation"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "pending",
+            "queued",
+            "passed",
+            "failed",
+            "blocked",
+            "auth_blocked",
+            "not_applicable"
+          ]
+        },
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "receipt_uri": {"$ref": "#/$defs/receipt_uri"},
+        "receipt_sha256": {"$ref": "#/$defs/receipt_sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"outcome": {"const": "pending"}}},
+          "then": {
+            "properties": {
+              "receipt_uri": {"type": "null"},
+              "receipt_sha256": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "receipt_uri": {"type": "string"},
+              "receipt_sha256": {"type": "string"}
+            }
+          }
+        }
+      ]
+    },
+    "receipt_uri": {
+      "type": ["string", "null"],
+      "pattern": "^receipts/[A-Za-z0-9][A-Za-z0-9._-]{0,190}\\.json$"
+    },
+    "receipt_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository",
+        "source_sha",
+        "reference",
+        "status",
+        "prerequisites",
+        "attempts",
+        "results"
+      ],
+      "properties": {
+        "project_id": {"type": "string", "minLength": 1},
+        "repository": {"$ref": "#/$defs/repository"},
+        "source_sha": {"oneOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+        "reference": {
+          "oneOf": [{"$ref": "#/$defs/reference"}, {"type": "null"}]
+        },
+        "status": {"$ref": "#/$defs/status"},
+        "prerequisites": {"type": "array", "maxItems": 1, "uniqueItems": true},
+        "attempts": {"type": "array", "items": {"$ref": "#/$defs/attempt"}},
+        "results": {"type": "array", "items": {"$ref": "#/$defs/result"}}
+      }
+    }
+  }
+}

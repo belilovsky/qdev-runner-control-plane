@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 _IMMUTABLE_IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
@@ -42,14 +43,23 @@ def _worker_identity() -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class BrokerSettings:
-    app_id: str
-    app_private_key_path: Path
+    app_id: str | None
+    app_private_key_path: Path | None
     webhook_secret: str
-    worker_token: str
+    worker_token: str | None
     inventory_path: Path
     profiles_path: Path
     database_path: Path
     artifact_root: Path
+    # Production brokers expose disjoint surfaces.  ``test`` is available only
+    # to callers constructing settings directly; ``from_env`` deliberately
+    # requires an explicit public/internal choice so a missing deployment
+    # variable cannot recreate the historical combined broker.
+    surface: Literal["public", "internal", "test"] = "test"
+    # Artifact upload credentials are deliberately separate from the
+    # worker-wide authentication secret.  The public upload surface receives
+    # this bounded key but never receives QDEV_WORKER_TOKEN.
+    artifact_token_key: str | None = None
     claim_scopes_path: Path = Path("/etc/qdev-runner/claim-scopes.json")
     github_api_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
@@ -68,8 +78,16 @@ class BrokerSettings:
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
     admin_platform_ledger_path: Path = Path("/etc/qdev-runner/admin-platform-ledger.yml")
+    admin_platform_receipt_root: Path = Path(
+        "/var/lib/qdev-runner/admin-platform-receipts"
+    )
     managed_release_ledger_path: Path = Path("/etc/qdev-runner/managed-release-ledger.yml")
     release_jobs_root: Path = Path("/var/lib/qdev-runner/release-jobs")
+    release_host_dispatch_keys_file: Path = Path(
+        "/etc/qdev-runner/release-host-dispatch-keys.json"
+    )
+    release_host_dispatch_claim_ttl_seconds: int = 120
+    release_job_lease_ttl_seconds: int = 3600
     github_actions_oidc_issuer: str = "https://token.actions.githubusercontent.com"
     github_actions_oidc_jwks_url: str = (
         "https://token.actions.githubusercontent.com/.well-known/jwks"
@@ -82,21 +100,62 @@ class BrokerSettings:
     fleet_bootstrap_receipt_root: Path = Path(
         "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
     )
-    fleet_recovery_executable: Path = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
+    fleet_host_dispatch_request_root: Path = Path(
+        "/var/lib/qdev-runner/fleet-host-dispatch/incoming"
+    )
+    fleet_host_dispatch_result_root: Path = Path(
+        "/var/lib/qdev-runner/fleet-host-dispatch/results"
+    )
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
+        surface = os.environ.get("QDEV_BROKER_SURFACE", "").strip().lower()
+        if surface not in {"public", "internal"}:
+            raise RuntimeError("QDEV_BROKER_SURFACE must be public or internal")
+        # The public webhook/artifact process never calls the GitHub App API.
+        # Do not make its container carry the private application key merely
+        # because the internal broker uses the same settings type.
+        app_id = (
+            _required("QDEV_GITHUB_APP_ID")
+            if surface == "internal"
+            else (os.environ.get("QDEV_GITHUB_APP_ID", "").strip() or None)
+        )
+        app_private_key_path = (
+            Path(_required("QDEV_GITHUB_APP_PRIVATE_KEY"))
+            if surface == "internal"
+            else None
+        )
+        release_host_dispatch_claim_ttl_seconds = int(
+            os.environ.get("QDEV_RELEASE_HOST_DISPATCH_CLAIM_TTL_SECONDS", "120")
+        )
+        if not 30 <= release_host_dispatch_claim_ttl_seconds <= 300:
+            raise RuntimeError(
+                "QDEV_RELEASE_HOST_DISPATCH_CLAIM_TTL_SECONDS must be between 30 and 300"
+            )
+        release_job_lease_ttl_seconds = int(
+            os.environ.get("QDEV_RELEASE_JOB_LEASE_TTL_SECONDS", "3600")
+        )
+        if not 60 <= release_job_lease_ttl_seconds <= 86400:
+            raise RuntimeError(
+                "QDEV_RELEASE_JOB_LEASE_TTL_SECONDS must be between 60 and 86400"
+            )
         return cls(
-            app_id=_required("QDEV_GITHUB_APP_ID"),
-            app_private_key_path=Path(_required("QDEV_GITHUB_APP_PRIVATE_KEY")),
-            webhook_secret=_required("QDEV_GITHUB_WEBHOOK_SECRET"),
-            worker_token=_required("QDEV_WORKER_TOKEN"),
+            app_id=app_id,
+            app_private_key_path=app_private_key_path,
+            webhook_secret=(
+                _required("QDEV_GITHUB_WEBHOOK_SECRET") if surface == "public" else ""
+            ),
+            worker_token=(
+                _required("QDEV_WORKER_TOKEN") if surface == "internal" else None
+            ),
             inventory_path=Path(os.environ.get("QDEV_INVENTORY", "/etc/qdev-runner/repos.json")),
             profiles_path=Path(os.environ.get("QDEV_PROFILES", "/etc/qdev-runner/profiles.yml")),
             database_path=Path(os.environ.get("QDEV_DATABASE", "/var/lib/qdev-runner/broker.db")),
             artifact_root=Path(
                 os.environ.get("QDEV_ARTIFACT_ROOT", "/var/lib/qdev-runner/artifacts")
             ),
+            surface=cast(Literal["public", "internal"], surface),
+            artifact_token_key=_required("QDEV_ARTIFACT_TOKEN_KEY"),
             claim_scopes_path=Path(
                 os.environ.get("QDEV_CLAIM_SCOPES", "/etc/qdev-runner/claim-scopes.json")
             ),
@@ -134,6 +193,12 @@ class BrokerSettings:
                     "/etc/qdev-runner/admin-platform-ledger.yml",
                 )
             ),
+            admin_platform_receipt_root=Path(
+                os.environ.get(
+                    "QDEV_ADMIN_PLATFORM_RECEIPT_ROOT",
+                    "/var/lib/qdev-runner/admin-platform-receipts",
+                )
+            ),
             managed_release_ledger_path=Path(
                 os.environ.get(
                     "QDEV_MANAGED_RELEASE_LEDGER",
@@ -143,6 +208,16 @@ class BrokerSettings:
             release_jobs_root=Path(
                 os.environ.get("QDEV_RELEASE_JOBS_ROOT", "/var/lib/qdev-runner/release-jobs")
             ),
+            release_host_dispatch_keys_file=Path(
+                os.environ.get(
+                    "QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE",
+                    "/etc/qdev-runner/release-host-dispatch-keys.json",
+                )
+            ),
+            release_host_dispatch_claim_ttl_seconds=(
+                release_host_dispatch_claim_ttl_seconds
+            ),
+            release_job_lease_ttl_seconds=release_job_lease_ttl_seconds,
             github_actions_oidc_issuer=os.environ.get(
                 "QDEV_GITHUB_ACTIONS_OIDC_ISSUER",
                 "https://token.actions.githubusercontent.com",
@@ -172,10 +247,16 @@ class BrokerSettings:
                     "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts",
                 )
             ),
-            fleet_recovery_executable=Path(
+            fleet_host_dispatch_request_root=Path(
                 os.environ.get(
-                    "QDEV_FLEET_RECOVERY_EXECUTABLE",
-                    "/usr/local/sbin/qdev-fleet-worker-recovery",
+                    "QDEV_FLEET_HOST_DISPATCH_REQUEST_ROOT",
+                    "/var/lib/qdev-runner/fleet-host-dispatch/incoming",
+                )
+            ),
+            fleet_host_dispatch_result_root=Path(
+                os.environ.get(
+                    "QDEV_FLEET_HOST_DISPATCH_RESULT_ROOT",
+                    "/var/lib/qdev-runner/fleet-host-dispatch/results",
                 )
             ),
         )

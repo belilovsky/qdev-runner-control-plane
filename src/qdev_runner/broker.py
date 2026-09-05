@@ -8,15 +8,22 @@ import os
 import re
 import secrets
 import ssl
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .admin_platform_ledger import AdminPlatformLedger, AdminPlatformLedgerError
+from .admin_platform import (
+    CONTROLLER_RELEASE_SCHEMA_V1,
+    AdminPlatformLedger,
+    AdminPlatformLedgerError,
+    ControllerRuntimeHealth,
+    controller_runtime_health,
+)
 from .claim_scope import (
     SCHEMA_V2,
     ClaimScope,
@@ -34,7 +41,7 @@ from .fleet_bootstrap import (
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
 )
-from .fleet_bootstrap_executor import execute_existing_worker_recovery
+from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
@@ -65,8 +72,7 @@ from .settings import BrokerSettings
 from .store import Store
 
 LOGGER = logging.getLogger("qdev-runner-broker")
-_CONTROLLER_RELEASE_SCHEMA = "qdev-controller-release-status-v1"
-_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+_CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V1
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -81,32 +87,8 @@ def controller_release_status(path: Path) -> dict[str, Any]:
         "schema": _CONTROLLER_RELEASE_SCHEMA,
         "state": "unavailable",
     }
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return unavailable
-    if not isinstance(value, dict):
-        return unavailable
-    required = {"schema", "state", "revision", "release_digest", "activated_at"}
-    if set(value) != required or value.get("schema") != _CONTROLLER_RELEASE_SCHEMA:
-        return unavailable
-    if value.get("state") != "active":
-        return unavailable
-    revision = value.get("revision")
-    release_digest = value.get("release_digest")
-    activated_at = value.get("activated_at")
-    if not isinstance(revision, str) or not _GIT_REVISION.fullmatch(revision):
-        return unavailable
-    if not isinstance(release_digest, str) or not _SHA256_DIGEST.fullmatch(release_digest):
-        return unavailable
-    if not isinstance(activated_at, str):
-        return unavailable
-    try:
-        if datetime.fromisoformat(activated_at.replace("Z", "+00:00")).tzinfo is None:
-            return unavailable
-    except ValueError:
-        return unavailable
-    return dict(value)
+    runtime = controller_runtime_health(path)
+    return dict(runtime.receipt) if runtime.receipt is not None else unavailable
 
 
 def profile_admission_health(
@@ -226,6 +208,16 @@ class FleetBootstrapRecoveryRequest(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
 
+class FleetBootstrapOperationRequest(BaseModel):
+    """Controller-observed activation or host-agent enrolment request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request: dict[str, Any] = Field(min_length=1)
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+    timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+
+
 def verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
     if not signature or not signature.startswith("sha256="):
         return False
@@ -248,6 +240,47 @@ def artifact_job_is_active(
         and str(job["head_sha"]) == sha
         and str(job["status"]) in {"claimed", "running"}
     )
+
+
+def _release_host_dispatch_signing_key(path: Path, identity: str) -> str:
+    """Resolve one managed host key without accepting key material from a request.
+
+    Both the identity-to-file map and the selected secret must be private,
+    non-symlink regular files owned by root or by the broker process.  The
+    generic error deliberately prevents path, identity and secret disclosure.
+    """
+
+    def private_file(value: Path) -> str:
+        try:
+            if not value.is_absolute() or value.is_symlink():
+                raise ReleaseLaneError("managed release dispatch key is unavailable")
+            metadata = value.stat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid not in {0, os.geteuid()}
+                or metadata.st_mode & 0o077
+            ):
+                raise ReleaseLaneError("managed release dispatch key is unavailable")
+            return value.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise ReleaseLaneError("managed release dispatch key is unavailable") from error
+
+    try:
+        mapping = json.loads(private_file(path))
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ReleaseLaneError("managed release dispatch key is unavailable") from error
+    if not isinstance(mapping, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in mapping.items()
+    ):
+        raise ReleaseLaneError("managed release dispatch key is unavailable")
+    secret_path = mapping.get(identity)
+    if not isinstance(secret_path, str):
+        raise ReleaseLaneError("managed release dispatch key is unavailable")
+    secret = private_file(Path(secret_path)).strip()
+    if not 32 <= len(secret.encode("utf-8")) <= 4096:
+        raise ReleaseLaneError("managed release dispatch key is unavailable")
+    return secret
 
 
 def registry_credentials(settings: BrokerSettings, profile_name: str) -> dict[str, str] | None:
@@ -411,7 +444,7 @@ def _worker_audit(
 
 def worker_authenticated(
     token: str | None,
-    expected_token: str,
+    expected_token: str | None,
     *,
     claim_scope: ClaimScope | None = None,
     client_certificate_sha256: str | None = None,
@@ -425,7 +458,11 @@ def worker_authenticated(
     """
     if claim_scope is not None and claim_scope.worker_certificate_sha256:
         return claim_scope.certificate_matches(client_certificate_sha256)
-    return bool(token and secrets.compare_digest(token, expected_token))
+    return bool(
+        token
+        and expected_token
+        and secrets.compare_digest(token, expected_token)
+    )
 
 
 def _safe_segment(value: str) -> str:
@@ -433,6 +470,28 @@ def _safe_segment(value: str) -> str:
     if not value or value in {".", ".."} or any(char not in allowed for char in value):
         raise HTTPException(status_code=400, detail="invalid artifact path")
     return value
+
+
+def _surface_allows_path(
+    surface: Literal["public", "internal", "test"], path: str
+) -> bool:
+    """Keep the public webhook/artifact broker separate from mTLS control APIs.
+
+    The source-owned edge remains responsible for authenticating client
+    certificates on the internal backhaul.  This second, application-level
+    boundary ensures that a peer on the shared public Docker network cannot
+    reach an operator or release handler by forging the edge identity header.
+    """
+
+    if surface == "test":
+        return True
+    if surface == "public":
+        return (
+            path == "/health"
+            or path == "/github/workflow-job"
+            or path.startswith("/artifacts/")
+        )
+    return path in {"/health", "/health/runtime"} or path.startswith("/internal/")
 
 
 def create_app(
@@ -446,12 +505,15 @@ def create_app(
     settings = settings or BrokerSettings.from_env()
     store = store or Store(settings.database_path)
     policy = policy or Policy(settings.inventory_path, settings.profiles_path)
-    github = github or GitHubAppClient(
-        settings.app_id,
-        settings.app_private_key_path,
-        settings.github_api_url,
-        settings.github_api_version,
-    )
+    if github is None and settings.surface != "public":
+        if settings.app_id is None or settings.app_private_key_path is None:
+            raise RuntimeError("the internal broker requires GitHub App credentials")
+        github = GitHubAppClient(
+            settings.app_id,
+            settings.app_private_key_path,
+            settings.github_api_url,
+            settings.github_api_version,
+        )
     github_actions_oidc_verifier = (
         github_actions_oidc_verifier
         or GitHubActionsArtifactOIDCVerifier(
@@ -461,6 +523,13 @@ def create_app(
         )
     )
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_token_key = settings.artifact_token_key
+    if settings.surface == "test" and artifact_token_key is None:
+        # Directly constructed legacy test settings remain source-compatible;
+        # production from_env() never permits this fallback.
+        artifact_token_key = settings.worker_token
+    if not artifact_token_key:
+        raise RuntimeError("QDEV_ARTIFACT_TOKEN_KEY is required")
     operator_values = (
         settings.operator_token,
         settings.operator_receipt_key,
@@ -490,6 +559,15 @@ def create_app(
     app.state.operations = operations
     release_store: ReleaseStore | None = None
 
+    @app.middleware("http")
+    async def enforce_broker_surface(request: Request, call_next: Any) -> Response:
+        if not _surface_allows_path(settings.surface, request.url.path):
+            # Deliberately hide the existence of control-plane endpoints from
+            # the shared public network rather than returning an auth oracle.
+            return Response(status_code=404)
+        response = await call_next(request)
+        return cast(Response, response)
+
     def require_worker(
         token: str | None,
         *,
@@ -503,6 +581,14 @@ def create_app(
             client_certificate_sha256=client_certificate_sha256,
         ):
             raise HTTPException(status_code=401, detail="worker authentication failed")
+
+    def require_github() -> GitHubAppClient:
+        if github is None:
+            # This is unreachable through the public route allowlist.  Keep a
+            # second fail-closed guard so future route refactors cannot turn a
+            # missing public credential into an implicit fallback.
+            raise HTTPException(status_code=503, detail="GitHub control plane is unavailable")
+        return github
 
     def require_operator(token: str | None) -> OperationStore:
         if operations is None or settings.operator_token is None:
@@ -560,7 +646,11 @@ def create_app(
 
     def admin_platform_ledger() -> AdminPlatformLedger:
         try:
-            return AdminPlatformLedger(settings.admin_platform_ledger_path)
+            return AdminPlatformLedger(
+                settings.admin_platform_ledger_path,
+                receipt_key=settings.operator_receipt_key,
+                receipt_root=settings.admin_platform_receipt_root,
+            )
         except AdminPlatformLedgerError as error:
             raise HTTPException(
                 status_code=503, detail="admin platform ledger is unavailable"
@@ -777,6 +867,12 @@ def create_app(
             ),
         }
 
+    @app.get("/health/runtime", response_model=ControllerRuntimeHealth)
+    def health_runtime() -> ControllerRuntimeHealth:
+        """Expose only identity measured from the activated controller receipt."""
+
+        return controller_runtime_health(settings.controller_release_status_path)
+
     @app.post("/internal/v1/release-hosts/{placement}/heartbeat")
     def release_host_heartbeat(
         placement: str,
@@ -821,14 +917,25 @@ def create_app(
                 status_code=503, detail="qaz-tours release lane is unavailable"
             ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        admission_now = int(datetime.now(tz=UTC).timestamp())
         try:
             validate_candidate(request, lane)
-            validate_controller_claim(request, lane, signing_key=settings.controller_claim_key)
+            validate_controller_claim(
+                request,
+                lane,
+                signing_key=settings.controller_claim_key,
+                now=admission_now,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
         try:
-            job, _idempotent = release_state().admit(request, lane)
+            job, _idempotent = release_state().admit(
+                request,
+                lane,
+                now=admission_now,
+                lease_ttl_seconds=settings.release_job_lease_ttl_seconds,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="release lane is busy") from error
         return admission_receipt(job)
@@ -848,10 +955,37 @@ def create_app(
             ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
         ready_host_agent(lane)
-        job = release_state().next_job(lane)
+        dispatch_signing_key: str | None = None
+        if lane.canonical_repository is not None:
+            # The identity is certificate-derived at the edge and has already
+            # matched the lane.  Key material is selected exclusively from a
+            # controller-owned private map; it is never accepted from callers.
+            assert x_qdev_mtls_identity is not None
+            try:
+                dispatch_signing_key = _release_host_dispatch_signing_key(
+                    settings.release_host_dispatch_keys_file,
+                    x_qdev_mtls_identity,
+                )
+            except ReleaseLaneError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="managed release host dispatch is unavailable",
+                ) from error
+        try:
+            job = release_state().next_job(
+                lane,
+                host_identity=x_qdev_mtls_identity,
+                dispatch_signing_key=dispatch_signing_key,
+                claim_ttl_seconds=settings.release_host_dispatch_claim_ttl_seconds,
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="managed release host dispatch is unavailable",
+            ) from error
         if job is None:
             return Response(status_code=204)
-        return {
+        response = {
             "schema": "qdev-release-host-agent-job-v1",
             "release_id": job["release_id"],
             "release_lane": lane.name,
@@ -863,6 +997,26 @@ def create_app(
             "lease_id": job["lease_id"],
             "fence": job["fence"],
         }
+        if lane.canonical_repository is not None:
+            claim = job.get("dispatch_claim")
+            signature = job.get("dispatch_claim_signature")
+            lease_expires_at = job.get("lease_expires_at")
+            rollback_anchor = job.get("rollback_anchor")
+            if (
+                not isinstance(claim, dict)
+                or not isinstance(signature, str)
+                or not isinstance(lease_expires_at, int)
+                or not isinstance(rollback_anchor, dict)
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="managed release host dispatch is unavailable",
+                )
+            response["lease_expires_at"] = lease_expires_at
+            response["rollback_anchor"] = rollback_anchor
+            response["dispatch_claim"] = claim
+            response["dispatch_claim_signature"] = signature
+        return response
 
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/receipt")
@@ -1017,14 +1171,25 @@ def create_app(
                 status_code=404, detail="release lane is not allowlisted"
             ) from error
         require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        admission_now = int(datetime.now(tz=UTC).timestamp())
         try:
             validate_candidate(request, lane)
-            validate_controller_claim(request, lane, signing_key=settings.controller_claim_key)
+            validate_controller_claim(
+                request,
+                lane,
+                signing_key=settings.controller_claim_key,
+                now=admission_now,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=422, detail="release candidate was rejected") from error
         ready_host_agent(lane)
         try:
-            job, _idempotent = release_state().admit(request, lane)
+            job, _idempotent = release_state().admit(
+                request,
+                lane,
+                now=admission_now,
+                lease_ttl_seconds=settings.release_job_lease_ttl_seconds,
+            )
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="release lane is busy") from error
         return admission_receipt(job)
@@ -1094,21 +1259,28 @@ def create_app(
         require_operator_mtls(x_qdev_operator_mtls_identity)
         registry = managed_registry()
         ledger = admin_platform_ledger()
-        active_candidate = ledger.active_candidate
-        if active_candidate is None:
+        active_stage = ledger.active_stage
+        if active_stage is None:
             raise HTTPException(
                 status_code=503,
                 detail="admin platform has no active candidate",
             )
-        active_entry = next(entry for entry in ledger.entries if entry.entry_id == active_candidate)
+        active_entry = next(entry for entry in ledger.entries if entry.entry_id == active_stage)
         if active_entry.source_sha is None:
             raise HTTPException(
                 status_code=503,
                 detail="admin platform active candidate has no source SHA",
             )
-        active = ledger.validate_admission(active_candidate, active_entry.source_sha)
+        active = ledger.validate_admission(active_stage, active_entry.source_sha)
         managed = registry.entry_for_id(active.entry_id)
-        if managed is None or managed.project_id != active.project_id:
+        controller_owned_stages = {
+            "controller",
+            "qaz-admin-kit",
+            "platform-registry-qak-1",
+        }
+        if (managed is None and active.entry_id not in controller_owned_stages) or (
+            managed is not None and managed.project_id != active.project_id
+        ):
             raise HTTPException(
                 status_code=503,
                 detail="admin platform registry and ledger are not aligned",
@@ -1125,7 +1297,7 @@ def create_app(
                 "admission": {
                     "state": "controller-release-observed",
                     "source_sha": active.source_sha,
-                    "registry_entry": managed.entry_id,
+                    "registry_entry": managed.entry_id if managed is not None else None,
                     "ledger_status": active.status,
                     "claim_scope": "controller-signed-only",
                 },
@@ -1163,15 +1335,14 @@ def create_app(
         x_qdev_operator_token: str | None = Header(default=None),
         x_qdev_operator_mtls_identity: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        """Run one controller-owned recovery for an allowlisted existing worker.
+        """Queue one controller-owned recovery for an allowlisted existing worker.
 
         GitHub validation produces the signed request, but this endpoint is
         deliberately reachable only through the fleet-operations mTLS session.
-        The controller supplies the policy, operation paths and recovery
-        adapter; callers cannot select a host, service, executable or CA key.
-        Non-completed results are signed receipts and leave durable operation
-        state pending so an operator can retry after the external condition is
-        repaired.
+        The rootless broker can publish only the validated typed request.  A
+        root-owned dispatcher reloads policy and derives the fixed adapter and
+        target independently; callers cannot select a host, service,
+        executable, URL, or CA key.
         """
 
         operation_store = require_operator_session(
@@ -1183,16 +1354,15 @@ def create_app(
             operation_path = (
                 settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
             )
-            receipt_path = settings.fleet_bootstrap_receipt_root / f"{request.idempotency_key}.json"
-            execution = execute_existing_worker_recovery(
+            execution = FleetHostDispatchSpool(
+                settings.fleet_host_dispatch_request_root,
+                settings.fleet_host_dispatch_result_root,
+            ).submit(
                 policy=policy_value,
                 store=BootstrapOperationStore(operation_path),
                 request=bootstrap_request,
                 idempotency_key=request.idempotency_key,
                 active_jobs=request.active_jobs,
-                adapter=settings.fleet_recovery_executable,
-                timeout_seconds=request.timeout_seconds,
-                receipt_path=receipt_path,
             )
         except (FleetBootstrapError, ValidationError, ValueError) as error:
             raise HTTPException(
@@ -1214,6 +1384,79 @@ def create_app(
                 "error_code": execution.error_code,
                 "result": execution.result,
             }
+        )
+
+    def run_fleet_bootstrap_operation(
+        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        request: FleetBootstrapOperationRequest,
+        operator_token: str | None,
+        operator_mtls_identity: str | None,
+    ) -> dict[str, Any]:
+        """Queue one route-frozen bootstrap action for root dispatch.
+
+        The rootless broker has no host executable or Docker socket.  It
+        publishes an immutable policy-validated request and observes only the
+        durable result returned by the root-owned dispatcher.
+        """
+
+        operation_store = require_operator_session(
+            operator_token, operator_mtls_identity
+        )
+        try:
+            bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
+            if bootstrap_request.action != expected_action:
+                raise FleetBootstrapError("fleet bootstrap action does not match route")
+            policy_value = fleet_bootstrap_policy()
+            operation_path = (
+                settings.fleet_bootstrap_operation_root
+                / f"{request.idempotency_key}.json"
+            )
+            execution = FleetHostDispatchSpool(
+                settings.fleet_host_dispatch_request_root,
+                settings.fleet_host_dispatch_result_root,
+            ).submit(
+                policy=policy_value,
+                store=BootstrapOperationStore(operation_path),
+                request=bootstrap_request,
+                idempotency_key=request.idempotency_key,
+            )
+        except (FleetBootstrapError, ValidationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="fleet bootstrap operation request is invalid",
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "fleet-bootstrap-operation",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "execution": execution.as_dict(),
+            }
+        )
+
+    @app.post("/internal/v1/operations/fleet-bootstrap/activate-controller")
+    def activate_controller(
+        request: FleetBootstrapOperationRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_operation(
+            "activate-controller",
+            request,
+            x_qdev_operator_token,
+            x_qdev_operator_mtls_identity,
+        )
+
+    @app.post("/internal/v1/operations/fleet-bootstrap/enrol-host-agent")
+    def enrol_host_agent(
+        request: FleetBootstrapOperationRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_operation(
+            "enrol-host-agent",
+            request,
+            x_qdev_operator_token,
+            x_qdev_operator_mtls_identity,
         )
 
     @app.post("/internal/v1/operations/jobs/{job_id}/claim-scope")
@@ -1753,8 +1996,11 @@ def create_app(
         installation_id = int(row["installation_id"])
         repository = str(row["repository"])
         try:
-            remote_job = github.workflow_job(installation_id, repository, job_id)
-            remote_run = github.workflow_run(installation_id, repository, int(row["run_id"]))
+            github_client = require_github()
+            remote_job = github_client.workflow_job(installation_id, repository, job_id)
+            remote_run = github_client.workflow_run(
+                installation_id, repository, int(row["run_id"])
+            )
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),
@@ -1955,14 +2201,15 @@ def create_app(
                 # and changing FIFO position.
                 store.set_status(job_id, "rejected", "claim scope binding invariant violation")
                 raise HTTPException(status_code=403, detail="claim scope rejected")
-            run = github.workflow_run(
+            github_client = require_github()
+            run = github_client.workflow_run(
                 int(claimed["installation_id"]), claimed["repository"], int(claimed["run_id"])
             )
             policy.authorize_run(claimed["repository"], profile, run)
             if conclusion := completed_run_conclusion(run):
                 store.complete_from_webhook(job_id, conclusion)
                 return Response(status_code=204)
-            remote_job = github.workflow_job(
+            remote_job = github_client.workflow_job(
                 int(claimed["installation_id"]), claimed["repository"], job_id
             )
             if str(remote_job.get("status")) != "queued":
@@ -1972,7 +2219,7 @@ def create_app(
                 )
                 return Response(status_code=204)
             runner_name = f"qdev-{claimed['repository'].split('/')[-1]}-{job_id}"[:63]
-            jit_config = github.generate_jit_config(
+            jit_config = github_client.generate_jit_config(
                 int(claimed["installation_id"]),
                 claimed["repository"],
                 runner_name,
@@ -1980,7 +2227,7 @@ def create_app(
             )
             store.set_status(job_id, "running", f"runner={runner_name}")
             token = artifact_token(
-                settings.worker_token, claimed["repository"], claimed["head_sha"], job_id
+                artifact_token_key, claimed["repository"], claimed["head_sha"], job_id
             )
             response: dict[str, Any] = {
                 "schema": "qdev-runner-job-v1",
@@ -2039,7 +2286,8 @@ def create_app(
             )
             return Response(status_code=204)
         try:
-            remote_job = github.workflow_job(
+            github_client = require_github()
+            remote_job = github_client.workflow_job(
                 int(job["installation_id"]), str(job["repository"]), request.job_id
             )
         except GitHubError:
@@ -2048,7 +2296,7 @@ def create_app(
         remote_status = str(remote_job.get("status") or "unknown")
         if remote_status == "queued":
             try:
-                run = github.workflow_run(
+                run = github_client.workflow_run(
                     int(job["installation_id"]),
                     str(job["repository"]),
                     int(job["run_id"]),
@@ -2085,7 +2333,8 @@ def create_app(
         status = str(job["status"])
         if status in {"claimed", "running"}:
             try:
-                remote_job = github.workflow_job(
+                github_client = require_github()
+                remote_job = github_client.workflow_job(
                     int(job["installation_id"]), str(job["repository"]), job_id
                 )
                 if str(remote_job.get("status")) == "completed":
@@ -2094,7 +2343,7 @@ def create_app(
                     )
                     status = "completed"
                 elif str(remote_job.get("status")) == "queued":
-                    run = github.workflow_run(
+                    run = github_client.workflow_run(
                         int(job["installation_id"]),
                         str(job["repository"]),
                         int(job["run_id"]),
@@ -2161,7 +2410,7 @@ def create_app(
             job = store.job(job_id)
             if not artifact_job_is_active(job, full_name, safe_sha, job_id):
                 raise HTTPException(status_code=401, detail="artifact credentials expired")
-            expected_token = artifact_token(settings.worker_token, full_name, safe_sha, job_id)
+            expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
             if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
                 raise HTTPException(status_code=401, detail="artifact authentication failed")
         else:

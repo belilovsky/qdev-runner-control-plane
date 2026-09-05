@@ -11,7 +11,10 @@ from qdev_runner.fleet_bootstrap import (
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
 )
-from qdev_runner.fleet_bootstrap_executor import execute_existing_worker_recovery
+from qdev_runner.fleet_bootstrap_executor import (
+    execute_bootstrap_operation,
+    execute_existing_worker_recovery,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "fleet-bootstrap.yml"
@@ -37,6 +40,28 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
     )
 
 
+def _bootstrap_request(
+    action: str,
+    *,
+    release_lane: str | None = None,
+) -> FleetBootstrapRequest:
+    return FleetBootstrapRequest.model_validate(
+        {
+            "schema": REQUEST_SCHEMA,
+            "action": action,
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "claim_ttl_seconds": 300,
+            "controller_revision": _ACTIVATION["controller_revision"],
+            "controller_release_digest": _ACTIVATION["controller_release_digest"],
+            "release_lane": release_lane,
+            "worker_name": None,
+        }
+    )
+
+
 def _adapter(path: Path, *, status: str = "completed") -> Path:
     path.write_text(
         "#!/bin/sh\n"
@@ -45,6 +70,40 @@ def _adapter(path: Path, *, status: str = "completed") -> Path:
         f"\"status\":\"{status}\",\"worker_name\":t[\"worker_name\"],"
         "\"target_id\":t[\"target_id\"],\"service_unit\":t[\"service_unit\"],"
         "\"active_jobs\":0,\"result\":{\"native\":\"ok\"}}))'\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o700)
+    return path
+
+
+def _bootstrap_adapter(
+    path: Path,
+    *,
+    identity_mismatch: bool = False,
+) -> Path:
+    revision_expression = "'0' * 40" if identity_mismatch else "r['controller_revision']"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "x = json.load(sys.stdin)\n"
+        "r, t = x['request'], x['target']\n"
+        "lane = t.get('release_lane')\n"
+        "host = t.get('host_agent_mtls_identity')\n"
+        "rollback_sha = t.get('rollback_revision', 'c' * 40)\n"
+        "rollback_digest = t.get('rollback_release_digest', 'sha256:' + 'd' * 64)\n"
+        f"revision = {revision_expression}\n"
+        "print(json.dumps({\n"
+        "  'schema': 'qdev-fleet-bootstrap-adapter-result-v1',\n"
+        "  'status': 'completed',\n"
+        "  'action': r['action'],\n"
+        "  'controller_revision': revision,\n"
+        "  'controller_release_digest': r['controller_release_digest'],\n"
+        "  'release_lane': lane,\n"
+        "  'host_agent_mtls_identity': host,\n"
+        "  'rollback_source_sha': rollback_sha,\n"
+        "  'rollback_artifact_digest': rollback_digest,\n"
+        "  'result': {'native_status': 'verified'}\n"
+        "}))\n",
         encoding="utf-8",
     )
     path.chmod(0o700)
@@ -134,3 +193,76 @@ def test_adapter_identity_mismatch_fails_closed(tmp_path: Path) -> None:
     )
     assert result.status == "failed"
     assert result.error_code == "adapter_identity_mismatch"
+
+
+def test_controller_activation_missing_adapter_remains_pending(tmp_path: Path) -> None:
+    request = _bootstrap_request("activate-controller")
+    result = execute_bootstrap_operation(
+        policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+        store=BootstrapOperationStore(tmp_path / "activation.json"),
+        request=request,
+        idempotency_key="controller-activation-001",
+        adapter=tmp_path / "not-installed",
+        receipt_path=tmp_path / "receipt.json",
+    )
+    assert result.status == "access_blocked"
+    assert result.operation_status == "pending"
+    assert result.error_code == "activation_adapter_unavailable"
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> None:
+    request = _bootstrap_request("activate-controller")
+    store = BootstrapOperationStore(tmp_path / "activation.json")
+    adapter = _bootstrap_adapter(tmp_path / "activate")
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    first = execute_bootstrap_operation(
+        policy=policy,
+        store=store,
+        request=request,
+        idempotency_key="controller-activation-002",
+        adapter=adapter,
+        receipt_path=tmp_path / "receipt.json",
+    )
+    second = execute_bootstrap_operation(
+        policy=policy,
+        store=store,
+        request=request,
+        idempotency_key="controller-activation-002",
+        adapter=tmp_path / "no-longer-needed",
+    )
+    assert first.status == second.status == "completed"
+    assert first.operation_status == second.operation_status == "completed"
+    assert first.result is not None
+    assert first.result["rollback_source_sha"] == _ACTIVATION["rollback_revision"]
+    assert json.loads((tmp_path / "receipt.json").read_text())["status"] == "completed"
+
+
+def test_controller_activation_rejects_adapter_identity_mismatch(tmp_path: Path) -> None:
+    result = execute_bootstrap_operation(
+        policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+        store=BootstrapOperationStore(tmp_path / "activation.json"),
+        request=_bootstrap_request("activate-controller"),
+        idempotency_key="controller-activation-003",
+        adapter=_bootstrap_adapter(tmp_path / "activate", identity_mismatch=True),
+    )
+    assert result.status == "failed"
+    assert result.operation_status == "pending"
+    assert result.error_code == "adapter_identity_mismatch"
+
+
+def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Path) -> None:
+    request = _bootstrap_request("enrol-host-agent", release_lane="qdev-release-total")
+    result = execute_bootstrap_operation(
+        policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+        store=BootstrapOperationStore(tmp_path / "enrolment.json"),
+        request=request,
+        idempotency_key="host-enrolment-001",
+        adapter=_bootstrap_adapter(tmp_path / "enrol"),
+    )
+    assert result.status == "completed"
+    assert result.release_lane == "qdev-release-total"
+    assert result.host_agent_mtls_identity == "qdev-host-agent:total-qdev-origin"
+    assert result.result is not None
+    assert result.result["rollback_source_sha"] == "c" * 40
+    assert result.result["rollback_artifact_digest"] == "sha256:" + "d" * 64

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -10,11 +12,19 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from qdev_runner.admin_platform import AdminPlatformCandidate
+from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.broker import create_app
 from qdev_runner.models import QueuedJob
+from qdev_runner.operations import OperationStore
 from qdev_runner.operator import verify_controller_receipt
 from qdev_runner.policy import Policy
-from qdev_runner.release_lane import ReleaseLaneError, ReleaseLanePolicy
+from qdev_runner.release_lane import (
+    ReleaseAdmissionRequest,
+    ReleaseLaneError,
+    ReleaseLanePolicy,
+    controller_claim_payload,
+)
 from qdev_runner.settings import BrokerSettings
 from qdev_runner.store import Store
 
@@ -40,6 +50,46 @@ def _fleet_bootstrap_activation() -> dict[str, str]:
         "controller_revision": str(activation["controller_revision"]),
         "controller_release_digest": str(activation["controller_release_digest"]),
     }
+
+
+def _initialized_admin_platform_ledger(tmp_path: Path) -> tuple[Path, Path]:
+    template_path = (
+        Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
+    )
+    template = yaml.safe_load(template_path.read_text(encoding="utf-8"))
+    candidate = AdminPlatformCandidate(**template["active_candidate"])
+    state_root = tmp_path / "admin-platform-state"
+    state_root.mkdir()
+    ledger_path = state_root / "admin-platform-ledger.yml"
+    receipt_root = state_root / "receipts"
+    signer = OperationStore(
+        tmp_path / "admin-platform-operation-store",
+        worker_signing_key="unused-worker-key",
+        receipt_signing_key=RECEIPT_KEY,
+    )
+    source_receipt = signer.receipt(
+        {
+            "kind": "admin-platform-evidence",
+            "observed_at": "2026-09-05T00:01:00Z",
+            "program_id": template["program"]["id"],
+            "stage": "controller",
+            "release_id": candidate.release_id,
+            "source_sha": candidate.source_sha,
+            "evidence_type": "lane_result",
+            "lane": "source",
+            "outcome": "passed",
+        }
+    )
+    AdminPlatformStateStore(
+        ledger_path,
+        receipt_key=RECEIPT_KEY,
+        receipt_root=receipt_root,
+    ).initialize_from_template(
+        template_path=template_path,
+        candidate=candidate,
+        source_receipt=source_receipt,
+    )
+    return ledger_path, receipt_root
 
 
 def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
@@ -154,6 +204,18 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         ),
         encoding="utf-8",
     )
+    fleet_bootstrap_policy = tmp_path / "fleet-bootstrap.yml"
+    fleet_bootstrap_document = yaml.safe_load(
+        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
+    )
+    fleet_bootstrap_document["enrolment"] = {"lanes": ["qdev-release-qmt"]}
+    fleet_bootstrap_policy.write_text(
+        yaml.safe_dump(fleet_bootstrap_document, sort_keys=False),
+        encoding="utf-8",
+    )
+    admin_platform_ledger, admin_platform_receipts = (
+        _initialized_admin_platform_ledger(tmp_path)
+    )
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -170,15 +232,17 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         controller_release_status_path=tmp_path / "controller-release.json",
         claim_scopes_path=tmp_path / "claim-scopes.json",
         release_lanes_path=release_lanes,
-        fleet_bootstrap_policy_path=Path(__file__).parents[1] / "config" / "fleet-bootstrap.yml",
+        fleet_bootstrap_policy_path=fleet_bootstrap_policy,
         fleet_bootstrap_operation_root=tmp_path / "fleet-bootstrap-operations",
         fleet_bootstrap_receipt_root=tmp_path / "fleet-bootstrap-receipts",
-        fleet_recovery_executable=tmp_path / "not-installed-recovery",
+        fleet_host_dispatch_request_root=tmp_path / "fleet-host-dispatch" / "incoming",
+        fleet_host_dispatch_result_root=tmp_path / "fleet-host-dispatch" / "results",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
-        admin_platform_ledger_path=(
-            Path(__file__).parents[1] / "config" / "admin-platform-ledger.yml"
-        ),
+        admin_platform_ledger_path=admin_platform_ledger,
+        admin_platform_receipt_root=admin_platform_receipts,
         release_jobs_root=tmp_path / "release-jobs",
+        release_host_dispatch_keys_file=tmp_path / "release-host-dispatch-keys.json",
+        release_host_dispatch_claim_ttl_seconds=120,
     )
     app = create_app(
         settings,
@@ -383,6 +447,157 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
     assert status.json()["runtime_receipt"] == runtime_receipt
 
 
+def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    settings: BrokerSettings = client.app.state.settings
+    settings.release_lanes_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "qdev-release-lanes-v2",
+                "lanes": {
+                    "qdev-release-qaz-tours": {
+                        "project_id": "qaz-tours",
+                        "placement": "vps-hostinger-186",
+                        "client_mtls_identity": "qdev-release-client:qaz-tours",
+                        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+                        "minimum_free_gib": 60,
+                        "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "qaz-tours",
+                        "canonical_repository": "belilovsky/qaz-tours",
+                        "artifact_ref_prefix": "registry.ci.qdev.run/qaz-tours",
+                        "native_host_adapter": "legacy-qaz-tours-v1",
+                        "runtime_endpoints": [
+                            "https://qaza.tours/.well-known/release.json"
+                        ],
+                        "rollback_reference": "qdev-release-host-state-v1",
+                        "required_readiness": ["qazgeo"],
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    host_identity = "qdev-host-agent:vps-hostinger-186"
+    host_headers = {"X-QDev-mTLS-Identity": host_identity}
+    heartbeat = _release_heartbeat()
+    heartbeat["bootstrap"] = True
+    heartbeat["rollback"] = {
+        "verified": True,
+        **heartbeat["active_release"],
+    }
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers=host_headers,
+        ).status_code
+        == 200
+    )
+    request = _release_request()
+    request["candidate_receipt"].update(
+        {
+            "repository": "belilovsky/qaz-tours",
+            "workflow": "release.yml",
+            "job": "release-qaz-tours",
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "runner_profile": "qdev-ci-docker",
+        }
+    )
+    lane = ReleaseLanePolicy(settings.release_lanes_path).lane(
+        "qdev-release-qaz-tours"
+    )
+    admission_now = int(time.time())
+    candidate = ReleaseAdmissionRequest.model_validate(request)
+    controller_claim = controller_claim_payload(
+        candidate,
+        lane,
+        issued_at=admission_now,
+        expires_at=admission_now + 120,
+        nonce="managed-controller-claim-nonce-0001",
+    )
+    request["controller_claim"] = controller_claim
+    request["controller_claim_signature"] = hmac.new(
+        b"managed-controller-claim-key-for-test",
+        json.dumps(
+            controller_claim,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    release_store = client.app.state.release_store
+    release_store.admit(
+        ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now
+    )
+
+    next_path = "/internal/v1/release-hosts/vps-hostinger-186/jobs/next"
+    blocked = client.get(next_path, headers=host_headers)
+    assert blocked.status_code == 503
+    assert blocked.json()["detail"] == "managed release host dispatch is unavailable"
+
+    signing_key = "managed-host-dispatch-key-for-test-0001"
+    secret_path = tmp_path / "host-dispatch.secret"
+    secret_path.write_text(signing_key + "\n", encoding="utf-8")
+    secret_path.chmod(0o600)
+    settings.release_host_dispatch_keys_file.write_text(
+        json.dumps({host_identity: str(secret_path)}),
+        encoding="utf-8",
+    )
+    settings.release_host_dispatch_keys_file.chmod(0o600)
+
+    response = client.get(next_path, headers=host_headers)
+    assert response.status_code == 200
+    job = response.json()
+    claim = job["dispatch_claim"]
+    assert set(claim) == {
+        "schema",
+        "repository",
+        "workflow",
+        "job",
+        "exact_sha",
+        "run_id",
+        "job_id",
+        "attempt",
+        "runner_profile",
+        "host_identity",
+        "release_id",
+        "release_lane",
+        "project_id",
+        "placement",
+        "artifact_digest",
+        "artifact_ref",
+        "lease_id",
+        "fence",
+        "lease_expires_at",
+        "rollback_anchor",
+        "issued_at",
+        "expires_at",
+        "nonce",
+    }
+    assert claim["schema"] == "qdev-controller-host-dispatch-claim-v2"
+    assert claim["host_identity"] == host_identity
+    assert claim["repository"] == "belilovsky/qaz-tours"
+    assert claim["exact_sha"] == "a" * 40
+    assert claim["workflow"] == "release.yml"
+    assert claim["job"] == "release-qaz-tours"
+    assert claim["lease_expires_at"] == job["lease_expires_at"]
+    assert claim["rollback_anchor"] == job["rollback_anchor"]
+    assert claim["expires_at"] - claim["issued_at"] == 120
+    canonical = json.dumps(
+        claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert job["dispatch_claim_signature"] == hmac.new(
+        signing_key.encode("utf-8"), canonical, hashlib.sha256
+    ).hexdigest()
+    assert signing_key not in response.text
+
+
 def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) -> None:
     client = _app(tmp_path)
     headers = {"X-QDev-mTLS-Identity": "qdev-release-client:qaz-tours"}
@@ -569,6 +784,16 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["controller_release"] == status
+    assert client.get("/health/runtime").json() == {
+        "schema": "qdev-controller-runtime-health-v1",
+        "state": "legacy",
+        "revision": "a" * 40,
+        "digest": "sha256:" + "b" * 64,
+        "activated": "2026-08-31T00:00:00Z",
+        "runtime_identity": None,
+        "dependency_identity": None,
+        "receipt": status,
+    }
 
     unauthorized = client.get("/internal/v1/operations/controller-release")
     assert unauthorized.status_code == 401
@@ -579,6 +804,85 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["kind"] == "controller-release-audit"
     assert receipt["payload"]["controller_release"] == status
+
+
+def test_controller_runtime_health_reports_measured_v2_identity(tmp_path: Path) -> None:
+    status_path = tmp_path / "controller-release.json"
+    runtime_identity = {
+        "source_revision": "a" * 40,
+        "source_digest": "sha256:" + "c" * 64,
+        "public_image_id": "sha256:" + "d" * 64,
+        "internal_image_id": "sha256:" + "e" * 64,
+    }
+    dependency_identity = {
+        "requirements_digest": "sha256:" + "f" * 64,
+        "public_installed_digest": "sha256:" + "1" * 64,
+        "internal_installed_digest": "sha256:" + "1" * 64,
+    }
+    status = {
+        "schema": "qdev-controller-release-status-v2",
+        "state": "active",
+        "revision": "a" * 40,
+        "release_digest": "sha256:" + "b" * 64,
+        "activated_at": "2026-09-05T00:00:00Z",
+        "runtime_identity": runtime_identity,
+        "dependency_identity": dependency_identity,
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    client = _app(tmp_path)
+
+    assert client.get("/health").json()["controller_release"] == status
+    assert client.get("/health/runtime").json() == {
+        "schema": "qdev-controller-runtime-health-v1",
+        "state": "active",
+        "revision": "a" * 40,
+        "digest": "sha256:" + "b" * 64,
+        "activated": "2026-09-05T00:00:00Z",
+        "runtime_identity": runtime_identity,
+        "dependency_identity": dependency_identity,
+        "receipt": status,
+    }
+
+
+def test_controller_runtime_health_rejects_unbound_v2_identity(tmp_path: Path) -> None:
+    status_path = tmp_path / "controller-release.json"
+    status = {
+        "schema": "qdev-controller-release-status-v2",
+        "state": "active",
+        "revision": "a" * 40,
+        "release_digest": "sha256:" + "b" * 64,
+        "activated_at": "2026-09-05T00:00:00Z",
+        "runtime_identity": {
+            "source_revision": "a" * 40,
+            "source_digest": "sha256:" + "c" * 64,
+            "public_image_id": "sha256:" + "d" * 64,
+            "internal_image_id": "sha256:" + "e" * 64,
+        },
+        "dependency_identity": {
+            "requirements_digest": "sha256:" + "f" * 64,
+            "public_installed_digest": "sha256:" + "1" * 64,
+            "internal_installed_digest": "sha256:" + "2" * 64,
+        },
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    client = _app(tmp_path)
+
+    unavailable = {
+        "schema": "qdev-controller-runtime-health-v1",
+        "state": "unavailable",
+        "revision": None,
+        "digest": None,
+        "activated": None,
+        "runtime_identity": None,
+        "dependency_identity": None,
+        "receipt": None,
+    }
+    assert client.get("/health/runtime").json() == unavailable
+
+    status["dependency_identity"]["internal_installed_digest"] = "sha256:" + "1" * 64
+    status["runtime_identity"]["source_digest"] = "c" * 64
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    assert client.get("/health/runtime").json() == unavailable
 
 
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
@@ -626,8 +930,103 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     assert payload["worker_name"] == "qdev-platform-ci-187"
     assert payload["target_id"].endswith("qdev-platform-ci-187")
     assert payload["active_jobs"] == 0
-    private_receipt = tmp_path / "fleet-bootstrap-receipts" / "worker-recovery-001.json"
-    assert json.loads(private_receipt.read_text(encoding="utf-8"))["status"] == "access_blocked"
+    operation = tmp_path / "fleet-bootstrap-operations" / "worker-recovery-001.json"
+    assert json.loads(operation.read_text(encoding="utf-8"))["status"] == "pending"
+
+
+def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    activation = _fleet_bootstrap_activation()
+    base_request: dict[str, Any] = {
+        "schema": "qdev-fleet-bootstrap-request-v1",
+        "source_sha": "a" * 40,
+        "run_id": 123,
+        "job_id": 456,
+        "attempt": 1,
+        "claim_ttl_seconds": 300,
+        "controller_revision": activation["controller_revision"],
+        "controller_release_digest": activation["controller_release_digest"],
+        "worker_name": None,
+    }
+    activation_path = "/internal/v1/operations/fleet-bootstrap/activate-controller"
+    activation_body = {
+        "request": base_request
+        | {
+            "action": "activate-controller",
+            "release_lane": None,
+        },
+        "idempotency_key": "controller-activation-001",
+        "timeout_seconds": 5,
+    }
+    assert client.post(activation_path, json=activation_body).status_code == 401
+    assert (
+        client.post(
+            activation_path,
+            json=activation_body,
+            headers={"X-QDev-Operator-Token": OPERATOR_TOKEN},
+        ).status_code
+        == 403
+    )
+    activation_response = client.post(
+        activation_path,
+        json=activation_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert activation_response.status_code == 200
+    activation_receipt = verify_controller_receipt(
+        activation_response.json(), receipt_key=RECEIPT_KEY
+    )
+    activation_execution = activation_receipt["payload"]["execution"]
+    assert activation_receipt["payload"]["kind"] == "fleet-bootstrap-operation"
+    assert activation_execution["action"] == "activate-controller"
+    assert activation_execution["status"] == "access_blocked"
+    assert activation_execution["operation_status"] == "pending"
+    assert activation_execution["error_code"] == "host_dispatch_unavailable"
+    assert activation_execution["release_lane"] is None
+    assert activation_execution["host_agent_mtls_identity"] is None
+    assert not (
+        tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json"
+    ).exists()
+
+    enrolment_path = "/internal/v1/operations/fleet-bootstrap/enrol-host-agent"
+    enrolment_body = {
+        "request": base_request
+        | {
+            "action": "enrol-host-agent",
+            "release_lane": "qdev-release-qmt",
+        },
+        "idempotency_key": "host-enrolment-001",
+        "timeout_seconds": 5,
+    }
+    enrolment_response = client.post(
+        enrolment_path,
+        json=enrolment_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert enrolment_response.status_code == 200
+    enrolment_receipt = verify_controller_receipt(
+        enrolment_response.json(), receipt_key=RECEIPT_KEY
+    )
+    enrolment_execution = enrolment_receipt["payload"]["execution"]
+    assert enrolment_execution["action"] == "enrol-host-agent"
+    assert enrolment_execution["status"] == "access_blocked"
+    assert enrolment_execution["operation_status"] == "pending"
+    assert enrolment_execution["error_code"] == "host_dispatch_unavailable"
+    assert enrolment_execution["release_lane"] == "qdev-release-qmt"
+    assert enrolment_execution["host_agent_mtls_identity"] == "qdev-host-agent:srv138jump"
+    assert not (
+        tmp_path / "fleet-bootstrap-receipts" / "host-enrolment-001.json"
+    ).exists()
+
+    mismatched = client.post(
+        activation_path,
+        json=enrolment_body | {"idempotency_key": "route-action-mismatch-001"},
+        headers=OPERATOR_HEADERS,
+    )
+    assert mismatched.status_code == 422
+    assert mismatched.json()["detail"] == "fleet bootstrap operation request is invalid"
 
 
 def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
@@ -654,10 +1053,10 @@ def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     payload = receipt["payload"]
     assert payload["kind"] == "admin-platform-audit"
-    assert payload["active_candidate"] == "avds-admin-shell"
+    assert payload["active_candidate"] == "controller"
     assert payload["admission"]["claim_scope"] == "controller-signed-only"
     assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v3"
-    assert payload["admin_platform_ledger"]["schema"] == "qdev-admin-platform-ledger-v1"
+    assert payload["admin_platform_ledger"]["schema"] == "qdev-admin-platform-ledger-v3"
 
 
 def test_health_reports_profile_specific_admission_without_job_details(tmp_path: Path) -> None:
@@ -718,6 +1117,16 @@ def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -
     assert client.get("/health").json()["controller_release"] == {
         "schema": "qdev-controller-release-status-v1",
         "state": "unavailable",
+    }
+    assert client.get("/health/runtime").json() == {
+        "schema": "qdev-controller-runtime-health-v1",
+        "state": "unavailable",
+        "revision": None,
+        "digest": None,
+        "activated": None,
+        "runtime_identity": None,
+        "dependency_identity": None,
+        "receipt": None,
     }
 
 

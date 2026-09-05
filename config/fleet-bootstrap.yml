@@ -12,6 +12,10 @@ activation:
   rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
 enrolment:
   lanes:
+    - qdev-release-ortcom
+    - qdev-release-cmnt
+    - qdev-release-total
+    - qdev-release-qazposter
     - qdev-release-qmt
 workers:
   - qdev-ci

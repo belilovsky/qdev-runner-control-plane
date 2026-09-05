@@ -285,6 +285,56 @@ def test_capacity_override_receipt_requires_full_immutable_fifo_tuple() -> None:
         )
 
 
+def test_admin_platform_evidence_receipt_binds_exact_lane_or_terminal_state(
+    operation_store: OperationStore,
+) -> None:
+    base = {
+        "kind": "admin-platform-evidence",
+        "observed_at": "2026-09-05T08:00:00Z",
+        "program_id": "qdev-admin-platform-wave-1",
+        "stage": "controller",
+        "release_id": "controller-v3-candidate-1",
+        "source_sha": "a" * 40,
+    }
+    lane = operation_store.receipt(
+        base
+        | {
+            "evidence_type": "lane_result",
+            "lane": "ci",
+            "outcome": "passed",
+        }
+    )
+    terminal = operation_store.receipt(
+        base
+        | {
+            "evidence_type": "attempt_terminal",
+            "lane": None,
+            "outcome": "live_accepted",
+        }
+    )
+
+    assert verify_controller_receipt(lane, receipt_key="receipt-signing-key") == lane
+    assert verify_controller_receipt(terminal, receipt_key="receipt-signing-key") == terminal
+    with pytest.raises(ValueError, match="lane evidence"):
+        operation_store.receipt(
+            base
+            | {
+                "evidence_type": "lane_result",
+                "lane": "ci",
+                "outcome": "live_accepted",
+            }
+        )
+    with pytest.raises(ValueError, match="terminal evidence"):
+        operation_store.receipt(
+            base
+            | {
+                "evidence_type": "attempt_terminal",
+                "lane": "ci",
+                "outcome": "live_accepted",
+            }
+        )
+
+
 def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
     payload = {
         "kind": "fifo-claim-scope-issued",
@@ -346,6 +396,49 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
         "worker": {},
     }
     with pytest.raises(ValueError, match="fifo skip item"):
+        validate_controller_receipt_payload(payload)
+
+
+def _unknown_fleet_recovery_payload() -> dict[str, object]:
+    return {
+        "kind": "fleet-bootstrap-recovery",
+        "observed_at": "2026-09-05T08:00:00Z",
+        "status": "unknown",
+        "operation_status": "unknown",
+        "idempotency_key": "fleet-recovery-unknown-1",
+        "request_fingerprint": "a" * 64,
+        "worker_name": "srv1879763-light-primary",
+        "target_id": "srv1879763-light-primary",
+        "service_unit": "qdev-runner@primary.service",
+        "active_jobs": 0,
+        "error_code": "operation_outcome_unknown_reconciliation_required",
+        "result": None,
+    }
+
+
+def test_fleet_recovery_receipt_preserves_unknown_outcome_for_reconciliation() -> None:
+    payload = _unknown_fleet_recovery_payload()
+
+    assert validate_controller_receipt_payload(payload) == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("status", "failed"),
+        ("operation_status", "pending"),
+        ("error_code", "worker_recovery_failed"),
+        ("result", {"reported": "success"}),
+    ),
+)
+def test_fleet_recovery_unknown_outcome_cannot_be_mixed_with_a_claimed_result(
+    field: str,
+    replacement: object,
+) -> None:
+    payload = _unknown_fleet_recovery_payload()
+    payload[field] = replacement
+
+    with pytest.raises(ValueError, match="unknown outcome"):
         validate_controller_receipt_payload(payload)
 
 

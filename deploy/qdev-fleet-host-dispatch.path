@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch QDev fleet bootstrap request spool
+After=local-fs.target
+
+[Path]
+PathExistsGlob=/var/lib/qdev-runner/fleet-host-dispatch/incoming/*.json
+PathExistsGlob=/var/lib/qdev-runner/fleet-host-dispatch/processing/*.request.json
+Unit=qdev-fleet-host-dispatch.service
+
+[Install]
+WantedBy=multi-user.target

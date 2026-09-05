@@ -23,7 +23,7 @@ from typing import Any, Literal, TextIO
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .release_lane import ReleaseLanePolicy
+from .release_lane import ReleaseLane, ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v1"
@@ -134,7 +134,10 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("fleet bootstrap policy schema is invalid")
         self.identity = self._identity(document["bootstrap"])
         self.activation = self._activation(document["activation"])
-        self._allowed_lanes = self._parse_lanes(document["enrolment"], release_lanes_path)
+        self._release_lanes = ReleaseLanePolicy(release_lanes_path)
+        self._allowed_lanes = self._parse_lanes(
+            document["enrolment"], self._release_lanes
+        )
         self._allowed_workers = self._parse_workers(document["workers"])
         self._worker_targets = self._parse_worker_targets(document["worker_targets"])
 
@@ -201,7 +204,7 @@ class FleetBootstrapPolicy:
         return activation
 
     @staticmethod
-    def _parse_lanes(raw: object, release_lanes_path: Path) -> frozenset[str]:
+    def _parse_lanes(raw: object, policy: ReleaseLanePolicy) -> frozenset[str]:
         if not isinstance(raw, dict) or set(raw) != {"lanes"}:
             raise FleetBootstrapError("bootstrap enrolment policy is invalid")
         values = raw["lanes"]
@@ -213,12 +216,26 @@ class FleetBootstrapPolicy:
         ):
             raise FleetBootstrapError("bootstrap enrolment lanes are invalid")
         try:
-            policy = ReleaseLanePolicy(release_lanes_path)
             for name in values:
                 policy.lane(name)
         except Exception as exc:
             raise FleetBootstrapError("bootstrap enrolment lane is not registered") from exc
         return frozenset(values)
+
+    def release_lane(self, name: str) -> ReleaseLane:
+        """Return one enrolment-allowlisted immutable release lane.
+
+        Keeping this lookup on the parsed bootstrap policy prevents a
+        privileged executor from reopening a different registry file after
+        the request has been admitted.
+        """
+
+        if name not in self._allowed_lanes:
+            raise FleetBootstrapError("bootstrap release lane is not allowlisted")
+        try:
+            return self._release_lanes.lane(name)
+        except Exception as exc:
+            raise FleetBootstrapError("bootstrap release lane is unavailable") from exc
 
     @staticmethod
     def _parse_workers(raw: object) -> frozenset[str]:
