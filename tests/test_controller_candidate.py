@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -179,6 +180,37 @@ def test_prepare_controller_candidate_resumes_after_terminal_transition(
     assert result["ledger_sha256"] != finished.ledger_sha256
     _, current_snapshot = state.current()
     assert current_snapshot["active_candidate"]["source_sha"] == NEXT_SHA
+
+
+def test_prepare_controller_candidate_survives_commit_failure_without_split_state(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, _, _ = _initialize(tmp_path)
+    before = ledger.read_bytes()
+
+    with patch.object(
+        AdminPlatformStateStore,
+        "_commit_locked",
+        side_effect=RuntimeError("simulated commit failure"),
+    ), pytest.raises(RuntimeError, match="simulated commit failure"):
+        _prepare(tmp_path)
+
+    assert ledger.read_bytes() == before
+    _, interrupted = state.current()
+    assert interrupted["program"]["status"] == "active"
+    assert interrupted["active_candidate"]["source_sha"] == CURRENT_SHA
+    assert len(interrupted["entries"][0]["attempts"]) == 1
+
+    result = _prepare(tmp_path)
+
+    assert result["status"] == "completed"
+    _, recovered = state.current()
+    assert recovered["program"]["status"] == "active"
+    assert recovered["active_candidate"]["source_sha"] == NEXT_SHA
+    assert [attempt["terminal_state"] for attempt in recovered["entries"][0]["attempts"]] == [
+        "blocked",
+        None,
+    ]
 
 
 def test_prepare_controller_candidate_uses_monotonic_durable_timestamps(

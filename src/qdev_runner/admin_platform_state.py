@@ -507,6 +507,102 @@ class AdminPlatformStateStore:
             uris.append(terminal_uri)
             return self._commit_locked(raw, document, tuple(uris))
 
+    def supersede_attempt(
+        self,
+        *,
+        expected_sha256: str,
+        result_receipt: Mapping[str, Any],
+        terminal_receipt: Mapping[str, Any],
+        candidate: AdminPlatformCandidate,
+        source_receipt: Mapping[str, Any],
+    ) -> AdminPlatformStateUpdate:
+        """Atomically block the active attempt and admit its replacement."""
+
+        with self._lock():
+            raw, ledger = self._load_locked()
+            self._require_digest(raw, expected_sha256)
+            document = ledger.document()
+            if document["program"]["status"] != "active":
+                raise AdminPlatformStateError("program is not active for supersession")
+            entry, previous_attempt = self._active_attempt(document)
+            if entry["status"] not in {"candidate", "ci_queued", "ci_passed"}:
+                raise AdminPlatformStateError("active attempt cannot be superseded")
+            if previous_attempt["terminal_state"] is not None:
+                raise AdminPlatformStateError("active attempt is already terminal")
+
+            result_document, result = self._evidence(
+                result_receipt, evidence_type="lane_result"
+            )
+            terminal_document, terminal = self._evidence(
+                terminal_receipt, evidence_type="attempt_terminal"
+            )
+            source_document, source = self._evidence(
+                source_receipt, evidence_type="lane_result"
+            )
+            self._require_active_tuple(document, result)
+            self._require_active_tuple(document, terminal)
+            self._require_candidate_source(document, candidate, source)
+            if result["outcome"] != "blocked" or terminal["outcome"] != "blocked":
+                raise AdminPlatformStateError("supersession requires blocked terminal evidence")
+            if source["lane"] != "source" or source["outcome"] != "passed":
+                raise AdminPlatformStateError("supersession requires passing source evidence")
+            result_at = parse_utc(cast(str, result["observed_at"]))
+            terminal_at = parse_utc(cast(str, terminal["observed_at"]))
+            source_at = parse_utc(cast(str, source["observed_at"]))
+            if result_at > terminal_at:
+                raise AdminPlatformStateError("lane result follows its terminal receipt")
+            if source_at <= terminal_at:
+                raise AdminPlatformStateError(
+                    "replacement candidate does not follow terminal receipt"
+                )
+            if candidate.repository != entry["repository"]:
+                raise AdminPlatformStateError("candidate repository does not match active stage")
+            if any(
+                attempt["release_id"] == candidate.release_id for attempt in entry["attempts"]
+            ):
+                raise AdminPlatformStateError("candidate release id was already used")
+
+            result_uri, result_checksum = self._persist_receipt(result_document)
+            terminal_uri, terminal_checksum = self._persist_receipt(terminal_document)
+            source_uri, source_checksum = self._persist_receipt(source_document)
+            self._append_result(entry, result, result_uri, result_checksum)
+            previous_attempt.update(
+                {
+                    "finished_at": terminal["observed_at"],
+                    "terminal_state": "blocked",
+                    "receipt_uri": terminal_uri,
+                    "receipt_sha256": terminal_checksum,
+                }
+            )
+            entry.update(
+                {
+                    "source_sha": candidate.source_sha,
+                    "reference": candidate.reference,
+                    "status": "candidate",
+                }
+            )
+            entry["attempts"].append(
+                {
+                    "release_id": candidate.release_id,
+                    "source_sha": candidate.source_sha,
+                    "reference": candidate.reference,
+                    "started_at": source["observed_at"],
+                    "finished_at": None,
+                    "terminal_state": None,
+                    "receipt_uri": None,
+                    "receipt_sha256": None,
+                }
+            )
+            self._append_result(entry, source, source_uri, source_checksum)
+            document["active_candidate"] = asdict(candidate)
+            document["program"]["status"] = "active"
+            self._touch(document, cast(str, source["observed_at"]))
+            return self._commit_locked(
+                raw,
+                document,
+                (result_uri, terminal_uri, source_uri),
+            )
+
     def restart_attempt(
         self,
         *,
