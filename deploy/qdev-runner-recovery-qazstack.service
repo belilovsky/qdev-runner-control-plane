@@ -1,0 +1,25 @@
+[Unit]
+Description=QDev controller-owned recovery agent for qdev-qazstack-01
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+TimeoutStartSec=900
+ExecStart=/opt/qdev-runner-recovery/current/scripts/qdev_runner_recovery_host_agent.py --profile qazstack --config /etc/qdev-runner-recovery/qazstack.env --once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/opt/github-runners
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native

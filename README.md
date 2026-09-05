@@ -338,6 +338,21 @@ and succeeds.
 
 ## Signed capacity and stale-worker recovery
 
+Recovery of the two named long-lived CI runners uses the separate typed
+controller transaction in `docs/controller-capacity-recovery.md`. The operator
+can select only `qdev-platform-ci-187` or `qdev-qazstack-01`; the controller and
+certificate-bound host agents own the repository, permanent labels, native
+action and service identity. A prepared operation fences admission until the
+provider reports the runner online and idle and a controller-dispatched,
+exact-SHA canary succeeds. Replaying an accepted operation is idempotent.
+
+The retired
+`/internal/v1/operations/fleet-bootstrap/recover-existing-worker` route always
+returns `410`. It is not a fallback to the typed recovery API. Controller
+activation packages the fixed host agents and one-shot units, but an operator
+must install their private certificate/release bindings on the already
+assigned hosts; no workflow receives SSH, CA material or a general command.
+
 The capacity endpoint never changes a job, FIFO order, lease, label, profile or
 `runs-on`. It can issue one signed override for a fresh, idle worker only when
 the baseline blocker is disk-only and measured headroom still covers the hard
