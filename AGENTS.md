@@ -3,11 +3,12 @@
 <!-- qdev-runner-policy:start -->
 ## QDev GitHub Actions runner policy
 
-- General CI uses a static GitHub-hosted runner as the normal path. Keep the
-  centralized ephemeral self-hosted pool as a separately dispatchable recovery
-  path; do not implement a silent dynamic selector fallback.
-- A recovery job selects one approved profile (`qdev-ci`, `qdev-ci-browser`, or
-  `qdev-ci-docker`) together with `self-hosted`, `Linux`, `X64`, and a
+- General CI and `qdev-runner-contract` use the existing centralized ephemeral
+  self-hosted pool under the supported `qdev-runner-v1` contract. This is an
+  owner-authorized migration from billing-blocked hosted compute; do not add a
+  hosted or dynamic selector fallback.
+- A CI job selects one contract-approved profile (`qdev-ci` here) together
+  with `self-hosted`, `Linux`, `X64`, and a
   job-unique `qdev-job-*` label. Matrix jobs also include
   `${{ strategy.job-index }}` so each expansion has a distinct runner lease.
 - Treat `.github/qdev-runner.yml` as the machine-readable source of truth. Do
@@ -20,7 +21,10 @@
 - Public fork pull requests must not execute fork code on production-connected
   runners. Keep product-specific deployment labels and their credential gates
   separate from the general CI pool.
-- Any new or changed workflow must pass the hosted `qdev-runner-contract`
-  check. Recovery acceptance additionally requires `runner-smoke` on the same
-  default-branch SHA.
+- Keep `cancel-in-progress: false` and run/attempt-specific concurrency groups
+  so new runs do not replace pending or active controller FIFO entries.
+- Any new or changed workflow must pass the self-hosted `qdev-runner-contract`
+  check without changing its name or validation content. Runner activation
+  acceptance additionally requires `runner-smoke` on the same default-branch
+  SHA; local validation is not live runner evidence.
 <!-- qdev-runner-policy:end -->

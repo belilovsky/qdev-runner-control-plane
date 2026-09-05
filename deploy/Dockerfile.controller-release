@@ -1,0 +1,22 @@
+FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+
+ARG SOURCE_REVISION
+ARG BUNDLE_DIGEST
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN groupadd --system --gid 9020 qdev-runner \
+    && useradd --system --uid 9020 --gid 9020 --home /nonexistent \
+        --shell /usr/sbin/nologin qdev-runner
+WORKDIR /opt/qdev-controller-release
+COPY . .
+RUN PYTHONPATH=src python -m qdev_runner.bootstrap_wheelhouse verify wheelhouse \
+      --requirements requirements.runtime.txt \
+    && python -m pip install --no-cache-dir --no-index --no-deps --require-hashes \
+      --find-links wheelhouse -r requirements.runtime.txt \
+    && python -m pip install --no-cache-dir --no-index --no-deps \
+      wheelhouse/qdev_runner_control_plane-*.whl
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      run.qdev.controller.bundle-digest="${BUNDLE_DIGEST}" \
+      run.qdev.controller.schema="qdev-controller-release-image-v1"
+USER 9020:9020
+ENTRYPOINT ["qdev-runner-broker"]

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Validate one signed GitHub Actions request for fleet bootstrap.
 
-This workflow is intentionally a validation boundary, not the privileged
-executor.  It binds the current workflow attempt to the numeric GitHub job,
-validates the immutable controller tuple against the checked-in policy and
-records an idempotent, non-secret operation marker.  A controller process with
-the QDev CA must still mint the short-lived claim and perform the allowlisted
-transition.
+It binds the current workflow attempt to the numeric GitHub job and to an
+immutable controller artifact digest. The controller still independently
+verifies the OIDC identity, mints the short-lived operation directive and
+performs only the allowlisted transition through a fixed privileged adapter.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,18 +25,22 @@ from pydantic import ValidationError
 
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
-    BootstrapOperationStore,
     FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
     bootstrap_request_fingerprint,
 )
 from qdev_runner.github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
+from qdev_runner.operator import run as operator_run
 
 ROOT = Path(__file__).resolve().parents[1]
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _SAFE_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:/()\-]{0,127}$")
+_GITHUB_API_ORIGIN = "https://api.github.com"
+_OIDC_MINT_HOST = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+actions\.githubusercontent\.com$"
+)
 
 
 class BootstrapValidationError(RuntimeError):
@@ -70,12 +74,40 @@ def _source_sha() -> str:
 
 
 def _https_url(name: str, value: str, *, allowed_host: str | None = None) -> str:
-    parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+    if "\\" in value or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+        raise BootstrapValidationError(f"{name} must be an HTTPS URL")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError as error:
+        raise BootstrapValidationError(f"{name} must be an HTTPS URL") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or parsed.fragment
+    ):
         raise BootstrapValidationError(f"{name} must be an HTTPS URL")
     if allowed_host is not None and parsed.hostname != allowed_host:
         raise BootstrapValidationError(f"{name} host is not allowlisted")
     return value
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never resend a workflow bearer to a redirect target, even on the same origin."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
 
 
 def _json_request(
@@ -88,10 +120,10 @@ def _json_request(
         url, headers=headers, method="GET"
     )
     try:
-        # ``_https_url`` validates every caller-supplied endpoint before this
-        # helper is reached.  Keep the explicit suppression local to the two
-        # stdlib calls so a future unvalidated URL cannot hide in this module.
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        # Callers validate the initial URL; disabling redirects preserves that
+        # origin boundary for both the Actions runtime bearer and GITHUB_TOKEN.
+        opener = urllib.request.build_opener(_NoRedirect())
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310
             body = response.read()
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
         # Never include response bodies: GitHub errors can contain identity or
@@ -107,13 +139,20 @@ def _oidc_token(audience: str) -> str:
     endpoint = _https_url(
         "ACTIONS_ID_TOKEN_REQUEST_URL",
         _required("ACTIONS_ID_TOKEN_REQUEST_URL"),
-        allowed_host="token.actions.githubusercontent.com",
     )
+    parsed = urllib.parse.urlsplit(endpoint)
+    # The mint endpoint is regional, unlike the fixed JWT issuer. GitHub's
+    # runner supplies a host under *.actions.githubusercontent.com.
+    if not _OIDC_MINT_HOST.fullmatch(parsed.hostname or ""):
+        raise BootstrapValidationError("ACTIONS_ID_TOKEN_REQUEST_URL host is not allowlisted")
     token = _required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     if not audience or len(audience) > 256:
         raise BootstrapValidationError("OIDC audience is invalid")
-    parsed = urllib.parse.urlsplit(endpoint)
-    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
+    query = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        if key != "audience"
+    ]
     query.append(("audience", audience))
     endpoint = urllib.parse.urlunsplit(
         parsed._replace(query=urllib.parse.urlencode(query, doseq=True))
@@ -132,17 +171,22 @@ def _oidc_token(audience: str) -> str:
 
 
 def _github_api_base() -> str:
-    return _https_url(
+    endpoint = _https_url(
         "GITHUB_API_URL",
-        os.environ.get("GITHUB_API_URL", "https://api.github.com"),
-    ).rstrip("/")
+        os.environ.get("GITHUB_API_URL", _GITHUB_API_ORIGIN),
+        allowed_host="api.github.com",
+    )
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.path not in {"", "/"} or parsed.query:
+        raise BootstrapValidationError("GITHUB_API_URL must be the GitHub API origin")
+    return _GITHUB_API_ORIGIN
 
 
-def _job_list(repository: str, run_id: int) -> list[dict[str, Any]]:
+def _job_list(repository: str, run_id: int, attempt: int) -> list[dict[str, Any]]:
     token = _required("GITHUB_TOKEN")
     endpoint = (
         f"{_github_api_base()}/repos/{urllib.parse.quote(repository, safe='/')}"
-        f"/actions/runs/{run_id}/jobs?per_page=100"
+        f"/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
     )
     body = _json_request(
         endpoint,
@@ -161,18 +205,18 @@ def _job_list(repository: str, run_id: int) -> list[dict[str, Any]]:
     return jobs
 
 
-def resolve_job_id(repository: str, run_id: int, *, expected_name: str) -> int:
-    """Resolve exactly one numeric job ID from the current run.
+def resolve_job_id(repository: str, run_id: int, *, attempt: int, expected_name: str) -> int:
+    """Resolve exactly one running numeric job ID from the current attempt.
 
     A profile label is never accepted as a job identity.  The API response is
-    also checked against the current source SHA and run before the ID enters
-    the request fingerprint.
+    also checked against the current source SHA, run and attempt before the ID
+    enters the request fingerprint.
     """
 
     if not _SAFE_JOB_NAME.fullmatch(expected_name):
         raise BootstrapValidationError("bootstrap job name is invalid")
     source_sha = _source_sha()
-    jobs = _job_list(repository, run_id)
+    jobs = _job_list(repository, run_id, attempt)
     matching = [job for job in jobs if job.get("name") == expected_name]
     if len(matching) != 1:
         raise BootstrapValidationError("current bootstrap job is not uniquely discoverable")
@@ -181,13 +225,15 @@ def resolve_job_id(repository: str, run_id: int, *, expected_name: str) -> int:
     if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id < 1:
         raise BootstrapValidationError("GitHub returned an invalid numeric job ID")
     if (
-        str(job.get("run_id")) != str(run_id)
+        type(job.get("run_id")) is not int
+        or job["run_id"] != run_id
+        or type(job.get("run_attempt")) is not int
+        or job["run_attempt"] != attempt
         or job.get("head_sha") != source_sha
-        or job.get("status") not in {"queued", "in_progress", "completed"}
+        or job.get("status") != "in_progress"
+        or job.get("conclusion") is not None
     ):
         raise BootstrapValidationError("GitHub job identity does not match this attempt")
-    if job.get("status") == "completed" and job.get("conclusion") != "success":
-        raise BootstrapValidationError("completed bootstrap job did not succeed")
     supplied = os.environ.get("BOOTSTRAP_JOB_ID", "").strip()
     if supplied and _positive_int(supplied, "BOOTSTRAP_JOB_ID") != job_id:
         raise BootstrapValidationError("supplied job ID does not match GitHub API")
@@ -199,14 +245,24 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     if repository != policy.identity.repository:
         raise BootstrapValidationError("workflow repository is not allowlisted")
     run_id = _positive_int(_required("GITHUB_RUN_ID"), "GITHUB_RUN_ID")
-    attempt = _positive_int(
-        os.environ.get("GITHUB_RUN_ATTEMPT", "1"), "GITHUB_RUN_ATTEMPT"
-    )
+    attempt = _positive_int(_required("GITHUB_RUN_ATTEMPT"), "GITHUB_RUN_ATTEMPT")
     expected_job_name = _required("BOOTSTRAP_JOB_NAME")
-    job_id = resolve_job_id(repository, run_id, expected_name=expected_job_name)
+    job_id = resolve_job_id(repository, run_id, attempt=attempt, expected_name=expected_job_name)
+    action = _required("BOOTSTRAP_ACTION")
+    candidate_raw = os.environ.get("BOOTSTRAP_CONTROLLER_CANDIDATE_RECEIPT", "").strip()
+    candidate: object = None
+    if action == "activate-controller":
+        if not candidate_raw or len(candidate_raw.encode("utf-8")) > 16_384:
+            raise BootstrapValidationError("controller candidate receipt is required")
+        try:
+            candidate = json.loads(candidate_raw)
+        except json.JSONDecodeError as error:
+            raise BootstrapValidationError("controller candidate receipt is invalid") from error
+    elif candidate_raw:
+        raise BootstrapValidationError("controller candidate receipt is out of scope")
     raw: dict[str, Any] = {
         "schema": REQUEST_SCHEMA,
-        "action": _required("BOOTSTRAP_ACTION"),
+        "action": action,
         "source_sha": _source_sha(),
         "run_id": run_id,
         "job_id": job_id,
@@ -217,6 +273,7 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
         ),
         "controller_revision": _required("BOOTSTRAP_CONTROLLER_REVISION").lower(),
         "controller_release_digest": _required("BOOTSTRAP_CONTROLLER_RELEASE_DIGEST").lower(),
+        "controller_candidate_receipt": candidate,
         "release_lane": os.environ.get("BOOTSTRAP_RELEASE_LANE") or None,
         "worker_name": os.environ.get("BOOTSTRAP_WORKER_NAME") or None,
     }
@@ -228,7 +285,7 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     return request
 
 
-def validate() -> dict[str, str]:
+def _validated_operation() -> tuple[FleetBootstrapRequest, str, str]:
     policy_path = Path(
         os.environ.get("FLEET_BOOTSTRAP_POLICY", str(ROOT / "config/fleet-bootstrap.yml"))
     )
@@ -239,8 +296,9 @@ def validate() -> dict[str, str]:
         policy = FleetBootstrapPolicy(policy_path, release_lanes_path)
         request = build_request(policy)
         audience = policy.identity.audience
+        token = _oidc_token(audience)
         claims = GitHubActionsArtifactOIDCVerifier(audience=audience).verify_and_decode(
-            _oidc_token(audience),
+            token,
             repository=policy.identity.repository,
             sha=request.source_sha,
             run_id=request.run_id,
@@ -249,26 +307,86 @@ def validate() -> dict[str, str]:
         idempotency_key = _required("BOOTSTRAP_IDEMPOTENCY_KEY")
         if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise BootstrapValidationError("bootstrap idempotency key is invalid")
-        store_path = Path(
-            os.environ.get(
-                "BOOTSTRAP_OPERATION_STATE",
-                str(ROOT / ".fleet-bootstrap-operation.json"),
-            )
-        )
-        record = BootstrapOperationStore(store_path).begin(idempotency_key, request)
     except (FleetBootstrapError, GitHubActionsOIDCError) as error:
         raise BootstrapValidationError("bootstrap request failed closed") from error
+    return request, idempotency_key, token
+
+
+def validate() -> dict[str, str]:
+    request, idempotency_key, _ = _validated_operation()
     return {
         "status": "validated",
-        "operation_status": record.status,
         "request_fingerprint": bootstrap_request_fingerprint(request),
-        "idempotency_key": record.idempotency_key,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def execute() -> dict[str, str]:
+    """Validate once, then submit that exact identity to the controller."""
+
+    request, idempotency_key, oidc_token = _validated_operation()
+    descriptor, temporary = tempfile.mkstemp(prefix="qdev-fleet-bootstrap-", suffix=".json")
+    request_path = Path(temporary)
+    previous_token = os.environ.get("QDEV_BOOTSTRAP_OIDC_TOKEN")
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(
+                request.model_dump(mode="json", by_alias=True),
+                stream,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.environ["QDEV_BOOTSTRAP_OIDC_TOKEN"] = oidc_token
+        receipt = operator_run(
+            [
+                "fleet-bootstrap",
+                "--request",
+                str(request_path),
+                "--idempotency-key",
+                idempotency_key,
+                "--timeout-seconds",
+                "120",
+            ]
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise BootstrapValidationError("controller bootstrap execution failed closed") from error
+    finally:
+        request_path.unlink(missing_ok=True)
+        if previous_token is None:
+            os.environ.pop("QDEV_BOOTSTRAP_OIDC_TOKEN", None)
+        else:
+            os.environ["QDEV_BOOTSTRAP_OIDC_TOKEN"] = previous_token
+    payload = receipt.get("payload") if isinstance(receipt, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("kind") != "fleet-bootstrap"
+        or payload.get("status") != "completed"
+        or payload.get("operation_status") != "completed"
+        or payload.get("action") != request.action
+        or payload.get("idempotency_key") != idempotency_key
+        or payload.get("request_fingerprint") != bootstrap_request_fingerprint(request)
+    ):
+        raise BootstrapValidationError("controller did not complete the exact bootstrap request")
+    receipt_digest = hashlib.sha256(
+        json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "status": "completed",
+        "action": request.action,
+        "request_fingerprint": bootstrap_request_fingerprint(request),
+        "idempotency_key": idempotency_key,
+        "controller_receipt_digest": receipt_digest,
     }
 
 
 def main() -> int:
     try:
-        result = validate()
+        result = execute()
     except BootstrapValidationError as error:
         print(f"fleet_bootstrap_validation_failed: {error}", file=sys.stderr)
         return 1

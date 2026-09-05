@@ -108,6 +108,26 @@ class GitHubAppClient:
             )
         return cast(dict[str, Any], response.json())
 
+    def workflow_jobs(
+        self, installation_id: int, repository: str, run_id: int, attempt: int
+    ) -> list[dict[str, Any]]:
+        """Return one exact workflow attempt's jobs for provenance verification."""
+
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
+            headers=self._headers(self.installation_token(installation_id)),
+        )
+        if response.status_code != 200:
+            raise GitHubError(
+                f"workflow jobs request failed: {response.status_code} {response.text[:300]}"
+            )
+        data = response.json()
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
+            raise GitHubError("workflow jobs response is invalid")
+        return cast(list[dict[str, Any]], jobs)
+
     def generate_jit_config(
         self,
         installation_id: int,

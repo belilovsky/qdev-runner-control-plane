@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 1 || ! "$1" =~ ^[0-9a-f]{7,40}$ ]]; then
-  printf 'usage: %s RELEASE_ID\n' "$0" >&2
+if [[ "${EUID}" -ne 0 ]]; then
+  printf 'run as root\n' >&2
+  exit 1
+fi
+if [[ "$#" -ne 1 || ! "$1" =~ ^[0-9a-f]{32}$ ]]; then
+  printf 'usage: %s TRANSACTION_ID\n' "$0" >&2
   exit 64
 fi
 
-script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
-target="/opt/qdev-runner-control-plane/releases/$1"
-legacy_rollback=false
-if [[ ! -f "$target/config/admin-platform-ledger-v2.yml" ]]; then
-  # Older controller releases predate the Admin Platform v2 ledger and the
-  # product adapters.  This flag is only derived by this controller-owned
-  # rollback path; forward activation remains fail-closed on v2.
-  legacy_rollback=true
-fi
-QDEV_CONTROLLER_NO_BUILD=true \
-QDEV_CONTROLLER_LEGACY_ROLLBACK="$legacy_rollback" \
-  "$script_dir/activate_controller_release.sh" "$target"
+current="$(realpath -e -- /opt/qdev-runner-control-plane/current)"
+case "$current" in
+  /opt/qdev-runner-control-plane/releases/*) ;;
+  *)
+    printf 'active controller release is outside the registered root\n' >&2
+    exit 1
+    ;;
+esac
+
+# The trusted active release interprets the root-private snapshot. The caller
+# selects only the latest accepted transaction ID, never an arbitrary SHA/path.
+PYTHONPATH="$current/src" exec /usr/bin/python3 -m qdev_runner.controller_transaction \
+  --rollback "$1"

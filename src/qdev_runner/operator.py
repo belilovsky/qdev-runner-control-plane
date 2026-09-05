@@ -147,16 +147,20 @@ def controller_request(
     method: str,
     path: str,
     body: Mapping[str, Any] | None = None,
+    bootstrap_oidc: str | None = None,
 ) -> dict[str, Any]:
     headers = {
         "X-QDev-Operator-Token": settings.operator_token,
         "X-QDev-Operator-mTLS-Identity": OPERATOR_MTLS_IDENTITY,
     }
+    if bootstrap_oidc is not None:
+        headers["X-QDev-Bootstrap-OIDC"] = bootstrap_oidc
     with httpx.Client(
         base_url=settings.controller_url,
         headers=headers,
         verify=_tls_context(settings),
-        timeout=45,
+        timeout=150 if bootstrap_oidc is not None else 45,
+        follow_redirects=False,
     ) as client:
         response = client.request(method, path, json=body)
         response.raise_for_status()
@@ -231,8 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recover_worker.add_argument("--request", required=True, type=Path)
     recover_worker.add_argument("--idempotency-key", required=True)
-    recover_worker.add_argument("--active-jobs", required=True, type=int)
     recover_worker.add_argument("--timeout-seconds", type=float, default=120.0)
+    bootstrap = commands.add_parser(
+        "fleet-bootstrap",
+        help="Execute one controller activation or registered host-agent enrolment",
+    )
+    bootstrap.add_argument("--request", required=True, type=Path)
+    bootstrap.add_argument("--idempotency-key", required=True)
+    bootstrap.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
 
@@ -330,24 +340,27 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "duration_seconds": arguments.duration_seconds,
             },
         )
-    if arguments.command == "recover-existing-worker":
+    if arguments.command in {"recover-existing-worker", "fleet-bootstrap"}:
         key = _idempotency_key(arguments.idempotency_key)
-        if arguments.active_jobs < 0:
-            raise ValueError("active jobs cannot be negative")
         try:
             raw = json.loads(arguments.request.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError("bootstrap request file is invalid") from error
         if not isinstance(raw, dict):
             raise ValueError("bootstrap request file must contain an object")
+        endpoint = (
+            "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
+            if arguments.command == "recover-existing-worker"
+            else "/internal/v1/operations/fleet-bootstrap/execute"
+        )
         return controller_request(
             settings,
             method="POST",
-            path="/internal/v1/operations/fleet-bootstrap/recover-existing-worker",
+            path=endpoint,
+            bootstrap_oidc=_required("QDEV_BOOTSTRAP_OIDC_TOKEN"),
             body={
                 "request": raw,
                 "idempotency_key": key,
-                "active_jobs": arguments.active_jobs,
                 "timeout_seconds": arguments.timeout_seconds,
             },
         )

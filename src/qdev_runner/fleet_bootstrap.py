@@ -15,7 +15,8 @@ import json
 import os
 import re
 import tempfile
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TextIO
@@ -23,21 +24,23 @@ from typing import Any, Literal, TextIO
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .release_lane import ReleaseLanePolicy
+from .controller_image_candidate import CandidateReceiptError
+from .controller_image_candidate import verify as verify_candidate_receipt
+from .release_lane import ReleaseLane, ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v1"
-ALLOWED_ACTIONS = frozenset(
-    {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
-)
+ALLOWED_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ARTIFACT_PREFIX = re.compile(r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _WORKFLOW_PATH = re.compile(r"^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$")
 _WORKER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _TARGET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,254}$")
 _SERVICE_UNIT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,254}\.service$")
+_CERTIFICATE_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _SENSITIVE_RESULT_KEY = re.compile(
     r"(?:token|secret|private|password|credential|cookie|pin|claim)", re.IGNORECASE
@@ -59,8 +62,8 @@ class BootstrapIdentity:
 
 @dataclass(frozen=True)
 class ControllerActivation:
-    revision: str
-    release_digest: str
+    source_revision_binding: str
+    artifact_ref_prefix: str
     rollback_revision: str
     rollback_release_digest: str
 
@@ -79,6 +82,7 @@ class WorkerRecoveryTarget:
     service_unit: str
     host_binding: str
     labels: tuple[str, ...]
+    certificate_fingerprint_sha256: str
 
 
 class FleetBootstrapRequest(BaseModel):
@@ -87,16 +91,15 @@ class FleetBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_name: str = Field(alias="schema")
-    action: Literal[
-        "activate-controller", "enrol-host-agent", "restore-existing-worker"
-    ]
+    action: Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
     source_sha: str
-    run_id: int = Field(ge=1)
-    job_id: int = Field(ge=1)
-    attempt: int = Field(ge=1)
-    claim_ttl_seconds: int = Field(ge=1)
+    run_id: int = Field(ge=1, strict=True)
+    job_id: int = Field(ge=1, strict=True)
+    attempt: int = Field(ge=1, strict=True)
+    claim_ttl_seconds: int = Field(ge=1, strict=True)
     controller_revision: str
     controller_release_digest: str
+    controller_candidate_receipt: dict[str, Any] | None = None
     release_lane: str | None = None
     worker_name: str | None = None
 
@@ -105,10 +108,20 @@ class FleetBootstrapRequest(BaseModel):
         if self.action == "activate-controller":
             if self.release_lane is not None or self.worker_name is not None:
                 raise ValueError("controller activation cannot name a lane or worker")
+            if self.controller_candidate_receipt is None:
+                raise ValueError("controller activation requires candidate provenance")
         elif self.action == "enrol-host-agent":
-            if self.release_lane is None or self.worker_name is not None:
+            if (
+                self.release_lane is None
+                or self.worker_name is not None
+                or self.controller_candidate_receipt is not None
+            ):
                 raise ValueError("host-agent enrolment must name exactly one release lane")
-        elif self.release_lane is not None or self.worker_name is None:
+        elif (
+            self.release_lane is not None
+            or self.worker_name is None
+            or self.controller_candidate_receipt is not None
+        ):
             raise ValueError("worker restoration must name exactly one worker")
         return self
 
@@ -134,9 +147,20 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("fleet bootstrap policy schema is invalid")
         self.identity = self._identity(document["bootstrap"])
         self.activation = self._activation(document["activation"])
-        self._allowed_lanes = self._parse_lanes(document["enrolment"], release_lanes_path)
+        self._release_lanes = ReleaseLanePolicy(release_lanes_path)
+        self._allowed_lanes = self._parse_lanes(document["enrolment"], self._release_lanes)
         self._allowed_workers = self._parse_workers(document["workers"])
         self._worker_targets = self._parse_worker_targets(document["worker_targets"])
+        target_profiles = {
+            label
+            for target in self._worker_targets.values()
+            for label in target.labels
+            if label not in {"self-hosted", "Linux", "X64"}
+        }
+        if target_profiles != self._allowed_workers:
+            raise FleetBootstrapError(
+                "bootstrap worker targets must cover exactly the allowed profiles"
+            )
 
     @staticmethod
     def _identity(raw: object) -> BootstrapIdentity:
@@ -173,8 +197,8 @@ class FleetBootstrapPolicy:
     @staticmethod
     def _activation(raw: object) -> ControllerActivation:
         expected = {
-            "controller_revision",
-            "controller_release_digest",
+            "source_revision_binding",
+            "artifact_ref_prefix",
             "rollback_revision",
             "rollback_release_digest",
         }
@@ -184,24 +208,22 @@ class FleetBootstrapPolicy:
         if not all(isinstance(value, str) for value in values):
             raise FleetBootstrapError("bootstrap activation values are invalid")
         activation = ControllerActivation(
-            revision=str(raw["controller_revision"]),
-            release_digest=str(raw["controller_release_digest"]),
+            source_revision_binding=str(raw["source_revision_binding"]),
+            artifact_ref_prefix=str(raw["artifact_ref_prefix"]),
             rollback_revision=str(raw["rollback_revision"]),
             rollback_release_digest=str(raw["rollback_release_digest"]),
         )
         if (
-            not _SHA.fullmatch(activation.revision)
-            or not _DIGEST.fullmatch(activation.release_digest)
+            activation.source_revision_binding != "workflow-source"
+            or not _ARTIFACT_PREFIX.fullmatch(activation.artifact_ref_prefix)
             or not _SHA.fullmatch(activation.rollback_revision)
             or not _DIGEST.fullmatch(activation.rollback_release_digest)
-            or activation.revision == activation.rollback_revision
-            or activation.release_digest == activation.rollback_release_digest
         ):
-            raise FleetBootstrapError("bootstrap immutable controller tuple is invalid")
+            raise FleetBootstrapError("bootstrap controller activation policy is invalid")
         return activation
 
     @staticmethod
-    def _parse_lanes(raw: object, release_lanes_path: Path) -> frozenset[str]:
+    def _parse_lanes(raw: object, policy: ReleaseLanePolicy) -> frozenset[str]:
         if not isinstance(raw, dict) or set(raw) != {"lanes"}:
             raise FleetBootstrapError("bootstrap enrolment policy is invalid")
         values = raw["lanes"]
@@ -213,7 +235,6 @@ class FleetBootstrapPolicy:
         ):
             raise FleetBootstrapError("bootstrap enrolment lanes are invalid")
         try:
-            policy = ReleaseLanePolicy(release_lanes_path)
             for name in values:
                 policy.lane(name)
         except Exception as exc:
@@ -245,6 +266,7 @@ class FleetBootstrapPolicy:
                 "service_unit",
                 "host_binding",
                 "labels",
+                "certificate_fingerprint_sha256",
             }:
                 raise FleetBootstrapError("bootstrap worker target mapping is invalid")
             worker_name = entry["worker_name"]
@@ -252,6 +274,7 @@ class FleetBootstrapPolicy:
             service_unit = entry["service_unit"]
             host_binding = entry["host_binding"]
             labels = entry["labels"]
+            certificate_fingerprint = entry["certificate_fingerprint_sha256"]
             if (
                 not isinstance(worker_name, str)
                 or not _WORKER.fullmatch(worker_name)
@@ -268,6 +291,8 @@ class FleetBootstrapPolicy:
                 or not all(isinstance(label, str) and label for label in labels)
                 or len(labels) != len(set(labels))
                 or not {"self-hosted", "Linux", "X64"}.issubset(labels)
+                or not isinstance(certificate_fingerprint, str)
+                or not _CERTIFICATE_FINGERPRINT.fullmatch(certificate_fingerprint)
             ):
                 raise FleetBootstrapError("bootstrap worker target mapping is invalid")
             targets[worker_name] = WorkerRecoveryTarget(
@@ -276,6 +301,7 @@ class FleetBootstrapPolicy:
                 service_unit=service_unit,
                 host_binding=host_binding,
                 labels=tuple(labels),
+                certificate_fingerprint_sha256=certificate_fingerprint,
             )
             seen_target_ids.add(target_id)
             seen_services.add(service_unit)
@@ -285,6 +311,27 @@ class FleetBootstrapPolicy:
         """Return the exact registered target for an existing worker name."""
 
         return self._worker_targets.get(worker_name)
+
+    def release_lane(self, name: str) -> ReleaseLane:
+        """Return one exact registered lane admitted for host-agent enrolment."""
+
+        if name not in self._allowed_lanes:
+            raise FleetBootstrapError("bootstrap release lane is not allowlisted")
+        try:
+            return self._release_lanes.lane(name)
+        except Exception as exc:
+            raise FleetBootstrapError("bootstrap release lane is not registered") from exc
+
+    def controller_artifact_ref(self, request: FleetBootstrapRequest) -> str:
+        """Derive the immutable controller artifact without caller-selected paths."""
+
+        self.validate(request)
+        return self.controller_artifact_ref_unchecked(request)
+
+    def controller_artifact_ref_unchecked(self, request: FleetBootstrapRequest) -> str:
+        """Derive the fixed OCI reference without recursively validating the request."""
+
+        return f"{self.activation.artifact_ref_prefix}@{request.controller_release_digest}"
 
     def validate(self, request: FleetBootstrapRequest) -> None:
         if request.schema_name != REQUEST_SCHEMA:
@@ -297,11 +344,23 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap immutable request values are invalid")
         if request.claim_ttl_seconds > self.identity.max_claim_ttl_seconds:
             raise FleetBootstrapError("bootstrap claim TTL exceeds policy")
-        if (
-            request.controller_revision != self.activation.revision
-            or request.controller_release_digest != self.activation.release_digest
-        ):
-            raise FleetBootstrapError("bootstrap controller tuple is not allowlisted")
+        if request.controller_revision != request.source_sha:
+            raise FleetBootstrapError("bootstrap controller revision is not workflow source")
+        if request.controller_revision == self.activation.rollback_revision:
+            raise FleetBootstrapError("bootstrap controller revision matches rollback")
+        if request.controller_release_digest == self.activation.rollback_release_digest:
+            raise FleetBootstrapError("bootstrap controller digest matches rollback")
+        if request.action == "activate-controller":
+            try:
+                candidate = verify_candidate_receipt(request.controller_candidate_receipt)
+            except CandidateReceiptError as exc:
+                raise FleetBootstrapError("bootstrap controller candidate is invalid") from exc
+            if (
+                candidate["source_revision"] != request.controller_revision
+                or candidate["image_digest"] != request.controller_release_digest
+                or candidate["image_ref"] != self.controller_artifact_ref_unchecked(request)
+            ):
+                raise FleetBootstrapError("bootstrap controller candidate binding is invalid")
         if request.action == "enrol-host-agent" and request.release_lane not in self._allowed_lanes:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
         if (
@@ -310,9 +369,7 @@ class FleetBootstrapPolicy:
         ):
             raise FleetBootstrapError("bootstrap worker is not allowlisted")
 
-    def validate_oidc_claims(
-        self, claims: dict[str, Any], request: FleetBootstrapRequest
-    ) -> None:
+    def validate_oidc_claims(self, claims: dict[str, Any], request: FleetBootstrapRequest) -> None:
         """Bind the OIDC claim to one immutable workflow attempt.
 
         The JWT signature and standard temporal checks are performed by the
@@ -321,8 +378,7 @@ class FleetBootstrapPolicy:
         run, job-attempt and audience binding.
         """
         expected_workflow_ref = (
-            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/"
-            f"{self.identity.branch}"
+            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/{self.identity.branch}"
         )
         attempt = claims.get("run_attempt")
         if isinstance(attempt, bool) or str(attempt) != str(request.attempt):
@@ -397,8 +453,7 @@ class BootstrapOperationStore:
     @staticmethod
     def _validate_result(result: dict[str, Any]) -> None:
         if not isinstance(result, dict) or any(
-            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key)
-            for key in result
+            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key) for key in result
         ):
             raise FleetBootstrapError("bootstrap operation result is not safe to persist")
         for value in result.values():
@@ -406,10 +461,10 @@ class BootstrapOperationStore:
                 raise FleetBootstrapError("bootstrap operation result is not safe to persist")
 
     def _read_unlocked(self) -> BootstrapOperationRecord | None:
-        if not self.path.exists():
-            return None
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
         except (OSError, json.JSONDecodeError) as exc:
             raise FleetBootstrapError("bootstrap operation state is unreadable") from exc
         if not isinstance(raw, dict) or raw.get("schema") != "qdev-fleet-bootstrap-operation-v1":
@@ -447,6 +502,11 @@ class BootstrapOperationStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
+            directory = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         except OSError as exc:
             with suppress(OSError):
                 os.unlink(temporary)
@@ -455,8 +515,22 @@ class BootstrapOperationStore:
     def _locked(self) -> TextIO:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.lock_path.open("a+", encoding="utf-8")
+        os.fchmod(handle.fileno(), 0o600)
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
+
+    @contextmanager
+    def execution_lock(self) -> Iterator[None]:
+        """Serialize the entire side effect, not only the preceding journal write."""
+        path = self.path.with_name(f".{self.path.name}.execution.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def begin(
         self, idempotency_key: str, request: FleetBootstrapRequest

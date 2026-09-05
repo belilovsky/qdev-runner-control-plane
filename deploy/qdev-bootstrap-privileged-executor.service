@@ -1,0 +1,24 @@
+[Unit]
+Description=QDev privileged fleet bootstrap executor
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/opt/qdev-runner-bootstrap/current/venv/bin/qdev-bootstrap-privileged-executor --signing-key-file /etc/qdev-runner/bootstrap-directive.key --runtime-release-root /opt/qdev-runner-bootstrap/current --runtime-identity-file /run/qdev-runner-bootstrap/executor-identity.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/qdev-runner-bootstrap /var/lib/qdev-runner/bootstrap-privileged /opt/qdev-runner-control-plane /etc/qdev-runner
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

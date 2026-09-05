@@ -1,0 +1,128 @@
+name: Controller image candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller-image-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  controller-image-candidate:
+    name: controller-image-candidate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci-docker
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-controller-image
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Verify exact source
+        env:
+          EXPECTED_REPOSITORY: belilovsky/qdev-runner-control-plane
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Run full controller suite
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]'
+          ruff check .
+          mypy
+          pytest -q
+          python .github/scripts/qdev-runner-policy.py --root .
+      - name: Build verified release bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/controller-wheelhouse-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 0755 "$wheelhouse"
+          python -m pip download --disable-pip-version-check --only-binary=:all: \
+            --require-hashes --no-deps --dest "$wheelhouse" -r requirements.runtime.txt
+          python -m pip wheel --disable-pip-version-check --no-deps \
+            --wheel-dir "$wheelhouse" .
+          python -m qdev_runner.bootstrap_wheelhouse build "$wheelhouse" \
+            --requirements requirements.runtime.txt \
+            > "$RUNNER_TEMP/controller-wheelhouse-result.json"
+          wheelhouse_digest="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["wheelhouse_digest"])' "$RUNNER_TEMP/controller-wheelhouse-result.json")"
+          requirements_digest="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["requirements_sha256"])' "$RUNNER_TEMP/controller-wheelhouse-result.json")"
+          sbom_digest="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sbom_sha256"])' "$RUNNER_TEMP/controller-wheelhouse-result.json")"
+          bundle_root="$RUNNER_TEMP/controller-release-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$bundle_root"
+          python -m qdev_runner.controller_release_bundle build . "$bundle_root" \
+            --source-revision "$GITHUB_SHA" --wheelhouse "$wheelhouse" \
+            > "$RUNNER_TEMP/controller-bundle-result.json"
+          bundle_digest="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["bundle_digest"])' "$RUNNER_TEMP/controller-bundle-result.json")"
+          test "${#bundle_digest}" -eq 64
+          printf 'root=%s\ndigest=%s\nwheelhouse_digest=%s\nrequirements_digest=%s\nsbom_digest=%s\n' \
+            "$bundle_root" "$bundle_digest" "$wheelhouse_digest" "$requirements_digest" \
+            "$sbom_digest" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable image and capture registry digest
+        id: image
+        env:
+          BUNDLE_ROOT: ${{ steps.bundle.outputs.root }}
+          BUNDLE_DIGEST: ${{ steps.bundle.outputs.digest }}
+          IMAGE_REPOSITORY: registry.ci.qdev.run/qdev-runner-control-plane
+        run: |
+          set -euo pipefail
+          test -n "${QDEV_REGISTRY_URL:-}"
+          test -n "${QDEV_REGISTRY_USERNAME:-}"
+          test -n "${QDEV_REGISTRY_PASSWORD:-}"
+          printf '%s' "$QDEV_REGISTRY_PASSWORD" | docker login "$QDEV_REGISTRY_URL" \
+            --username "$QDEV_REGISTRY_USERNAME" --password-stdin >/dev/null
+          metadata="$RUNNER_TEMP/controller-image-metadata.json"
+          candidate_tag="$IMAGE_REPOSITORY:candidate-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT"
+          docker buildx build --push \
+            --file "$BUNDLE_ROOT/deploy/Dockerfile.controller-release" \
+            --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
+            --build-arg "BUNDLE_DIGEST=$BUNDLE_DIGEST" \
+            --metadata-file "$metadata" \
+            --tag "$candidate_tag" \
+            "$BUNDLE_ROOT"
+          image_digest="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["containerimage.digest"])' "$metadata")"
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 66
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$image_digest" >/dev/null
+          printf 'digest=%s\n' "$image_digest" >> "$GITHUB_OUTPUT"
+      - name: Create and store candidate receipt
+        env:
+          BUNDLE_DIGEST: ${{ steps.bundle.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          WHEELHOUSE_DIGEST: ${{ steps.bundle.outputs.wheelhouse_digest }}
+          REQUIREMENTS_DIGEST: ${{ steps.bundle.outputs.requirements_digest }}
+          SBOM_DIGEST: ${{ steps.bundle.outputs.sbom_digest }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/controller-image-candidate-receipt.json"
+          python -m qdev_runner.controller_image_candidate create \
+            --source-revision "$GITHUB_SHA" \
+            --bundle-digest "$BUNDLE_DIGEST" \
+            --image-digest "$IMAGE_DIGEST" \
+            --base-image-digest "sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7" \
+            --wheelhouse-digest "$WHEELHOUSE_DIGEST" \
+            --requirements-digest "$REQUIREMENTS_DIGEST" \
+            --sbom-digest "$SBOM_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job controller-image-candidate \
+            --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$receipt"
+          python -m qdev_runner.controller_image_candidate verify "$receipt"
+          templates/qdev-upload-artifact.sh \
+            "controller-image-candidate-$GITHUB_SHA-$GITHUB_RUN_ATTEMPT" "$receipt"
+      - name: Remove registry session
+        if: always()
+        run: docker logout "${QDEV_REGISTRY_URL:-registry.ci.qdev.run}" >/dev/null 2>&1 || true

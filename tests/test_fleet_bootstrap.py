@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from bootstrap_support import candidate_receipt
 
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
@@ -28,14 +29,19 @@ def _request(**overrides: object) -> FleetBootstrapRequest:
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": "f5fe4c2673a81fcb25d1d501314ec0ed2e6fdd4a",
+        "controller_revision": SOURCE_SHA,
         "controller_release_digest": (
             "sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3"
+        ),
+        "controller_candidate_receipt": candidate_receipt(
+            image_digest=("sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3")
         ),
         "release_lane": None,
         "worker_name": None,
     }
     body.update(overrides)
+    if body["action"] != "activate-controller" and "controller_candidate_receipt" not in overrides:
+        body["controller_candidate_receipt"] = None
     return FleetBootstrapRequest.model_validate(body)
 
 
@@ -77,22 +83,41 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
     request = _request(
         action="restore-existing-worker",
         release_lane=None,
-        worker_name="qdev-platform-ci-187",
+        worker_name="srv1879763-primary",
     )
     policy.validate(request)
-    target = policy.worker_target("qdev-platform-ci-187")
+    target = policy.worker_target("srv1879763-primary")
     assert target is not None
-    assert target.target_id == (
-        "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187"
-    )
-    assert target.service_unit.endswith(".service")
+    assert target.target_id == "controller.worker.srv1879763-primary"
+    assert target.service_unit == "qdev-runner-worker.service"
     assert target.host_binding == "controller-registry"
+    assert target.certificate_fingerprint_sha256 == (
+        "ed0a503d98a2c163c42b3244f5b4f83c88b7b3ab4a7e028482c890ab814650f3"
+    )
+    assert target.labels == (
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci",
+        "qdev-ci-browser",
+        "qdev-ci-docker",
+    )
+
+
+def test_bootstrap_policy_rejects_worker_profile_coverage_drift(tmp_path: Path) -> None:
+    altered = (POLICY.read_text(encoding="utf-8")).replace(
+        ", qdev-ci-browser, qdev-ci-docker]", ", qdev-ci-browser]"
+    )
+    policy_path = tmp_path / "fleet-bootstrap.yml"
+    policy_path.write_text(altered, encoding="utf-8")
+    with pytest.raises(FleetBootstrapError, match="cover exactly"):
+        FleetBootstrapPolicy(policy_path, RELEASE_LANES)
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"controller_revision": "b" * 40}, "tuple"),
+        ({"controller_revision": "b" * 40}, "workflow source"),
         ({"claim_ttl_seconds": 901}, "TTL"),
         (
             {

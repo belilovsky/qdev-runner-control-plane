@@ -1,11 +1,10 @@
-schema_version: qdev-runner-v2
-execution_mode: github-hosted-primary
-self_hosted_recovery: true
-# Self-hosted profiles are permitted only in these manual recovery workflows.
-recovery_workflows:
-  - runner-smoke.yml
+schema_version: qdev-runner-v1
+# Owner-authorized migration of equivalent checks from billing-blocked hosted
+# compute to the existing centralized pool; no dynamic or hosted fallback.
+github_hosted_fallback: false
 profiles:
   - qdev-ci
+  - qdev-ci-docker
 trusted_events:
   - push
   - workflow_dispatch

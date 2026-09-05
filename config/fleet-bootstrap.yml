@@ -6,10 +6,14 @@ bootstrap:
   audience: qdev-fleet-bootstrap-v1
   max_claim_ttl_seconds: 900
 activation:
-  controller_revision: f5fe4c2673a81fcb25d1d501314ec0ed2e6fdd4a
-  controller_release_digest: sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3
-  rollback_revision: 13a165e43b6dd61a3cbbb60ca487bb7edab10f37
-  rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
+  # The signed workflow request binds revision to its own OIDC source SHA.
+  # The controller derives the image reference from this fixed repository and
+  # the exact digest carried by the signed release request. This avoids a
+  # circular future-commit SHA in the policy source.
+  source_revision_binding: workflow-source
+  artifact_ref_prefix: registry.ci.qdev.run/qdev-runner-control-plane
+  rollback_revision: 0a3f418bc45375f431481b60470cdf8bee218eae
+  rollback_release_digest: sha256:570e44d17fb99c927fffef2cc429fd411c2a3240ab9d7e15bc7c9065f8c2834e
 enrolment:
   lanes:
     - qdev-release-qmt
@@ -21,13 +25,9 @@ worker_targets:
   # These are existing, controller-registered service identities. The
   # controller resolves host_binding through its private registry; no
   # workflow may supply a hostname or a new runner identity.
-  - worker_name: qdev-platform-ci-187
-    target_id: actions.runner.belilovsky-platform-portal.qdev-platform-ci-187
-    service_unit: actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service
+  - worker_name: srv1879763-primary
+    target_id: controller.worker.srv1879763-primary
+    service_unit: qdev-runner-worker.service
     host_binding: controller-registry
-    labels: [self-hosted, Linux, X64, qdev-platform-ci]
-  - worker_name: qdev-qazstack-01
-    target_id: actions.runner.belilovsky-qazstack.qdev-qazstack-01
-    service_unit: actions.runner.belilovsky-qazstack.qdev-qazstack-01.service
-    host_binding: controller-registry
-    labels: [self-hosted, Linux, X64, qdev-ci]
+    labels: [self-hosted, Linux, X64, qdev-ci, qdev-ci-browser, qdev-ci-docker]
+    certificate_fingerprint_sha256: ed0a503d98a2c163c42b3244f5b4f83c88b7b3ab4a7e028482c890ab814650f3

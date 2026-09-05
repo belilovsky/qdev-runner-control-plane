@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll the QDev controller for approved QMT releases
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=qdev-release-qmt.service
+
+[Install]
+WantedBy=timers.target

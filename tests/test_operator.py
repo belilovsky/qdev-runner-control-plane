@@ -27,9 +27,7 @@ def test_claim_scope_uses_fifo_endpoint(
 
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
 
-    def fake_request(
-        settings: operator.OperatorSettings, **kwargs: Any
-    ) -> dict[str, Any]:
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
         captured["settings"] = settings
         captured.update(kwargs)
         return {"schema": "qdev-controller-receipt-v2"}
@@ -170,6 +168,7 @@ def test_recover_existing_worker_uses_controller_execution_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, Any] = {}
+    monkeypatch.setenv("QDEV_BOOTSTRAP_OIDC_TOKEN", "synthetic-oidc")
     request_path = tmp_path / "bootstrap-request.json"
     request_path.write_text(
         json.dumps(
@@ -203,15 +202,14 @@ def test_recover_existing_worker_uses_controller_execution_endpoint(
             str(request_path),
             "--idempotency-key",
             "worker-recovery-001",
-            "--active-jobs",
-            "0",
         ]
     )
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
     assert captured["path"] == "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
     assert captured["body"]["idempotency_key"] == "worker-recovery-001"
-    assert captured["body"]["active_jobs"] == 0
+    assert "active_jobs" not in captured["body"]
+    assert captured["bootstrap_oidc"] == "synthetic-oidc"
 
 
 @pytest.mark.parametrize(

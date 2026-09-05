@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ def test_product_agent_binds_jobs_to_fixed_lane_and_registry(name: str) -> None:
     job = {
         "schema": "qdev-release-host-agent-job-v1",
         "release_id": "release-1",
+        "lease_id": "L" * 24,
+        "fence": "f" * 24,
         "release_lane": profile.lane,
         "project_id": profile.project,
         "placement": profile.placement,
@@ -49,10 +52,12 @@ def test_product_agent_is_no_build_and_proves_public_identity() -> None:
     assert "preloaded_image_required" in script
     assert "docker system prune" not in script
     assert "docker image prune" not in script
-    assert "runtime_proof(profile, active)" in script
+    assert "expected_version=previous_version" in script
 
 
-def test_qmt_requires_a_preloaded_digest_and_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_qmt_pulls_only_fixed_digest_and_rollback_never_pulls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     profile = AGENT.PROFILES["qmt"]
     release = {
         "source_sha": SHA,
@@ -63,10 +68,20 @@ def test_qmt_requires_a_preloaded_digest_and_never_pulls(monkeypatch: pytest.Mon
 
     def fake_run(command: list[str], **_kwargs: object) -> bytes:
         commands.append(command)
-        if any("RepoDigests" in token for token in command):
-            return f'["{release["artifact_ref"]}"]'.encode()
-        return SHA.encode()
+        return json.dumps(
+            [
+                {
+                    "Id": "sha256:" + "c" * 64,
+                    "RepoDigests": [release["artifact_ref"]],
+                    "Config": {"Labels": {"org.opencontainers.image.revision": SHA}},
+                }
+            ]
+        ).encode()
 
     monkeypatch.setattr(AGENT, "_run", fake_run)
     AGENT.verify_image(release, profile)
+    assert commands[0] == ["docker", "pull", release["artifact_ref"]]
+    commands.clear()
+    AGENT.verify_image(release, profile, pull=False)
     assert ["docker", "pull", release["artifact_ref"]] not in commands
+    assert profile.public_version == "4.4.2"

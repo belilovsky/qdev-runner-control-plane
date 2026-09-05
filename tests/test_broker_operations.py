@@ -11,6 +11,10 @@ import yaml
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import create_app
+from qdev_runner.host_enrolment_challenge import (
+    HostEnrolmentChallenge,
+    verify_host_enrolment_ack,
+)
 from qdev_runner.models import QueuedJob
 from qdev_runner.operator import verify_controller_receipt
 from qdev_runner.policy import Policy
@@ -20,25 +24,21 @@ from qdev_runner.store import Store
 
 OPERATOR_TOKEN = "operator-token"  # noqa: S105 - inert test fixture
 RECEIPT_KEY = "receipt-key"
-DIRECTIVE_KEY = "directive-key"
+DIRECTIVE_KEY = "directive-key-" + "x" * 32
 WORKER_TOKEN = "worker-token"  # noqa: S105 - inert test fixture
 WORKER_NAME = "srv1879763-light-primary"
 OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
-_FLEET_BOOTSTRAP_POLICY = (
-    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
-)
+_FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
 
 
 def _fleet_bootstrap_activation() -> dict[str, str]:
-    activation = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )["activation"]
+    yaml.safe_load(_FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8"))["activation"]
     return {
-        "controller_revision": str(activation["controller_revision"]),
-        "controller_release_digest": str(activation["controller_release_digest"]),
+        "controller_revision": "a" * 40,
+        "controller_release_digest": "sha256:" + "b" * 64,
     }
 
 
@@ -187,6 +187,137 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         github=github or object(),  # type: ignore[arg-type]
     )
     return TestClient(app)
+
+
+def test_host_enrolment_challenge_requires_exact_mtls_certificate(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    challenge = {
+        "schema": "qdev-host-enrolment-challenge-v1",
+        "release_lane": "qdev-release-qmt",
+        "project_id": "kaztilshi",
+        "placement": "srv138jump",
+        "controller_revision": "a" * 40,
+        "operation_fence": "fence-" + "b" * 32,
+        "certificate_fingerprint_sha256": "c" * 64,
+        "nonce": "d" * 64,
+    }
+    headers = {
+        "X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump",
+        "X-QDev-Client-Certificate-SHA256": "c" * 64,
+    }
+
+    response = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+
+    assert response.status_code == 200
+    verified = verify_host_enrolment_ack(
+        response.json(),
+        request=HostEnrolmentChallenge.model_validate(challenge),
+        expected_mtls_identity="qdev-host-agent:srv138jump",
+        signing_key=DIRECTIVE_KEY,
+    )
+    assert verified["certificate_fingerprint_sha256"] == "c" * 64
+
+    wrong_certificate = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers={**headers, "X-QDev-Client-Certificate-SHA256": "e" * 64},
+        json=challenge,
+    )
+    wrong_identity = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers={**headers, "X-QDev-mTLS-Identity": "qdev-host-agent:attacker"},
+        json=challenge,
+    )
+
+    assert wrong_certificate.status_code == 403
+    assert wrong_identity.status_code == 403
+
+
+def test_host_enrolment_challenge_is_immutable_for_one_fence(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    challenge = {
+        "schema": "qdev-host-enrolment-challenge-v1",
+        "release_lane": "qdev-release-qmt",
+        "project_id": "kaztilshi",
+        "placement": "srv138jump",
+        "controller_revision": "a" * 40,
+        "operation_fence": "fence-" + "b" * 32,
+        "certificate_fingerprint_sha256": "c" * 64,
+        "nonce": "d" * 64,
+    }
+    headers = {
+        "X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump",
+        "X-QDev-Client-Certificate-SHA256": "c" * 64,
+    }
+    first = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+    retry = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+    changed = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json={**challenge, "nonce": "e" * 64},
+    )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json() == first.json()
+    assert changed.status_code == 503
+
+
+def test_registered_recovery_worker_heartbeat_is_bound_to_certificate(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    payload = {
+        "worker_name": "srv1879763-primary",
+        "tier": "primary",
+        "profiles": ["qdev-ci", "qdev-ci-browser", "qdev-ci-docker"],
+        "active_jobs": 0,
+        "active_job_ids": [],
+        "detail": {"allowed": True, "concurrency": 1},
+    }
+    fingerprint = "ed0a503d98a2c163c42b3244f5b4f83c88b7b3ab4a7e028482c890ab814650f3"
+    accepted = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={
+            "X-QDev-Worker-Token": WORKER_TOKEN,
+            "X-QDev-Client-Certificate-SHA256": fingerprint,
+        },
+        json=payload,
+    )
+    missing = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={"X-QDev-Worker-Token": WORKER_TOKEN},
+        json=payload,
+    )
+    forged_detail = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={
+            "X-QDev-Worker-Token": WORKER_TOKEN,
+            "X-QDev-Client-Certificate-SHA256": fingerprint,
+        },
+        json={
+            **payload,
+            "detail": {
+                **payload["detail"],
+                "authenticated_certificate_sha256": "f" * 64,
+            },
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert missing.status_code == 403
+    assert forged_detail.status_code == 422
 
 
 def _release_heartbeat() -> dict[str, Any]:
@@ -584,7 +715,11 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    from bootstrap_support import GitHub, Verifier, register
+
+    client = _app(tmp_path, github=GitHub())
+    client.app.state.bootstrap_oidc_verifier = Verifier()
+    register(client.app.state.store)
     activation = _fleet_bootstrap_activation()
     request = {
         "schema": "qdev-fleet-bootstrap-request-v1",
@@ -597,12 +732,11 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         "controller_revision": activation["controller_revision"],
         "controller_release_digest": activation["controller_release_digest"],
         "release_lane": None,
-        "worker_name": "qdev-platform-ci-187",
+        "worker_name": "srv1879763-primary",
     }
     body = {
         "request": request,
         "idempotency_key": "worker-recovery-001",
-        "active_jobs": 0,
         "timeout_seconds": 5,
     }
     path = "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
@@ -616,18 +750,21 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         == 403
     )
 
-    response = client.post(path, json=body, headers=OPERATOR_HEADERS)
+    assert client.post(path, json=body, headers=OPERATOR_HEADERS).status_code == 401
+    headers = {**OPERATOR_HEADERS, "X-QDev-Bootstrap-OIDC": "synthetic-oidc"}
+    assert client.post(path, json={**body, "active_jobs": 0}, headers=headers).status_code == 422
+    response = client.post(path, json=body, headers=headers)
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     payload = receipt["payload"]
     assert payload["kind"] == "fleet-bootstrap-recovery"
     assert payload["status"] == "access_blocked"
     assert payload["operation_status"] == "pending"
-    assert payload["worker_name"] == "qdev-platform-ci-187"
-    assert payload["target_id"].endswith("qdev-platform-ci-187")
-    assert payload["active_jobs"] == 0
+    assert payload["worker_name"] == "srv1879763-primary"
+    assert payload["target_id"] == "controller.worker.srv1879763-primary"
+    assert payload["active_jobs"] is None
     private_receipt = tmp_path / "fleet-bootstrap-receipts" / "worker-recovery-001.json"
-    assert json.loads(private_receipt.read_text(encoding="utf-8"))["status"] == "access_blocked"
+    assert not private_receipt.exists()
 
 
 def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
@@ -722,7 +859,7 @@ def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -
 
 
 def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000042))
     _heartbeat(client)
     _seed_pending_job(
         client,
@@ -775,6 +912,17 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert override_response.status_code == 200
     override = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)
     operation = override["payload"]["operation"]
+    assert override["payload"]["provider"] == {
+        "immutable_tuple": {
+            "run_id": 84000000042,
+            "job_run_id": 84000000042,
+            "job_id": 42,
+            "attempt": 1,
+            "exact_sha": "a" * 40,
+        },
+        "job_status": "queued",
+        "run_status": "in_progress",
+    }
     assert operation["profiles"] == ["qdev-ci-docker"]
     assert operation["repository"] == "belilovsky/qazshield"
     assert operation["head_sha"] == "a" * 40
@@ -1121,7 +1269,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
 
 
 def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000042))
     _heartbeat(client, disk_free_gib=17.0)
     _seed_pending_job(
         client,
@@ -1149,6 +1297,70 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
+
+
+@pytest.mark.parametrize(
+    ("github", "detail", "final_status"),
+    [
+        (
+            FakeGitHub(
+                job_status="completed",
+                job_conclusion="cancelled",
+                job_run_id=84000000042,
+            ),
+            "provider reports FIFO head completed: cancelled",
+            "completed",
+        ),
+        (
+            FakeGitHub(job_status="in_progress", job_run_id=84000000042),
+            "provider reports FIFO head is already in progress",
+            "pending",
+        ),
+        (
+            FakeGitHub(job_run_id=84000000043),
+            "provider immutable tuple does not match the FIFO head",
+            "pending",
+        ),
+    ],
+)
+def test_capacity_override_reconciles_provider_fifo_head(
+    tmp_path: Path,
+    github: FakeGitHub,
+    detail: str,
+    final_status: str,
+) -> None:
+    client = _app(tmp_path, github)
+    _heartbeat(client)
+    _seed_pending_job(
+        client,
+        42,
+        "provider-reconciliation",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazshield",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "provider-bound regression",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == detail
+    assert client.app.state.store.job_status(42) == final_status
+    assert client.app.state.operations.active(
+        WORKER_NAME,
+        registered_profiles=("qdev-ci-docker",),
+    ) is None
 
 
 def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
@@ -1191,7 +1403,7 @@ def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
 
 
 def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path) -> None:
-    client = _app(tmp_path, FakeGitHub())
+    client = _app(tmp_path, FakeGitHub(job_run_id=85, head_sha="b" * 40))
     _heartbeat(client)
     store: Store = client.app.state.store
     assert store.enqueue(

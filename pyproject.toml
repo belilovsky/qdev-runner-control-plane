@@ -29,6 +29,14 @@ dev = [
 qdev-runner-broker = "qdev_runner.broker:main"
 qdev-runner-operator = "qdev_runner.operator:main"
 qdev-runner-worker = "qdev_runner.worker:main"
+qdev-bootstrap-adapter-client = "qdev_runner.privileged_bootstrap_client:main"
+qdev-bootstrap-privileged-executor = "qdev_runner.privileged_bootstrap_executor:main"
+qdev-controller-release-bundle = "qdev_runner.controller_release_bundle:main"
+qdev-controller-activation-adapter = "qdev_runner.controller_activation_adapter:main"
+qdev-fleet-worker-recovery-native = "qdev_runner.worker_recovery_native:main"
+qdev-host-agent-enrolment-adapter = "qdev_runner.host_agent_enrolment_adapter:main"
+qdev-qmt-host-agent-enrol-native = "qdev_runner.qmt_host_agent_enrol_native:main"
+qdev-controller-image-candidate = "qdev_runner.controller_image_candidate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

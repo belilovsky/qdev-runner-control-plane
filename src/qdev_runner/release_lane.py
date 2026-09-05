@@ -31,9 +31,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _CANONICAL_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,38}/[a-z0-9][a-z0-9_.-]{0,99}$")
-_ARTIFACT_PREFIX = re.compile(
-    r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
-)
+_ARTIFACT_PREFIX = re.compile(r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$")
 _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
@@ -215,8 +213,7 @@ class ReleaseLanePolicy:
                     or not raw_readiness
                     or len(raw_readiness) != len(set(raw_readiness))
                     or not all(
-                        isinstance(item, str) and _SEGMENT.fullmatch(item)
-                        for item in raw_readiness
+                        isinstance(item, str) and _SEGMENT.fullmatch(item) for item in raw_readiness
                     )
                 ):
                     raise ReleaseLaneError("release lane v2 values are invalid")
@@ -364,9 +361,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
             raise ReleaseLaneError("candidate runner profile is not allowlisted")
 
 
-def controller_claim_payload(
-    request: ReleaseAdmissionRequest, lane: ReleaseLane
-) -> dict[str, Any]:
+def controller_claim_payload(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> dict[str, Any]:
     """Return the canonical fields covered by a controller-signed claim."""
     receipt = request.candidate_receipt
     scope = {
@@ -422,16 +417,16 @@ def validate_controller_claim(
     }:
         raise ReleaseLaneError("controller-signed claim scope is invalid")
     if lane.canonical_repository is not None and (
-            scope.get("repository") != lane.canonical_repository
-            or scope.get("exact_sha") != request.source_sha
-            or not isinstance(scope.get("workflow"), str)
-            or not _CI_SCOPE_VALUE.fullmatch(scope["workflow"])
-            or not isinstance(scope.get("job"), str)
-            or not _CI_SCOPE_VALUE.fullmatch(scope["job"])
-            or not isinstance(scope.get("attempt"), int)
-            or isinstance(scope.get("attempt"), bool)
-            or scope["attempt"] <= 0
-            or scope.get("runner_profile") not in _RUNNER_PROFILES
+        scope.get("repository") != lane.canonical_repository
+        or scope.get("exact_sha") != request.source_sha
+        or not isinstance(scope.get("workflow"), str)
+        or not _CI_SCOPE_VALUE.fullmatch(scope["workflow"])
+        or not isinstance(scope.get("job"), str)
+        or not _CI_SCOPE_VALUE.fullmatch(scope["job"])
+        or not isinstance(scope.get("attempt"), int)
+        or isinstance(scope.get("attempt"), bool)
+        or scope["attempt"] <= 0
+        or scope.get("runner_profile") not in _RUNNER_PROFILES
     ):
         raise ReleaseLaneError("controller-signed claim scope is invalid")
     canonical = json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
@@ -465,9 +460,7 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         and rollback.get("verified") is True
         and _is_sha(rollback.get("source_sha"))
         and _is_digest(rollback.get("artifact_digest"))
-        and _is_lane_artifact_ref(
-            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
-        )
+        and _is_lane_artifact_ref(rollback.get("artifact_ref"), rollback["artifact_digest"], lane)
     )
     if not active_valid or not rollback_valid:
         raise ReleaseLaneError("host-agent rollback proof is invalid")
@@ -484,6 +477,52 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         raise ReleaseLaneError("host-agent rollback must be a distinct immutable tuple")
     if request.bootstrap and not same_tuple:
         raise ReleaseLaneError("bootstrap heartbeat must use the current release as its anchor")
+
+
+def validate_product_container_proof(proof: dict[str, Any], lane: ReleaseLane) -> None:
+    services_by_project = {
+        "qaz-fund": {"api", "worker"},
+        "qaz-events": {"app"},
+        "kaztilshi": {"kaztilshi"},
+    }
+    services = proof.get("services")
+    if (
+        not _is_digest(proof.get("image_id"))
+        or not isinstance(services, dict)
+        or set(services) != services_by_project.get(lane.project_id)
+        or any(value != proof["image_id"] for value in services.values())
+    ):
+        raise ReleaseLaneError("actual product container image is not proven")
+
+
+def validate_product_provenance(receipt: dict[str, Any], lane: ReleaseLane) -> None:
+    identity = receipt["runtime_identity"]
+    validate_product_container_proof(identity, lane)
+    if set(identity) != {
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+        "measured",
+        "image_id",
+        "services",
+    }:
+        raise ReleaseLaneError("product measured identity fields are invalid")
+    dependency = receipt["dependency_identity"]
+    checksum = dependency.get("compose_config_sha256")
+    if (
+        set(dependency) != {"compose_config_sha256"}
+        or not isinstance(checksum, str)
+        or not _HEX64.fullmatch(checksum)
+    ):
+        raise ReleaseLaneError("product configuration digest is invalid")
+    expected = {
+        "schema": "qdev-product-oci-provenance-v1",
+        **{key: receipt[key] for key in ("source_sha", "artifact_digest", "artifact_ref")},
+        "image_id": identity["image_id"],
+        "config_sha256": checksum,
+    }
+    if receipt["artifact_provenance"] != expected:
+        raise ReleaseLaneError("product OCI provenance does not bind measured identity")
 
 
 def validate_runtime_receipt(
@@ -547,15 +586,18 @@ def validate_runtime_receipt(
         provenance = receipt["artifact_provenance"]
         if not isinstance(provenance, dict):
             raise ReleaseLaneError("runtime artifact provenance is invalid")
-        for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
-            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
-                provenance[field]
+        if lane.native_host_adapter == "product-compose-v2":
+            validate_product_provenance(receipt, lane)
+        else:
+            for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
+                if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
+                    provenance[field]
+                ):
+                    raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
+            if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
+                provenance["avds_source_sha"]
             ):
-                raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
-        if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
-            provenance["avds_source_sha"]
-        ):
-            raise ReleaseLaneError("runtime AVDS source binding is invalid")
+                raise ReleaseLaneError("runtime AVDS source binding is invalid")
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     if (
@@ -585,12 +627,14 @@ class ReleaseStore:
         self.jobs_root = root / "jobs"
         self.locks_root = root / "locks"
         self.operations_root = root / "operations"
+        self.enrolments_root = root / "enrolments"
         for path in (
             self.root,
             self.agents_root,
             self.jobs_root,
             self.locks_root,
             self.operations_root,
+            self.enrolments_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
             path.chmod(0o700)
@@ -605,9 +649,13 @@ class ReleaseStore:
     def _read(path: Path) -> dict[str, Any] | None:
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             return None
-        return value if isinstance(value, dict) else None
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ReleaseLaneError("release state cannot be verified") from exc
+        if not isinstance(value, dict):
+            raise ReleaseLaneError("release state is not an object")
+        return value
 
     @staticmethod
     def _write(path: Path, value: dict[str, Any]) -> None:
@@ -620,6 +668,11 @@ class ReleaseStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -633,8 +686,57 @@ class ReleaseStore:
     def _previous_path(self, lane_name: str) -> Path:
         return self.jobs_root / f"{self._safe_name(lane_name)}.previous.json"
 
+    def _history_path(self, lane_name: str, release_id: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,128}", release_id):
+            raise ReleaseLaneError("release history identifier is invalid")
+        identity = hashlib.sha256(release_id.encode()).hexdigest()
+        return self.jobs_root / (f"{self._safe_name(lane_name)}.{identity}.terminal.json")
+
     def _operation_path(self, lane_name: str) -> Path:
         return self.operations_root / f"{self._safe_name(lane_name)}.json"
+
+    def _enrolment_path(self, lane_name: str, operation_fence: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{24,128}", operation_fence):
+            raise ReleaseLaneError("host enrolment fence is invalid")
+        identity = hashlib.sha256(operation_fence.encode("utf-8")).hexdigest()
+        return self.enrolments_root / f"{self._safe_name(lane_name)}.{identity}.json"
+
+    def record_enrolment_ack(
+        self, lane: ReleaseLane, operation_fence: str, acknowledgement: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist one immutable mTLS challenge acknowledgement."""
+
+        path = self._enrolment_path(lane.name, operation_fence)
+        with self._lock(lane.name):
+            current = self._read(path)
+            if current is not None:
+                if current != acknowledgement:
+                    raise ReleaseLaneError("host enrolment acknowledgement cannot be replaced")
+                return current
+            self._write(path, acknowledgement)
+        return acknowledgement
+
+    def enrolment_ack(self, lane: ReleaseLane, operation_fence: str) -> dict[str, Any] | None:
+        """Return the immutable acknowledgement for an exact operation fence."""
+
+        with self._lock(lane.name):
+            return self._read(self._enrolment_path(lane.name, operation_fence))
+
+    def _sync_operation(self, lane: ReleaseLane, job: dict[str, Any]) -> None:
+        # The job is authoritative. Retrying an acknowledgement repairs this
+        # projection if the process died between the two durable writes.
+        self._write(
+            self._operation_path(lane.name),
+            {
+                "schema": "qdev-controller-release-operation-v1",
+                **{
+                    key: job.get(key)
+                    for key in ("release_id", "lease_id", "fence", "operation_seq")
+                },
+                "phase": job["status"],
+                "updated_at": time.time(),
+            },
+        )
 
     @contextmanager
     def _lock(self, name: str) -> Iterator[None]:
@@ -689,8 +791,6 @@ class ReleaseStore:
                     return existing, True
                 raise ReleaseLaneError("release lane already has an active immutable tuple")
             current = self._read(self._job_path(lane.name))
-            if current is not None and current.get("status") == "verified":
-                self._write(self._previous_path(lane.name), current)
             job = {
                 "release_id": secrets.token_urlsafe(18),
                 "lease_id": secrets.token_urlsafe(18),
@@ -708,6 +808,38 @@ class ReleaseStore:
                 "status": "accepted",
                 "accepted_at": time.time(),
             }
+            if lane.native_host_adapter == "product-compose-v2":
+                agent = self.fresh_agent(lane)
+                if agent is None:
+                    raise ReleaseLaneError("product release requires a fresh rollback anchor")
+                validate_host_heartbeat(
+                    HostHeartbeatRequest.model_validate(
+                        {
+                            key: value
+                            for key, value in agent.items()
+                            if key not in {"mtls_identity", "received_at"}
+                        }
+                    ),
+                    lane,
+                )
+                if current is not None:
+                    terminal = current.get("status")
+                    if terminal == "verified":
+                        anchor = {key: current[key] for key in tuple_fields}
+                        finished_at = current["verified_at"]
+                    elif terminal == "rolled_back":
+                        restored = current["rollback_receipt"]["restored_release"]
+                        anchor = {key: restored[key] for key in tuple_fields}
+                        finished_at = current["rolled_back_at"]
+                    else:
+                        raise ReleaseLaneError("previous product operation is not terminal")
+                    if agent["received_at"] <= finished_at or agent["active_release"] != anchor:
+                        raise ReleaseLaneError("host has not reconciled the previous release")
+                job["previous_release"] = agent["active_release"]
+            if current is not None:
+                self._write(self._history_path(lane.name, current["release_id"]), current)
+                if current.get("status") == "verified":
+                    self._write(self._previous_path(lane.name), current)
             self._write(
                 self._operation_path(lane.name),
                 {
@@ -745,8 +877,12 @@ class ReleaseStore:
     ) -> dict[str, Any]:
         with self._lock(lane.name):
             job = self._read(self._job_path(lane.name))
+            historical = False
             if job is None or job.get("release_id") != release_id:
-                raise ReleaseLaneError("release job is not active")
+                job = self._read(self._history_path(lane.name, release_id))
+                historical = True
+                if job is None or job.get("release_id") != release_id:
+                    raise ReleaseLaneError("release job is not active")
             if lane.canonical_repository is not None and not lease_id:
                 raise ReleaseLaneError("managed release lease is required")
             if lane.canonical_repository is not None and not fence:
@@ -757,6 +893,8 @@ class ReleaseStore:
                 raise ReleaseLaneError("release fence does not match job")
             if job.get("status") == "verified":
                 if job.get("runtime_receipt") == receipt:
+                    if not historical:
+                        self._sync_operation(lane, job)
                     return job
                 raise ReleaseLaneError("release job was already completed with another receipt")
             if job.get("status") not in {"accepted", "dispatched"}:
@@ -768,6 +906,11 @@ class ReleaseStore:
                 artifact_digest=str(job["artifact_digest"]),
                 artifact_ref=str(job["artifact_ref"]),
             )
+            if lane.native_host_adapter == "product-compose-v2" and {
+                key: receipt["rollback"].get(key)
+                for key in ("source_sha", "artifact_digest", "artifact_ref")
+            } != job.get("previous_release"):
+                raise ReleaseLaneError("runtime rollback differs from admitted anchor")
             job["status"] = "verified"
             job["verified_at"] = time.time()
             job["runtime_receipt"] = receipt
@@ -811,9 +954,13 @@ class ReleaseStore:
                 raise ReleaseLaneError("release fence does not match job")
             if job.get("status") == "rolled_back":
                 if job.get("rollback_receipt") == receipt:
+                    self._sync_operation(lane, job)
                     return job
                 raise ReleaseLaneError("release rollback already has another receipt")
-            if job.get("status") not in {"accepted", "dispatched"}:
+            allowed_states = {"accepted", "dispatched"}
+            if lane.native_host_adapter == "product-compose-v2":
+                allowed_states.add("verified")
+            if job.get("status") not in allowed_states:
                 raise ReleaseLaneError("release job cannot be rolled back")
             required_receipt = {
                 "schema",
@@ -850,8 +997,7 @@ class ReleaseStore:
                 raise ReleaseLaneError("rollback receipt does not bind failed release")
             restored = receipt["restored_release"]
             _release_tuple = {
-                key: restored.get(key)
-                for key in ("source_sha", "artifact_digest", "artifact_ref")
+                key: restored.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")
             }
             if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(
                 _release_tuple["artifact_digest"]
@@ -863,6 +1009,10 @@ class ReleaseStore:
                 raise ReleaseLaneError("rollback artifact identity is invalid")
             if _release_tuple == failed_tuple:
                 raise ReleaseLaneError("rollback must restore a different immutable release")
+            if lane.native_host_adapter == "product-compose-v2" and (
+                _release_tuple != job.get("previous_release")
+            ):
+                raise ReleaseLaneError("rollback must restore the admitted previous release")
             native = receipt["native_receipt"]
             if (
                 native.get("schema") != "qdev-admin-platform-native-receipt-v1"
@@ -873,6 +1023,15 @@ class ReleaseStore:
                 or native.get("artifact_ref") != restored["artifact_ref"]
             ):
                 raise ReleaseLaneError("rollback native identity is not proven")
+            if lane.native_host_adapter == "product-compose-v2":
+                validate_product_container_proof(native, lane)
+                if (
+                    not isinstance(native.get("config_sha256"), str)
+                    or not _HEX64.fullmatch(native["config_sha256"])
+                    or not isinstance(native.get("readiness"), dict)
+                    or any(native["readiness"].get(key) != "ok" for key in lane.required_readiness)
+                ):
+                    raise ReleaseLaneError("restored configuration or readiness is not proven")
             job["status"] = "rolled_back"
             job["rollback_receipt"] = receipt
             job["rolled_back_at"] = time.time()
