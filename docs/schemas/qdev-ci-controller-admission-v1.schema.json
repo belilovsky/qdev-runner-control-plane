@@ -30,6 +30,7 @@
         "repository",
         "protected_ref",
         "functional_source_sha",
+        "evidence",
         "workflow",
         "required_jobs",
         "controller_revision",
@@ -55,6 +56,20 @@
           "pattern": "^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$"
         },
         "functional_source_sha": {"$ref": "#/$defs/sha"},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "release_payload_sha256",
+            "controller_contract_sha256",
+            "release_lock_sha256"
+          ],
+          "properties": {
+            "release_payload_sha256": {"$ref": "#/$defs/digest"},
+            "controller_contract_sha256": {"$ref": "#/$defs/digest"},
+            "release_lock_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
         "workflow": {
           "type": "object",
           "additionalProperties": false,

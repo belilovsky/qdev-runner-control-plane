@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -15,21 +16,59 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 EXPECTED_REPOSITORY = Path("/opt/qazcoop.git")
+EXPECTED_REPOSITORY_ID = 1_357_887_516
+EXPECTED_REPOSITORY_NAME = "belilovsky/qazcoop"
+EXPECTED_REF = "refs/heads/codex/qazcoop-mvp"
+LEGACY_HOOK_SHA256 = "ce9a0963eb84aa7c9775cfd73bce78d76195fc38a83463c99200eeb47fa593f2"
+HOOK_MARKER = b"# QAZCOOP_RELEASE_GUARD_MANAGED_V1\n"
+LAUNCHER_MARKER = b"# QAZCOOP_RELEASE_GUARD_LAUNCHER_MANAGED_V1\n"
 EXPECTED_FILES = {
     "public.pem": Path("trust/public.pem"),
     "admission.schema.json": Path("trust/admission.schema.json"),
+    "key-canary.json": Path("trust/key-canary.json"),
     "controller_admission.py": Path("lib/qdev_runner/controller_admission.py"),
     "qazcoop_release_guard.py": Path("lib/qdev_runner/qazcoop_release_guard.py"),
+    "qdev_runner.__init__.py": Path("lib/qdev_runner/__init__.py"),
     "qdev-controller-verify-admission": Path("bin/qdev-controller-verify-admission"),
     "qazcoop-update": Path("bin/qazcoop-update"),
 }
+EXPECTED_DIRECTORIES = {
+    Path("."),
+    Path("trust"),
+    Path("lib"),
+    Path("lib/qdev_runner"),
+    Path("bin"),
+}
+VERSION_FILES = {
+    EXPECTED_FILES["controller_admission.py"]: 0o640,
+    EXPECTED_FILES["qazcoop_release_guard.py"]: 0o640,
+    EXPECTED_FILES["qdev_runner.__init__.py"]: 0o640,
+    EXPECTED_FILES["qdev-controller-verify-admission"]: 0o750,
+    EXPECTED_FILES["qazcoop-update"]: 0o750,
+}
+VERSION_DIRECTORIES = {Path("."), Path("lib"), Path("lib/qdev_runner"), Path("bin")}
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{86}$")
 
 
 def digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def strict_json(path: Path) -> dict[str, Any]:
@@ -37,39 +76,108 @@ def strict_json(path: Path) -> dict[str, Any]:
         value: dict[str, Any] = {}
         for key, item in items:
             if key in value:
-                raise ValueError(f"bundle contains duplicate key {key}")
+                raise ValueError(f"JSON contains duplicate key {key}")
             value[key] = item
         return value
 
     def constant(value: str) -> None:
-        raise ValueError(f"bundle contains forbidden constant {value}")
+        raise ValueError(f"JSON contains forbidden constant {value}")
 
-    value = json.loads(
-        path.read_text(encoding="utf-8"),
-        object_pairs_hook=pairs,
-        parse_constant=constant,
-    )
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=pairs,
+            parse_constant=constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read strict JSON: {path.name}") from error
     if not isinstance(value, dict):
-        raise ValueError("bundle manifest must be an object")
+        raise ValueError(f"JSON must contain an object: {path.name}")
     return value
 
 
-def require_owner_controlled(path: Path, *, executable: bool = False) -> None:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"bundle file is unavailable: {path.name}")
-    info = path.stat()
-    if info.st_uid not in {0, os.geteuid()} or stat.S_IMODE(info.st_mode) & 0o022:
-        raise ValueError(f"bundle file is not owner controlled: {path.name}")
-    if executable and not stat.S_IMODE(info.st_mode) & 0o111:
-        raise ValueError(f"bundle file is not executable: {path.name}")
+def _require_owner_controlled(path: Path, *, directory: bool = False) -> os.stat_result:
+    status = path.lstat()
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(status.st_mode):
+        raise ValueError(f"bundle entry has an invalid type: {path.name}")
+    if status.st_uid not in {0, os.geteuid()} or stat.S_IMODE(status.st_mode) & 0o022:
+        raise ValueError(f"bundle entry is not owner controlled: {path.name}")
+    return status
+
+
+def _exact_inventory(bundle: Path) -> None:
+    _require_owner_controlled(bundle, directory=True)
+    files: set[Path] = set()
+    directories: set[Path] = {Path(".")}
+    for root, names, filenames in os.walk(bundle, topdown=True, followlinks=False):
+        root_path = Path(root)
+        relative_root = root_path.relative_to(bundle)
+        relative_root = relative_root if relative_root.parts else Path(".")
+        _require_owner_controlled(root_path, directory=True)
+        directories.add(relative_root)
+        for name in names:
+            candidate = root_path / name
+            _require_owner_controlled(candidate, directory=True)
+            directories.add(candidate.relative_to(bundle))
+        for name in filenames:
+            candidate = root_path / name
+            _require_owner_controlled(candidate)
+            files.add(candidate.relative_to(bundle))
+    expected_files = {Path("bundle.json"), *EXPECTED_FILES.values()}
+    if files != expected_files or directories != EXPECTED_DIRECTORIES:
+        raise ValueError("bundle filesystem inventory is not exact")
+
+
+def _public_key(path: Path) -> tuple[Ed25519PublicKey, str]:
+    try:
+        key = serialization.load_pem_public_key(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise ValueError("bundle public key is invalid") from error
+    if not isinstance(key, Ed25519PublicKey):
+        raise ValueError("bundle public key must be Ed25519")
+    raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return key, "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _verify_key_canary(bundle: Path, revision: str) -> None:
+    key, key_id = _public_key(bundle / EXPECTED_FILES["public.pem"])
+    canary = strict_json(bundle / EXPECTED_FILES["key-canary.json"])
+    if set(canary) != {"payload", "signature"}:
+        raise ValueError("bundle key canary fields are invalid")
+    payload = canary["payload"]
+    signature = canary["signature"]
+    expected_payload = {
+        "contract": "qazcoop-release-guard-key-canary/v1",
+        "controller_revision": revision,
+        "public_key_id": key_id,
+        "repository": {
+            "id": EXPECTED_REPOSITORY_ID,
+            "full_name": EXPECTED_REPOSITORY_NAME,
+        },
+    }
+    if payload != expected_payload or not isinstance(signature, dict):
+        raise ValueError("bundle key canary payload is invalid")
+    if set(signature) != {"algorithm", "key_id", "value"}:
+        raise ValueError("bundle key canary signature fields are invalid")
+    value = signature["value"]
+    if (
+        signature["algorithm"] != "Ed25519"
+        or signature["key_id"] != key_id
+        or not isinstance(value, str)
+        or SIGNATURE.fullmatch(value) is None
+    ):
+        raise ValueError("bundle key canary signature metadata is invalid")
+    try:
+        raw_signature = base64.urlsafe_b64decode(value + "==")
+        key.verify(raw_signature, canonical(payload))
+    except (ValueError, InvalidSignature) as error:
+        raise ValueError("bundle key canary signature is invalid") from error
 
 
 def validate_bundle(bundle: Path) -> dict[str, Any]:
-    if bundle.is_symlink() or not bundle.is_dir():
-        raise ValueError("bundle directory is unavailable")
-    manifest_path = bundle / "bundle.json"
-    require_owner_controlled(manifest_path)
-    manifest = strict_json(manifest_path)
+    _exact_inventory(bundle)
+    manifest = strict_json(bundle / "bundle.json")
     if set(manifest) != {"contract", "controller_revision", "repository", "files"}:
         raise ValueError("bundle manifest fields are invalid")
     if manifest["contract"] != "qazcoop-release-guard-trust-bundle/v1":
@@ -78,9 +186,9 @@ def validate_bundle(bundle: Path) -> dict[str, Any]:
     if not isinstance(revision, str) or SHA.fullmatch(revision) is None:
         raise ValueError("bundle controller revision is invalid")
     if manifest["repository"] != {
-        "id": 1_357_887_516,
-        "full_name": "belilovsky/qazcoop",
-        "protected_ref": "refs/heads/codex/qazcoop-mvp",
+        "id": EXPECTED_REPOSITORY_ID,
+        "full_name": EXPECTED_REPOSITORY_NAME,
+        "protected_ref": EXPECTED_REF,
     }:
         raise ValueError("bundle repository identity is invalid")
     files = manifest["files"]
@@ -88,14 +196,172 @@ def validate_bundle(bundle: Path) -> dict[str, Any]:
         raise ValueError("bundle file inventory is invalid")
     for name, relative in EXPECTED_FILES.items():
         path = bundle / relative
+        mode = stat.S_IMODE(path.lstat().st_mode)
         executable = name in {"qazcoop-update", "qdev-controller-verify-admission"}
-        require_owner_controlled(path, executable=executable)
+        if executable != bool(mode & 0o111):
+            raise ValueError(f"bundle executable mode is invalid: {name}")
         expected = files[name]
         if not isinstance(expected, str) or DIGEST.fullmatch(expected) is None:
             raise ValueError(f"bundle digest is invalid: {name}")
         if digest(path) != expected:
             raise ValueError(f"bundle digest mismatch: {name}")
+    _verify_key_canary(bundle, revision)
     return manifest
+
+
+def _managed_file(path: Path, marker: bytes, *, allow_legacy_hook: bool = False) -> str | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"existing managed path is not a regular file: {path}")
+    content = path.read_bytes()
+    if marker in content.splitlines(keepends=True)[:3]:
+        return digest(path).removeprefix("sha256:")[:16]
+    observed = hashlib.sha256(content).hexdigest()
+    if allow_legacy_hook and observed == LEGACY_HOOK_SHA256:
+        return "legacy-ce9a0963eb84"
+    raise ValueError(f"refusing to replace unmanaged file: {path}")
+
+
+def _copy_fixed(source: Path, destination: Path, *, mode: int, gid: int) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination, follow_symlinks=False)
+    os.chown(destination, 0, gid)
+    destination.chmod(mode)
+
+
+def _safe_root_directory(path: Path, *, mode: int, gid: int = 0) -> None:
+    if path.exists() or path.is_symlink():
+        status = path.lstat()
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or stat.S_ISLNK(status.st_mode)
+            or status.st_uid != 0
+            or stat.S_IMODE(status.st_mode) & 0o022
+        ):
+            raise ValueError(f"managed directory is unsafe: {path}")
+    else:
+        path.mkdir(mode=mode)
+    os.chown(path, 0, gid)
+    path.chmod(mode)
+
+
+def _validate_root_directory(path: Path) -> None:
+    status = path.lstat()
+    if (
+        not stat.S_ISDIR(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or status.st_uid != 0
+        or stat.S_IMODE(status.st_mode) & 0o022
+    ):
+        raise ValueError(f"managed parent directory is unsafe: {path}")
+
+
+def _validate_installed_version(
+    version_root: Path,
+    manifest: dict[str, Any],
+    *,
+    gid: int,
+    uid: int = 0,
+) -> None:
+    files: set[Path] = set()
+    directories: set[Path] = {Path(".")}
+    for root, names, filenames in os.walk(version_root, topdown=True, followlinks=False):
+        root_path = Path(root)
+        relative_root = root_path.relative_to(version_root)
+        relative_root = relative_root if relative_root.parts else Path(".")
+        status = root_path.lstat()
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or stat.S_ISLNK(status.st_mode)
+            or status.st_uid != uid
+            or status.st_gid != gid
+            or stat.S_IMODE(status.st_mode) != 0o750
+        ):
+            raise ValueError(f"installed guard directory metadata is invalid: {relative_root}")
+        directories.add(relative_root)
+        for name in names:
+            path = root_path / name
+            child_status = path.lstat()
+            if not stat.S_ISDIR(child_status.st_mode) or stat.S_ISLNK(child_status.st_mode):
+                raise ValueError(f"installed guard directory type is invalid: {path}")
+            directories.add(path.relative_to(version_root))
+        for name in filenames:
+            path = root_path / name
+            relative = path.relative_to(version_root)
+            child_status = path.lstat()
+            if (
+                not stat.S_ISREG(child_status.st_mode)
+                or stat.S_ISLNK(child_status.st_mode)
+                or child_status.st_uid != uid
+                or child_status.st_gid != gid
+                or child_status.st_nlink != 1
+                or stat.S_IMODE(child_status.st_mode) != VERSION_FILES.get(relative)
+            ):
+                raise ValueError(f"installed guard file metadata is invalid: {relative}")
+            files.add(relative)
+    if files != set(VERSION_FILES) or directories != VERSION_DIRECTORIES:
+        raise ValueError("installed guard filesystem inventory is not exact")
+    manifest_files = manifest["files"]
+    for name, relative in EXPECTED_FILES.items():
+        if relative not in VERSION_FILES:
+            continue
+        if digest(version_root / relative) != manifest_files[name]:
+            raise ValueError(f"installed guard digest mismatch: {name}")
+
+
+def _identity_can_traverse(path: Path, uid: int, gid: int) -> bool:
+    if uid == 0:
+        return True
+    status = path.stat()
+    mode = stat.S_IMODE(status.st_mode)
+    if uid == status.st_uid:
+        return bool(mode & stat.S_IXUSR)
+    if gid == status.st_gid:
+        return bool(mode & stat.S_IXGRP)
+    return bool(mode & stat.S_IXOTH)
+
+
+def _backup_managed_file(source: Path, destination: Path, *, gid: int) -> None:
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink() or not destination.is_file():
+            raise ValueError(f"managed backup path is invalid: {destination}")
+        status = destination.stat()
+        if (
+            status.st_uid != 0
+            or stat.S_IMODE(status.st_mode) & 0o022
+            or status.st_nlink != 1
+            or digest(destination) != digest(source)
+        ):
+            raise ValueError(f"managed backup does not match current file: {destination}")
+        return
+    _copy_fixed(
+        source,
+        destination,
+        mode=stat.S_IMODE(source.stat().st_mode),
+        gid=gid,
+    )
+
+
+def _restore_file(destination: Path, backup: Path | None) -> None:
+    destination.unlink(missing_ok=True)
+    if backup is not None:
+        shutil.copyfile(backup, destination, follow_symlinks=False)
+        status = backup.stat()
+        os.chown(destination, status.st_uid, status.st_gid)
+        destination.chmod(stat.S_IMODE(status.st_mode))
+
+
+def _run_as_identity(command: list[str], uid: int, gid: int) -> None:
+    prefix: list[str] = []
+    if (uid, gid) != (os.geteuid(), os.getegid()):
+        prefix = [
+            "/usr/bin/setpriv",
+            f"--reuid={uid}",
+            f"--regid={gid}",
+            "--clear-groups",
+        ]
+    subprocess.run([*prefix, *command], check=True, capture_output=True, text=True)
 
 
 def install_bundle(candidate: Path, bundle: Path) -> str:
@@ -112,82 +378,161 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
         text=True,
     ).stdout.strip() != "true":
         raise ValueError("candidate repository must be bare")
+
     manifest = validate_bundle(bundle)
     revision = str(manifest["controller_revision"])
+    candidate_status = candidate.stat()
+    receive_uid, receive_gid = candidate_status.st_uid, candidate_status.st_gid
     version_root = Path("/usr/local/lib/qazcoop-release-guard") / revision
-    if version_root.exists() or version_root.is_symlink():
-        raise ValueError("guard revision is already installed")
-    version_root.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-    temporary = Path(tempfile.mkdtemp(prefix=f".{revision}.", dir=version_root.parent))
-    try:
-        shutil.copytree(bundle / "lib", temporary / "lib", dirs_exist_ok=True)
-        shutil.copytree(bundle / "bin", temporary / "bin", dirs_exist_ok=True)
-        for path in temporary.rglob("*"):
-            if path.is_file():
-                path.chmod(0o755 if path.parent.name == "bin" else 0o644)
-        os.replace(temporary, version_root)
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-
     trust_parent = Path("/etc/qazcoop")
-    trust_parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    trust_tmp = Path(tempfile.mkdtemp(prefix=".release-controller.", dir=trust_parent))
-    old_trust = trust_parent / ".release-controller.previous"
     trust_root = trust_parent / "release-controller"
     launcher = Path("/usr/local/sbin/qdev-controller-verify-admission")
     hook = candidate / "hooks/update"
-    backups = Path(tempfile.mkdtemp(prefix=".qazcoop-release-guard-backup.", dir="/tmp"))
-    previous_files: dict[Path, Path] = {}
+    previous_hook = _managed_file(hook, HOOK_MARKER, allow_legacy_hook=True)
+    previous_launcher = _managed_file(launcher, LAUNCHER_MARKER)
+    version_preexisting = version_root.exists() or version_root.is_symlink()
+    if version_preexisting:
+        if version_root.is_symlink() or not version_root.is_dir():
+            raise ValueError("installed guard revision path is invalid")
+        _validate_installed_version(version_root, manifest, gid=receive_gid)
+
+    backup_id = previous_hook or previous_launcher or "first-install"
+    backup_root = trust_parent / "release-controller-backups" / backup_id
+    transaction_old_trust = trust_parent / f".release-controller.previous.{os.getpid()}"
+    version_parent = version_root.parent
+    version_tmp: Path | None = None
+    trust_tmp: Path | None = None
+    hook_backup: Path | None = None
+    launcher_backup: Path | None = None
+    trust_moved = False
+    installed_trust = False
+    installed_hook = False
+    installed_launcher = False
+
     try:
-        shutil.copyfile(bundle / "bundle.json", trust_tmp / "bundle.json")
-        shutil.copyfile(bundle / "trust/public.pem", trust_tmp / "public.pem")
-        shutil.copyfile(bundle / "trust/admission.schema.json", trust_tmp / "admission.schema.json")
-        for path in trust_tmp.iterdir():
-            path.chmod(0o644)
+        if not trust_parent.exists():
+            trust_parent.mkdir(parents=True, mode=0o750)
+            os.chown(trust_parent, 0, 0)
+        _validate_root_directory(trust_parent)
+        if not _identity_can_traverse(trust_parent, receive_uid, receive_gid):
+            raise ValueError("repository receive identity cannot traverse /etc/qazcoop")
+        backup_parent = backup_root.parent
+        if not backup_parent.exists():
+            backup_parent.mkdir(mode=0o750)
+        _safe_root_directory(backup_parent, mode=0o750, gid=receive_gid)
+        if not backup_root.exists():
+            backup_root.mkdir(mode=0o750)
+        _safe_root_directory(backup_root, mode=0o750, gid=receive_gid)
+        if hook.exists():
+            hook_backup = backup_root / "update"
+            _backup_managed_file(hook, hook_backup, gid=receive_gid)
+        if launcher.exists():
+            launcher_backup = backup_root / "qdev-controller-verify-admission"
+            _backup_managed_file(launcher, launcher_backup, gid=receive_gid)
+
+        if not version_parent.exists():
+            version_parent.mkdir(parents=True, mode=0o755)
+        _safe_root_directory(version_parent, mode=0o755)
+        if not version_preexisting:
+            version_tmp = Path(tempfile.mkdtemp(prefix=f".{revision}.", dir=version_parent))
+            for directory in (version_tmp / "lib/qdev_runner", version_tmp / "bin"):
+                directory.mkdir(parents=True, exist_ok=True)
+                os.chown(directory, 0, receive_gid)
+                directory.chmod(0o750)
+            for name in (
+                "controller_admission.py",
+                "qazcoop_release_guard.py",
+                "qdev_runner.__init__.py",
+            ):
+                _copy_fixed(
+                    bundle / EXPECTED_FILES[name],
+                    version_tmp / EXPECTED_FILES[name],
+                    mode=0o640,
+                    gid=receive_gid,
+                )
+            for name in ("qdev-controller-verify-admission", "qazcoop-update"):
+                _copy_fixed(
+                    bundle / EXPECTED_FILES[name],
+                    version_tmp / EXPECTED_FILES[name],
+                    mode=0o750,
+                    gid=receive_gid,
+                )
+            os.chown(version_tmp / "lib", 0, receive_gid)
+            (version_tmp / "lib").chmod(0o750)
+            os.chown(version_tmp, 0, receive_gid)
+            version_tmp.chmod(0o750)
+            os.replace(version_tmp, version_root)
+            version_tmp = None
+
+        trust_tmp = Path(tempfile.mkdtemp(prefix=".release-controller.", dir=trust_parent))
+        trust_files = ("bundle.json", "public.pem", "admission.schema.json", "key-canary.json")
+        for name in trust_files:
+            relative = Path("bundle.json") if name == "bundle.json" else EXPECTED_FILES[name]
+            source = bundle / relative
+            _copy_fixed(source, trust_tmp / name, mode=0o640, gid=receive_gid)
+        os.chown(trust_tmp, 0, receive_gid)
         trust_tmp.chmod(0o750)
-        if old_trust.exists():
-            shutil.rmtree(old_trust)
-        if trust_root.exists():
-            os.replace(trust_root, old_trust)
+        if transaction_old_trust.exists() or transaction_old_trust.is_symlink():
+            raise ValueError("stale release-controller transaction directory exists")
+        if trust_root.exists() or trust_root.is_symlink():
+            if trust_root.is_symlink() or not trust_root.is_dir():
+                raise ValueError("existing trust root is invalid")
+            os.replace(trust_root, transaction_old_trust)
+            trust_moved = True
         os.replace(trust_tmp, trust_root)
-        Path("/var/lib/qazcoop/release/admissions").mkdir(parents=True, exist_ok=True, mode=0o750)
-        Path("/var/lib/qazcoop/release").chmod(0o750)
-        for name, destination in (("launcher", launcher), ("hook", hook)):
-            if destination.exists() or destination.is_symlink():
-                if destination.is_symlink() or not destination.is_file():
-                    raise ValueError(f"existing {name} is not a regular file")
-                backup = backups / name
-                shutil.copyfile(destination, backup)
-                backup.chmod(stat.S_IMODE(destination.stat().st_mode))
-                previous_files[destination] = backup
+        trust_tmp = None
+        installed_trust = True
+
+        release_root = Path("/var/lib/qazcoop/release")
+        receipt_root = release_root / "admissions"
+        replay_store = release_root / "consumed-admissions.sqlite3"
+        for directory in (release_root, receipt_root):
+            directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+            os.chown(directory, 0, receive_gid)
+            directory.chmod(0o750)
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(replay_store, flags, 0o600)
+        except FileExistsError as error:
+            if replay_store.is_symlink() or not replay_store.is_file():
+                raise ValueError("replay store path is invalid") from error
+        else:
+            os.close(descriptor)
+        os.chown(replay_store, receive_uid, receive_gid)
+        replay_store.chmod(0o600)
+
         for source, destination in (
             (bundle / EXPECTED_FILES["qdev-controller-verify-admission"], launcher),
             (bundle / EXPECTED_FILES["qazcoop-update"], hook),
         ):
             staged = destination.with_name(f".{destination.name}.{os.getpid()}.new")
-            shutil.copyfile(source, staged)
-            staged.chmod(0o755)
+            _copy_fixed(source, staged, mode=0o750, gid=receive_gid)
             os.replace(staged, destination)
-        subprocess.run([str(launcher), "--help"], check=True, capture_output=True)
-        if old_trust.exists():
-            shutil.rmtree(old_trust)
-    except Exception:
-        if trust_root.exists():
-            shutil.rmtree(trust_root)
-        if old_trust.exists():
-            os.replace(old_trust, trust_root)
-        for destination in (launcher, hook):
-            previous_backup = previous_files.get(destination)
-            if previous_backup is not None:
-                os.replace(previous_backup, destination)
+            if destination == launcher:
+                installed_launcher = True
             else:
-                destination.unlink(missing_ok=True)
-        shutil.rmtree(version_root, ignore_errors=True)
+                installed_hook = True
+
+        _run_as_identity([str(launcher), "--help"], receive_uid, receive_gid)
+        if trust_moved:
+            shutil.rmtree(transaction_old_trust)
+    except Exception:
+        if installed_hook:
+            _restore_file(hook, hook_backup)
+        if installed_launcher:
+            _restore_file(launcher, launcher_backup)
+        if installed_trust and (trust_root.exists() or trust_root.is_symlink()):
+            shutil.rmtree(trust_root, ignore_errors=True)
+        if trust_moved and transaction_old_trust.exists():
+            os.replace(transaction_old_trust, trust_root)
+        if not version_preexisting:
+            shutil.rmtree(version_root, ignore_errors=True)
         raise
     finally:
-        shutil.rmtree(trust_tmp, ignore_errors=True)
-        shutil.rmtree(backups, ignore_errors=True)
+        if version_tmp is not None:
+            shutil.rmtree(version_tmp, ignore_errors=True)
+        if trust_tmp is not None:
+            shutil.rmtree(trust_tmp, ignore_errors=True)
     return revision
 
 

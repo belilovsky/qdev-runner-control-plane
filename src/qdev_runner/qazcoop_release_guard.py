@@ -26,8 +26,9 @@ REPOSITORY = "belilovsky/qazcoop"
 PROTECTED_REF = "refs/heads/codex/qazcoop-mvp"
 PAYLOAD_PATH = "docs/acceptance/release-receipt.v3.payload.json"
 CONTROLLER_PATH = "app/contracts/qdev_ci_controller.v1.json"
+LOCK_PATH = "app/contracts/release_lock.v1.json"
 PUBLIC_KEY_MIRROR_PATH = "app/contracts/trust/qdev-ci-controller-ed25519.pub"
-EVIDENCE_ALLOWLIST = frozenset({PAYLOAD_PATH, CONTROLLER_PATH})
+EVIDENCE_ALLOWLIST = frozenset({PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH})
 RELEASABLE = frozenset({"release_ready", "released"})
 EXPECTED_JOBS = {
     "reuse-first": "qdev-ci",
@@ -82,11 +83,21 @@ def _strict_json_bytes(raw: bytes, label: str) -> dict[str, Any]:
 
 
 def _object_at(repository: Path, revision: str, relative_path: str) -> dict[str, Any]:
-    raw = _git(repository, "show", f"{revision}:{relative_path}", text=False)
+    raw = _bytes_at(repository, revision, relative_path)
     return _strict_json_bytes(
-        cast(bytes, raw),
+        raw,
         relative_path,
     )
+
+
+def _bytes_at(repository: Path, revision: str, relative_path: str) -> bytes:
+    return cast(bytes, _git(repository, "show", f"{revision}:{relative_path}", text=False))
+
+
+def _file_digest_at(repository: Path, revision: str, relative_path: str) -> str:
+    return "sha256:" + hashlib.sha256(
+        _bytes_at(repository, revision, relative_path)
+    ).hexdigest()
 
 
 def _exact_fields(value: Mapping[str, object], expected: set[str], label: str) -> None:
@@ -159,8 +170,10 @@ def _load_bundle_manifest(trust_dir: Path) -> dict[str, Any]:
     expected_files = {
         "public.pem",
         "admission.schema.json",
+        "key-canary.json",
         "controller_admission.py",
         "qazcoop_release_guard.py",
+        "qdev_runner.__init__.py",
         "qdev-controller-verify-admission",
         "qazcoop-update",
     }
@@ -168,7 +181,7 @@ def _load_bundle_manifest(trust_dir: Path) -> dict[str, Any]:
         raise QazCoopReleaseGuardError("release trust file manifest is invalid")
     for name, expected_digest in files.items():
         _digest(expected_digest, f"release trust file digest for {name}")
-        if name in {"public.pem", "admission.schema.json"}:
+        if name in {"public.pem", "admission.schema.json", "key-canary.json"}:
             candidate = trust_dir / name
         elif name == "qazcoop_release_guard.py":
             candidate = Path(__file__)
@@ -176,6 +189,10 @@ def _load_bundle_manifest(trust_dir: Path) -> dict[str, Any]:
             from qdev_runner import controller_admission
 
             candidate = Path(str(controller_admission.__file__))
+        elif name == "qdev_runner.__init__.py":
+            from qdev_runner import __file__ as package_file
+
+            candidate = Path(str(package_file))
         elif name == "qdev-controller-verify-admission":
             launcher = os.environ.get("QAZCOOP_GUARD_LAUNCHER")
             if not launcher:
@@ -391,12 +408,25 @@ def validate_evidence_commit(
 
     payload = _object_at(repository, evidence_sha, PAYLOAD_PATH)
     controller = _object_at(repository, evidence_sha, CONTROLLER_PATH)
+    release_lock = _object_at(repository, evidence_sha, LOCK_PATH)
     if payload.get("contract") != "qazcoop-release-receipt-payload/v3":
         raise QazCoopReleaseGuardError("release payload contract is invalid")
     if payload.get("status") not in {"acceptance_incomplete", *RELEASABLE}:
         raise QazCoopReleaseGuardError("release payload status is invalid")
     if payload.get("functional_source_sha") != functional_sha:
         raise QazCoopReleaseGuardError("release payload is not bound to its direct parent")
+    _exact_fields(
+        release_lock,
+        {"contract", "status", "functional_source_sha", "public_marker"},
+        "release lock",
+    )
+    if (
+        release_lock.get("contract") != "qazcoop-release-lock/v1"
+        or release_lock.get("status") != "active"
+        or release_lock.get("functional_source_sha") != functional_sha
+        or release_lock.get("public_marker") != f"qazcoop-{functional_sha[:7]}"
+    ):
+        raise QazCoopReleaseGuardError("release lock is not bound to the functional parent")
     if controller.get("contract") != "qdev-ci-controller-admission/v1":
         raise QazCoopReleaseGuardError("controller contract is invalid")
     _exact_fields(
@@ -411,6 +441,7 @@ def validate_evidence_commit(
             "registration_status",
             "admission_status",
             "admission_id",
+            "claim_id",
             "external_verifier",
             "trust",
             "evidence_gap",
@@ -453,7 +484,7 @@ def verify_qazcoop_admission(
         raise QazCoopReleaseGuardError("release controller admission is invalid")
     _exact_fields(
         release_admission,
-        {"status", "contract_path", "admission_id"},
+        {"status", "contract_path", "admission_id", "claim_id"},
         "release controller admission",
     )
     if release_admission.get("contract_path") != CONTROLLER_PATH:
@@ -465,15 +496,21 @@ def verify_qazcoop_admission(
     if payload["status"] == "acceptance_incomplete":
         if require_authoritative:
             raise QazCoopReleaseGuardError("authoritative admission requires a releasable payload")
-        if admission_status != "not_obtained" or release_admission.get("admission_id") is not None:
+        if (
+            admission_status != "not_obtained"
+            or release_admission.get("admission_id") is not None
+            or release_admission.get("claim_id") is not None
+        ):
             raise QazCoopReleaseGuardError("incomplete evidence cannot claim admission")
         return {"state": "evidence_valid", "functional_source_sha": functional_sha}
 
     if payload["status"] not in RELEASABLE or admission_status != "external_required":
         raise QazCoopReleaseGuardError("releasable evidence requires external admission")
     admission_id = _admission_id(release_admission.get("admission_id"))
+    claim_id = _admission_id(release_admission.get("claim_id"))
     if (
         controller.get("admission_id") != admission_id
+        or controller.get("claim_id") != claim_id
         or controller.get("registration_status") != "confirmed"
     ):
         raise QazCoopReleaseGuardError("controller registration or admission binding is invalid")
@@ -556,6 +593,17 @@ def verify_qazcoop_admission(
         job_ids[name] = job_id
     if set(job_ids) != set(EXPECTED_JOBS):
         raise QazCoopReleaseGuardError("controller receipt job set is invalid")
+    expected_evidence = {
+        "release_payload_sha256": _file_digest_at(
+            repository, evidence_commit_sha, PAYLOAD_PATH
+        ),
+        "controller_contract_sha256": _file_digest_at(
+            repository, evidence_commit_sha, CONTROLLER_PATH
+        ),
+        "release_lock_sha256": _file_digest_at(
+            repository, evidence_commit_sha, LOCK_PATH
+        ),
+    }
     if require_authoritative:
         verified = verify_and_consume_receipt(
             receipt,
@@ -567,7 +615,10 @@ def verify_qazcoop_admission(
             expected_repository=REPOSITORY,
             expected_ref=PROTECTED_REF,
             expected_sha=functional_sha,
+            expected_evidence=expected_evidence,
             expected_controller_revision=str(manifest["controller_revision"]),
+            expected_admission_id=admission_id,
+            expected_claim_id=claim_id,
             expected_jobs=EXPECTED_JOBS,
             expected_workflow_run_id=workflow_run_id,
             expected_workflow_run_attempt=workflow_run_attempt,
@@ -582,7 +633,10 @@ def verify_qazcoop_admission(
             expected_repository=REPOSITORY,
             expected_ref=PROTECTED_REF,
             expected_sha=functional_sha,
+            expected_evidence=expected_evidence,
             expected_controller_revision=str(manifest["controller_revision"]),
+            expected_admission_id=admission_id,
+            expected_claim_id=claim_id,
             expected_jobs=EXPECTED_JOBS,
         )
     verified_admission = verified.get("admission")
@@ -592,6 +646,7 @@ def verify_qazcoop_admission(
         "state": "admission_consumed" if require_authoritative else "admission_verified",
         "functional_source_sha": functional_sha,
         "admission_id": admission_id,
+        "claim_id": claim_id,
     }
 
 

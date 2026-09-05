@@ -24,6 +24,7 @@ install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0755 /etc/qdev-runner
 install -d -o root -g root -m 0700 /etc/qdev-runner/admission
+install -d -o root -g root -m 0700 /etc/qdev-runner/qazcoop-release-signing
 install -d -o root -g root -m 0700 /run/qdev-controller
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
@@ -76,6 +77,7 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.service \
 install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
+PYTHONPATH="$PWD/src" python3 scripts/provision_qazcoop_release_signing_key.py
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path

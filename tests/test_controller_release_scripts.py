@@ -173,6 +173,26 @@ def test_controller_provisions_root_owned_admission_signer() -> None:
     assert "--entrypoint qdev-controller-admission" in wrapper
 
 
+def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "scripts/provision_qazcoop_release_signing_key.py" in provisioning
+    assert "/etc/qdev-runner/qazcoop-release-signing" in provisioning
+    assert "install_qazcoop_release_guard()" in activation
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in activation
+    assert "scripts/install_qazcoop_release_guard.py" in activation
+    assert "-o StrictHostKeyChecking=yes" in activation
+    assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
+        "if ! install_qazcoop_release_guard; then"
+    )
+    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
+    assert "currently deployed product remains available" in guard_function
+
+
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 

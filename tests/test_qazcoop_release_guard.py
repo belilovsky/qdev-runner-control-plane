@@ -14,6 +14,7 @@ from qdev_runner import controller_admission
 from qdev_runner.controller_admission import initialize_keypair, sign_payload
 from qdev_runner.qazcoop_release_guard import (
     CONTROLLER_PATH,
+    LOCK_PATH,
     PAYLOAD_PATH,
     QazCoopReleaseGuardError,
     verify_qazcoop_admission,
@@ -58,6 +59,8 @@ def _trust_bundle(tmp_path: Path, public_key: Path) -> tuple[Path, Path, Path]:
     public.write_bytes(public_key.read_bytes())
     schema = trust / "admission.schema.json"
     schema.write_text("{}\n", encoding="utf-8")
+    canary = trust / "key-canary.json"
+    canary.write_text("{}\n", encoding="utf-8")
     launcher = tmp_path / "qdev-controller-verify-admission"
     launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     hook = tmp_path / "qazcoop-update"
@@ -67,9 +70,13 @@ def _trust_bundle(tmp_path: Path, public_key: Path) -> tuple[Path, Path, Path]:
     files = {
         "public.pem": _digest(public),
         "admission.schema.json": _digest(schema),
+        "key-canary.json": _digest(canary),
         "controller_admission.py": _digest(Path(controller_admission.__file__)),
         "qazcoop_release_guard.py": _digest(
             Path(__file__).parents[1] / "src/qdev_runner/qazcoop_release_guard.py"
+        ),
+        "qdev_runner.__init__.py": _digest(
+            Path(__file__).parents[1] / "src/qdev_runner/__init__.py"
         ),
         "qdev-controller-verify-admission": _digest(launcher),
         "qazcoop-update": _digest(hook),
@@ -145,6 +152,7 @@ def _release_payload(functional_sha: str, manifest: dict[str, object]) -> dict[s
             "status": "external_required",
             "contract_path": CONTROLLER_PATH,
             "admission_id": "admission-qazcoop-20260905",
+            "claim_id": "claim-qazcoop-20260905",
         },
         "supply_chain": {
             "sbom_sha256": "sha256:" + "b" * 64,
@@ -171,6 +179,7 @@ def _controller(functional_sha: str, manifest: dict[str, object]) -> dict[str, o
         "registration_status": "confirmed",
         "admission_status": "external_required",
         "admission_id": "admission-qazcoop-20260905",
+        "claim_id": "claim-qazcoop-20260905",
         "external_verifier": {
             "delivery": "root_owned_controller_bundle",
             "protected_environment": "qazcoop-release-admission",
@@ -197,28 +206,67 @@ def _repository(tmp_path: Path, trust: Path) -> tuple[Path, str, str]:
     _git(repository, "init")
     _git(repository, "config", "user.email", "controller@example.invalid")
     _git(repository, "config", "user.name", "Controller Test")
+    (repository / "bootstrap.txt").write_text("bootstrap\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-m", "bootstrap")
+    bootstrap_sha = _git(repository, "rev-parse", "HEAD")
     (repository / "functional.txt").write_text("functional\n", encoding="utf-8")
     public_mirror = repository / "app/contracts/trust/qdev-ci-controller-ed25519.pub"
     public_mirror.parent.mkdir(parents=True, exist_ok=True)
     public_mirror.write_bytes((trust / "public.pem").read_bytes())
+    _write_json(
+        repository / LOCK_PATH,
+        {
+            "contract": "qazcoop-release-lock/v1",
+            "status": "active",
+            "functional_source_sha": bootstrap_sha,
+            "public_marker": f"qazcoop-{bootstrap_sha[:7]}",
+        },
+    )
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "functional")
     functional_sha = _git(repository, "rev-parse", "HEAD")
     manifest = json.loads((trust / "bundle.json").read_text(encoding="utf-8"))
     _write_json(repository / PAYLOAD_PATH, _release_payload(functional_sha, manifest))
     _write_json(repository / CONTROLLER_PATH, _controller(functional_sha, manifest))
-    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH)
+    _write_json(
+        repository / LOCK_PATH,
+        {
+            "contract": "qazcoop-release-lock/v1",
+            "status": "active",
+            "functional_source_sha": functional_sha,
+            "public_marker": f"qazcoop-{functional_sha[:7]}",
+        },
+    )
+    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH)
     _git(repository, "commit", "-m", "evidence")
     return repository, functional_sha, _git(repository, "rev-parse", "HEAD")
 
 
-def _signed_receipt(functional_sha: str, private_key: Path) -> dict[str, object]:
+def _signed_receipt(
+    repository: Path, evidence_sha: str, functional_sha: str, private_key: Path
+) -> dict[str, object]:
     now = datetime.now(UTC)
+
+    def digest_at(relative: str) -> str:
+        raw = subprocess.run(  # noqa: S603
+            ["/usr/bin/git", "show", f"{evidence_sha}:{relative}"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
+
     return sign_payload(
         {
             "repository": {"id": 1_357_887_516, "full_name": "belilovsky/qazcoop"},
             "protected_ref": BRANCH,
             "functional_source_sha": functional_sha,
+            "evidence": {
+                "release_payload_sha256": digest_at(PAYLOAD_PATH),
+                "controller_contract_sha256": digest_at(CONTROLLER_PATH),
+                "release_lock_sha256": digest_at(LOCK_PATH),
+            },
             "workflow": {"run_id": 1001, "run_attempt": 1},
             "required_jobs": [
                 {
@@ -264,7 +312,7 @@ def test_guard_verifies_and_consumes_exact_signed_release(
     receipt_dir.mkdir()
     _write_json(
         receipt_dir / "admission-qazcoop-20260905.json",
-        _signed_receipt(functional_sha, private),
+        _signed_receipt(repository, evidence_sha, functional_sha, private),
     )
     monkeypatch.setenv("QAZCOOP_GUARD_LAUNCHER", str(launcher))
     monkeypatch.setenv("QAZCOOP_GUARD_HOOK", str(hook))
@@ -279,18 +327,16 @@ def test_guard_verifies_and_consumes_exact_signed_release(
         replay_store=tmp_path / "consumed.sqlite3",
     )
     assert result["state"] == "admission_consumed"
-    with pytest.raises(
-        controller_admission.ControllerAdmissionError, match="already been consumed"
-    ):
-        verify_qazcoop_admission(
-            repository=repository,
-            protected_ref=BRANCH,
-            evidence_commit_sha=evidence_sha,
-            require_authoritative=True,
-            trust_dir=trust,
-            receipt_dir=receipt_dir,
-            replay_store=tmp_path / "consumed.sqlite3",
-        )
+    retried = verify_qazcoop_admission(
+        repository=repository,
+        protected_ref=BRANCH,
+        evidence_commit_sha=evidence_sha,
+        require_authoritative=True,
+        trust_dir=trust,
+        receipt_dir=receipt_dir,
+        replay_store=tmp_path / "consumed.sqlite3",
+    )
+    assert retried == result
 
 
 def test_guard_rejects_tampered_installed_hook(
@@ -403,3 +449,79 @@ def test_update_hook_rejects_lock_receipt_mismatch_before_verifier(
     with pytest.raises(hook.GuardError, match="release lock and evidence source differ"):
         hook.validate_update(repository, BRANCH, old, new)
     assert verifier_called is False
+
+
+def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = tmp_path / "private.pem"
+    public = tmp_path / "public.pem"
+    initialize_keypair(private, public)
+    trust, _launcher, _installed_hook = _trust_bundle(tmp_path, public)
+    repository, functional_sha, evidence_sha = _repository(tmp_path, trust)
+    hook = _hook_module()
+    verifier_calls: list[list[str]] = []
+    original_run = subprocess.run
+
+    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = args[0]
+        if isinstance(command, list) and command and str(command[0]).endswith(
+            "qdev-controller-verify-admission"
+        ):
+            verifier_calls.append([str(value) for value in command])
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook.subprocess, "run", observed_run)
+    hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][-1] == "--require-authoritative-admission"
+
+
+def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = tmp_path / "private.pem"
+    public = tmp_path / "public.pem"
+    initialize_keypair(private, public)
+    trust, _launcher, _installed_hook = _trust_bundle(tmp_path, public)
+    repository, functional_sha, evidence_sha = _repository(tmp_path, trust)
+    payload_path = repository / PAYLOAD_PATH
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    payload["status"] = "acceptance_incomplete"
+    payload["controller_admission"] = {
+        "status": "not_obtained",
+        "contract_path": CONTROLLER_PATH,
+        "admission_id": None,
+        "claim_id": None,
+    }
+    _write_json(payload_path, payload)
+    controller_path = repository / CONTROLLER_PATH
+    controller = json.loads(controller_path.read_text(encoding="utf-8"))
+    controller["admission_status"] = "not_obtained"
+    controller["admission_id"] = None
+    controller["claim_id"] = None
+    _write_json(controller_path, controller)
+    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH)
+    _git(repository, "commit", "--amend", "--no-edit")
+    evidence_sha = _git(repository, "rev-parse", "HEAD")
+    hook = _hook_module()
+    verifier_calls: list[list[str]] = []
+    original_run = subprocess.run
+
+    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = args[0]
+        if isinstance(command, list) and command and str(command[0]).endswith(
+            "qdev-controller-verify-admission"
+        ):
+            verifier_calls.append([str(value) for value in command])
+            return subprocess.CompletedProcess(
+                command, 1, "", "authoritative admission requires a releasable payload\n"
+            )
+        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook.subprocess, "run", observed_run)
+    with pytest.raises(hook.GuardError, match="authoritative admission requires"):
+        hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][-1] == "--require-authoritative-admission"

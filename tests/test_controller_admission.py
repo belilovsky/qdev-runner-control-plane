@@ -33,6 +33,11 @@ def _payload() -> dict[str, object]:
         "repository": {"id": 1_357_887_516, "full_name": "belilovsky/qazcoop"},
         "protected_ref": "refs/heads/codex/qazcoop-mvp",
         "functional_source_sha": SOURCE_SHA,
+        "evidence": {
+            "release_payload_sha256": "sha256:" + "3" * 64,
+            "controller_contract_sha256": "sha256:" + "4" * 64,
+            "release_lock_sha256": "sha256:" + "5" * 64,
+        },
         "workflow": {"run_id": 33_949_265_063, "run_attempt": 2},
         "required_jobs": [
             {
@@ -68,7 +73,14 @@ def _exact_expectations() -> dict[str, object]:
         "expected_repository": "belilovsky/qazcoop",
         "expected_ref": "refs/heads/codex/qazcoop-mvp",
         "expected_sha": SOURCE_SHA,
+        "expected_evidence": {
+            "release_payload_sha256": "sha256:" + "3" * 64,
+            "controller_contract_sha256": "sha256:" + "4" * 64,
+            "release_lock_sha256": "sha256:" + "5" * 64,
+        },
         "expected_controller_revision": CONTROLLER_SHA,
+        "expected_admission_id": "admission-20260905",
+        "expected_claim_id": "claim-20260905",
         "expected_jobs": {
             "reuse-first": "qdev-ci",
             "postgres-migrations": "qdev-ci-docker",
@@ -367,6 +379,22 @@ def test_consume_receipt_rejects_replay(tmp_path: Path) -> None:
         )
 
 
+def test_consume_receipt_allows_exact_idempotent_retry(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+    replay_store = tmp_path / "state" / "consumed.sqlite3"
+    for _attempt in range(2):
+        verified = verify_and_consume_receipt(
+            receipt,
+            public,
+            replay_store,
+            consumer="qazcoop-evidence-deadbeef",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+        assert verified["admission"]["claim_id"] == "claim-20260905"
+
+
 def test_consume_rejects_conflict_ignore_replay_schema(tmp_path: Path) -> None:
     private, public = _keys(tmp_path)
     receipt = sign_payload(_payload(), private)
@@ -539,3 +567,34 @@ def test_cli_requires_complete_consumption_arguments(
         == 1
     )
     assert "must be provided together" in capsys.readouterr().err
+
+
+def test_cli_rejects_partial_evidence_binding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    private, public = _keys(tmp_path)
+    payload = _payload()
+    payload["issued_at"] = (datetime.now(UTC) - timedelta(minutes=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    payload["expires_at"] = (datetime.now(UTC) + timedelta(minutes=10)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_bytes(canonical_payload(sign_payload(payload, private)) + b"\n")
+
+    assert (
+        main(
+            [
+                "verify",
+                "--receipt",
+                str(receipt_path),
+                "--public-key",
+                str(public),
+                "--release-payload-sha256",
+                "sha256:" + "3" * 64,
+            ]
+        )
+        == 1
+    )
+    assert "all three evidence digests" in capsys.readouterr().err

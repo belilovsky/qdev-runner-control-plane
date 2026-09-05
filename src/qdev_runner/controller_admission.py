@@ -59,6 +59,7 @@ _PAYLOAD_FIELDS = frozenset(
         "repository",
         "protected_ref",
         "functional_source_sha",
+        "evidence",
         "workflow",
         "required_jobs",
         "controller_revision",
@@ -66,6 +67,9 @@ _PAYLOAD_FIELDS = frozenset(
         "issued_at",
         "expires_at",
     }
+)
+_EVIDENCE_FIELDS = frozenset(
+    {"release_payload_sha256", "controller_contract_sha256", "release_lock_sha256"}
 )
 _REPOSITORY_FIELDS = frozenset({"id", "full_name"})
 _WORKFLOW_FIELDS = frozenset({"run_id", "run_attempt"})
@@ -292,6 +296,10 @@ def validate_payload(payload: object) -> dict[str, Any]:
     _matched_text(repository["full_name"], _REPOSITORY, "payload.repository.full_name")
     _matched_text(value["protected_ref"], _REF, "payload.protected_ref")
     _matched_text(value["functional_source_sha"], _SHA, "payload.functional_source_sha")
+    evidence = _mapping(value["evidence"], "payload.evidence")
+    _exact_fields(evidence, _EVIDENCE_FIELDS, "payload.evidence")
+    for field in sorted(_EVIDENCE_FIELDS):
+        _matched_text(evidence[field], _DIGEST, f"payload.evidence.{field}")
 
     workflow = _mapping(value["workflow"], "payload.workflow")
     _exact_fields(workflow, _WORKFLOW_FIELDS, "payload.workflow")
@@ -424,7 +432,10 @@ def verify_receipt(
     expected_repository: str | None = None,
     expected_ref: str | None = None,
     expected_sha: str | None = None,
+    expected_evidence: Mapping[str, str] | None = None,
     expected_controller_revision: str | None = None,
+    expected_admission_id: str | None = None,
+    expected_claim_id: str | None = None,
     expected_jobs: Mapping[str, str] | None = None,
     expected_workflow_run_id: int | None = None,
     expected_workflow_run_attempt: int | None = None,
@@ -468,11 +479,15 @@ def verify_receipt(
     workflow = _mapping(payload["workflow"], "payload.workflow")
     workflow_jobs = _mapping_jobs(payload["required_jobs"])
     workflow_job_ids = _mapping_job_ids(payload["required_jobs"])
+    evidence = _mapping(payload["evidence"], "payload.evidence")
+    admission = _mapping(payload["admission"], "payload.admission")
     exact_expectations: tuple[tuple[str, object, object | None], ...] = (
         ("repository id", repository["id"], expected_repository_id),
         ("repository", repository["full_name"], expected_repository),
         ("protected ref", payload["protected_ref"], expected_ref),
         ("functional source SHA", payload["functional_source_sha"], expected_sha),
+        ("admission id", admission["id"], expected_admission_id),
+        ("claim id", admission["claim_id"], expected_claim_id),
         ("controller revision", payload["controller_revision"], expected_controller_revision),
         ("workflow run id", workflow["run_id"], expected_workflow_run_id),
         ("workflow run attempt", workflow["run_attempt"], expected_workflow_run_attempt),
@@ -487,6 +502,10 @@ def verify_receipt(
     if expected_job_ids is not None and workflow_job_ids != dict(expected_job_ids):
         raise ControllerAdmissionError(
             "receipt required job IDs do not match expected job/ID mapping"
+        )
+    if expected_evidence is not None and evidence != dict(expected_evidence):
+        raise ControllerAdmissionError(
+            "receipt evidence digests do not match expected release files"
         )
     return payload
 
@@ -632,38 +651,52 @@ def _consume_verified_receipt(
                 if table_exists is None:
                     connection.execute(_REPLAY_TABLE_SQL)
                 _validate_replay_store_schema(connection)
-                inserted = connection.execute(
-                    """
-                    INSERT INTO consumed_receipts (
-                        fingerprint,
-                        key_id,
-                        admission_id,
-                        claim_id,
-                        functional_source_sha,
-                        consumer,
-                        consumed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        fingerprint,
-                        key_id,
-                        admission_id,
-                        claim_id,
-                        functional_source_sha,
-                        consumer_value,
-                        observed,
-                    ),
+                identity = (
+                    fingerprint,
+                    key_id,
+                    admission_id,
+                    claim_id,
+                    functional_source_sha,
+                    consumer_value,
                 )
-                if inserted.rowcount != 1 or connection.execute(
-                    "SELECT changes()"
-                ).fetchone() != (1,):
-                    raise ControllerAdmissionError("receipt has already been consumed")
+                try:
+                    inserted = connection.execute(
+                        """
+                        INSERT INTO consumed_receipts (
+                            fingerprint,
+                            key_id,
+                            admission_id,
+                            claim_id,
+                            functional_source_sha,
+                            consumer,
+                            consumed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (*identity, observed),
+                    )
+                except sqlite3.IntegrityError as error:
+                    existing = connection.execute(
+                        """
+                        SELECT fingerprint, key_id, admission_id, claim_id,
+                               functional_source_sha, consumer
+                        FROM consumed_receipts
+                        WHERE fingerprint = ? OR admission_id = ? OR claim_id = ?
+                        """,
+                        (fingerprint, admission_id, claim_id),
+                    ).fetchall()
+                    if existing != [identity]:
+                        raise ControllerAdmissionError(
+                            "receipt has already been consumed"
+                        ) from error
+                else:
+                    if inserted.rowcount != 1 or connection.execute(
+                        "SELECT changes()"
+                    ).fetchone() != (1,):
+                        raise ControllerAdmissionError("receipt has already been consumed")
         finally:
             os.close(descriptor)
     except ControllerAdmissionError:
         raise
-    except sqlite3.IntegrityError as error:
-        raise ControllerAdmissionError("receipt has already been consumed") from error
     except (OSError, sqlite3.Error) as error:
         raise ControllerAdmissionError("receipt replay store is unavailable") from error
 
@@ -679,7 +712,10 @@ def verify_and_consume_receipt(
     expected_repository: str | None = None,
     expected_ref: str | None = None,
     expected_sha: str | None = None,
+    expected_evidence: Mapping[str, str] | None = None,
     expected_controller_revision: str | None = None,
+    expected_admission_id: str | None = None,
+    expected_claim_id: str | None = None,
     expected_jobs: Mapping[str, str] | None = None,
     expected_workflow_run_id: int | None = None,
     expected_workflow_run_attempt: int | None = None,
@@ -693,7 +729,10 @@ def verify_and_consume_receipt(
         "expected_repository": expected_repository,
         "expected_ref": expected_ref,
         "expected_sha": expected_sha,
+        "expected_evidence": expected_evidence,
         "expected_controller_revision": expected_controller_revision,
+        "expected_admission_id": expected_admission_id,
+        "expected_claim_id": expected_claim_id,
         "expected_jobs": expected_jobs,
         "expected_workflow_run_id": expected_workflow_run_id,
         "expected_workflow_run_attempt": expected_workflow_run_attempt,
@@ -719,7 +758,10 @@ def verify_and_consume_receipt(
         expected_repository=expected_repository,
         expected_ref=expected_ref,
         expected_sha=expected_sha,
+        expected_evidence=expected_evidence,
         expected_controller_revision=expected_controller_revision,
+        expected_admission_id=expected_admission_id,
+        expected_claim_id=expected_claim_id,
         expected_jobs=expected_jobs,
         expected_workflow_run_id=expected_workflow_run_id,
         expected_workflow_run_attempt=expected_workflow_run_attempt,
@@ -764,7 +806,12 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--repository")
     verify.add_argument("--protected-ref")
     verify.add_argument("--functional-source-sha")
+    verify.add_argument("--release-payload-sha256")
+    verify.add_argument("--controller-contract-sha256")
+    verify.add_argument("--release-lock-sha256")
     verify.add_argument("--controller-revision")
+    verify.add_argument("--admission-id")
+    verify.add_argument("--claim-id")
     verify.add_argument("--workflow-run-id", type=int)
     verify.add_argument("--workflow-run-attempt", type=int)
     verify.add_argument("--require-job", action="append")
@@ -794,6 +841,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             receipt = load_json_strict(args.receipt)
             expected_jobs, expected_job_ids = _expected_jobs(args.require_job)
+            expected_evidence = None
+            evidence_values = (
+                args.release_payload_sha256,
+                args.controller_contract_sha256,
+                args.release_lock_sha256,
+            )
+            if any(value is not None for value in evidence_values):
+                if not all(value is not None for value in evidence_values):
+                    raise ControllerAdmissionError(
+                        "all three evidence digests must be provided together"
+                    )
+                expected_evidence = {
+                    "release_payload_sha256": args.release_payload_sha256,
+                    "controller_contract_sha256": args.controller_contract_sha256,
+                    "release_lock_sha256": args.release_lock_sha256,
+                }
             if (args.consume_ledger is None) != (args.consumer is None):
                 raise ControllerAdmissionError(
                     "--consume-ledger and --consumer must be provided together"
@@ -808,7 +871,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_repository=args.repository,
                     expected_ref=args.protected_ref,
                     expected_sha=args.functional_source_sha,
+                    expected_evidence=expected_evidence,
                     expected_controller_revision=args.controller_revision,
+                    expected_admission_id=args.admission_id,
+                    expected_claim_id=args.claim_id,
                     expected_jobs=expected_jobs,
                     expected_workflow_run_id=args.workflow_run_id,
                     expected_workflow_run_attempt=args.workflow_run_attempt,
@@ -822,7 +888,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     expected_repository=args.repository,
                     expected_ref=args.protected_ref,
                     expected_sha=args.functional_source_sha,
+                    expected_evidence=expected_evidence,
                     expected_controller_revision=args.controller_revision,
+                    expected_admission_id=args.admission_id,
+                    expected_claim_id=args.claim_id,
                     expected_jobs=expected_jobs,
                     expected_workflow_run_id=args.workflow_run_id,
                     expected_workflow_run_attempt=args.workflow_run_attempt,

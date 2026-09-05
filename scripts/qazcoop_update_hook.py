@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# QAZCOOP_RELEASE_GUARD_MANAGED_V1
 """Root-owned update hook for the QazCoop protected release branch."""
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ PAYLOAD_PATH = "docs/acceptance/release-receipt.v3.payload.json"
 VERIFIER = Path("/usr/local/sbin/qdev-controller-verify-admission")
 ZERO = "0" * 40
 SHA = re.compile(r"^[0-9a-f]{40}$")
-RELEASABLE = frozenset({"release_ready", "released"})
 
 
 class GuardError(ValueError):
@@ -117,8 +117,11 @@ def validate_update(repository: Path, reference: str, old: str, new: str) -> Non
         "--evidence-commit-sha",
         new,
     ]
-    if payload.get("status") in RELEASABLE:
-        command.append("--require-authoritative-admission")
+    # Every accepted update moves the active release lock to the evidence
+    # commit's functional parent.  Require the controller receipt even when
+    # the accompanying evidence is marked incomplete so that an unsigned
+    # evidence commit cannot advance the deployable source.
+    command.append("--require-authoritative-admission")
     result = subprocess.run(command, cwd=repository, capture_output=True, text=True)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "admission rejected"
