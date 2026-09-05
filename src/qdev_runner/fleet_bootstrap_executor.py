@@ -163,8 +163,8 @@ def _bootstrap_target(
     if request.action == "activate-controller":
         return (
             {
-                "controller_revision": policy.activation.revision,
-                "controller_release_digest": policy.activation.release_digest,
+                "controller_revision": request.controller_revision,
+                "controller_release_digest": request.controller_release_digest,
                 "rollback_revision": policy.activation.rollback_revision,
                 "rollback_release_digest": policy.activation.rollback_release_digest,
             },

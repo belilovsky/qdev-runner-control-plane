@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .release_lane import ReleaseLane, ReleaseLanePolicy
 
-POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v1"
+POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v2"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v1"
 ALLOWED_ACTIONS = frozenset(
     {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
@@ -59,8 +59,6 @@ class BootstrapIdentity:
 
 @dataclass(frozen=True)
 class ControllerActivation:
-    revision: str
-    release_digest: str
     rollback_revision: str
     rollback_release_digest: str
 
@@ -176,8 +174,6 @@ class FleetBootstrapPolicy:
     @staticmethod
     def _activation(raw: object) -> ControllerActivation:
         expected = {
-            "controller_revision",
-            "controller_release_digest",
             "rollback_revision",
             "rollback_release_digest",
         }
@@ -187,20 +183,14 @@ class FleetBootstrapPolicy:
         if not all(isinstance(value, str) for value in values):
             raise FleetBootstrapError("bootstrap activation values are invalid")
         activation = ControllerActivation(
-            revision=str(raw["controller_revision"]),
-            release_digest=str(raw["controller_release_digest"]),
             rollback_revision=str(raw["rollback_revision"]),
             rollback_release_digest=str(raw["rollback_release_digest"]),
         )
         if (
-            not _SHA.fullmatch(activation.revision)
-            or not _DIGEST.fullmatch(activation.release_digest)
-            or not _SHA.fullmatch(activation.rollback_revision)
+            not _SHA.fullmatch(activation.rollback_revision)
             or not _DIGEST.fullmatch(activation.rollback_release_digest)
-            or activation.revision == activation.rollback_revision
-            or activation.release_digest == activation.rollback_release_digest
         ):
-            raise FleetBootstrapError("bootstrap immutable controller tuple is invalid")
+            raise FleetBootstrapError("bootstrap rollback controller tuple is invalid")
         return activation
 
     @staticmethod
@@ -314,11 +304,8 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap immutable request values are invalid")
         if request.claim_ttl_seconds > self.identity.max_claim_ttl_seconds:
             raise FleetBootstrapError("bootstrap claim TTL exceeds policy")
-        if (
-            request.controller_revision != self.activation.revision
-            or request.controller_release_digest != self.activation.release_digest
-        ):
-            raise FleetBootstrapError("bootstrap controller tuple is not allowlisted")
+        if request.controller_revision != request.source_sha:
+            raise FleetBootstrapError("bootstrap controller revision is not source-bound")
         if request.action == "enrol-host-agent" and request.release_lane not in self._allowed_lanes:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
         if (

@@ -8,7 +8,7 @@ Type=oneshot
 User=root
 Group=root
 ExecStart=/usr/bin/python3 -I /usr/local/libexec/qdev-fleet-host-dispatch
-TimeoutStartSec=10min
+TimeoutStartSec=35min
 UMask=0027
 Environment=PYTHONNOUSERSITE=1
 NoNewPrivileges=true
@@ -16,6 +16,6 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
 ReadOnlyPaths=/opt/qdev-runner-control-plane/releases
-ReadWritePaths=/etc/qdev-runner /etc/systemd/system /usr/local/libexec /usr/local/sbin
+ReadWritePaths=/opt/qdev-runner-control-plane /var/lib/qdev-runner /etc/qdev-runner /etc/systemd/system /usr/local/libexec /usr/local/sbin /run/lock /run/docker.sock
 LockPersonality=true
 RestrictSUIDSGID=true

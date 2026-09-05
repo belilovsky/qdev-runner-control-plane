@@ -11,14 +11,6 @@ on:
           - activate-controller
           - enrol-host-agent
           - restore-existing-worker
-      controller_revision:
-        description: "Exact pushed controller source SHA"
-        required: true
-        type: string
-      controller_release_digest:
-        description: "Exact immutable controller image digest (sha256:...)"
-        required: true
-        type: string
       release_lane:
         description: "Required only for enrol-host-agent"
         required: false
@@ -63,8 +55,6 @@ jobs:
       - name: Validate signed bootstrap request
         env:
           BOOTSTRAP_ACTION: ${{ inputs.action }}
-          BOOTSTRAP_CONTROLLER_REVISION: ${{ inputs.controller_revision }}
-          BOOTSTRAP_CONTROLLER_RELEASE_DIGEST: ${{ inputs.controller_release_digest }}
           BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
           BOOTSTRAP_WORKER_NAME: ${{ inputs.worker_name }}
           BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}

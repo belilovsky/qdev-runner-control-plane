@@ -24,9 +24,11 @@ host_dispatch_results="$host_dispatch_root/results"
 broker_env_path="/etc/qdev-runner/broker.env"
 admin_platform_ledger_path="/etc/qdev-runner/admin-platform-ledger.yml"
 release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
+rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-/etc/qdev-runner/controller-rollback-anchor.json}"
 release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/qdev-controller-release.lock}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
+script_root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 release="$(realpath -e -- "$1")"
 case "$release" in
   "$release_root"/releases/*) ;;
@@ -35,15 +37,106 @@ case "$release" in
     exit 64
     ;;
 esac
-legacy_rollback="${QDEV_CONTROLLER_LEGACY_ROLLBACK:-false}"
-if [[ "$legacy_rollback" != true && "$legacy_rollback" != false ]]; then
-  printf 'QDEV_CONTROLLER_LEGACY_ROLLBACK must be true or false\n' >&2
+rollback_mode="${QDEV_CONTROLLER_ROLLBACK:-false}"
+if [[ "$rollback_mode" != true && "$rollback_mode" != false ]]; then
+  printf 'QDEV_CONTROLLER_ROLLBACK must be true or false\n' >&2
   exit 64
 fi
 expected_current_revision="${QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION:-}"
-if [[ "$legacy_rollback" != true && ! "$expected_current_revision" =~ ^[0-9a-f]{40}$ ]]; then
-  printf 'forward activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION\n' >&2
+if [[ ! "$expected_current_revision" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION\n' >&2
   exit 64
+fi
+
+anchor_revision=""
+anchor_release_digest=""
+anchor_release_path=""
+anchor_public_image_id=""
+anchor_internal_image_id=""
+anchor_public_image_ref=""
+anchor_internal_image_ref=""
+anchor_public_saved_ref=""
+anchor_internal_saved_ref=""
+
+load_rollback_anchor() {
+  local anchor_output
+  anchor_output="$(python3 - "$rollback_anchor_path" "$release_root" <<'PY'
+import json
+import pathlib
+import re
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+release_root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+metadata = path.lstat()
+if (
+    not stat.S_ISREG(metadata.st_mode)
+    or stat.S_ISLNK(metadata.st_mode)
+    or metadata.st_uid != 0
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+):
+    raise SystemExit("controller rollback anchor ownership or permissions are unsafe")
+payload = json.loads(path.read_text(encoding="utf-8"))
+expected = {
+    "schema", "revision", "release_digest", "release_path",
+    "public_image_id", "internal_image_id", "public_image_ref",
+    "internal_image_ref", "public_saved_ref", "internal_saved_ref", "recorded_at",
+}
+if not isinstance(payload, dict) or set(payload) != expected:
+    raise SystemExit("controller rollback anchor schema is invalid")
+if payload.get("schema") != "qdev-controller-rollback-anchor-v1":
+    raise SystemExit("controller rollback anchor version is invalid")
+sha = re.compile(r"^[0-9a-f]{40}$")
+digest = re.compile(r"^sha256:[0-9a-f]{64}$")
+image_ref = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$")
+if not sha.fullmatch(str(payload.get("revision", ""))):
+    raise SystemExit("controller rollback anchor revision is invalid")
+for key in ("release_digest", "public_image_id", "internal_image_id"):
+    if not digest.fullmatch(str(payload.get(key, ""))):
+        raise SystemExit(f"controller rollback anchor {key} is invalid")
+for key in (
+    "public_image_ref", "internal_image_ref", "public_saved_ref", "internal_saved_ref"
+):
+    if not image_ref.fullmatch(str(payload.get(key, ""))):
+        raise SystemExit(f"controller rollback anchor {key} is invalid")
+release_path = pathlib.Path(str(payload.get("release_path", ""))).resolve(strict=True)
+releases = (release_root / "releases").resolve(strict=True)
+if release_path.parent != releases or not release_path.is_dir():
+    raise SystemExit("controller rollback anchor release path is invalid")
+for key in (
+    "revision", "release_digest", "release_path", "public_image_id",
+    "internal_image_id", "public_image_ref", "internal_image_ref",
+    "public_saved_ref", "internal_saved_ref",
+):
+    value = str(release_path) if key == "release_path" else str(payload[key])
+    if "\\n" in value or "\\r" in value:
+        raise SystemExit("controller rollback anchor contains an unsafe value")
+    print(value)
+PY
+)" || return 1
+  mapfile -t anchor_fields <<< "$anchor_output"
+  if [[ "${#anchor_fields[@]}" -ne 9 ]]; then
+    printf 'controller rollback anchor is incomplete\n' >&2
+    return 1
+  fi
+  anchor_revision="${anchor_fields[0]}"
+  anchor_release_digest="${anchor_fields[1]}"
+  anchor_release_path="${anchor_fields[2]}"
+  anchor_public_image_id="${anchor_fields[3]}"
+  anchor_internal_image_id="${anchor_fields[4]}"
+  anchor_public_image_ref="${anchor_fields[5]}"
+  anchor_internal_image_ref="${anchor_fields[6]}"
+  anchor_public_saved_ref="${anchor_fields[7]}"
+  anchor_internal_saved_ref="${anchor_fields[8]}"
+  if [[ "$release" != "$anchor_release_path" ]]; then
+    printf 'rollback target is not the saved controller anchor\n' >&2
+    return 1
+  fi
+}
+
+if [[ "$rollback_mode" == true ]]; then
+  load_rollback_anchor || exit 66
 fi
 
 # Serialize activation and rollback so two otherwise valid release
@@ -68,7 +161,10 @@ except (OSError, json.JSONDecodeError):
 
 revision = payload.get("revision")
 if (
-    payload.get("schema") != "qdev-controller-release-status-v1"
+    payload.get("schema") not in {
+        "qdev-controller-release-status-v1",
+        "qdev-controller-release-status-v2",
+    }
     or payload.get("state") != "active"
     or not isinstance(revision, str)
     or re.fullmatch(r"[0-9a-f]{40}", revision) is None
@@ -79,7 +175,6 @@ PY
 }
 
 assert_expected_current_revision() {
-  [[ "$legacy_rollback" != true ]] || return 0
   local observed_revision
   if ! observed_revision="$(read_active_release_revision)"; then
     printf 'active controller release status is unavailable or invalid\n' >&2
@@ -95,12 +190,11 @@ assert_expected_current_revision() {
 # Fail before capacity work, backups or any configuration mutation if this
 # transaction was prepared against a controller runtime that is no longer live.
 assert_expected_current_revision
-# Forward activation is fail-closed on the durable, root-owned Admin Platform
+# Forward activation is fail-closed on the durable, runtime-readable Admin Platform
 # v3 ledger and its fixed product adapters.  Packaged ledger snapshots are not
 # activation inputs: they can be stale by construction because the ledger
-# binds the exact candidate being activated.  The explicit legacy flag is
-# reserved for the controller-owned rollback helper restoring an older
-# controller release; rollback also preserves the durable ledger.
+# binds the exact candidate being activated. Rollback is accepted only for the
+# root-owned exact runtime anchor and also preserves the durable ledger.
 required=(
   pyproject.toml \
   requirements.runtime.txt \
@@ -110,6 +204,7 @@ required=(
   config/profiles.yml \
   config/release-lanes.yml \
   config/fleet-bootstrap.yml \
+  config/controller-capacity.json \
   config/managed-registry.yml \
   config/managed-release-ledger.yml \
   scripts/bootstrap_admin_platform_ledger_v3.py \
@@ -126,9 +221,13 @@ required=(
   deploy/qdev-fleet-host-dispatch.path \
   deploy/Dockerfile.broker
 )
-if [[ "$legacy_rollback" != true ]]; then
+if [[ "$rollback_mode" != true ]]; then
   required+=(
     scripts/qdev_admin_platform_release_host_agent.py
+    scripts/qdev_controller_activation_adapter.py
+    scripts/qdev_release_host_agent_enrol_adapter.py
+    scripts/qdev_fleet_worker_recovery_adapter.py
+    scripts/provision_fleet_host_dispatch_state.py
     deploy/qdev-release-ortcom.service
     deploy/qdev-release-cmnt.service
     deploy/qdev-release-total.service
@@ -239,11 +338,19 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85}"
-min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-30}"
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94}"
+min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
 health_check_attempts="${QDEV_CONTROLLER_HEALTH_CHECK_ATTEMPTS:-90}"
+if [[ "$no_build" != true && "$no_build" != false ]]; then
+  printf 'QDEV_CONTROLLER_NO_BUILD must be true or false\n' >&2
+  exit 64
+fi
+if [[ "$rollback_mode" == true && "$no_build" != true ]]; then
+  printf 'controller rollback requires QDEV_CONTROLLER_NO_BUILD=true\n' >&2
+  exit 64
+fi
 for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_per_cpu" "$health_check_attempts"; do
   [[ "$value" =~ ^[0-9]+$ ]] || {
     printf 'controller capacity overrides must be non-negative integers\n' >&2
@@ -259,7 +366,7 @@ if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
-  [[ "$max_disk_used_pct" != 85 ]] || [[ "$min_free_gib" != 30 ]] ||
+  [[ "$max_disk_used_pct" != 94 ]] || [[ "$min_free_gib" != 8 ]] ||
     [[ "$min_memory_gib" != 4 ]] || [[ "$max_load_per_cpu" != 2 ]]
 }; then
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
@@ -381,7 +488,11 @@ if [[ ! "$release_revision" =~ ^[0-9a-f]{40}$ ]]; then
   printf 'release must expose an exact git revision via HEAD or QDEV_CONTROLLER_RELEASE_REVISION\n' >&2
   exit 66
 fi
-if [[ "$legacy_rollback" != true ]]; then
+if [[ "$rollback_mode" == true && "$release_revision" != "$anchor_revision" ]]; then
+  printf 'rollback checkout does not match the saved controller anchor revision\n' >&2
+  exit 66
+fi
+if [[ "$rollback_mode" != true ]]; then
   if [[ -z "$detected_release_root" ||
         "$(realpath -e -- "$detected_release_root")" != "$release" ]]; then
     printf 'forward activation requires a source-bound git release checkout\n' >&2
@@ -414,11 +525,17 @@ receipt_root = pathlib.Path(sys.argv[2])
 broker_env_path = pathlib.Path(sys.argv[3])
 revision = sys.argv[4]
 require_candidate = sys.argv[5] == "true"
+runtime_uid = int(sys.argv[6])
+runtime_gid = int(sys.argv[7])
 
 metadata = ledger_path.lstat()
 if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
     raise SystemExit("durable admin platform ledger is not a regular file")
-if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) & 0o022:
+if (
+    metadata.st_uid != runtime_uid
+    or metadata.st_gid != runtime_gid
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+):
     raise SystemExit("durable admin platform ledger ownership or permissions are unsafe")
 
 receipt_key = None
@@ -461,10 +578,15 @@ if require_candidate:
       'durable Admin Platform v3 ledger is missing; seed it with the root-controlled exact-candidate migration before activation' >&2
     return 1
   fi
-  PYTHONPATH="$release/src" python3 -c "$validation_program" \
+  local validation_root="$release"
+  if [[ "$rollback_mode" == true ]]; then
+    validation_root="$script_root"
+  fi
+  PYTHONPATH="$validation_root/src" python3 -c "$validation_program" \
     "$admin_platform_ledger_path" "$admin_platform_receipt_root" \
     "$broker_env_path" "$release_revision" \
-    "$([[ "$legacy_rollback" == true ]] && printf false || printf true)"
+    "$([[ "$rollback_mode" == true ]] && printf false || printf true)" \
+    "$runtime_uid" "$runtime_gid"
 }
 
 if ! validate_durable_admin_platform_ledger; then
@@ -472,42 +594,13 @@ if ! validate_durable_admin_platform_ledger; then
     'controller activation preserves the existing ledger and will not install a packaged snapshot' >&2
   exit 66
 fi
-digest_files=(
-    "$release/deploy/compose.yml" \
-    "$release/inventory/repos.json" \
-    "$release/config/profiles.yml" \
-    "$release/config/release-lanes.yml" \
-    "$release/config/fleet-bootstrap.yml" \
-    "$release/config/managed-registry.yml" \
-    "$release/config/managed-release-ledger.yml" \
-    "$release/scripts/bootstrap_admin_platform_ledger_v3.py" \
-    "$release/scripts/dispatch_fleet_bootstrap.py" \
-    "$release/scripts/provision_operator_identity.sh" \
-    "$release/scripts/qaz_tours_release_host_agent.py" \
-    "$release/deploy/qdev-release-qaz-tours.service" \
-    "$release/scripts/qdev_product_release_host_agent.py" \
-    "$release/deploy/qdev-release-qaz-fund.service" \
-    "$release/deploy/qdev-release-qaz-events.service" \
-    "$release/deploy/qdev-release-qmt.service" \
-    "$release/deploy/qdev-release-qmt.compose.yml" \
-    "$release/deploy/qdev-fleet-host-dispatch.service" \
-    "$release/deploy/qdev-fleet-host-dispatch.path" \
-    "$release/deploy/Dockerfile.broker"
-)
-if [[ "$legacy_rollback" != true ]]; then
-  digest_files+=(
-    "$release/scripts/qdev_admin_platform_release_host_agent.py"
-    "$release/deploy/qdev-release-ortcom.service"
-    "$release/deploy/qdev-release-cmnt.service"
-    "$release/deploy/qdev-release-total.service"
-    "$release/deploy/qdev-release-qazposter.service"
-  )
+if [[ "$rollback_mode" == true ]]; then
+  release_digest="$anchor_release_digest"
+else
+  release_digest="$(
+    PYTHONPATH="$release/src" python3 -m qdev_runner.controller_release "$release"
+  )"
 fi
-release_digest="sha256:$(
-  for release_file in "${digest_files[@]}"; do
-    sha256sum -- "$release_file" | awk '{print $1}'
-  done | sha256sum | awk '{print $1}'
-)"
 
 source_digest_program='import hashlib
 import pathlib
@@ -747,6 +840,113 @@ validate_previous_release_status() {
     "$release_status_backup" "$public_image_id" "$internal_image_id"
 }
 
+write_rollback_anchor() {
+  [[ "$rollback_mode" != true ]] || return 0
+  local anchor_directory previous_revision previous_digest
+  local saved_public_ref saved_internal_ref
+  anchor_directory="$(dirname -- "$rollback_anchor_path")"
+  if [[ -z "$previous" || ! -d "$previous" ]]; then
+    printf 'current controller release path is unavailable for rollback anchoring\n' >&2
+    return 1
+  fi
+  [[ -d "$anchor_directory" ]] || {
+    printf 'controller rollback anchor directory is missing: %s\n' "$anchor_directory" >&2
+    return 1
+  }
+  previous_revision="$(python3 - "$release_status_backup" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+revision = payload.get("revision")
+if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+    raise SystemExit("previous controller revision is invalid")
+print(revision)
+PY
+  )" || return 1
+  previous_digest="$(python3 - "$release_status_backup" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+value = payload.get("release_digest")
+if not isinstance(value, str) or re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", value) is None:
+    raise SystemExit("previous controller digest is invalid")
+print(value if value.startswith("sha256:") else f"sha256:{value}")
+PY
+  )" || return 1
+  saved_public_ref="qdev-runner-controller-anchor-public:$previous_revision"
+  saved_internal_ref="qdev-runner-controller-anchor-internal:$previous_revision"
+  docker image tag "$previous_public_image" "$saved_public_ref" || return 1
+  docker image tag "$previous_internal_image" "$saved_internal_ref" || return 1
+  python3 - "$rollback_anchor_path" "$previous_revision" "$previous_digest" \
+    "$previous" "$previous_public_image" "$previous_internal_image" \
+    "$previous_public_ref" "$previous_internal_ref" \
+    "$saved_public_ref" "$saved_internal_ref" <<'PY'
+import datetime
+import json
+import os
+import pathlib
+import tempfile
+import sys
+
+(
+    destination, revision, release_digest, release_path, public_image_id,
+    internal_image_id, public_image_ref, internal_image_ref, public_saved_ref,
+    internal_saved_ref,
+) = sys.argv[1:]
+payload = {
+    "schema": "qdev-controller-rollback-anchor-v1",
+    "revision": revision,
+    "release_digest": release_digest,
+    "release_path": release_path,
+    "public_image_id": public_image_id,
+    "internal_image_id": internal_image_id,
+    "public_image_ref": public_image_ref,
+    "internal_image_ref": internal_image_ref,
+    "public_saved_ref": public_saved_ref,
+    "internal_saved_ref": internal_saved_ref,
+    "recorded_at": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
+}
+target = pathlib.Path(destination)
+descriptor, temporary_name = tempfile.mkstemp(
+    dir=target.parent, prefix=".controller-rollback-anchor."
+)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chown(temporary_name, 0, 0)
+    os.chmod(temporary_name, 0o600)
+    os.replace(temporary_name, target)
+except BaseException:
+    pathlib.Path(temporary_name).unlink(missing_ok=True)
+    raise
+PY
+}
+
+prepare_saved_rollback_images() {
+  [[ "$rollback_mode" == true ]] || return 0
+  local saved_public_id saved_internal_id
+  saved_public_id="$(docker image inspect "$anchor_public_saved_ref" --format '{{.Id}}')" ||
+    return 1
+  saved_internal_id="$(docker image inspect "$anchor_internal_saved_ref" --format '{{.Id}}')" ||
+    return 1
+  if [[ "$saved_public_id" != "$anchor_public_image_id" ||
+        "$saved_internal_id" != "$anchor_internal_image_id" ]]; then
+    printf 'saved controller rollback images do not match the anchor\n' >&2
+    return 1
+  fi
+  docker image tag "$anchor_public_saved_ref" "$anchor_public_image_ref" || return 1
+  docker image tag "$anchor_internal_saved_ref" "$anchor_internal_image_ref" || return 1
+}
+
 restore_operator_identity_metadata() {
   [[ "$operator_identity_was_present" == true ]] || return 0
   while read -r mode uid gid path; do
@@ -768,6 +968,19 @@ install_fleet_host_dispatch() {
   install -o root -g root -m 0755 -- \
     "$release/scripts/dispatch_fleet_bootstrap.py" \
     /usr/local/libexec/qdev-fleet-host-dispatch
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_controller_activation_adapter.py" \
+    /usr/local/sbin/qdev-controller-activate
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_release_host_agent_enrol_adapter.py" \
+    /usr/local/sbin/qdev-release-host-agent-enrol
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_fleet_worker_recovery_adapter.py" \
+    /usr/local/sbin/qdev-fleet-worker-recovery
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/provision_fleet_host_dispatch_state.py" \
+    /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
+  /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
   install -o root -g root -m 0644 -- \
     "$release/deploy/qdev-fleet-host-dispatch.service" \
     /etc/systemd/system/qdev-fleet-host-dispatch.service
@@ -783,6 +996,14 @@ install_fleet_host_dispatch() {
 
 if ! validate_previous_release_status "$previous_public_image" "$previous_internal_image"; then
   printf 'existing controller status is not bound to a recoverable runtime\n' >&2
+  exit 66
+fi
+if ! write_rollback_anchor; then
+  printf 'controller rollback anchor could not be persisted\n' >&2
+  exit 66
+fi
+if ! prepare_saved_rollback_images; then
+  printf 'controller rollback anchor images are unavailable\n' >&2
   exit 66
 fi
 install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json

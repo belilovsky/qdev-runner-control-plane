@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from qdev_runner.controller_release import controller_release_digest
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     BootstrapOperationStore,
@@ -204,10 +205,11 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     )
     expected_job_name = _required("BOOTSTRAP_JOB_NAME")
     job_id = resolve_job_id(repository, run_id, expected_name=expected_job_name)
+    source_sha = _source_sha()
     raw: dict[str, Any] = {
         "schema": REQUEST_SCHEMA,
         "action": _required("BOOTSTRAP_ACTION"),
-        "source_sha": _source_sha(),
+        "source_sha": source_sha,
         "run_id": run_id,
         "job_id": job_id,
         "attempt": attempt,
@@ -215,8 +217,8 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
             os.environ.get("BOOTSTRAP_CLAIM_TTL_SECONDS", "900"),
             "BOOTSTRAP_CLAIM_TTL_SECONDS",
         ),
-        "controller_revision": _required("BOOTSTRAP_CONTROLLER_REVISION").lower(),
-        "controller_release_digest": _required("BOOTSTRAP_CONTROLLER_RELEASE_DIGEST").lower(),
+        "controller_revision": source_sha,
+        "controller_release_digest": controller_release_digest(ROOT),
         "release_lane": os.environ.get("BOOTSTRAP_RELEASE_LANE") or None,
         "worker_name": os.environ.get("BOOTSTRAP_WORKER_NAME") or None,
     }

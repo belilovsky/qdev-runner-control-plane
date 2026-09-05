@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
-
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     BootstrapOperationStore,
@@ -19,7 +17,7 @@ from qdev_runner.fleet_bootstrap_executor import (
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "fleet-bootstrap.yml"
 RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
-_ACTIVATION = yaml.safe_load(POLICY.read_text(encoding="utf-8"))["activation"]
+_CONTROLLER_DIGEST = "sha256:" + "b" * 64
 
 
 def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest:
@@ -32,8 +30,8 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
             "job_id": 456,
             "attempt": 1,
             "claim_ttl_seconds": 300,
-            "controller_revision": _ACTIVATION["controller_revision"],
-            "controller_release_digest": _ACTIVATION["controller_release_digest"],
+            "controller_revision": "a" * 40,
+            "controller_release_digest": _CONTROLLER_DIGEST,
             "release_lane": None,
             "worker_name": worker_name,
         }
@@ -54,8 +52,8 @@ def _bootstrap_request(
             "job_id": 456,
             "attempt": 1,
             "claim_ttl_seconds": 300,
-            "controller_revision": _ACTIVATION["controller_revision"],
-            "controller_release_digest": _ACTIVATION["controller_release_digest"],
+            "controller_revision": "a" * 40,
+            "controller_release_digest": _CONTROLLER_DIGEST,
             "release_lane": release_lane,
             "worker_name": None,
         }
@@ -234,7 +232,8 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
     assert first.status == second.status == "completed"
     assert first.operation_status == second.operation_status == "completed"
     assert first.result is not None
-    assert first.result["rollback_source_sha"] == _ACTIVATION["rollback_revision"]
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    assert first.result["rollback_source_sha"] == policy.activation.rollback_revision
     assert json.loads((tmp_path / "receipt.json").read_text())["status"] == "completed"
 
 

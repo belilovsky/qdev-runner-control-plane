@@ -62,8 +62,8 @@ def _request(
         "job_id": 202,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": policy.activation.revision,
-        "controller_release_digest": policy.activation.release_digest,
+        "controller_revision": "a" * 40,
+        "controller_release_digest": "sha256:" + "b" * 64,
         "release_lane": None,
         "worker_name": None,
     }

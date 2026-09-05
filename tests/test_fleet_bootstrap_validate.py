@@ -77,3 +77,34 @@ def test_resolve_job_id_rejects_non_unique_job_name(
 
     with pytest.raises(validator.BootstrapValidationError, match="not uniquely"):
         validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap")
+
+
+def test_build_request_derives_controller_tuple_from_running_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_sha = "b" * 40
+    release_digest = "sha256:" + "c" * 64
+    policy = validator.FleetBootstrapPolicy(
+        ROOT / "config" / "fleet-bootstrap.yml",
+        ROOT / "config" / "release-lanes.yml",
+    )
+    monkeypatch.setenv("GITHUB_REPOSITORY", policy.identity.repository)
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    monkeypatch.setenv("GITHUB_SHA", source_sha)
+    monkeypatch.setenv("BOOTSTRAP_JOB_NAME", "bootstrap")
+    monkeypatch.setenv("BOOTSTRAP_ACTION", "activate-controller")
+    # Obsolete caller-selected values must not be able to redirect activation.
+    monkeypatch.setenv("BOOTSTRAP_CONTROLLER_REVISION", "d" * 40)
+    monkeypatch.setenv("BOOTSTRAP_CONTROLLER_RELEASE_DIGEST", "sha256:" + "e" * 64)
+    monkeypatch.setattr(validator, "resolve_job_id", lambda *args, **kwargs: 9001)
+    monkeypatch.setattr(validator, "controller_release_digest", lambda root: release_digest)
+
+    request = validator.build_request(policy)
+
+    assert request.source_sha == source_sha
+    assert request.controller_revision == source_sha
+    assert request.controller_release_digest == release_digest
+    assert request.run_id == 42
+    assert request.job_id == 9001
+    assert request.attempt == 3

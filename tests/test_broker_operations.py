@@ -40,15 +40,10 @@ OPERATOR_HEADERS = {
 _FLEET_BOOTSTRAP_POLICY = (
     Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
 )
-
-
 def _fleet_bootstrap_activation() -> dict[str, str]:
-    activation = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )["activation"]
     return {
-        "controller_revision": str(activation["controller_revision"]),
-        "controller_release_digest": str(activation["controller_release_digest"]),
+        "controller_revision": "a" * 40,
+        "controller_release_digest": "sha256:" + "b" * 64,
     }
 
 

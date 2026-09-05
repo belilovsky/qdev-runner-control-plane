@@ -51,6 +51,7 @@ def main() -> int:
         result_root=Path("/var/lib/qdev-runner/fleet-host-dispatch/results"),
         policy_path=Path("/etc/qdev-runner/fleet-bootstrap.yml"),
         release_lanes_path=Path("/etc/qdev-runner/release-lanes.yml"),
+        adapter_timeout_seconds=1800,
     )
     results = dispatcher.drain()
     print(

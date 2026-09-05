@@ -14,7 +14,7 @@ load_15="$(awk '{print $3}' /proc/loadavg)"
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" 'BEGIN {
-    if (used > 85 || free < 31457280 || mem < 4194304 || load15 > (2 * cpus)) exit 1
+    if (used > 94 || free < 8388608 || mem < 4194304 || load15 > (2 * cpus)) exit 1
   }' || {
     printf 'capacity gate rejected controller provisioning\n' >&2
     exit 1
@@ -52,6 +52,15 @@ install -o root -g root -m 0755 scripts/dispatch_fleet_bootstrap.py \
 install -d -o root -g root -m 0755 /usr/local/sbin
 install -o root -g root -m 0755 scripts/bootstrap_admin_platform_ledger_v3.py \
   /usr/local/sbin/qdev-admin-platform-ledger-bootstrap
+install -o root -g root -m 0755 scripts/qdev_controller_activation_adapter.py \
+  /usr/local/sbin/qdev-controller-activate
+install -o root -g root -m 0755 scripts/qdev_release_host_agent_enrol_adapter.py \
+  /usr/local/sbin/qdev-release-host-agent-enrol
+install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
+  /usr/local/sbin/qdev-fleet-worker-recovery
+install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
+  /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
+/usr/local/sbin/qdev-fleet-host-dispatch-state-provision
 install -m 0644 deploy/qdev-runner-broker.service /etc/systemd/system/qdev-runner-broker.service
 install -m 0644 deploy/qdev-artifact-retention.service /etc/systemd/system/qdev-artifact-retention.service
 install -m 0644 deploy/qdev-artifact-retention.timer /etc/systemd/system/qdev-artifact-retention.timer

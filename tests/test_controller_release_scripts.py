@@ -14,8 +14,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "systemctl enable --now qdev-fleet-host-dispatch.path" in script
     assert "mv -Tf" in script
     assert "rollback" in script
-    assert "QDEV_CONTROLLER_MIN_FREE_GIB:-30" in script
-    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85" in script
+    assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94" in script
     assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
     assert (
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
@@ -57,13 +57,25 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qazposter.service" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
+    assert "scripts/qdev_controller_activation_adapter.py" in script
+    assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
+    assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
+    assert "scripts/provision_fleet_host_dispatch_state.py" in script
+    assert "/usr/local/sbin/qdev-controller-activate" in script
+    assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
+    assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
+    assert "/usr/local/sbin/qdev-fleet-host-dispatch-state-provision" in script
     assert "deploy/qdev-fleet-host-dispatch.service" in script
     assert "deploy/qdev-fleet-host-dispatch.path" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
     assert '"$release/config/fleet-bootstrap.yml" /etc/qdev-runner/fleet-bootstrap.yml' in script
     assert '"$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml' in script
-    assert 'if [[ "$legacy_rollback" != true ]]; then' in script
+    assert 'rollback_mode="${QDEV_CONTROLLER_ROLLBACK:-false}"' in script
+    assert 'if [[ "$rollback_mode" != true ]]; then' in script
+    assert "qdev-controller-rollback-anchor-v1" in script
+    assert "controller rollback anchor ownership or permissions are unsafe" in script
+    assert "stat.S_IMODE(metadata.st_mode) != 0o600" in script
     assert "validate_durable_admin_platform_ledger()" in script
     assert "durable Admin Platform v3 ledger is missing" in script
     assert "root-controlled exact-candidate migration" in script
@@ -137,24 +149,8 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "docker exec qdev-runner-broker-internal" in script
     assert "public_image_id" in script
     assert "internal_image_id" in script
-    assert "for release_file in" in script
-    assert '"$release/scripts/qaz_tours_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-qaz-tours.service"' in script
-    assert '"$release/scripts/qdev_product_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-qaz-fund.service"' in script
-    assert '"$release/deploy/qdev-release-qaz-events.service"' in script
-    assert '"$release/deploy/qdev-release-qmt.service"' in script
-    assert '"$release/deploy/qdev-release-qmt.compose.yml"' in script
-    assert '"$release/scripts/qdev_admin_platform_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-ortcom.service"' in script
-    assert '"$release/deploy/qdev-release-cmnt.service"' in script
-    assert '"$release/deploy/qdev-release-total.service"' in script
-    assert '"$release/deploy/qdev-release-qazposter.service"' in script
-    assert '"$release/scripts/dispatch_fleet_bootstrap.py"' in script
-    assert '"$release/scripts/bootstrap_admin_platform_ledger_v3.py"' in script
-    assert '"$release/deploy/qdev-fleet-host-dispatch.service"' in script
-    assert '"$release/deploy/qdev-fleet-host-dispatch.path"' in script
-    assert 'sha256sum -- "$release_file"' in script
+    assert "python3 -m qdev_runner.controller_release" in script
+    assert 'release_digest="$anchor_release_digest"' in script
     assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
         "if ! write_release_status; then"
     )
@@ -167,7 +163,7 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     rollback = script.split("rollback() {", 1)[1].split("\n}\n\nif !", 1)[0]
     previous_rollback = rollback.split('activate_link "$previous"', 1)[1]
     assert previous_rollback.index("up -d --force-recreate --no-build") < previous_rollback.index(
-        'restore_release_status'
+        "restore_release_status"
     )
     assert "docker rm -f qdev-runner-broker-public qdev-runner-broker-internal" in rollback
     assert 'rm -f -- "$current"' in rollback
@@ -180,11 +176,12 @@ def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound(
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
     assert "QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
-    assert "forward activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
+    assert "activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
     assert 'release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/' in script
     assert "flock -n 9" in script
     assert "read_active_release_revision()" in script
     assert "qdev-controller-release-status-v1" in script
+    assert "qdev-controller-release-status-v2" in script
     assert "controller release compare-and-swap rejected" in script
     assert script.count("assert_expected_current_revision") == 3
     assert script.index("assert_expected_current_revision\n# Forward activation") < script.index(
@@ -193,12 +190,29 @@ def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound(
     assert script.index("# Recheck at the last non-mutating boundary") < script.index(
         'install -m 0644 -- "$release/inventory/repos.json"'
     )
+    assert "metadata.st_uid != runtime_uid" in script
+    assert "metadata.st_gid != runtime_gid" in script
+    assert "stat.S_IMODE(metadata.st_mode) != 0o600" in script
 
 
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
+    assert "^[0-9a-f]{40}$" in script
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert "QDEV_CONTROLLER_ROLLBACK=true" in script
+    assert 'QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION="$current_revision"' in script
+    assert 'rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-' in activation
+    assert "qdev-controller-rollback-anchor-v1" in activation
+    assert "metadata.st_uid != 0" in activation
+    assert "stat.S_IMODE(metadata.st_mode) != 0o600" in activation
+    assert "prepare_saved_rollback_images()" in activation
+    assert "saved controller rollback images do not match the anchor" in activation
+    assert 'docker image tag "$anchor_public_saved_ref" "$anchor_public_image_ref"' in activation
+    assert (
+        'docker image tag "$anchor_internal_saved_ref" "$anchor_internal_image_ref"' in activation
+    )
 
 
 def test_controller_compose_project_is_namespaced() -> None:

@@ -1,0 +1,16 @@
+{
+  "schema": "qdev-controller-capacity-evidence-v1",
+  "measured_at": "2026-09-05T05:18:33Z",
+  "host": "qdev-runner-controller",
+  "root_filesystem_bytes": 206900281344,
+  "root_available_bytes": 26935312384,
+  "active_release_bytes": 1149358,
+  "candidate_tracked_bytes": 1062430,
+  "active_public_image_bytes": 64871548,
+  "active_internal_image_bytes": 64871550,
+  "estimated_peak_incremental_bytes": 4294967296,
+  "minimum_operational_reserve_bytes": 8589934592,
+  "max_disk_used_pct": 94,
+  "min_free_gib": 8,
+  "notes": "Rollback image tags reuse existing layers; the reserve exceeds the measured candidate, both broker images, and a four-GiB build peak."
+}
