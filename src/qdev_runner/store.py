@@ -849,6 +849,25 @@ class Store:
                 # controller endpoint: a worker must not be able to bypass FIFO
                 # by invoking the store directly.
                 for row in pending_rows:
+                    # A capacity directive is already bound by the controller to
+                    # one validated repository/SHA tuple.  Compute FIFO within
+                    # that bounded candidate set; otherwise an older row that the
+                    # controller deliberately deemed inadmissible can deadlock the
+                    # exact signed scope forever.
+                    if (
+                        claim_scope is not None
+                        and claim_scope.schema == SCHEMA_V2
+                        and repository is not None
+                        and str(row["repository"]).lower() != repository.lower()
+                    ):
+                        continue
+                    if (
+                        claim_scope is not None
+                        and claim_scope.schema == SCHEMA_V2
+                        and head_sha is not None
+                        and str(row["head_sha"]).lower() != head_sha.lower()
+                    ):
+                        continue
                     labels = {label.lower() for label in json.loads(row["labels_json"])}
                     matching_profile = next(
                         (profile for profile in profiles if profile.lower() in labels), None
