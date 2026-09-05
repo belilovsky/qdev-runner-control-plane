@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from .admin_platform import AdminPlatformCandidate
 from .admin_platform_state import AdminPlatformStateStore
-from .operations import OperationStore, format_utc, parse_utc, utc_now
+from .operations import OperationStore, format_utc, parse_utc
 
 PROGRAM_ID = "qdev-admin-platform-wave-1"
 REPOSITORY = "belilovsky/qdev-runner-control-plane"
@@ -71,6 +71,8 @@ def _candidate(value: object) -> AdminPlatformCandidate:
 
 
 def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
+    """Derive a replay-stable timestamp from the committed ledger."""
+
     program = snapshot.get("program")
     updated_at = program.get("updated_at") if isinstance(program, dict) else None
     if not isinstance(updated_at, str):
@@ -79,7 +81,7 @@ def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
         latest = parse_utc(updated_at)
     except ValueError as error:
         raise ControllerCandidateError("controller program timestamp is invalid") from error
-    return max(utc_now(), latest + timedelta(microseconds=1))
+    return latest + timedelta(microseconds=1)
 
 
 def _blocking_lane(entry: dict[str, Any], *, release_id: str) -> str:

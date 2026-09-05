@@ -190,17 +190,81 @@ def test_prepare_controller_candidate_resumes_after_terminal_transition(
     assert current_snapshot["active_candidate"]["source_sha"] == NEXT_SHA
 
 
+def test_restart_survives_commit_failure_without_enforced_orphan(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, _ = _initialize(tmp_path)
+    digest, snapshot = state.current()
+    current = AdminPlatformCandidate(**snapshot["active_candidate"])
+    state.finish_attempt(
+        expected_sha256=digest,
+        result_receipt=_evidence(
+            signer,
+            candidate=current,
+            observed_at="2026-09-05T00:00:01Z",
+            lane="ci",
+            outcome="blocked",
+        ),
+        terminal_receipt=_evidence(
+            signer,
+            candidate=current,
+            observed_at="2026-09-05T00:00:01Z",
+            evidence_type="attempt_terminal",
+            lane=None,
+            outcome="blocked",
+        ),
+    )
+    before = ledger.read_bytes()
+    root_receipts_before = sorted(receipts.glob("*.json"))
+
+    with patch.object(
+        AdminPlatformStateStore,
+        "_commit_locked",
+        side_effect=RuntimeError("simulated restart commit failure"),
+    ), pytest.raises(RuntimeError, match="simulated restart commit failure"):
+        _prepare(tmp_path)
+
+    assert ledger.read_bytes() == before
+    assert sorted(receipts.glob("*.json")) == root_receipts_before
+    interrupted_transactions = sorted((receipts / "transactions").iterdir())
+    assert len(interrupted_transactions) == 1
+    orphan = json.loads(
+        next(
+            path
+            for path in interrupted_transactions[0].glob("*.json")
+            if path.name != "ledger-binding.json"
+        ).read_text()
+    )
+    with pytest.raises(ValueError, match="requires committed ledger context"):
+        verify_controller_receipt(orphan, receipt_key=RECEIPT_KEY)
+
+    result = _prepare(tmp_path)
+
+    assert result["status"] == "completed"
+    assert len(result["receipt_uris"]) == 1
+    assert len(list((receipts / "transactions").iterdir())) == 1
+    _, recovered = state.current()
+    assert recovered["active_candidate"]["source_sha"] == NEXT_SHA
+    AdminPlatformLedger(
+        ledger,
+        receipt_key=RECEIPT_KEY,
+        receipt_root=receipts,
+    )
+
+
 def test_prepare_controller_candidate_survives_commit_failure_without_split_state(
     tmp_path: Path,
 ) -> None:
-    # A future durable timestamp makes both attempts produce the exact same
-    # transaction ID and therefore exercises immutable-transaction replay.
-    state, _, ledger, receipts, _ = _initialize(
-        tmp_path,
-        observed_at="2099-09-05T00:00:00Z",
-    )
+    state, _, ledger, receipts, _ = _initialize(tmp_path)
     before = ledger.read_bytes()
     before_digest = hashlib.sha256(before).hexdigest()
+
+    with patch.object(
+        AdminPlatformStateStore,
+        "_commit_locked",
+        side_effect=RuntimeError("simulated commit failure"),
+    ), pytest.raises(RuntimeError, match="simulated commit failure"):
+        _prepare(tmp_path)
 
     with patch.object(
         AdminPlatformStateStore,
@@ -303,8 +367,9 @@ def test_transaction_receipts_fail_closed_when_ledger_lineage_is_missing(
         )
 
 
-def test_child_receipt_directory_creation_fsyncs_receipt_root(tmp_path: Path) -> None:
-    receipts = tmp_path / "receipts"
+def test_child_receipt_directory_creation_fsyncs_every_new_parent(tmp_path: Path) -> None:
+    receipt_parent = tmp_path / "separate-state"
+    receipts = receipt_parent / "receipts"
     state = AdminPlatformStateStore(
         tmp_path / "ledger.yml",
         receipt_key=RECEIPT_KEY,
@@ -329,7 +394,36 @@ def test_child_receipt_directory_creation_fsyncs_receipt_root(tmp_path: Path) ->
         os.close(child_fd)
         os.close(receipt_root_fd)
 
+    assert tmp_path.stat().st_ino in synced_inodes
+    assert receipt_parent.stat().st_ino in synced_inodes
     assert receipts.stat().st_ino in synced_inodes
+
+
+def test_stale_transaction_directory_is_safely_reaped(tmp_path: Path) -> None:
+    state = AdminPlatformStateStore(
+        tmp_path / "ledger.yml",
+        receipt_key=RECEIPT_KEY,
+        receipt_root=tmp_path / "receipts",
+    )
+    transaction_id = "a" * 64
+    transactions = tmp_path / "receipts" / "transactions"
+    stale = transactions / f".{transaction_id}.0123456789abcdef.tmp"
+    unrelated = transactions / ".unrelated.0123456789abcdef.tmp"
+    stale.mkdir(parents=True)
+    unrelated.mkdir()
+    (stale / "receipt.json").write_text("partial", encoding="utf-8")
+    root_fd = os.open(transactions, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        state._remove_stale_transaction_directories(
+            root_fd,
+            transaction_id,
+            ("receipt.json",),
+        )
+    finally:
+        os.close(root_fd)
+
+    assert not stale.exists()
+    assert unrelated.is_dir()
 
 
 def test_torn_ledger_link_does_not_poison_retry(tmp_path: Path) -> None:

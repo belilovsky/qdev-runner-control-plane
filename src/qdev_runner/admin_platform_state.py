@@ -651,7 +651,11 @@ class AdminPlatformStateStore:
             ):
                 raise AdminPlatformStateError("candidate release id was already used")
 
-            uri, checksum = self._persist_receipt(receipt_document)
+            transaction_id, transaction_receipts = self._transaction_receipts(
+                (receipt_document,),
+                previous_raw=raw,
+            )
+            ((uri, checksum, _),) = transaction_receipts
             entry.update(
                 {
                     "source_sha": candidate.source_sha,
@@ -675,6 +679,13 @@ class AdminPlatformStateStore:
             document["active_candidate"] = asdict(candidate)
             document["program"]["status"] = "active"
             self._touch(document, cast(str, source["observed_at"]))
+            self._persist_receipt_transaction(
+                transaction_id=transaction_id,
+                receipts=transaction_receipts,
+                previous_raw=raw,
+                document=document,
+                observed_at=cast(str, source["observed_at"]),
+            )
             return self._commit_locked(raw, document, (uri,))
 
     def accept_and_advance(
@@ -1094,6 +1105,14 @@ class AdminPlatformStateStore:
         )
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
+        transaction_filenames = tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts) + (
+            "ledger-binding.json",
+        )
+        self._remove_stale_transaction_directories(
+            root_fd,
+            transaction_id,
+            transaction_filenames,
+        )
         temporary_name = f".{transaction_id}.{secrets.token_hex(8)}.tmp"
         transaction_fd: int | None = None
         try:
@@ -1158,8 +1177,7 @@ class AdminPlatformStateStore:
                 self._remove_temporary_transaction(
                     root_fd,
                     temporary_name,
-                    tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts)
-                    + ("ledger-binding.json",),
+                    transaction_filenames,
                 )
         finally:
             if transaction_fd is not None:
@@ -1168,8 +1186,7 @@ class AdminPlatformStateStore:
                 self._remove_temporary_transaction(
                     root_fd,
                     temporary_name,
-                    tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts)
-                    + ("ledger-binding.json",),
+                    transaction_filenames,
                 )
             os.close(root_fd)
             os.close(receipt_root_fd)
@@ -1181,13 +1198,13 @@ class AdminPlatformStateStore:
         unavailable: str,
         unsafe: str,
     ) -> tuple[int, int]:
-        self.receipt_root.mkdir(parents=True, exist_ok=True)
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:
-            receipt_root_fd = os.open(
+            receipt_root_fd = self._open_durable_directory_path(
                 self.receipt_root,
-                directory_flags | nofollow,
+                unavailable=unavailable,
+                unsafe=unsafe,
             )
         except OSError as error:
             raise AdminPlatformStateError(unavailable) from error
@@ -1222,6 +1239,69 @@ class AdminPlatformStateStore:
                 os.close(child_fd)
             os.close(receipt_root_fd)
             raise
+
+    def _open_durable_directory_path(
+        self,
+        path: Path,
+        *,
+        unavailable: str,
+        unsafe: str,
+    ) -> int:
+        """Open a directory without symlink traversal and persist every new edge."""
+
+        absolute = path if path.is_absolute() else Path.cwd() / path
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(absolute.anchor, directory_flags | nofollow)
+        try:
+            for component in absolute.parts[1:]:
+                created = False
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                    created = True
+                except FileExistsError:
+                    pass
+                child = os.open(
+                    component,
+                    directory_flags | nofollow,
+                    dir_fd=descriptor,
+                )
+                metadata = os.fstat(child)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    os.close(child)
+                    raise AdminPlatformStateError(unsafe)
+                if created:
+                    self._set_runtime_owner(child)
+                    os.fchmod(child, 0o700)
+                    os.fsync(descriptor)
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except AdminPlatformStateError:
+            os.close(descriptor)
+            raise
+        except OSError as error:
+            os.close(descriptor)
+            raise AdminPlatformStateError(unavailable) from error
+
+    @classmethod
+    def _remove_stale_transaction_directories(
+        cls,
+        root_fd: int,
+        transaction_id: str,
+        allowed_filenames: tuple[str, ...],
+    ) -> None:
+        prefix = f".{transaction_id}."
+        suffix = ".tmp"
+        for entry in sorted(os.listdir(root_fd)):
+            if not entry.startswith(prefix) or not entry.endswith(suffix):
+                continue
+            nonce = entry[len(prefix) : -len(suffix)]
+            if len(nonce) != 16 or any(
+                character not in "0123456789abcdef" for character in nonce
+            ):
+                continue
+            cls._remove_temporary_transaction(root_fd, entry, allowed_filenames)
 
     @staticmethod
     def _remove_temporary_transaction(
