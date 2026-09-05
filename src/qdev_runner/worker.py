@@ -378,6 +378,8 @@ class Worker:
             str(profile["pids_limit"]),
             "--env",
             "DOCKER_TLS_CERTDIR=",
+            "--env",
+            "DOCKER_HOST=unix:///run/qdev/docker.sock",
             "--mount",
             f"type=bind,src={job_root / 'run'},dst=/run/qdev",
             self.settings.docker_sidecar_image,

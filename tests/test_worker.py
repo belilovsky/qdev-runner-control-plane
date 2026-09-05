@@ -165,6 +165,7 @@ def test_docker_profile_gets_isolated_job_docker_and_buildkit() -> None:
     assert "/var/run/docker.sock" not in runner_command
     assert "--network container:runner-1-docker" in runner_command
     assert "--privileged" in sidecar_command
+    assert "DOCKER_HOST=unix:///run/qdev/docker.sock" in sidecar_command
     assert "/var/run/docker.sock" not in sidecar_command
     assert "qdev-ci-egress" in sidecar_command
     assert "docker:dind-test" in sidecar_command
