@@ -450,28 +450,32 @@ def main() -> None:
             except RuntimeError as exc:
                 parser.error(str(exc))
             refreshed[item["full_name"]] = item
-        merged: list[dict[str, Any]] = []
+        refreshed_merged: list[dict[str, Any]] = []
         for item in existing_repositories:
             # The shape check above narrows this at runtime; the explicit copy
             # keeps the inventory payload statically typed as well.
             assert isinstance(item, dict)
             full_name = item["full_name"]
             assert isinstance(full_name, str)
-            merged.append(refreshed.get(full_name, item))
+            refreshed_merged.append(refreshed.get(full_name, item))
         try:
-            validate_inventory_uniqueness(merged)
+            validate_inventory_uniqueness(refreshed_merged)
         except RuntimeError as exc:
             parser.error(str(exc))
         payload = inventory_payload(
             owner=existing.get("owner", args.owner),
-            active_count=int(existing.get("active_repository_count", len(merged))),
-            repositories=merged,
+            active_count=int(
+                existing.get("active_repository_count", len(refreshed_merged))
+            ),
+            repositories=refreshed_merged,
         )
         write_inventory(payload)
         print(
             "inventory_ok targeted="
             + ",".join(sorted(refreshed))
-            + f" repositories={len(merged)} active={payload['active_repository_count']}"
+            + " repositories="
+            + str(len(refreshed_merged))
+            + f" active={payload['active_repository_count']}"
         )
         return
 

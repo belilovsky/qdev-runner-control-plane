@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal, cast, overload
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -74,14 +75,25 @@ def require_regular(path: Path, label: str, *, owner_only: bool = False) -> None
         raise ValueError(f"{label} has unsafe permissions")
 
 
+@overload
+def _git(root: Path, *arguments: str, text: Literal[True] = True) -> str: ...
+
+
+@overload
+def _git(root: Path, *arguments: str, text: Literal[False]) -> bytes: ...
+
+
 def _git(root: Path, *arguments: str, text: bool = True) -> str | bytes:
-    return subprocess.run(
-        ["/usr/bin/git", *arguments],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=text,
-    ).stdout
+    return cast(
+        str | bytes,
+        subprocess.run(
+            ["/usr/bin/git", *arguments],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=text,
+        ).stdout,
+    )
 
 
 def committed_blob(root: Path, revision: str, relative: str) -> bytes:
@@ -94,7 +106,7 @@ def committed_blob(root: Path, revision: str, relative: str) -> bytes:
         raise ValueError(f"bundle source is not an exact regular blob: {relative}")
     if fields[0] not in {"100644", "100755"}:
         raise ValueError(f"bundle source mode is invalid: {relative}")
-    return bytes(_git(root, "show", f"{revision}:{relative}", text=False))
+    return _git(root, "show", f"{revision}:{relative}", text=False)
 
 
 def load_keypair(private_key: Path, public_key: Path) -> tuple[Ed25519PrivateKey, Ed25519PublicKey]:
