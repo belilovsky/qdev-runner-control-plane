@@ -603,6 +603,41 @@ def test_fresh_idle_worker_orphaned_claim_is_recoverable(tmp_path: Path) -> None
     assert store.job_status(100) == "pending"
 
 
+def test_failed_worker_job_is_released_atomically_without_losing_fifo(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    assert store.fail_if_active(100, "worker=primary-1 exit=143 capacity expiry") is True
+    failed = store.failed_worker_jobs()
+    assert [row["job_id"] for row in failed] == [100]
+    original = failed[0]
+
+    assert store.release_failed_job(
+        100,
+        "provider reconciled queued",
+        expected_updated_at=float(original["updated_at"]),
+    ) is True
+    released = store.job(100)
+    assert released is not None
+    assert released["status"] == "pending"
+    assert released["completed_at"] is None
+    assert float(released["created_at"]) == float(original["created_at"])
+    assert store.release_failed_job(
+        100,
+        "must not release twice",
+        expected_updated_at=float(original["updated_at"]),
+    ) is False
+
+
+def test_non_worker_failure_is_not_recoverable_as_failed_worker_job(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job())
+    store.claim("primary-1", ("qdev-ci",))
+    store.set_status(100, "failed", "policy failure")
+
+    assert store.failed_worker_jobs() == []
+
+
 def test_heartbeat_does_not_requeue_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

@@ -118,6 +118,40 @@ def test_capacity_override_sends_exact_source_binding(
     }
 
 
+def test_failed_worker_recovery_uses_provider_reconciled_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured["settings"] = settings
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "recover-failed",
+            "42",
+            "--owner",
+            "portfolio-ci",
+            "--reason",
+            "provider remains queued",
+        ]
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == (
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit"
+    )
+    assert captured["body"] == {
+        "owner": "portfolio-ci",
+        "reason": "provider remains queued",
+    }
+
+
 def test_capacity_override_cancel_requires_exact_operation_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

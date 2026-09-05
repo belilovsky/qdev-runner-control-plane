@@ -180,7 +180,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
         await worker.close()
 
 
-async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -> None:
+async def test_worker_keeps_admitted_job_when_capacity_override_expires(tmp_path: Path) -> None:
     worker = _worker(tmp_path)
     store = OperationStore(
         tmp_path / "operations",
@@ -204,6 +204,44 @@ async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -
             directive_payload=directive.model_dump(mode="json", by_alias=True),
         )
         expired = replace(admission, directive_expires_at=datetime.now(UTC))
+        worker.capacity = _disk_blocked_raw
+        output, detail = await worker.wait_for_runner(
+            CompletedRunnerProcess(),  # type: ignore[arg-type]
+            {"job_id": 123},
+            timeout=60,
+            admission=expired,
+        )
+        assert output == b"runner completed"
+        assert detail == ""
+    finally:
+        await worker.close()
+
+
+async def test_expired_override_keeps_frozen_running_job_disk_floor(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    store = OperationStore(
+        tmp_path / "operations",
+        worker_signing_key="worker-signing-key",
+        receipt_signing_key="receipt-signing-key",
+    )
+    directive = store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+        profiles=("qdev-ci",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95,
+        owner="qdev-fleet-operations",
+        reason="bounded FIFO recovery",
+        duration_seconds=900,
+    )
+    try:
+        admission = worker.admission_state(
+            raw=_disk_blocked_raw(),
+            directive_payload=directive.model_dump(mode="json", by_alias=True),
+        )
+        expired = replace(admission, directive_expires_at=datetime.now(UTC))
+        worker.capacity = lambda: replace(_disk_blocked_raw(), disk_free_gib=4.0)
         output, detail = await worker.wait_for_runner(
             ExpiringRunnerProcess(),  # type: ignore[arg-type]
             {"job_id": 123},
@@ -211,7 +249,9 @@ async def test_worker_stops_job_when_capacity_override_expires(tmp_path: Path) -
             admission=expired,
         )
         assert output == b"runner stopped after directive expiry"
-        assert detail == "capacity override expired during running job"
+        assert detail == (
+            "worker disk hard floor reached: free=4.00GiB minimum=4.50GiB"
+        )
     finally:
         await worker.close()
 

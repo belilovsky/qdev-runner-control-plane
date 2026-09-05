@@ -215,6 +215,11 @@ class StaleJobRecoveryRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class FailedJobRecoveryRequest(BaseModel):
+    owner: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class FleetBootstrapOperationRequest(BaseModel):
     """Controller-observed activation or host-agent enrolment request."""
 
@@ -2423,6 +2428,126 @@ def create_app(
             ) from error
         payload = {
             "kind": "stale-job-recovery",
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "owner": request.owner,
+            "reason": request.reason,
+            "immutable_job": immutable_job,
+            "provider": {
+                **provider_tuple,
+                "status": provider_status,
+                "conclusion": provider_conclusion,
+                "run_status": str(remote_run.get("status") or "unknown"),
+                "run_conclusion": remote_run.get("conclusion"),
+            },
+            "action": action,
+            "fifo_preserved": True,
+        }
+        return operation_store.receipt(payload)
+
+    @app.get("/internal/v1/operations/jobs/failed-worker-exit")
+    def audit_failed_worker_jobs(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        candidates = [_stale_job_tuple(row) for row in store.failed_worker_jobs()]
+        payload = {
+            "kind": "failed-job-audit",
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "provider_reconciliation_required": True,
+            "candidates": candidates,
+        }
+        return operation_store.receipt(payload)
+
+    @app.post("/internal/v1/operations/jobs/{job_id}/recover-failed-worker-exit")
+    def recover_failed_worker_job(
+        job_id: int,
+        request: FailedJobRecoveryRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        row = next(
+            (
+                candidate
+                for candidate in store.failed_worker_jobs()
+                if int(candidate["job_id"]) == job_id
+            ),
+            None,
+        )
+        if row is None:
+            raise HTTPException(status_code=409, detail="job is not a recoverable worker failure")
+        immutable_job = _stale_job_tuple(row)
+        installation_id = int(row["installation_id"])
+        repository = str(row["repository"])
+        try:
+            github_client = require_github()
+            remote_job = github_client.workflow_job(installation_id, repository, job_id)
+            remote_run = github_client.workflow_run(
+                installation_id, repository, int(row["run_id"])
+            )
+            provider_tuple = {
+                "run_id": int(remote_run.get("id") or 0),
+                "job_run_id": int(remote_job.get("run_id") or 0),
+                "job_id": int(remote_job.get("id") or 0),
+                "attempt": int(remote_run.get("run_attempt") or 0),
+                "exact_sha": str(remote_run.get("head_sha") or ""),
+            }
+            expected_tuple = {
+                "run_id": immutable_job["run_id"],
+                "job_run_id": immutable_job["run_id"],
+                "job_id": immutable_job["job_id"],
+                "attempt": immutable_job["attempt"],
+                "exact_sha": immutable_job["exact_sha"],
+            }
+            if provider_tuple != expected_tuple:
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider immutable tuple does not match the failed job",
+                )
+            provider_status = str(remote_job.get("status") or "unknown")
+            provider_conclusion = remote_job.get("conclusion")
+            if provider_status == "completed":
+                conclusion = str(provider_conclusion or "unknown")
+                store.complete_from_webhook(job_id, conclusion)
+                action = "completed-from-provider"
+            elif provider_status == "in_progress":
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider reports the job is still in progress",
+                )
+            elif provider_status == "queued":
+                run_conclusion = completed_run_conclusion(remote_run)
+                if run_conclusion is not None:
+                    store.complete_from_webhook(job_id, run_conclusion)
+                    action = "completed-from-parent-run"
+                elif not store.release_failed_job(
+                    job_id,
+                    f"operator recovery: {request.reason}",
+                    expected_updated_at=float(row["updated_at"]),
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="failed job changed during provider reconciliation",
+                    )
+                else:
+                    action = "released-preserving-fifo"
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"provider job state is not recoverable: {provider_status}",
+                )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="provider reconciliation failed",
+            ) from error
+        payload = {
+            "kind": "failed-job-recovery",
             "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "owner": request.owner,
             "reason": request.reason,
