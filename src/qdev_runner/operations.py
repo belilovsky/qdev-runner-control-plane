@@ -109,6 +109,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "operation",
         "required_free_gib",
         "immutable_tuple",
+        "provider",
     },
     "capacity-override-cancelled": {"kind", "observed_at", "worker_audit", "operation"},
     "stale-job-audit": {
@@ -350,10 +351,38 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         not isinstance(value["operation"], dict)
         or not isinstance(value["required_free_gib"], (int, float))
         or not isinstance(value["immutable_tuple"], dict)
+        or not isinstance(value["provider"], dict)
     ):
         raise ValueError("capacity override creation payload is invalid")
     if kind == "capacity-override-created":
         _validate_durable_queue_head(value["immutable_tuple"], require_attempt=True)
+        provider = value["provider"]
+        if set(provider) != {"immutable_tuple", "job_status", "run_status"}:
+            raise ValueError("capacity override provider evidence is invalid")
+        provider_tuple = provider["immutable_tuple"]
+        if not isinstance(provider_tuple, dict) or set(provider_tuple) != {
+            "run_id",
+            "job_run_id",
+            "job_id",
+            "attempt",
+            "exact_sha",
+        }:
+            raise ValueError("capacity override provider evidence is invalid")
+        if (
+            provider_tuple
+            != {
+                "run_id": value["immutable_tuple"]["run_id"],
+                "job_run_id": value["immutable_tuple"]["run_id"],
+                "job_id": value["immutable_tuple"]["job_id"],
+                "attempt": value["immutable_tuple"]["attempt"],
+                "exact_sha": value["immutable_tuple"]["exact_sha"],
+            }
+            or provider["job_status"] != "queued"
+            or not isinstance(provider["run_status"], str)
+            or provider["run_status"]
+            not in {"queued", "in_progress", "pending", "requested", "waiting"}
+        ):
+            raise ValueError("capacity override provider evidence is invalid")
     if kind == "capacity-override-cancelled" and not (
         isinstance(value["operation"], dict) or value["operation"] is None
     ):

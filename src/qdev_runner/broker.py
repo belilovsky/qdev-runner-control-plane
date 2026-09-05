@@ -1771,7 +1771,8 @@ def create_app(
                 status_code=409,
                 detail="repository-scoped capacity override requires exactly one profile",
             )
-        profile_heads, _ = durable_profile_heads(store.pending_jobs(), policy)
+        pending_jobs = store.pending_jobs()
+        profile_heads, _ = durable_profile_heads(pending_jobs, policy)
         fifo_head = next(
             (item for item in profile_heads if item["profile"] == requested_profiles[0]),
             None,
@@ -1791,6 +1792,76 @@ def create_app(
                 status_code=409,
                 detail="capacity override target is not the durable FIFO head",
             )
+        durable_row = next(
+            (
+                candidate
+                for candidate in pending_jobs
+                if int(candidate["job_id"]) == int(fifo_head["job_id"])
+            ),
+            None,
+        )
+        if durable_row is None:
+            raise HTTPException(
+                status_code=409,
+                detail="profile FIFO head changed during provider reconciliation",
+            )
+        try:
+            installation_id = int(durable_row["installation_id"])
+            run_id = int(durable_row["run_id"])
+            job_id = int(durable_row["job_id"])
+            remote_job = github.workflow_job(installation_id, repository_name, job_id)
+            remote_run = github.workflow_run(installation_id, repository_name, run_id)
+            provider_tuple = {
+                "run_id": int(remote_run.get("id") or 0),
+                "job_run_id": int(remote_job.get("run_id") or 0),
+                "job_id": int(remote_job.get("id") or 0),
+                "attempt": int(remote_run.get("run_attempt") or 0),
+                "exact_sha": str(remote_run.get("head_sha") or ""),
+            }
+            expected_tuple = {
+                "run_id": run_id,
+                "job_run_id": run_id,
+                "job_id": job_id,
+                "attempt": int(fifo_head["attempt"]),
+                "exact_sha": str(fifo_head["exact_sha"]),
+            }
+            if provider_tuple != expected_tuple:
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider immutable tuple does not match the FIFO head",
+                )
+            provider_status = str(remote_job.get("status") or "unknown")
+            provider_conclusion = remote_job.get("conclusion")
+            if provider_status == "completed":
+                conclusion = str(provider_conclusion or "unknown")
+                store.complete_from_webhook(job_id, conclusion)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"provider reports FIFO head completed: {conclusion}",
+                )
+            if provider_status == "queued":
+                run_conclusion = completed_run_conclusion(remote_run)
+                if run_conclusion is not None:
+                    store.complete_from_webhook(job_id, run_conclusion)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"provider reports FIFO head completed: {run_conclusion}",
+                    )
+            elif provider_status == "in_progress":
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider reports FIFO head is already in progress",
+                )
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"provider FIFO head state is not admissible: {provider_status}",
+                )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="provider reconciliation failed",
+            ) from error
         baseline = audit["baseline_capacity"]
         raw = audit["raw_capacity"]
         blockers = {str(value) for value in baseline.get("blockers", [])}
@@ -1851,6 +1922,11 @@ def create_app(
             "operation": directive.model_dump(mode="json", by_alias=True),
             "required_free_gib": round(required_free_gib, 3),
             "immutable_tuple": fifo_head,
+            "provider": {
+                "immutable_tuple": provider_tuple,
+                "job_status": provider_status,
+                "run_status": str(remote_run.get("status") or "unknown"),
+            },
         }
         return operation_store.receipt(payload)
 

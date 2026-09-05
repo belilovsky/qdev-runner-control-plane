@@ -859,7 +859,7 @@ def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -
 
 
 def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000042))
     _heartbeat(client)
     _seed_pending_job(
         client,
@@ -912,6 +912,17 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert override_response.status_code == 200
     override = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)
     operation = override["payload"]["operation"]
+    assert override["payload"]["provider"] == {
+        "immutable_tuple": {
+            "run_id": 84000000042,
+            "job_run_id": 84000000042,
+            "job_id": 42,
+            "attempt": 1,
+            "exact_sha": "a" * 40,
+        },
+        "job_status": "queued",
+        "run_status": "in_progress",
+    }
     assert operation["profiles"] == ["qdev-ci-docker"]
     assert operation["repository"] == "belilovsky/qazshield"
     assert operation["head_sha"] == "a" * 40
@@ -1258,7 +1269,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
 
 
 def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000042))
     _heartbeat(client, disk_free_gib=17.0)
     _seed_pending_job(
         client,
@@ -1286,6 +1297,70 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
+
+
+@pytest.mark.parametrize(
+    ("github", "detail", "final_status"),
+    [
+        (
+            FakeGitHub(
+                job_status="completed",
+                job_conclusion="cancelled",
+                job_run_id=84000000042,
+            ),
+            "provider reports FIFO head completed: cancelled",
+            "completed",
+        ),
+        (
+            FakeGitHub(job_status="in_progress", job_run_id=84000000042),
+            "provider reports FIFO head is already in progress",
+            "pending",
+        ),
+        (
+            FakeGitHub(job_run_id=84000000043),
+            "provider immutable tuple does not match the FIFO head",
+            "pending",
+        ),
+    ],
+)
+def test_capacity_override_reconciles_provider_fifo_head(
+    tmp_path: Path,
+    github: FakeGitHub,
+    detail: str,
+    final_status: str,
+) -> None:
+    client = _app(tmp_path, github)
+    _heartbeat(client)
+    _seed_pending_job(
+        client,
+        42,
+        "provider-reconciliation",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazshield",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "provider-bound regression",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == detail
+    assert client.app.state.store.job_status(42) == final_status
+    assert client.app.state.operations.active(
+        WORKER_NAME,
+        registered_profiles=("qdev-ci-docker",),
+    ) is None
 
 
 def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
@@ -1328,7 +1403,7 @@ def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
 
 
 def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path) -> None:
-    client = _app(tmp_path, FakeGitHub())
+    client = _app(tmp_path, FakeGitHub(job_run_id=85, head_sha="b" * 40))
     _heartbeat(client)
     store: Store = client.app.state.store
     assert store.enqueue(

@@ -276,6 +276,17 @@ def test_capacity_override_receipt_requires_full_immutable_fifo_tuple() -> None:
             "state": "pending",
             "created_at": 1_777_777_777.0,
         },
+        "provider": {
+            "immutable_tuple": {
+                "run_id": 84_000_000_042,
+                "job_run_id": 84_000_000_042,
+                "job_id": 42,
+                "attempt": 1,
+                "exact_sha": "a" * 40,
+            },
+            "job_status": "queued",
+            "run_status": "in_progress",
+        },
     }
     assert validate_controller_receipt_payload(payload) == payload
 
