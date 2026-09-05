@@ -176,8 +176,17 @@ def _read_status() -> tuple[str, str]:
         or metadata.st_uid != 0
         or stat.S_IMODE(metadata.st_mode) & 0o022
         or not isinstance(payload, dict)
-        or payload.get("schema")
-        not in {"qdev-controller-release-status-v1", "qdev-controller-release-status-v2"}
+        or set(payload)
+        != {
+            "schema",
+            "state",
+            "revision",
+            "release_digest",
+            "activated_at",
+            "runtime_identity",
+            "dependency_identity",
+        }
+        or payload.get("schema") != "qdev-controller-release-status-v2"
         or payload.get("state") != "active"
     ):
         raise AdapterError("runtime_status_invalid")
@@ -185,10 +194,44 @@ def _read_status() -> tuple[str, str]:
     digest = payload.get("release_digest")
     if not isinstance(revision, str) or not SHA.fullmatch(revision):
         raise AdapterError("runtime_revision_invalid")
-    if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-        digest = f"sha256:{digest}"
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AdapterError("runtime_digest_invalid")
+    runtime_identity = payload.get("runtime_identity")
+    dependency_identity = payload.get("dependency_identity")
+    if (
+        not isinstance(runtime_identity, dict)
+        or set(runtime_identity)
+        != {
+            "source_revision",
+            "source_digest",
+            "public_image_id",
+            "internal_image_id",
+        }
+        or runtime_identity.get("source_revision") != revision
+        or not isinstance(dependency_identity, dict)
+        or set(dependency_identity)
+        != {
+            "requirements_digest",
+            "public_installed_digest",
+            "internal_installed_digest",
+        }
+    ):
+        raise AdapterError("runtime_measurements_invalid")
+    measured_digests = (
+        runtime_identity.get("source_digest"),
+        runtime_identity.get("public_image_id"),
+        runtime_identity.get("internal_image_id"),
+        dependency_identity.get("requirements_digest"),
+        dependency_identity.get("public_installed_digest"),
+        dependency_identity.get("internal_installed_digest"),
+    )
+    if any(not isinstance(value, str) or not DIGEST.fullmatch(value) for value in measured_digests):
+        raise AdapterError("runtime_measurements_invalid")
+    if (
+        dependency_identity["public_installed_digest"]
+        != dependency_identity["internal_installed_digest"]
+    ):
+        raise AdapterError("runtime_dependencies_inconsistent")
     return revision, digest
 
 

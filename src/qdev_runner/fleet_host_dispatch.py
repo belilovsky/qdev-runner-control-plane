@@ -46,10 +46,15 @@ STARTED_SCHEMA = "qdev-fleet-host-dispatch-started-v1"
 DEFAULT_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
 DEFAULT_ENROLMENT_ADAPTER = Path("/usr/local/sbin/qdev-release-host-agent-enrol")
 DEFAULT_RECOVERY_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
+DEFAULT_CONTROLLER_STATUS = Path(
+    "/var/lib/qdev-runner/controller-status/controller-release.json"
+)
 
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_FILE_BYTES = 64 * 1024
 _ACTIONS = frozenset(
     {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
@@ -172,6 +177,91 @@ def _decode_object(payload: bytes, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FleetHostDispatchError(f"fleet host dispatch {label} is invalid")
     return value
+
+
+def verified_controller_runtime_anchor(
+    path: Path,
+    *,
+    expected_uid: int,
+) -> tuple[str, str]:
+    """Read one root-controlled, measured controller runtime identity.
+
+    The caller cannot supply the rollback anchor.  The root dispatcher derives
+    it immediately before the mutation marker, while the fixed activation
+    adapter independently rereads the same status for compare-and-swap.
+    """
+
+    _validate_policy_file(path, expected_uid=expected_uid)
+    raw = _decode_object(
+        _read_regular(path, expected_uid=expected_uid),
+        label="controller runtime status",
+    )
+    if set(raw) != {
+        "schema",
+        "state",
+        "revision",
+        "release_digest",
+        "activated_at",
+        "runtime_identity",
+        "dependency_identity",
+    }:
+        raise FleetHostDispatchError(
+            "fleet host dispatch controller runtime status shape is invalid"
+        )
+    revision = raw.get("revision")
+    release_digest = raw.get("release_digest")
+    runtime_identity = raw.get("runtime_identity")
+    dependency_identity = raw.get("dependency_identity")
+    if (
+        raw.get("schema") != "qdev-controller-release-status-v2"
+        or raw.get("state") != "active"
+        or not isinstance(revision, str)
+        or not _SHA.fullmatch(revision)
+        or not isinstance(release_digest, str)
+        or not _DIGEST.fullmatch(release_digest)
+        or not isinstance(runtime_identity, dict)
+        or set(runtime_identity)
+        != {
+            "source_revision",
+            "source_digest",
+            "public_image_id",
+            "internal_image_id",
+        }
+        or runtime_identity.get("source_revision") != revision
+        or not isinstance(dependency_identity, dict)
+        or set(dependency_identity)
+        != {
+            "requirements_digest",
+            "public_installed_digest",
+            "internal_installed_digest",
+        }
+    ):
+        raise FleetHostDispatchError(
+            "fleet host dispatch controller runtime identity is invalid"
+        )
+    measured_digests = (
+        runtime_identity.get("source_digest"),
+        runtime_identity.get("public_image_id"),
+        runtime_identity.get("internal_image_id"),
+        dependency_identity.get("requirements_digest"),
+        dependency_identity.get("public_installed_digest"),
+        dependency_identity.get("internal_installed_digest"),
+    )
+    if any(
+        not isinstance(value, str) or not _DIGEST.fullmatch(value)
+        for value in measured_digests
+    ):
+        raise FleetHostDispatchError(
+            "fleet host dispatch controller runtime measurements are invalid"
+        )
+    if (
+        dependency_identity["public_installed_digest"]
+        != dependency_identity["internal_installed_digest"]
+    ):
+        raise FleetHostDispatchError(
+            "fleet host dispatch controller dependency identity is inconsistent"
+        )
+    return revision, release_digest
 
 
 def _fsync_directory(path: Path) -> None:
@@ -596,6 +686,7 @@ class FleetHostDispatcher:
         activation_adapter: Path = DEFAULT_ACTIVATION_ADAPTER,
         enrolment_adapter: Path = DEFAULT_ENROLMENT_ADAPTER,
         recovery_adapter: Path = DEFAULT_RECOVERY_ADAPTER,
+        controller_status_path: Path = DEFAULT_CONTROLLER_STATUS,
         adapter_timeout_seconds: float = 120.0,
         runtime_uid: int = 9020,
         runtime_gid: int = 9020,
@@ -610,6 +701,7 @@ class FleetHostDispatcher:
         self.activation_adapter = activation_adapter
         self.enrolment_adapter = enrolment_adapter
         self.recovery_adapter = recovery_adapter
+        self.controller_status_path = controller_status_path
         self.adapter_timeout_seconds = adapter_timeout_seconds
         self.runtime_uid = runtime_uid
         self.runtime_gid = runtime_gid
@@ -753,7 +845,17 @@ class FleetHostDispatcher:
                     "host_adapter_unavailable",
                     None,
                 )
-            target, lane = _bootstrap_target(policy=policy, request=request)
+            controller_runtime = None
+            if action == "activate-controller":
+                controller_runtime = verified_controller_runtime_anchor(
+                    self.controller_status_path,
+                    expected_uid=self.root_uid,
+                )
+            target, lane = _bootstrap_target(
+                policy=policy,
+                request=request,
+                controller_runtime=controller_runtime,
+            )
             if not self._mark_started(envelope):
                 return self._unknown(envelope)
             adapter_status, adapter_result = _invoke_bootstrap_adapter(

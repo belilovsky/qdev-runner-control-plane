@@ -48,6 +48,36 @@ def _policy_files(tmp_path: Path) -> tuple[Path, Path, FleetBootstrapPolicy]:
     return policy_path, lanes_path, FleetBootstrapPolicy(policy_path, lanes_path)
 
 
+def _controller_status(tmp_path: Path) -> Path:
+    path = tmp_path / "policy" / "controller-release.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v2",
+                "state": "active",
+                "revision": "c" * 40,
+                "release_digest": "sha256:" + "d" * 64,
+                "activated_at": "2026-09-05T00:00:00Z",
+                "runtime_identity": {
+                    "source_revision": "c" * 40,
+                    "source_digest": "sha256:" + "e" * 64,
+                    "public_image_id": "sha256:" + "f" * 64,
+                    "internal_image_id": "sha256:" + "1" * 64,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "2" * 64,
+                    "public_installed_digest": "sha256:" + "3" * 64,
+                    "internal_installed_digest": "sha256:" + "3" * 64,
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
 def _request(
     policy: FleetBootstrapPolicy,
     *,
@@ -107,6 +137,7 @@ def _bridge(
         activation_adapter=adapter,
         enrolment_adapter=adapter,
         recovery_adapter=adapter,
+        controller_status_path=_controller_status(tmp_path),
         runtime_uid=uid,
         runtime_gid=gid,
         root_uid=uid,
@@ -179,10 +210,12 @@ def test_completed_result_is_durable_and_reused_without_reexecution(
     key = "completion-reuse-001"
     store = _store(tmp_path, key)
     calls = 0
+    captured_target: dict[str, Any] = {}
 
     def complete_adapter(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
         nonlocal calls
-        del args, kwargs
+        del args
+        captured_target.update(kwargs["target"])
         calls += 1
         return "completed", {"rollback_revision": "b" * 40}
 
@@ -197,6 +230,8 @@ def test_completed_result_is_durable_and_reused_without_reexecution(
     assert len(dispatched) == 1
     assert dispatched[0].status == "completed"
     assert calls == 1
+    assert captured_target["rollback_revision"] == "c" * 40
+    assert captured_target["rollback_release_digest"] == "sha256:" + "d" * 64
     assert not (incoming / f"{key}.json").exists()
     assert (results / f"{key}.json").exists()
 
@@ -332,6 +367,41 @@ def test_root_dispatch_reloads_and_rejects_writable_policy(tmp_path: Path) -> No
     )
     dispatcher.policy_path.chmod(0o660)
     with pytest.raises(FleetHostDispatchError, match="permissions"):
+        dispatcher.drain()
+
+
+def test_root_dispatch_rejects_writable_controller_status(tmp_path: Path) -> None:
+    spool, dispatcher, policy, _incoming, _processing, _results = _bridge(tmp_path)
+    key = "unsafe-runtime-status-001"
+    spool.submit(
+        policy=policy,
+        store=_store(tmp_path, key),
+        request=_request(policy),
+        idempotency_key=key,
+    )
+    dispatcher.controller_status_path.chmod(0o660)
+    with pytest.raises(FleetHostDispatchError, match="permissions"):
+        dispatcher.drain()
+
+
+def test_root_dispatch_rejects_tampered_controller_runtime_identity(
+    tmp_path: Path,
+) -> None:
+    spool, dispatcher, policy, _incoming, _processing, _results = _bridge(tmp_path)
+    key = "tampered-runtime-status-001"
+    spool.submit(
+        policy=policy,
+        store=_store(tmp_path, key),
+        request=_request(policy),
+        idempotency_key=key,
+    )
+    status = json.loads(dispatcher.controller_status_path.read_text(encoding="utf-8"))
+    status["runtime_identity"]["source_revision"] = "4" * 40
+    dispatcher.controller_status_path.write_text(
+        json.dumps(status, sort_keys=True), encoding="utf-8"
+    )
+    dispatcher.controller_status_path.chmod(0o600)
+    with pytest.raises(FleetHostDispatchError, match="runtime identity"):
         dispatcher.drain()
 
 
