@@ -37,11 +37,10 @@ _ADMIN_PLATFORM_LANES = frozenset(
 _ADMIN_PLATFORM_RESULT_OUTCOMES = frozenset(
     {"queued", "passed", "failed", "blocked", "auth_blocked", "not_applicable"}
 )
-_ADMIN_PLATFORM_TERMINAL_STATES = frozenset(
-    {"live_accepted", "rolled_back", "blocked"}
-)
+_ADMIN_PLATFORM_TERMINAL_STATES = frozenset({"live_accepted", "rolled_back", "blocked"})
 _FIFO_SKIP_REASONS = frozenset(
     {
+        "active-admin-platform-controller-priority",
         "admin-platform-candidate-not-active",
         "admin-platform-candidate-tuple-not-admitted",
     }
@@ -256,8 +255,13 @@ def _validate_fifo_skipped(value: Any) -> None:
             or not _SOURCE_SHA.fullmatch(item["head_sha"])
             or not isinstance(item["profile"], str)
             or not _WORKER_NAME.fullmatch(item["profile"])
-            or not isinstance(item["managed_registry_entry"], str)
-            or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
+            or (
+                item["managed_registry_entry"] is not None
+                and (
+                    not isinstance(item["managed_registry_entry"], str)
+                    or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
+                )
+            )
             or not isinstance(item["reason"], str)
             or item["reason"] not in _FIFO_SKIP_REASONS
         ):
@@ -341,12 +345,19 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         )
         or (
             value["managed_registry_entry"] is None
-            and any(
-                value[field] is not None
-                for field in (
-                    "admission_ledger",
-                    "admin_platform_ledger_entry",
-                    "managed_release_ledger_entry",
+            and not (
+                all(
+                    value[field] is None
+                    for field in (
+                        "admission_ledger",
+                        "admin_platform_ledger_entry",
+                        "managed_release_ledger_entry",
+                    )
+                )
+                or (
+                    value["admission_ledger"] == "admin-platform"
+                    and value["admin_platform_ledger_entry"] == "controller"
+                    and value["managed_release_ledger_entry"] is None
                 )
             )
         )
@@ -437,8 +448,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         if unknown and (
             value["status"] != "unknown"
             or value["operation_status"] != "unknown"
-            or value["error_code"]
-            != "operation_outcome_unknown_reconciliation_required"
+            or value["error_code"] != "operation_outcome_unknown_reconciliation_required"
             or value["result"] is not None
         ):
             raise ValueError("fleet bootstrap unknown outcome payload is invalid")
@@ -467,11 +477,33 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         host_identity = execution.get("host_agent_mtls_identity")
         error_code = execution.get("error_code")
         result = execution.get("result")
+        if status == "completed":
+            state_invalid = (
+                operation_status != "completed"
+                or error_code is not None
+                or not isinstance(result, dict)
+            )
+        elif status == "queued":
+            state_invalid = (
+                operation_status != "pending" or error_code is not None or result is not None
+            )
+        elif status in {"access_blocked", "failed"}:
+            state_invalid = (
+                operation_status != "pending"
+                or not isinstance(error_code, str)
+                or result is not None
+            )
+        elif status == "unknown":
+            state_invalid = (
+                operation_status != "unknown"
+                or error_code != "operation_outcome_unknown_reconciliation_required"
+                or result is not None
+            )
+        else:
+            state_invalid = True
         if (
             execution.get("schema") != "qdev-fleet-bootstrap-execution-receipt-v1"
-            or status not in {"completed", "access_blocked", "failed"}
-            or operation_status not in {"pending", "completed"}
-            or (status == "completed") != (operation_status == "completed")
+            or state_invalid
             or action not in {"activate-controller", "enrol-host-agent"}
             or not isinstance(execution.get("idempotency_key"), str)
             or not re.fullmatch(
@@ -483,13 +515,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             or not isinstance(execution.get("controller_revision"), str)
             or not _SOURCE_SHA.fullmatch(execution["controller_revision"])
             or not isinstance(execution.get("controller_release_digest"), str)
-            or not re.fullmatch(
-                r"sha256:[0-9a-f]{64}", execution["controller_release_digest"]
-            )
-            or (error_code is not None and not isinstance(error_code, str))
-            or (result is not None and not isinstance(result, dict))
-            or (status == "completed" and (error_code is not None or result is None))
-            or (status != "completed" and (not isinstance(error_code, str) or result is not None))
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution["controller_release_digest"])
             or (
                 action == "activate-controller"
                 and (release_lane is not None or host_identity is not None)
@@ -526,8 +552,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         ):
             raise ValueError("admin platform evidence identity is invalid")
         if evidence_type == "lane_result" and (
-            lane not in _ADMIN_PLATFORM_LANES
-            or outcome not in _ADMIN_PLATFORM_RESULT_OUTCOMES
+            lane not in _ADMIN_PLATFORM_LANES or outcome not in _ADMIN_PLATFORM_RESULT_OUTCOMES
         ):
             raise ValueError("admin platform lane evidence is invalid")
         if evidence_type == "attempt_terminal" and (
@@ -741,11 +766,14 @@ class OperationStore:
             raise ValueError("owner and reason are required")
         issued_at = now or utc_now()
         with self._worker_lock(worker_name):
-            if self.active(
-                worker_name,
-                registered_profiles=registered_profiles or profiles,
-                now=issued_at,
-            ) is not None:
+            if (
+                self.active(
+                    worker_name,
+                    registered_profiles=registered_profiles or profiles,
+                    now=issued_at,
+                )
+                is not None
+            ):
                 raise CapacityOverrideConflict("capacity override is already active")
             unsigned: dict[str, Any] = {
                 "schema": "qdev-capacity-override-v2",

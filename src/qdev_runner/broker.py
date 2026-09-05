@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform import (
     CONTROLLER_RELEASE_SCHEMA_V1,
+    AdminPlatformCandidate,
     AdminPlatformLedger,
     AdminPlatformLedgerError,
     ControllerRuntimeHealth,
@@ -88,6 +89,7 @@ from .worker_recovery import (
 
 LOGGER = logging.getLogger("qdev-runner-broker")
 _CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V1
+_CONTROLLER_REPOSITORY = "belilovsky/qdev-runner-control-plane"
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _RecoveryResult = TypeVar("_RecoveryResult")
 
@@ -275,8 +277,7 @@ def _release_host_dispatch_signing_key(path: Path, identity: str) -> str:
     except (TypeError, json.JSONDecodeError) as error:
         raise ReleaseLaneError("managed release dispatch key is unavailable") from error
     if not isinstance(mapping, dict) or any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in mapping.items()
+        not isinstance(key, str) or not isinstance(value, str) for key, value in mapping.items()
     ):
         raise ReleaseLaneError("managed release dispatch key is unavailable")
     secret_path = mapping.get(identity)
@@ -463,11 +464,7 @@ def worker_authenticated(
     """
     if claim_scope is not None and claim_scope.worker_certificate_sha256:
         return claim_scope.certificate_matches(client_certificate_sha256)
-    return bool(
-        token
-        and expected_token
-        and secrets.compare_digest(token, expected_token)
-    )
+    return bool(token and expected_token and secrets.compare_digest(token, expected_token))
 
 
 def _safe_segment(value: str) -> str:
@@ -477,9 +474,7 @@ def _safe_segment(value: str) -> str:
     return value
 
 
-def _surface_allows_path(
-    surface: Literal["public", "internal", "test"], path: str
-) -> bool:
+def _surface_allows_path(surface: Literal["public", "internal", "test"], path: str) -> bool:
     """Keep the public webhook/artifact broker separate from mTLS control APIs.
 
     The source-owned edge remains responsible for authenticating client
@@ -491,11 +486,7 @@ def _surface_allows_path(
     if surface == "test":
         return True
     if surface == "public":
-        return (
-            path == "/health"
-            or path == "/github/workflow-job"
-            or path.startswith("/artifacts/")
-        )
+        return path == "/health" or path == "/github/workflow-job" or path.startswith("/artifacts/")
     return path in {"/health", "/health/runtime"} or path.startswith("/internal/")
 
 
@@ -642,9 +633,7 @@ def create_app(
                 status_code=503,
                 detail="recovery edge authentication is not configured",
             )
-        if not proxy_auth or not secrets.compare_digest(
-            proxy_auth, settings.operator_proxy_secret
-        ):
+        if not proxy_auth or not secrets.compare_digest(proxy_auth, settings.operator_proxy_secret):
             raise HTTPException(
                 status_code=401,
                 detail="recovery edge authentication failed",
@@ -665,16 +654,12 @@ def create_app(
         require_operator(token)
         certificate = recovery_edge_certificate(proxy_auth, certificate_sha256)
         allowlist = settings.recovery_operator_certificate_sha256s
-        if not allowlist or any(
-            not _SHA256_DIGEST.fullmatch(item) for item in allowlist
-        ):
+        if not allowlist or any(not _SHA256_DIGEST.fullmatch(item) for item in allowlist):
             raise HTTPException(
                 status_code=503,
                 detail="recovery operator certificate allowlist is not configured",
             )
-        if not any(
-            secrets.compare_digest(certificate, allowed) for allowed in allowlist
-        ):
+        if not any(secrets.compare_digest(certificate, allowed) for allowed in allowlist):
             raise HTTPException(
                 status_code=403,
                 detail="recovery operator certificate is not allowlisted",
@@ -1657,17 +1642,14 @@ def create_app(
         durable result returned by the root-owned dispatcher.
         """
 
-        operation_store = require_operator_session(
-            operator_token, operator_mtls_identity
-        )
+        operation_store = require_operator_session(operator_token, operator_mtls_identity)
         try:
             bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
             if bootstrap_request.action != expected_action:
                 raise FleetBootstrapError("fleet bootstrap action does not match route")
             policy_value = fleet_bootstrap_policy()
             operation_path = (
-                settings.fleet_bootstrap_operation_root
-                / f"{request.idempotency_key}.json"
+                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
             )
             execution = FleetHostDispatchSpool(
                 settings.fleet_host_dispatch_request_root,
@@ -1791,6 +1773,7 @@ def create_app(
         admission_ledger: str | None = None
         admin_platform_ledger_entry: str | None = None
         managed_release_ledger_entry: str | None = None
+        controller_candidate_priority = False
         if managed_entry is not None:
             try:
                 admission_ledger = managed_entry.admission_ledger
@@ -1806,8 +1789,101 @@ def create_app(
                     managed_release_ledger_entry = managed_entry.entry_id
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+        elif str(candidate["repository"]) == _CONTROLLER_REPOSITORY:
+            try:
+                ledger = admin_platform_ledger()
+                active = ledger.active_candidate
+                if (
+                    ledger.active_stage == "controller"
+                    and active is not None
+                    and active.repository == _CONTROLLER_REPOSITORY
+                    and active.source_sha == str(candidate["head_sha"])
+                ):
+                    ledger.validate_admission("controller", str(candidate["head_sha"]))
+                    admission_ledger = "admin-platform"
+                    admin_platform_ledger_entry = "controller"
+                    controller_candidate_priority = True
+            except AdminPlatformLedgerError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        profile_queue, fifo_skipped = admissible_profile_queue(profile.name)
+        profile_queue: list[dict[str, Any]] = []
+        fifo_skipped: list[dict[str, Any]] = []
+        queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        for queued in store.pending_jobs():
+            try:
+                queued_profile = policy.profile_for_labels(
+                    str(queued["repository"]), _json_strings(queued["labels_json"])
+                )
+            except PolicyError:
+                continue
+            if queued_profile.name == profile.name:
+                try:
+                    queued_managed = managed_registry().validate_claim_if_managed(
+                        str(queued["repository"]), queued_profile.name
+                    )
+                except ManagedRegistryError:
+                    # Keep malformed managed rows in the strict queue.  They
+                    # must not be silently bypassed by this observational
+                    # stale-candidate filter.
+                    profile_queue.append(queued)
+                    continue
+                if (
+                    controller_candidate_priority
+                    and int(queued["job_id"]) != job_id
+                    and not profile_queue
+                ):
+                    # The active controller exact SHA is the bounded bootstrap
+                    # prerequisite for restoring normal signed admission.  It
+                    # may bypass earlier rows without cancelling or mutating
+                    # them; the signed receipt preserves every skipped tuple.
+                    fifo_skipped.append(
+                        {
+                            "job_id": int(queued["job_id"]),
+                            "repository": str(queued["repository"]),
+                            "run_id": int(queued["run_id"]),
+                            "head_sha": str(queued["head_sha"]),
+                            "profile": queued_profile.name,
+                            "managed_registry_entry": (
+                                queued_managed.entry_id if queued_managed else None
+                            ),
+                            "reason": "active-admin-platform-controller-priority",
+                        }
+                    )
+                    continue
+                if (
+                    queued_managed is not None
+                    and queued_managed.admission_ledger == "admin-platform"
+                ):
+                    if queued_admin_platform_ledger is None:
+                        try:
+                            queued_admin_platform_ledger = admin_platform_ledger()
+                        except AdminPlatformLedgerError as exc:
+                            raise HTTPException(
+                                status_code=503,
+                                detail=f"admin platform ledger unavailable: {exc}",
+                            ) from exc
+                    admitted, reason = queued_admin_platform_ledger.classify_admission(
+                        queued_managed.entry_id, str(queued["head_sha"])
+                    )
+                    if not admitted:
+                        # This row is retained as evidence in the signed
+                        # receipt, but cannot hold an unrelated profile FIFO.
+                        # Direct requests for the same managed row still use
+                        # validate_admission above and remain fail-closed.
+                        assert reason is not None
+                        fifo_skipped.append(
+                            {
+                                "job_id": int(queued["job_id"]),
+                                "repository": str(queued["repository"]),
+                                "run_id": int(queued["run_id"]),
+                                "head_sha": str(queued["head_sha"]),
+                                "profile": queued_profile.name,
+                                "managed_registry_entry": queued_managed.entry_id,
+                                "reason": reason,
+                            }
+                        )
+                        continue
+                profile_queue.append(queued)
         if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
 
@@ -2031,6 +2107,21 @@ def create_app(
         fifo_skipped: list[dict[str, Any]] = []
         queued_admin_platform_ledger: AdminPlatformLedger | None = None
         requested_profile = requested_profiles[0]
+        controller_candidate_priority = False
+        if repository_name == _CONTROLLER_REPOSITORY:
+            try:
+                ledger = admin_platform_ledger()
+                active = ledger.active_candidate
+                if (
+                    ledger.active_stage == "controller"
+                    and active is not None
+                    and active.repository == _CONTROLLER_REPOSITORY
+                    and active.source_sha == request.head_sha
+                ):
+                    ledger.validate_admission("controller", request.head_sha)
+                    controller_candidate_priority = True
+            except AdminPlatformLedgerError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         for queued in store.pending_jobs():
             try:
                 queued_profile = policy.profile_for_labels(
@@ -2047,6 +2138,31 @@ def create_app(
             except ManagedRegistryError:
                 # Malformed managed rows remain strict FIFO blockers.
                 pending_for_override.append(queued)
+                continue
+            if (
+                controller_candidate_priority
+                and (
+                    str(queued["repository"]).strip().lower() != repository_name
+                    or str(queued["head_sha"]) != request.head_sha
+                )
+                and not pending_for_override
+            ):
+                # Capacity and claim-scope issuance must agree on the same
+                # narrowly ledger-bound controller prerequisite.  The skipped
+                # row remains pending and is recorded in the signed receipt.
+                fifo_skipped.append(
+                    {
+                        "job_id": int(queued["job_id"]),
+                        "repository": str(queued["repository"]),
+                        "run_id": int(queued["run_id"]),
+                        "head_sha": str(queued["head_sha"]),
+                        "profile": queued_profile.name,
+                        "managed_registry_entry": (
+                            queued_managed.entry_id if queued_managed else None
+                        ),
+                        "reason": "active-admin-platform-controller-priority",
+                    }
+                )
                 continue
             if queued_managed is not None and queued_managed.admission_ledger == "admin-platform":
                 if queued_admin_platform_ledger is None:
@@ -2087,10 +2203,7 @@ def create_app(
                 status_code=409,
                 detail="profile FIFO head has no immutable provider attempt",
             )
-        if (
-            fifo_head["repository"] != repository_name
-            or fifo_head["exact_sha"] != request.head_sha
-        ):
+        if fifo_head["repository"] != repository_name or fifo_head["exact_sha"] != request.head_sha:
             raise HTTPException(
                 status_code=409,
                 detail="capacity override target is not the durable FIFO head",
@@ -2251,9 +2364,7 @@ def create_app(
         try:
             github_client = require_github()
             remote_job = github_client.workflow_job(installation_id, repository, job_id)
-            remote_run = github_client.workflow_run(
-                installation_id, repository, int(row["run_id"])
-            )
+            remote_run = github_client.workflow_run(installation_id, repository, int(row["run_id"]))
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),
@@ -2347,9 +2458,7 @@ def create_app(
         raw_job = payload.get("workflow_job") or {}
         repository = payload.get("repository") or {}
         try:
-            policy.repository(
-                str(repository["full_name"]), repository_id=int(repository["id"])
-            )
+            policy.repository(str(repository["full_name"]), repository_id=int(repository["id"]))
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected webhook: %s", error)
             return Response(status_code=202)
@@ -2423,7 +2532,47 @@ def create_app(
             or tuple(request.profiles) != active_directive.profiles
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
-        repository = active_directive.repository if active_directive is not None else None
+        # A capacity directive normally keeps the durable claim bound to its
+        # repository/SHA.  The sole bootstrap exception is an exact active
+        # controller tuple already admitted by the admin-platform ledger and a
+        # certificate-bound v2 scope.  This lets the controller restore its own
+        # admission path without weakening FIFO for any other scoped job.
+        controller_scoped_admission: AdminPlatformCandidate | None = None
+        if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            try:
+                ledger = admin_platform_ledger()
+                active_candidate = ledger.active_candidate
+                if (
+                    ledger.active_stage == "controller"
+                    and active_candidate is not None
+                    and active_candidate.repository == _CONTROLLER_REPOSITORY
+                    and any(
+                        item.repository == active_candidate.repository
+                        and item.exact_sha == active_candidate.source_sha
+                        for item in claim_scope.jobs
+                    )
+                ):
+                    ledger.validate_admission("controller", active_candidate.source_sha)
+                    controller_scoped_admission = active_candidate
+            except AdminPlatformLedgerError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"admin platform ledger unavailable: {error}",
+                ) from error
+        repository = (
+            controller_scoped_admission.repository
+            if controller_scoped_admission is not None
+            else active_directive.repository
+            if active_directive is not None
+            else None
+        )
+        head_sha = (
+            controller_scoped_admission.source_sha
+            if controller_scoped_admission is not None
+            else active_directive.head_sha
+            if active_directive is not None
+            else None
+        )
         fifo_skip_job_ids = frozenset[int]()
         if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
             skipped: set[int] = set()
@@ -2441,7 +2590,7 @@ def create_app(
             repository_profile_disk_mb=policy.repository_profile_disk_mb,
             claim_scope=claim_scope,
             repository=repository,
-            head_sha=active_directive.head_sha if active_directive is not None else None,
+            head_sha=head_sha,
             fifo_skip_job_ids=fifo_skip_job_ids,
         )
         if claimed is None:
