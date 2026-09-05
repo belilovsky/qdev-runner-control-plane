@@ -17,6 +17,12 @@ repository_admission_disk_mb:
   # worker's independent 4.5 GiB running floor and all controller checks.
   belilovsky/qazposter:
     qdev-ci: 4096
+  # Platform Portal's required qdev-runner-contract job is a bounded
+  # dependency-free policy check: checkout, pinned Python 3.12 and one local
+  # script. Reserve 4 GiB for that exact repository/profile while retaining
+  # the worker's independent 4.5 GiB running floor and controller checks.
+  belilovsky/platform-portal:
+    qdev-ci: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
