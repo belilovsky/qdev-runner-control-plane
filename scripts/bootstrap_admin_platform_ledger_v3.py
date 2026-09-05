@@ -27,7 +27,9 @@ REPOSITORY = "belilovsky/qdev-runner-control-plane"
 PROGRAM_ID = "qdev-admin-platform-wave-1"
 PRODUCTION_RELEASE_ROOT = Path("/opt/qdev-runner-control-plane/releases")
 DEFAULT_TEMPLATE = Path("config/admin-platform-ledger-v2.yml")
-DEFAULT_LEDGER = Path("/etc/qdev-runner/admin-platform-ledger.yml")
+DEFAULT_LEDGER = Path(
+    "/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml"
+)
 DEFAULT_RECEIPT_ROOT = Path("/var/lib/qdev-runner/admin-platform-receipts")
 DEFAULT_ARCHIVE_ROOT = Path("/var/lib/qdev-runner/admin-platform-ledger-migrations")
 DEFAULT_SIGNER_ROOT = Path("/var/lib/qdev-runner/admin-platform-bootstrap")

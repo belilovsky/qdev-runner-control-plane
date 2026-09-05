@@ -32,10 +32,13 @@ def _copy_release(tmp_path: Path) -> Path:
         target = release / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    new_runtime_module = Path("src/qdev_runner/controller_release.py")
-    if not (release / new_runtime_module).exists():
-        (release / new_runtime_module).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / new_runtime_module, release / new_runtime_module)
+    for new_runtime_module in (
+        Path("src/qdev_runner/controller_release.py"),
+        Path("src/qdev_runner/durable_state.py"),
+    ):
+        if not (release / new_runtime_module).exists():
+            (release / new_runtime_module).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / new_runtime_module, release / new_runtime_module)
     subprocess.run([GIT, "init", "-q", os.fspath(release)], check=True)  # noqa: S603
     subprocess.run([GIT, "-C", os.fspath(release), "add", "."], check=True)  # noqa: S603
     return release

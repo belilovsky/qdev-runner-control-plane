@@ -81,13 +81,15 @@ services:
       QDEV_RELEASE_HOST_DISPATCH_CLAIM_TTL_SECONDS: "120"
       QDEV_RELEASE_JOB_LEASE_TTL_SECONDS: "3600"
       QDEV_GITHUB_APP_PRIVATE_KEY: /etc/qdev-runner/github-app.pem
+      # Directory mounts preserve visibility when these files are replaced
+      # atomically; a single-file bind would pin the old inode.
+      QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
+      QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
       - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro
-      - /etc/qdev-runner/controller-release.json:/etc/qdev-runner/controller-release.json:ro
       - /etc/qdev-runner/release-lanes.yml:/etc/qdev-runner/release-lanes.yml:ro
       - /etc/qdev-runner/managed-registry.yml:/etc/qdev-runner/managed-registry.yml:ro
-      - /etc/qdev-runner/admin-platform-ledger.yml:/etc/qdev-runner/admin-platform-ledger.yml:ro
       - /etc/qdev-runner/managed-release-ledger.yml:/etc/qdev-runner/managed-release-ledger.yml:ro
       - /etc/qdev-runner/fleet-bootstrap.yml:/etc/qdev-runner/fleet-bootstrap.yml:ro
       - /etc/qdev-runner/release-host-dispatch-keys.json:/etc/qdev-runner/release-host-dispatch-keys.json:ro
@@ -98,6 +100,8 @@ services:
       - /var/lib/qdev-runner/artifacts:/var/lib/qdev-runner/artifacts
       - /var/lib/qdev-runner/operations:/var/lib/qdev-runner/operations
       - /var/lib/qdev-runner/admin-platform-receipts:/var/lib/qdev-runner/admin-platform-receipts
+      - /var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro
+      - /var/lib/qdev-runner/admin-platform-state:/var/lib/qdev-runner/admin-platform-state:ro
       - /var/lib/qdev-runner/release-jobs:/var/lib/qdev-runner/release-jobs
       - /var/lib/qdev-runner/fleet-host-dispatch/incoming:/var/lib/qdev-runner/fleet-host-dispatch/incoming
       - /var/lib/qdev-runner/fleet-host-dispatch/results:/var/lib/qdev-runner/fleet-host-dispatch/results:ro

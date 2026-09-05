@@ -22,8 +22,10 @@ host_dispatch_incoming="$host_dispatch_root/incoming"
 host_dispatch_processing="$host_dispatch_root/processing"
 host_dispatch_results="$host_dispatch_root/results"
 broker_env_path="/etc/qdev-runner/broker.env"
-admin_platform_ledger_path="/etc/qdev-runner/admin-platform-ledger.yml"
-release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
+default_admin_platform_ledger_path="/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml"
+admin_platform_ledger_path="${QDEV_ADMIN_PLATFORM_LEDGER:-$default_admin_platform_ledger_path}"
+default_release_status_path="/var/lib/qdev-runner/controller-status/controller-release.json"
+release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-$default_release_status_path}"
 rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-/etc/qdev-runner/controller-rollback-anchor.json}"
 release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/qdev-controller-release.lock}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
@@ -45,6 +47,10 @@ fi
 expected_current_revision="${QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION:-}"
 if [[ ! "$expected_current_revision" =~ ^[0-9a-f]{40}$ ]]; then
   printf 'activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION\n' >&2
+  exit 64
+fi
+if [[ ! "$runtime_uid" =~ ^[0-9]+$ || ! "$runtime_gid" =~ ^[0-9]+$ ]]; then
+  printf 'controller runtime uid/gid must be numeric\n' >&2
   exit 64
 fi
 
@@ -147,6 +153,35 @@ if ! flock -n 9; then
   exit 75
 fi
 
+# Docker preserves the inode of a single-file bind mount.  Migrate the two
+# atomically replaced controller records into dedicated directory-mounted
+# stores before reading the active revision.  The helper leaves fixed /etc
+# compatibility symlinks so the saved v1 rollback runtime observes the same
+# records.  Explicit test/maintenance path overrides remain untouched.
+durable_state_names=()
+if [[ "$release_status_path" == "$default_release_status_path" ]]; then
+  durable_state_names+=(status)
+fi
+if [[ "$admin_platform_ledger_path" == "$default_admin_platform_ledger_path" ]]; then
+  durable_state_names+=(ledger)
+fi
+if (( ${#durable_state_names[@]} > 0 )); then
+  # The old installation owned this parent as the broker UID.  Harden it
+  # before creating root-controlled children so that runtime code cannot
+  # rename or replace the status and ledger directories from the host mount.
+  install -d -o root -g "$runtime_gid" -m 0750 /var/lib/qdev-runner
+  if [[ "$(stat -c '%u:%g:%a' -- /var/lib/qdev-runner)" != "0:$runtime_gid:750" ]]; then
+    printf 'controller durable-state parent ownership or permissions are unsafe\n' >&2
+    exit 73
+  fi
+  durable_state_helper="$script_root/src/qdev_runner/durable_state.py"
+  if [[ ! -f "$durable_state_helper" ]] ||
+    ! python3 -I "$durable_state_helper" "${durable_state_names[@]}"; then
+    printf 'controller status/ledger durable-state migration failed\n' >&2
+    exit 73
+  fi
+fi
+
 read_active_release_revision() {
   python3 - "$release_status_path" <<'PY'
 import json
@@ -223,6 +258,7 @@ required=(
 )
 if [[ "$rollback_mode" != true ]]; then
   required+=(
+    src/qdev_runner/durable_state.py
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
@@ -246,14 +282,18 @@ release_status_directory="$(dirname -- "$release_status_path")"
   exit 73
 }
 
+target_has_runtime_health=false
+if grep -Fq '@app.get("/health/runtime"' "$release/src/qdev_runner/broker.py"; then
+  target_has_runtime_health=true
+elif [[ "$rollback_mode" != true ]]; then
+  printf 'forward controller release lacks measured runtime health\n' >&2
+  exit 66
+fi
+
 # The broker runs rootless. Prepare its persistent operation store before any
 # container is recreated so a valid release cannot fail after the old broker
 # has already been replaced. Numeric IDs are intentional: the runtime image
 # owns this UID/GID even when the host has no matching passwd entry.
-[[ "$runtime_uid" =~ ^[0-9]+$ && "$runtime_gid" =~ ^[0-9]+$ ]] || {
-  printf 'controller runtime uid/gid must be numeric\n' >&2
-  exit 64
-}
 for durable_root in \
   "$operations_root" \
   "$release_jobs_root" \
@@ -713,18 +753,30 @@ measure_runtime_identity() {
 }
 
 write_release_status() {
-  local temporary_status
+  local legacy_digest temporary_status
   temporary_status="$(mktemp "$release_status_directory/.controller-release-status.XXXXXX")"
-  printf '%s\n' \
-    "{\"schema\":\"qdev-controller-release-status-v2\",\"state\":\"active\",\"revision\":\"$release_revision\",\"release_digest\":\"$release_digest\",\"activated_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"runtime_identity\":{\"source_revision\":\"$release_revision\",\"source_digest\":\"$runtime_source_digest\",\"public_image_id\":\"$runtime_public_image_id\",\"internal_image_id\":\"$runtime_internal_image_id\"},\"dependency_identity\":{\"requirements_digest\":\"$runtime_requirements_digest\",\"public_installed_digest\":\"$runtime_public_dependencies_digest\",\"internal_installed_digest\":\"$runtime_internal_dependencies_digest\"}}" \
-    > "$temporary_status"
+  if [[ "$target_has_runtime_health" == true ]]; then
+    printf '%s\n' \
+      "{\"schema\":\"qdev-controller-release-status-v2\",\"state\":\"active\",\"revision\":\"$release_revision\",\"release_digest\":\"$release_digest\",\"activated_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"runtime_identity\":{\"source_revision\":\"$release_revision\",\"source_digest\":\"$runtime_source_digest\",\"public_image_id\":\"$runtime_public_image_id\",\"internal_image_id\":\"$runtime_internal_image_id\"},\"dependency_identity\":{\"requirements_digest\":\"$runtime_requirements_digest\",\"public_installed_digest\":\"$runtime_public_dependencies_digest\",\"internal_installed_digest\":\"$runtime_internal_dependencies_digest\"}}" \
+      > "$temporary_status"
+  else
+    # The saved v1 broker deliberately rejects unknown status fields and a
+    # sha256: prefix.  Runtime/source/dependency measurements are still made
+    # and retained by the signed rollback operation; this projection is only
+    # the compatibility shape the old runtime can expose through /health.
+    legacy_digest="${release_digest#sha256:}"
+    printf '%s\n' \
+      "{\"schema\":\"qdev-controller-release-status-v1\",\"state\":\"active\",\"revision\":\"$release_revision\",\"release_digest\":\"$legacy_digest\",\"activated_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+      > "$temporary_status"
+  fi
   chmod 0644 "$temporary_status"
   mv -f -- "$temporary_status" "$release_status_path"
 }
 
-verify_internal_runtime_health() {
+verify_controller_runtime_health() {
   local health_program
-  health_program='import json
+  if [[ "$target_has_runtime_health" == true ]]; then
+    health_program='import json
 import sys
 import urllib.request
 
@@ -748,9 +800,32 @@ if runtime.get("public_image_id") != public_image or runtime.get(
     "internal_image_id"
 ) != internal_image:
     raise SystemExit("internal runtime health image identity is invalid")'
-  docker exec qdev-runner-broker-internal python -c "$health_program" \
-    "$release_revision" "$release_digest" \
-    "$runtime_public_image_id" "$runtime_internal_image_id"
+    docker exec qdev-runner-broker-internal python -c "$health_program" \
+      "$release_revision" "$release_digest" \
+      "$runtime_public_image_id" "$runtime_internal_image_id"
+    return
+  fi
+
+  [[ "$rollback_mode" == true ]] || return 1
+  health_program='import json
+import sys
+import urllib.request
+
+revision, release_digest = sys.argv[1:]
+with urllib.request.urlopen("https://ci.qdev.run/health", timeout=5) as response:
+    if response.status != 200:
+        raise SystemExit("legacy public health returned a non-success status")
+    document = json.load(response)
+controller = document.get("controller_release")
+if not isinstance(controller, dict):
+    raise SystemExit("legacy public health omitted controller release identity")
+if controller.get("schema") != "qdev-controller-release-status-v1":
+    raise SystemExit("legacy public health status schema is invalid")
+if controller.get("state") != "active" or controller.get("revision") != revision:
+    raise SystemExit("legacy public health is not bound to the active revision")
+if controller.get("release_digest") != release_digest:
+    raise SystemExit("legacy public health is not bound to the release digest")'
+  python3 -c "$health_program" "$release_revision" "${release_digest#sha256:}"
 }
 
 restore_release_status() {
@@ -1258,9 +1333,9 @@ if ! write_release_status; then
   exit 1
 fi
 
-if ! verify_internal_runtime_health; then
+if ! verify_controller_runtime_health; then
   printf '%s\n' \
-    'Controller receipt is not observable on the isolated internal broker; restoring the prior release.' >&2
+    'Controller receipt is not observable from the activated runtime; restoring the prior release.' >&2
   rollback
   exit 1
 fi

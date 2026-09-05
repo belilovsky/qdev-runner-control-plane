@@ -60,6 +60,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/qdev_controller_activation_adapter.py" in script
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
+    assert "src/qdev_runner/durable_state.py" in script
     assert "scripts/provision_fleet_host_dispatch_state.py" in script
     assert "/usr/local/sbin/qdev-controller-activate" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
@@ -127,6 +128,10 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/usr/local/sbin/qdev-admin-platform-ledger-bootstrap" in provisioning
     assert "/var/lib/qdev-runner/admin-platform-bootstrap" in provisioning
     assert "/var/lib/qdev-runner/admin-platform-ledger-migrations" in provisioning
+    assert "install -d -o root -g 9020 -m 0750 /var/lib/qdev-runner" in provisioning
+    assert "/var/lib/qdev-runner/controller-status" in provisioning
+    assert "/var/lib/qdev-runner/admin-platform-state" in provisioning
+    assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
@@ -158,8 +163,11 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
         "if ! write_release_status; then"
     )
     assert script.index("if ! write_release_status; then") < script.index(
-        "if ! verify_internal_runtime_health; then"
+        "if ! verify_controller_runtime_health; then"
     )
+    assert "qdev-controller-release-status-v1" in script
+    assert 'urllib.request.urlopen("https://ci.qdev.run/health", timeout=5)' in script
+    assert "legacy public health is not bound to the active revision" in script
     rollback = script.split("rollback() {", 1)[1].split("\n}\n\nif !", 1)[0]
     previous_rollback = rollback.split('activate_link "$previous"', 1)[1]
     assert previous_rollback.index("up -d --force-recreate --no-build") < previous_rollback.index(
@@ -221,6 +229,20 @@ def test_controller_compose_project_is_namespaced() -> None:
 
     assert compose.startswith("name: qdev-runner\n")
     assert service.count("--project-name qdev-runner") == 2
+
+
+def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
+    compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "/etc/qdev-runner/controller-release.json:" not in compose
+    assert "/etc/qdev-runner/admin-platform-ledger.yml:" not in compose
+    assert "/var/lib/qdev-runner/controller-status:" in compose
+    assert "/var/lib/qdev-runner/admin-platform-state:" in compose
+    assert "QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/" in compose
+    assert "QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/" in compose
+    assert 'python3 -I "$durable_state_helper"' in activation
+    assert "controller durable-state parent ownership or permissions are unsafe" in activation
 
 
 def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> None:
