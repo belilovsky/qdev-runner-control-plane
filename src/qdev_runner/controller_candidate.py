@@ -82,7 +82,7 @@ def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
     return max(utc_now(), latest + timedelta(microseconds=1))
 
 
-def _blocking_lane(entry: dict[str, Any]) -> str:
+def _blocking_lane(entry: dict[str, Any], *, release_id: str) -> str:
     """Select the first unfinished lane whose prerequisites already passed."""
 
     results = cast(list[dict[str, Any]], entry.get("results", []))
@@ -90,6 +90,7 @@ def _blocking_lane(entry: dict[str, Any]) -> str:
         cast(str, result["lane"]): cast(str, result["outcome"])
         for result in results
         if isinstance(result, dict)
+        and result.get("release_id") == release_id
         and isinstance(result.get("lane"), str)
         and isinstance(result.get("outcome"), str)
     }
@@ -249,7 +250,7 @@ def prepare_controller_candidate(
         if entry.get("status") not in {"candidate", "ci_queued", "ci_passed", "deploying"}:
             raise ControllerCandidateError("active controller attempt cannot be superseded")
         terminal_time = _next_observed_at(snapshot)
-        blocking_lane = _blocking_lane(entry)
+        blocking_lane = _blocking_lane(entry, release_id=previous.release_id)
         terminal = state.finish_attempt(
             expected_sha256=digest,
             result_receipt=_evidence(
