@@ -86,6 +86,7 @@ def test_embedded_node_runtimes_replace_npm_with_pinned_verified_release() -> No
     ) in dockerfile
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node20") == 2
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node24") == 2
+    assert "install-pinned-npm /usr \"${NPM_VERSION}\" \"${NPM_SHA512}\"" in dockerfile
     assert "sha512sum --check" in installer
     assert 'test "${actual_version}" = "${npm_version}"' in installer
 

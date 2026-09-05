@@ -76,6 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod 0555 /usr/local/bin/install-pinned-npm \
     && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node20 "${NPM_VERSION}" "${NPM_SHA512}" \
     && /usr/local/bin/install-pinned-npm /home/runner/actions-runner/externals/node24 "${NPM_VERSION}" "${NPM_SHA512}" \
+    && /usr/local/bin/install-pinned-npm /usr "${NPM_VERSION}" "${NPM_SHA512}" \
     && /home/runner/actions-runner/bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 COPY entrypoint.sh /usr/local/bin/qdev-runner-entrypoint
