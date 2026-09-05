@@ -1215,14 +1215,8 @@ class AdminPlatformStateStore:
                 raise AdminPlatformStateError(unsafe)
             self._set_runtime_owner(receipt_root_fd)
             os.fchmod(receipt_root_fd, 0o700)
-            created = False
-            try:
+            with suppress(FileExistsError):
                 os.mkdir(child_name, mode=0o700, dir_fd=receipt_root_fd)
-                created = True
-            except FileExistsError:
-                pass
-            if created:
-                os.fsync(receipt_root_fd)
             child_fd = os.open(
                 child_name,
                 directory_flags | nofollow,
@@ -1233,6 +1227,11 @@ class AdminPlatformStateStore:
                 raise AdminPlatformStateError(unsafe)
             self._set_runtime_owner(child_fd)
             os.fchmod(child_fd, 0o700)
+            # Persist the directory edge even on replay. A prior invocation may
+            # have crashed after mkdir(2) but before syncing the parent; treating
+            # FileExistsError as proof of durability would let a ledger commit
+            # reference receipts that can disappear after power loss.
+            os.fsync(receipt_root_fd)
             return receipt_root_fd, child_fd
         except BaseException:
             if child_fd is not None:
@@ -1273,7 +1272,10 @@ class AdminPlatformStateStore:
                 if created:
                     self._set_runtime_owner(child)
                     os.fchmod(child, 0o700)
-                    os.fsync(descriptor)
+                # Existing components may be remnants of an interrupted mkdir
+                # whose parent edge was never made durable. Sync every validated
+                # parent on replay, not only the invocation that created it.
+                os.fsync(descriptor)
                 os.close(descriptor)
                 descriptor = child
             return descriptor

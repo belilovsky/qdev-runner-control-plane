@@ -399,6 +399,57 @@ def test_child_receipt_directory_creation_fsyncs_every_new_parent(tmp_path: Path
     assert receipts.stat().st_ino in synced_inodes
 
 
+def test_child_receipt_directory_retry_fsyncs_interrupted_existing_edge(
+    tmp_path: Path,
+) -> None:
+    receipts = tmp_path / "separate-state" / "receipts"
+    state = AdminPlatformStateStore(
+        tmp_path / "ledger.yml",
+        receipt_key=RECEIPT_KEY,
+        receipt_root=receipts,
+    )
+    real_fsync = os.fsync
+
+    def interrupt_after_child_mkdir(descriptor: int) -> None:
+        if receipts.exists() and os.fstat(descriptor).st_ino == receipts.stat().st_ino:
+            raise OSError(errno.EIO, "simulated crash before receipt-root fsync")
+        real_fsync(descriptor)
+
+    with (
+        patch(
+            "qdev_runner.admin_platform_state.os.fsync",
+            side_effect=interrupt_after_child_mkdir,
+        ),
+        pytest.raises(OSError, match="simulated crash before receipt-root fsync"),
+    ):
+        state._open_durable_child_directory(
+            "transactions",
+            unavailable="unavailable",
+            unsafe="unsafe",
+        )
+
+    assert (receipts / "transactions").is_dir()
+    synced_inodes: list[int] = []
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        real_fsync(descriptor)
+
+    with patch(
+        "qdev_runner.admin_platform_state.os.fsync",
+        side_effect=record_fsync,
+    ):
+        receipt_root_fd, child_fd = state._open_durable_child_directory(
+            "transactions",
+            unavailable="unavailable",
+            unsafe="unsafe",
+        )
+        os.close(child_fd)
+        os.close(receipt_root_fd)
+
+    assert receipts.stat().st_ino in synced_inodes
+
+
 def test_stale_transaction_directory_is_safely_reaped(tmp_path: Path) -> None:
     state = AdminPlatformStateStore(
         tmp_path / "ledger.yml",
