@@ -1108,14 +1108,14 @@ class AdminPlatformStateStore:
         transaction_filenames = tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts) + (
             "ledger-binding.json",
         )
-        self._remove_stale_transaction_directories(
-            root_fd,
-            transaction_id,
-            transaction_filenames,
-        )
         temporary_name = f".{transaction_id}.{secrets.token_hex(8)}.tmp"
         transaction_fd: int | None = None
         try:
+            self._remove_stale_transaction_directories(
+                root_fd,
+                transaction_id,
+                transaction_filenames,
+            )
             os.mkdir(temporary_name, mode=0o700, dir_fd=root_fd)
             transaction_fd = os.open(
                 temporary_name,
@@ -1437,11 +1437,13 @@ class AdminPlatformStateStore:
             os.unlink(temporary_name, dir_fd=directory)
             os.fsync(directory)
         finally:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary_name, dir_fd=directory)
-                os.fsync(directory)
-            os.close(directory)
-            os.close(receipt_root_fd)
+            try:
+                with suppress(FileNotFoundError):
+                    os.unlink(temporary_name, dir_fd=directory)
+                    os.fsync(directory)
+            finally:
+                os.close(directory)
+                os.close(receipt_root_fd)
 
     @staticmethod
     def _touch(document: dict[str, Any], observed_at: str) -> None:

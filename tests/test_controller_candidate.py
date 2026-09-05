@@ -522,6 +522,52 @@ def test_stale_transaction_directory_is_safely_reaped(tmp_path: Path) -> None:
     assert unrelated.is_dir()
 
 
+def test_stale_transaction_cleanup_failure_closes_parent_descriptors(
+    tmp_path: Path,
+) -> None:
+    state, _, _, receipts, _ = _initialize(tmp_path)
+    _, document = state.current()
+    transaction_id = "a" * 64
+    transactions = receipts / "transactions"
+    stale = transactions / f".{transaction_id}.0123456789abcdef.tmp"
+    stale.mkdir(parents=True)
+    (stale / "unexpected.json").write_text("{}", encoding="utf-8")
+    opened: list[int] = []
+    original_open = state._open_durable_child_directory
+
+    def record_open(*args: Any, **kwargs: Any) -> tuple[int, int]:
+        descriptors = original_open(*args, **kwargs)
+        opened.extend(descriptors)
+        return descriptors
+
+    with (
+        patch.object(
+            state,
+            "_open_durable_child_directory",
+            side_effect=record_open,
+        ),
+        pytest.raises(AdminPlatformStateError, match="unexpected files"),
+    ):
+        state._persist_receipt_transaction(
+            transaction_id=transaction_id,
+            receipts=(
+                (
+                    f"receipts/transactions/{transaction_id}/{'b' * 64}.json",
+                    "c" * 64,
+                    b"{}\n",
+                ),
+            ),
+            previous_raw=state.path.read_bytes(),
+            document=document,
+            observed_at="2026-09-05T00:00:01Z",
+        )
+
+    assert len(opened) == 2
+    for descriptor in opened:
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(descriptor)
+
+
 def test_torn_ledger_link_does_not_poison_retry(tmp_path: Path) -> None:
     state, _, _, receipts, _ = _initialize(tmp_path)
     target = "f" * 64
@@ -562,6 +608,55 @@ def test_torn_ledger_link_does_not_poison_retry(tmp_path: Path) -> None:
 
     assert (link_root / f"{target}.json").read_bytes()
     assert not list(link_root.glob(f".{target}.json.*.tmp"))
+
+
+def test_ledger_link_cleanup_fsync_failure_closes_parent_descriptors(
+    tmp_path: Path,
+) -> None:
+    state, _, _, _, _ = _initialize(tmp_path)
+    opened: list[int] = []
+    directory_fd: int | None = None
+    original_open = state._open_durable_child_directory
+    original_fsync = os.fsync
+
+    def record_open(*args: Any, **kwargs: Any) -> tuple[int, int]:
+        nonlocal directory_fd
+        descriptors = original_open(*args, **kwargs)
+        opened.extend(descriptors)
+        directory_fd = descriptors[1]
+        return descriptors
+
+    def fail_cleanup_fsync(descriptor: int) -> None:
+        if descriptor == directory_fd:
+            raise OSError(errno.EIO, "simulated cleanup fsync failure")
+        original_fsync(descriptor)
+
+    with (
+        patch.object(
+            state,
+            "_open_durable_child_directory",
+            side_effect=record_open,
+        ),
+        patch(
+            "qdev_runner.admin_platform_state.os.link",
+            side_effect=OSError(errno.EIO, "simulated link failure"),
+        ),
+        patch(
+            "qdev_runner.admin_platform_state.os.fsync",
+            side_effect=fail_cleanup_fsync,
+        ),
+        pytest.raises(OSError, match="simulated cleanup fsync failure"),
+    ):
+        state._persist_ledger_link(
+            previous_ledger_sha256="e" * 64,
+            target_ledger_sha256="f" * 64,
+            observed_at="2026-09-05T00:00:00Z",
+        )
+
+    assert len(opened) == 2
+    for descriptor in opened:
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(descriptor)
 
 
 def test_prepare_controller_candidate_uses_monotonic_durable_timestamps(
