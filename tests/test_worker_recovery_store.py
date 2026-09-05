@@ -19,7 +19,48 @@ LABELS = ("self-hosted", "Linux", "X64", "qdev-platform-ci")
 PROOF_KEY = "provider-proof-key"
 RECONCILIATION_KEY = "native-reconciliation-key"
 ACCEPTANCE_KEY = "recovery-acceptance-key"
-PROVIDER_RECONCILIATION_DIGEST = "sha256:" + "0" * 64
+POLICY_DIGEST = "sha256:" + "2" * 64
+AGENT_RELEASE_DIGEST = "sha256:" + "3" * 64
+
+
+def _provider_observation(
+    *,
+    worker_name: str = WORKER,
+    repository: str = REPOSITORY,
+    labels: tuple[str, ...] = LABELS,
+    provider_runner_id: int = 187,
+    provider_status: str = "offline",
+    provider_busy: bool = False,
+    active_jobs: int = 0,
+    canary: dict[str, Any] | None = None,
+    other_runners: tuple[dict[str, Any], ...] = (),
+) -> dict[str, Any]:
+    runners = [
+        {
+            "id": provider_runner_id,
+            "name": worker_name,
+            "status": provider_status,
+            "busy": provider_busy,
+            "labels": list(labels),
+        },
+        *other_runners,
+    ]
+    observation: dict[str, Any] = {
+        "schema": (
+            "qdev-worker-provider-observation-v1"
+            if canary is None
+            else "qdev-worker-recovery-provider-observation-v1"
+        ),
+        "repository": repository,
+        "runners": {"total_count": len(runners), "items": runners},
+        "active_target_jobs": {
+            "total_count": active_jobs,
+            "items": [{"id": index + 1} for index in range(active_jobs)],
+        },
+    }
+    if canary is not None:
+        observation["canary"] = canary
+    return observation
 
 
 def _provider_proof(*, observed_at: float | None = None, active_jobs: int = 0) -> dict[str, Any]:
@@ -32,7 +73,7 @@ def _provider_proof(*, observed_at: float | None = None, active_jobs: int = 0) -
         provider_status="offline",
         provider_busy=False,
         active_jobs=active_jobs,
-        provider_reconciliation_digest=PROVIDER_RECONCILIATION_DIGEST,
+        provider_observation=_provider_observation(active_jobs=active_jobs),
         observed_at=observed_at,
     )
 
@@ -54,6 +95,8 @@ def _begin_arguments(**overrides: Any) -> dict[str, Any]:
         "interface_digest": "d" * 64,
         "controller_revision": "e" * 40,
         "controller_release_digest": "f" * 64,
+        "policy_digest": POLICY_DIGEST,
+        "agent_release_digest": AGENT_RELEASE_DIGEST,
         "controller_receipt_id": "1" * 64,
         "controller_observed_at": now,
         "request_nonce": "nonce-platform-0001",
@@ -116,9 +159,32 @@ def _acceptance_proof(
         if worker_name == WORKER
         else ".github/workflows/self-hosted-recovery.yml"
     )
+    operation_id = str(recovery["operation_id"])
+    temporary_label = f"qdev-job-recovery-{operation_id}"
+    dispatch_correlation = f"qdev-recovery-{operation_id}"
+    canary_observation = {
+        "repository": repository,
+        "workflow": workflow,
+        "ref": "refs/heads/main",
+        "head_sha": "8" * 40,
+        "dispatch_correlation": dispatch_correlation,
+        "temporary_label": temporary_label,
+        "dispatch_observed_label": temporary_label,
+        "run_observed_label": temporary_label,
+        "baseline_run_id": 499,
+        "run_id": 500,
+        "run_attempt": 1,
+        "job_id": 501,
+        "job_labels": [*permanent_labels, temporary_label],
+        "job_runner_id": resulting_runner_id,
+        "job_runner_name": worker_name,
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": completed_at,
+    }
     return Store.issue_worker_recovery_acceptance_proof(
         key=ACCEPTANCE_KEY,
-        operation_id=str(recovery["operation_id"]),
+        operation_id=operation_id,
         worker_name=worker_name,
         repository=repository,
         labels=permanent_labels,
@@ -129,14 +195,29 @@ def _acceptance_proof(
         provider_status="online",
         provider_busy=False,
         active_jobs=0,
-        provider_reconciliation_digest="sha256:" + "7" * 64,
+        provider_observation=_provider_observation(
+            worker_name=worker_name,
+            repository=repository,
+            labels=permanent_labels,
+            provider_runner_id=resulting_runner_id,
+            provider_status="online",
+            canary=canary_observation,
+        ),
         canary_repository=repository,
         canary_workflow=workflow,
         canary_ref="refs/heads/main",
         canary_head_sha="8" * 40,
+        canary_dispatch_correlation=dispatch_correlation,
+        canary_temporary_label=temporary_label,
+        canary_dispatch_observed_label=temporary_label,
+        canary_run_observed_label=temporary_label,
+        canary_baseline_run_id=499,
         canary_run_id=500,
         canary_run_attempt=1,
         canary_job_id=501,
+        canary_job_labels=permanent_labels + (temporary_label,),
+        canary_job_runner_id=resulting_runner_id,
+        canary_job_runner_name=worker_name,
         canary_runner_id=(resulting_runner_id if canary_runner_id is None else canary_runner_id),
         canary_runner_name=worker_name,
         canary_status="completed",
@@ -171,7 +252,6 @@ def _complete_canary(
         baseline_run_id=499,
         provider_runner_id=runner_id,
         provider_runner_name=worker_name,
-        temporary_labels=("qdev-job-recovery-canary",),
     )
     assert replay is False
     canary, permitted = store.claim_worker_recovery_canary_dispatch(
@@ -179,17 +259,56 @@ def _complete_canary(
         expected_revision=int(canary["revision"]),
     )
     assert permitted is True
-    steps = (
-        ("dispatched", {}),
-        ("run_observed", {"run_id": 500, "run_attempt": 1}),
+    correlation = str(canary["dispatch_correlation"])
+    temporary_label = str(canary["temporary_label"])
+    steps: tuple[tuple[str, dict[str, Any]], ...] = (
+        (
+            "dispatched",
+            {
+                "dispatch_correlation": correlation,
+                "observed_temporary_label": temporary_label,
+            },
+        ),
+        (
+            "run_observed",
+            {
+                "dispatch_correlation": correlation,
+                "observed_temporary_label": temporary_label,
+                "run_id": 500,
+                "run_attempt": 1,
+            },
+        ),
         ("labels_pending", {}),
         ("labels_applied", {}),
-        ("job_observed", {"job_id": 501, "run_status": "in_progress"}),
-        ("completed", {"run_status": "completed", "conclusion": "success"}),
+        (
+            "job_observed",
+            {
+                "dispatch_correlation": correlation,
+                "observed_temporary_label": temporary_label,
+                "job_id": 501,
+                "job_labels": tuple(json.loads(str(recovery["labels_json"]))) + (temporary_label,),
+                "job_runner_id": runner_id,
+                "job_runner_name": worker_name,
+                "run_status": "in_progress",
+            },
+        ),
+        (
+            "completed",
+            {
+                "run_status": "completed",
+                "conclusion": "success",
+            },
+        ),
         ("cleanup_pending", {}),
         ("cleaned", {}),
     )
     for phase, observation in steps:
+        if phase == "completed":
+            observation["completed_at"] = max(
+                time.time(),
+                float(recovery["native_finalized_at"]),
+                float(canary["dispatched_at"]),
+            )
         canary, replay = store.transition_worker_recovery_canary(
             operation_id=str(recovery["operation_id"]),
             expected_revision=int(canary["revision"]),
@@ -210,9 +329,13 @@ def _completed_recovery(store: Store) -> dict[str, Any]:
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="completed",
         outcome_digest="sha256:" + "4" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
 
@@ -262,12 +385,54 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
+        recovery_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(worker_recoveries)").fetchall()
+        }
+        outcome_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(worker_recovery_outcomes)").fetchall()
+        }
+        acceptance_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(worker_recovery_acceptances)"
+            ).fetchall()
+        }
+        canary_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(worker_recovery_canaries)").fetchall()
+        }
     assert "worker_recovery_controller_receipt_idx" in indexes
     assert "worker_recovery_request_nonce_idx" in indexes
     assert "worker_recovery_outcomes" in tables
     assert "worker_recovery_acceptances" in tables
     assert "worker_recovery_canaries" in tables
     assert "worker_recovery_canary_events" in tables
+    assert {
+        "provider_observation_json",
+        "provider_reconciliation_digest",
+        "policy_digest",
+        "agent_release_digest",
+    } <= recovery_columns
+    assert {
+        "provider_reconciliation_digest",
+        "recovery_action",
+        "request_nonce",
+        "policy_digest",
+        "agent_release_digest",
+    } <= outcome_columns
+    assert "provider_observation_json" in acceptance_columns
+    assert {
+        "dispatch_correlation",
+        "temporary_label",
+        "dispatch_observed_label",
+        "run_observed_label",
+        "job_labels_json",
+        "job_runner_id",
+        "job_runner_name",
+        "dispatched_at",
+    } <= canary_columns
 
 
 def test_offline_worker_can_be_fenced_only_with_signed_provider_and_durable_idle_proof(
@@ -314,7 +479,7 @@ def test_pre_recovery_proof_is_offline_only_and_strictly_typed(tmp_path: Path) -
             provider_status="online",
             provider_busy=False,
             active_jobs=0,
-            provider_reconciliation_digest=PROVIDER_RECONCILIATION_DIGEST,
+            provider_observation=_provider_observation(provider_status="online"),
         )
     with pytest.raises(ValueError, match="operation identity"):
         store.worker_recovery(None)  # type: ignore[arg-type]
@@ -357,7 +522,12 @@ def test_recovery_authority_and_live_controller_tuple_are_single_use(tmp_path: P
         provider_status="offline",
         provider_busy=False,
         active_jobs=0,
-        provider_reconciliation_digest=PROVIDER_RECONCILIATION_DIGEST,
+        provider_observation=_provider_observation(
+            worker_name=str(second["worker_name"]),
+            repository=str(second["repository"]),
+            labels=second["labels"],
+            provider_runner_id=153,
+        ),
     )
     with pytest.raises(ValueError, match="authority was already consumed"):
         store.begin_worker_recovery(**second)
@@ -376,9 +546,13 @@ def test_exact_terminal_request_replay_does_not_reopen_freshness_window(
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="not_applied",
         outcome_digest="sha256:" + "2" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
 
@@ -456,13 +630,21 @@ def test_recovery_rejects_unregistered_target_and_unbound_provider_reconciliatio
             provider_status="offline",
             provider_busy=False,
             active_jobs=0,
-            provider_reconciliation_digest=PROVIDER_RECONCILIATION_DIGEST,
+            provider_observation=_provider_observation(repository="belilovsky/other"),
         )
     with pytest.raises(ValueError, match="not registered"):
         store.begin_worker_recovery(**arbitrary)
 
     tampered = _provider_proof()
     tampered["provider_reconciliation_digest"] = "sha256:" + "9" * 64
+    forged_payload = {
+        field: value for field, value in tampered.items() if field not in {"digest", "signature"}
+    }
+    canonical = json.dumps(
+        forged_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode()
+    tampered["digest"] = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    tampered["signature"] = hmac.new(PROOF_KEY.encode(), canonical, hashlib.sha256).hexdigest()
     with pytest.raises(ValueError, match="provider idle proof"):
         store.begin_worker_recovery(**_begin_arguments(provider_idle_proof=tampered))
 
@@ -481,9 +663,13 @@ def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_complete
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="ambiguous",
         outcome_digest="sha256:" + "3" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
         observed_at=observed_at,
     )
@@ -494,9 +680,13 @@ def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_complete
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="ambiguous",
         outcome_digest="sha256:" + "3" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
         observed_at=observed_at - 600,
     )
@@ -506,9 +696,13 @@ def test_ambiguous_observation_stays_fenced_then_exact_terminal_outcome_complete
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="completed",
         outcome_digest="sha256:" + "4" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
     assert completed["state"] == "completed"
@@ -580,9 +774,13 @@ def test_not_applied_is_only_failure_outcome_that_releases_fence(tmp_path: Path)
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="failed",
         outcome_digest="sha256:" + "5" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
     assert failed["state"] == "invoking"
@@ -591,9 +789,13 @@ def test_not_applied_is_only_failure_outcome_that_releases_fence(tmp_path: Path)
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="not_applied",
         outcome_digest="sha256:" + "6" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
     assert released["state"] == "released"
@@ -610,9 +812,13 @@ def test_reconciliation_is_bound_to_expected_agent_and_signed(tmp_path: Path) ->
             operation_id=admitted["operation_id"],
             worker_name=WORKER,
             request_fingerprint="a" * 64,
+            recovery_action=str(admitted["recovery_action"]),
+            request_nonce=str(admitted["request_nonce"]),
+            provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
             agent_certificate_sha256="7" * 64,
             outcome="completed",
             outcome_digest="sha256:" + "8" * 64,
+            agent_release_digest=str(admitted["agent_release_digest"]),
             reconciliation_key=RECONCILIATION_KEY,
         )
 
@@ -621,9 +827,13 @@ def test_reconciliation_is_bound_to_expected_agent_and_signed(tmp_path: Path) ->
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="ambiguous",
         outcome_digest="sha256:" + "8" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
         observed_at=observed_at,
     )
@@ -633,7 +843,11 @@ def test_reconciliation_is_bound_to_expected_agent_and_signed(tmp_path: Path) ->
         "worker_name": WORKER,
         "request_digest": "a" * 64,
         "agent_certificate_sha256": "c" * 64,
-        "provider_reconciliation_digest": PROVIDER_RECONCILIATION_DIGEST,
+        "provider_reconciliation_digest": admitted["provider_reconciliation_digest"],
+        "recovery_action": admitted["recovery_action"],
+        "request_nonce": admitted["request_nonce"],
+        "policy_digest": admitted["policy_digest"],
+        "agent_release_digest": admitted["agent_release_digest"],
         "outcome": "ambiguous",
         "outcome_digest": "sha256:" + "8" * 64,
         "observed_at": observed_at,
@@ -647,7 +861,12 @@ def test_reconciliation_is_bound_to_expected_agent_and_signed(tmp_path: Path) ->
     )
     stored_outcomes = store.worker_recovery_outcomes(admitted["operation_id"])
     assert len(stored_outcomes) == 1
-    assert stored_outcomes[0]["provider_reconciliation_digest"] == PROVIDER_RECONCILIATION_DIGEST
+    assert (
+        stored_outcomes[0]["provider_reconciliation_digest"]
+        == admitted["provider_reconciliation_digest"]
+    )
+    assert stored_outcomes[0]["policy_digest"] == POLICY_DIGEST
+    assert stored_outcomes[0]["agent_release_digest"] == AGENT_RELEASE_DIGEST
 
 
 def test_native_outcome_cannot_predate_adapter_invocation(tmp_path: Path) -> None:
@@ -661,9 +880,13 @@ def test_native_outcome_cannot_predate_adapter_invocation(tmp_path: Path) -> Non
             operation_id=admitted["operation_id"],
             worker_name=WORKER,
             request_fingerprint="a" * 64,
+            recovery_action=str(admitted["recovery_action"]),
+            request_nonce=str(admitted["request_nonce"]),
+            provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
             agent_certificate_sha256="c" * 64,
             outcome="completed",
             outcome_digest="sha256:" + "9" * 64,
+            agent_release_digest=str(admitted["agent_release_digest"]),
             reconciliation_key=RECONCILIATION_KEY,
             observed_at=float(invoking["invoked_at"]) - 0.001,
         )
@@ -685,16 +908,26 @@ def test_acceptance_rejects_wrong_workflow_labels_and_platform_id_rotation(
         operation_id=admitted["operation_id"],
         worker_name=WORKER,
         request_fingerprint="a" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="completed",
         outcome_digest="sha256:" + "a" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
 
     wrong_workflow = {
         field: value
         for field, value in _acceptance_proof(completed).items()
-        if field not in {"digest", "signature", "schema"}
+        if field
+        not in {
+            "digest",
+            "signature",
+            "schema",
+            "provider_reconciliation_digest",
+        }
     }
     wrong_workflow["canary_workflow"] = ".github/workflows/other.yml"
     with pytest.raises(ValueError, match="acceptance proof"):
@@ -741,7 +974,12 @@ def test_qazstack_same_name_replace_accepts_unique_new_provider_id(
         provider_status="offline",
         provider_busy=False,
         active_jobs=0,
-        provider_reconciliation_digest="sha256:" + "b" * 64,
+        provider_observation=_provider_observation(
+            worker_name="qdev-qazstack-01",
+            repository="belilovsky/qazstack",
+            labels=labels,
+            provider_runner_id=21,
+        ),
         observed_at=now,
     )
     admitted = store.begin_worker_recovery(**arguments)
@@ -752,9 +990,13 @@ def test_qazstack_same_name_replace_accepts_unique_new_provider_id(
         operation_id=admitted["operation_id"],
         worker_name="qdev-qazstack-01",
         request_fingerprint="2" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
         agent_certificate_sha256="c" * 64,
         outcome="completed",
         outcome_digest="sha256:" + "c" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
         reconciliation_key=RECONCILIATION_KEY,
     )
     acceptance = _acceptance_proof(
@@ -789,7 +1031,6 @@ def test_canary_intent_is_exact_secret_free_and_replay_safe(tmp_path: Path) -> N
         "baseline_run_id": 499,
         "provider_runner_id": 187,
         "provider_runner_name": WORKER,
-        "temporary_labels": ("qdev-job-recovery-canary",),
     }
 
     intent, replay = store.create_worker_recovery_canary_intent(**arguments)
@@ -804,7 +1045,11 @@ def test_canary_intent_is_exact_secret_free_and_replay_safe(tmp_path: Path) -> N
     assert intent["baseline_run_id"] == 499
     assert intent["provider_runner_id"] == 187
     assert intent["provider_runner_name"] == WORKER
-    assert intent["temporary_labels"] == ("qdev-job-recovery-canary",)
+    expected_label = f"qdev-job-recovery-{recovery['operation_id']}"
+    expected_correlation = f"qdev-recovery-{recovery['operation_id']}"
+    assert intent["dispatch_correlation"] == expected_correlation
+    assert intent["temporary_label"] == expected_label
+    assert intent["temporary_labels"] == (expected_label,)
     events = store.worker_recovery_canary_events(recovery["operation_id"])
     assert len(events) == 1
     assert events[0]["event"]["phase"] == "dispatch_intent"
@@ -823,12 +1068,20 @@ def test_canary_intent_is_exact_secret_free_and_replay_safe(tmp_path: Path) -> N
         "baseline_run_id",
         "provider_runner_id",
         "provider_runner_name",
+        "dispatch_correlation",
+        "temporary_label",
         "temporary_labels",
+        "dispatch_observed_label",
+        "run_observed_label",
         "run_id",
         "run_attempt",
         "job_id",
+        "job_labels",
+        "job_runner_id",
+        "job_runner_name",
         "run_status",
         "conclusion",
+        "dispatched_at",
         "completed_at",
         "cleaned_at",
         "accepted_at",
@@ -881,7 +1134,6 @@ def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
         baseline_run_id=499,
         provider_runner_id=187,
         provider_runner_name=WORKER,
-        temporary_labels=("qdev-job-recovery-canary",),
     )
 
     claimed, permitted = store.claim_worker_recovery_canary_dispatch(
@@ -895,12 +1147,16 @@ def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
     assert permitted is True
     assert permitted_again is False
     assert replayed == claimed
+    correlation = str(claimed["dispatch_correlation"])
+    temporary_label = str(claimed["temporary_label"])
 
     dispatched, replay = store.transition_worker_recovery_canary(
         operation_id=recovery["operation_id"],
         expected_revision=2,
         expected_phase="dispatching",
         phase="dispatched",
+        dispatch_correlation=correlation,
+        observed_temporary_label=temporary_label,
     )
     assert replay is False
     replayed_dispatch, replay = store.transition_worker_recovery_canary(
@@ -908,6 +1164,8 @@ def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
         expected_revision=2,
         expected_phase="dispatching",
         phase="dispatched",
+        dispatch_correlation=correlation,
+        observed_temporary_label=temporary_label,
     )
     assert replay is True
     assert replayed_dispatch == dispatched
@@ -917,6 +1175,8 @@ def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
             expected_revision=2,
             expected_phase="dispatching",
             phase="run_observed",
+            dispatch_correlation=correlation,
+            observed_temporary_label=temporary_label,
             run_id=500,
             run_attempt=1,
         )
@@ -938,6 +1198,8 @@ def test_canary_dispatch_and_cas_replays_fail_closed_on_ambiguity(
             expected_revision=4,
             expected_phase="ambiguous",
             phase="run_observed",
+            dispatch_correlation=correlation,
+            observed_temporary_label=temporary_label,
             run_id=500,
             run_attempt=1,
         )
@@ -1044,18 +1306,6 @@ def test_canary_observations_are_exact_and_invalid_progress_does_not_commit(
 ) -> None:
     store = Store(tmp_path / "broker.db")
     recovery = _completed_recovery(store)
-    with pytest.raises(ValueError, match="binding is invalid"):
-        store.create_worker_recovery_canary_intent(
-            operation_id=recovery["operation_id"],
-            repository=REPOSITORY,
-            workflow=".github/workflows/runner-smoke.yml",
-            ref="refs/heads/main",
-            head_sha="8" * 40,
-            baseline_run_id=499,
-            provider_runner_id=187,
-            provider_runner_name=WORKER,
-            temporary_labels=("temporary-canary",),
-        )
     intent, _ = store.create_worker_recovery_canary_intent(
         operation_id=recovery["operation_id"],
         repository=REPOSITORY,
@@ -1065,27 +1315,130 @@ def test_canary_observations_are_exact_and_invalid_progress_does_not_commit(
         baseline_run_id=499,
         provider_runner_id=187,
         provider_runner_name=WORKER,
-        temporary_labels=("qdev-job-recovery-canary",),
     )
     claimed, _ = store.claim_worker_recovery_canary_dispatch(
         operation_id=recovery["operation_id"],
         expected_revision=int(intent["revision"]),
     )
+    correlation = str(claimed["dispatch_correlation"])
+    temporary_label = str(claimed["temporary_label"])
+    with pytest.raises(ValueError, match="provider binding is invalid"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=int(claimed["revision"]),
+            expected_phase="dispatching",
+            phase="dispatched",
+            dispatch_correlation=correlation,
+            observed_temporary_label="qdev-job-recovery-canary",
+        )
     dispatched, _ = store.transition_worker_recovery_canary(
         operation_id=recovery["operation_id"],
         expected_revision=int(claimed["revision"]),
         expected_phase="dispatching",
         phase="dispatched",
+        dispatch_correlation=correlation,
+        observed_temporary_label=temporary_label,
     )
+    with pytest.raises(ValueError, match="provider binding is invalid"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=int(dispatched["revision"]),
+            expected_phase="dispatched",
+            phase="run_observed",
+            dispatch_correlation=correlation,
+            observed_temporary_label=f"qdev-job-recovery-{'0' * 64}",
+            run_id=500,
+            run_attempt=1,
+        )
     with pytest.raises(ValueError, match="run observation is invalid"):
         store.transition_worker_recovery_canary(
             operation_id=recovery["operation_id"],
             expected_revision=int(dispatched["revision"]),
             expected_phase="dispatched",
             phase="run_observed",
+            dispatch_correlation=correlation,
+            observed_temporary_label=temporary_label,
             run_id=499,
             run_attempt=1,
         )
+    run_observed, _ = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(dispatched["revision"]),
+        expected_phase="dispatched",
+        phase="run_observed",
+        dispatch_correlation=correlation,
+        observed_temporary_label=temporary_label,
+        run_id=500,
+        run_attempt=1,
+    )
+    labels_pending, _ = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(run_observed["revision"]),
+        expected_phase="run_observed",
+        phase="labels_pending",
+    )
+    labels_applied, _ = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(labels_pending["revision"]),
+        expected_phase="labels_pending",
+        phase="labels_applied",
+    )
+    with pytest.raises(ValueError, match="job observation is invalid"):
+        store.transition_worker_recovery_canary(
+            operation_id=recovery["operation_id"],
+            expected_revision=int(labels_applied["revision"]),
+            expected_phase="labels_applied",
+            phase="job_observed",
+            dispatch_correlation=correlation,
+            observed_temporary_label=temporary_label,
+            job_id=501,
+            job_labels=LABELS + (f"qdev-job-recovery-{'0' * 64}",),
+            job_runner_id=187,
+            job_runner_name=WORKER,
+            run_status="in_progress",
+        )
+    job_observed, _ = store.transition_worker_recovery_canary(
+        operation_id=recovery["operation_id"],
+        expected_revision=int(labels_applied["revision"]),
+        expected_phase="labels_applied",
+        phase="job_observed",
+        dispatch_correlation=correlation,
+        observed_temporary_label=temporary_label,
+        job_id=501,
+        job_labels=LABELS + (temporary_label,),
+        job_runner_id=187,
+        job_runner_name=WORKER,
+        run_status="in_progress",
+    )
+    completion = {
+        "operation_id": recovery["operation_id"],
+        "expected_revision": int(job_observed["revision"]),
+        "expected_phase": "job_observed",
+        "phase": "completed",
+        "run_status": "completed",
+        "conclusion": "success",
+    }
+    with pytest.raises(ValueError, match="timestamp is required"):
+        store.transition_worker_recovery_canary(**completion)
+    with pytest.raises(ValueError, match="completion is invalid"):
+        store.transition_worker_recovery_canary(
+            **completion,
+            completed_at=float(job_observed["dispatched_at"]) - 0.001,
+        )
+    with pytest.raises(ValueError, match="completion is invalid"):
+        store.transition_worker_recovery_canary(
+            **completion,
+            completed_at=time.time() + 600,
+        )
+    completed, _ = store.transition_worker_recovery_canary(
+        **completion,
+        completed_at=max(
+            time.time(),
+            float(recovery["native_finalized_at"]),
+            float(job_observed["dispatched_at"]),
+        ),
+    )
     current = store.worker_recovery_canary(recovery["operation_id"])
-    assert current == dispatched
-    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 3
+    assert current == completed
+    assert current["completed_at"] is not None
+    assert len(store.worker_recovery_canary_events(recovery["operation_id"])) == 8

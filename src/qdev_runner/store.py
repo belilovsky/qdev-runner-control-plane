@@ -118,6 +118,129 @@ def _valid_canary_ref(value: object) -> bool:
     )
 
 
+def _canonical_provider_observation(value: object) -> tuple[dict[str, Any], str, str]:
+    """Return a JSON-native provider observation and its content digest."""
+
+    if not isinstance(value, dict):
+        raise ValueError("provider observation is invalid")
+    try:
+        canonical = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        normalized = json.loads(canonical)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("provider observation is invalid") from error
+    if normalized != value:
+        raise ValueError("provider observation is invalid")
+    digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return normalized, canonical, digest
+
+
+def _provider_observation_collection(
+    observation: dict[str, Any], name: str
+) -> list[dict[str, Any]]:
+    collection = observation.get(name)
+    if not isinstance(collection, dict) or set(collection) != {"total_count", "items"}:
+        raise ValueError("provider observation is invalid")
+    total_count = collection["total_count"]
+    items = collection["items"]
+    if (
+        isinstance(total_count, bool)
+        or not isinstance(total_count, int)
+        or total_count < 0
+        or not isinstance(items, list)
+        or total_count != len(items)
+        or any(not isinstance(item, dict) for item in items)
+    ):
+        raise ValueError("provider observation is invalid")
+    return items
+
+
+def _provider_runner_observations(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    runners = _provider_observation_collection(observation, "runners")
+    for runner in runners:
+        if set(runner) != {"id", "name", "status", "busy", "labels"}:
+            raise ValueError("provider observation is invalid")
+        runner_id = runner["id"]
+        runner_labels = runner["labels"]
+        if (
+            isinstance(runner_id, bool)
+            or not isinstance(runner_id, int)
+            or runner_id <= 0
+            or not isinstance(runner["name"], str)
+            or not runner["name"]
+            or runner["status"] not in {"online", "offline"}
+            or not isinstance(runner["busy"], bool)
+            or not isinstance(runner_labels, list)
+            or not runner_labels
+            or any(
+                not isinstance(label, str) or _RUNNER_LABEL.fullmatch(label) is None
+                for label in runner_labels
+            )
+            or len({label.lower() for label in runner_labels}) != len(runner_labels)
+        ):
+            raise ValueError("provider observation is invalid")
+    return runners
+
+
+def _worker_recovery_temporary_label(operation_id: str) -> str:
+    if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+        raise ValueError("worker recovery canary operation identity is invalid")
+    return f"qdev-job-recovery-{operation_id}"
+
+
+def _worker_recovery_dispatch_correlation(operation_id: str) -> str:
+    if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+        raise ValueError("worker recovery canary operation identity is invalid")
+    return f"qdev-recovery-{operation_id}"
+
+
+def _validate_provider_observation(
+    value: object,
+    *,
+    schema: str,
+    repository: str,
+    worker_name: str,
+    provider_runner_id: int,
+    provider_status: str,
+    provider_busy: bool,
+    labels: tuple[str, ...],
+    canary: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str, str]:
+    observation, canonical, digest = _canonical_provider_observation(value)
+    required = {"schema", "repository", "runners", "active_target_jobs"}
+    if canary is not None:
+        required.add("canary")
+    try:
+        runners = _provider_runner_observations(observation)
+        active_target_jobs = _provider_observation_collection(observation, "active_target_jobs")
+    except ValueError as error:
+        raise ValueError("provider observation is invalid") from error
+    matching = [runner for runner in runners if runner["name"] == worker_name]
+    expected_runner = {
+        "id": provider_runner_id,
+        "name": worker_name,
+        "status": provider_status,
+        "busy": provider_busy,
+        "labels": list(labels),
+    }
+    if (
+        set(observation) != required
+        or observation["schema"] != schema
+        or observation["repository"] != repository
+        or matching != [expected_runner]
+        or active_target_jobs
+        or observation["active_target_jobs"]["total_count"] != 0
+        or (canary is not None and observation["canary"] != canary)
+    ):
+        raise ValueError("provider observation is invalid")
+    return observation, canonical, digest
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id INTEGER PRIMARY KEY,
@@ -174,6 +297,7 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
     provider_runner_id INTEGER,
     provider_idle_proof_digest TEXT,
     provider_reconciliation_digest TEXT,
+    provider_observation_json TEXT,
     provider_observed_at REAL,
     recovery_action TEXT,
     operator_certificate_sha256 TEXT,
@@ -182,6 +306,8 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
     interface_digest TEXT,
     controller_revision TEXT,
     controller_release_digest TEXT,
+    policy_digest TEXT,
+    agent_release_digest TEXT,
     controller_receipt_id TEXT,
     controller_observed_at REAL,
     request_digest TEXT,
@@ -223,6 +349,10 @@ CREATE TABLE IF NOT EXISTS worker_recovery_outcomes (
     request_digest TEXT NOT NULL,
     agent_certificate_sha256 TEXT NOT NULL,
     provider_reconciliation_digest TEXT NOT NULL,
+    recovery_action TEXT NOT NULL,
+    request_nonce TEXT NOT NULL,
+    policy_digest TEXT NOT NULL,
+    agent_release_digest TEXT NOT NULL,
     outcome TEXT NOT NULL CHECK(
         outcome IN ('completed','not_applied','failed','ambiguous')
     ),
@@ -253,6 +383,7 @@ CREATE TABLE IF NOT EXISTS worker_recovery_acceptances (
     provider_runner_id INTEGER NOT NULL,
     matching_runner_count INTEGER NOT NULL CHECK(matching_runner_count=1),
     provider_reconciliation_digest TEXT NOT NULL,
+    provider_observation_json TEXT NOT NULL,
     provider_observed_at REAL NOT NULL,
     canary_repository TEXT NOT NULL,
     canary_workflow TEXT NOT NULL,
@@ -288,6 +419,8 @@ CREATE TABLE IF NOT EXISTS worker_recovery_canaries (
     baseline_run_id INTEGER NOT NULL CHECK(baseline_run_id>=0),
     provider_runner_id INTEGER NOT NULL CHECK(provider_runner_id>0),
     provider_runner_name TEXT NOT NULL,
+    dispatch_correlation TEXT NOT NULL UNIQUE,
+    temporary_label TEXT NOT NULL,
     temporary_labels_json TEXT NOT NULL,
     intent_digest TEXT NOT NULL UNIQUE,
     phase TEXT NOT NULL CHECK(phase IN (
@@ -301,6 +434,12 @@ CREATE TABLE IF NOT EXISTS worker_recovery_canaries (
     job_id INTEGER,
     run_status TEXT,
     conclusion TEXT,
+    dispatch_observed_label TEXT,
+    run_observed_label TEXT,
+    job_labels_json TEXT,
+    job_runner_id INTEGER,
+    job_runner_name TEXT,
+    dispatched_at REAL,
     completed_at REAL,
     cleaned_at REAL,
     accepted_at REAL,
@@ -466,6 +605,7 @@ class Store:
             "provider_runner_id": "INTEGER",
             "provider_idle_proof_digest": "TEXT",
             "provider_reconciliation_digest": "TEXT",
+            "provider_observation_json": "TEXT",
             "provider_observed_at": "REAL",
             "recovery_action": "TEXT",
             "operator_certificate_sha256": "TEXT",
@@ -474,6 +614,8 @@ class Store:
             "interface_digest": "TEXT",
             "controller_revision": "TEXT",
             "controller_release_digest": "TEXT",
+            "policy_digest": "TEXT",
+            "agent_release_digest": "TEXT",
             "controller_receipt_id": "TEXT",
             "controller_observed_at": "REAL",
             "request_digest": "TEXT",
@@ -509,11 +651,47 @@ class Store:
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(worker_recovery_outcomes)").fetchall()
         }
-        if "provider_reconciliation_digest" not in outcome_columns:
+        outcome_additions = {
+            "provider_reconciliation_digest": "TEXT",
+            "recovery_action": "TEXT",
+            "request_nonce": "TEXT",
+            "policy_digest": "TEXT",
+            "agent_release_digest": "TEXT",
+        }
+        for name, sql_type in outcome_additions.items():
+            if name not in outcome_columns:
+                connection.execute(
+                    f"ALTER TABLE worker_recovery_outcomes ADD COLUMN {name} {sql_type}"
+                )
+        acceptance_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(worker_recovery_acceptances)"
+            ).fetchall()
+        }
+        if "provider_observation_json" not in acceptance_columns:
             connection.execute(
-                "ALTER TABLE worker_recovery_outcomes ADD COLUMN "
-                "provider_reconciliation_digest TEXT"
+                "ALTER TABLE worker_recovery_acceptances ADD COLUMN provider_observation_json TEXT"
             )
+        canary_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(worker_recovery_canaries)").fetchall()
+        }
+        canary_additions = {
+            "dispatch_correlation": "TEXT",
+            "temporary_label": "TEXT",
+            "dispatch_observed_label": "TEXT",
+            "run_observed_label": "TEXT",
+            "job_labels_json": "TEXT",
+            "job_runner_id": "INTEGER",
+            "job_runner_name": "TEXT",
+            "dispatched_at": "REAL",
+        }
+        for name, sql_type in canary_additions.items():
+            if name not in canary_columns:
+                connection.execute(
+                    f"ALTER TABLE worker_recovery_canaries ADD COLUMN {name} {sql_type}"
+                )
         # Legacy rows predate native-operation identity.  Derive it from their
         # immutable request binding; no recovery may be replayed to populate it.
         rows = connection.execute(
@@ -542,6 +720,11 @@ class Store:
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_request_nonce_idx "
             "ON worker_recoveries(request_nonce) WHERE request_nonce IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_canary_correlation_idx "
+            "ON worker_recovery_canaries(dispatch_correlation) "
+            "WHERE dispatch_correlation IS NOT NULL"
         )
 
     @contextmanager
@@ -683,9 +866,8 @@ class Store:
                 )
                 if matching_profile is None:
                     continue
-                if (
-                    enforce_profile_fifo
-                    and profile_heads.get(matching_profile.lower()) != int(row["job_id"])
+                if enforce_profile_fifo and profile_heads.get(matching_profile.lower()) != int(
+                    row["job_id"]
                 ):
                     continue
                 if claim_scope is not None and not claim_scope.permits(
@@ -944,6 +1126,8 @@ class Store:
         interface_digest: str,
         controller_revision: str,
         controller_release_digest: str,
+        policy_digest: str,
+        agent_release_digest: str,
         controller_receipt_id: str,
         controller_observed_at: float,
         request_nonce: str,
@@ -981,6 +1165,10 @@ class Store:
             or not _GIT_REVISION.fullmatch(controller_revision)
             or not isinstance(controller_release_digest, str)
             or not _SHA256_HEX.fullmatch(controller_release_digest)
+            or not isinstance(policy_digest, str)
+            or not _SHA256_DIGEST.fullmatch(policy_digest)
+            or not isinstance(agent_release_digest, str)
+            or not _SHA256_DIGEST.fullmatch(agent_release_digest)
             or not isinstance(controller_receipt_id, str)
             or not _SHA256_HEX.fullmatch(controller_receipt_id)
             or not isinstance(request_nonce, str)
@@ -1005,6 +1193,9 @@ class Store:
             # replay.  Freshness is enforced below only for first admission.
             max_age_seconds=None,
         )
+        _, provider_observation_json, _ = _canonical_provider_observation(
+            provider["provider_observation"]
+        )
         operation_binding = {
             "schema": "qdev-worker-recovery-operation-v2",
             "idempotency_key": idempotency_key,
@@ -1019,6 +1210,8 @@ class Store:
             "interface_digest": interface_digest,
             "controller_revision": controller_revision,
             "controller_release_digest": controller_release_digest,
+            "policy_digest": policy_digest,
+            "agent_release_digest": agent_release_digest,
             "controller_receipt_id": controller_receipt_id,
             "controller_observed_at": controller_observed_at,
             "request_nonce": request_nonce,
@@ -1054,12 +1247,15 @@ class Store:
                         existing["interface_digest"],
                         existing["controller_revision"],
                         existing["controller_release_digest"],
+                        existing["policy_digest"],
+                        existing["agent_release_digest"],
                         existing["controller_receipt_id"],
                         existing["controller_observed_at"],
                         existing["request_nonce"],
                         existing["requested_at"],
                         existing["provider_idle_proof_digest"],
                         existing["provider_reconciliation_digest"],
+                        existing["provider_observation_json"],
                         existing["operation_id"],
                     )
                     supplied_binding = (
@@ -1074,12 +1270,15 @@ class Store:
                         interface_digest,
                         controller_revision,
                         controller_release_digest,
+                        policy_digest,
+                        agent_release_digest,
                         controller_receipt_id,
                         controller_observed_at,
                         request_nonce,
                         requested_at,
                         provider["digest"],
                         provider["provider_reconciliation_digest"],
+                        provider_observation_json,
                         operation_id,
                     )
                     if existing_binding != supplied_binding:
@@ -1102,12 +1301,14 @@ class Store:
                     "idempotency_key,worker_name,request_fingerprint,operation_id,"
                     "state,created_at,invoked_at,updated_at,repository,labels_json,"
                     "provider_runner_id,provider_idle_proof_digest,provider_observed_at,"
-                    "provider_reconciliation_digest,"
+                    "provider_reconciliation_digest,provider_observation_json,"
                     "recovery_action,operator_certificate_sha256,"
                     "expected_agent_certificate_sha256,interface_version,interface_digest,"
-                    "controller_revision,controller_release_digest,controller_receipt_id,"
+                    "controller_revision,controller_release_digest,policy_digest,"
+                    "agent_release_digest,controller_receipt_id,"
                     "controller_observed_at,request_digest,request_nonce,requested_at,consumed_at"
-                    ") VALUES(?,?,?,?,'prepared',?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ") VALUES(?,?,?,?,'prepared',?,NULL,"
+                    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         idempotency_key,
                         worker_name,
@@ -1121,6 +1322,7 @@ class Store:
                         provider["digest"],
                         provider["observed_at"],
                         provider["provider_reconciliation_digest"],
+                        provider_observation_json,
                         recovery_action,
                         operator_certificate_sha256,
                         expected_agent_certificate_sha256,
@@ -1128,6 +1330,8 @@ class Store:
                         interface_digest,
                         controller_revision,
                         controller_release_digest,
+                        policy_digest,
+                        agent_release_digest,
                         controller_receipt_id,
                         controller_observed_at,
                         fingerprint,
@@ -1161,7 +1365,7 @@ class Store:
         provider_status: str,
         provider_busy: bool,
         active_jobs: int,
-        provider_reconciliation_digest: str,
+        provider_observation: dict[str, Any],
         observed_at: float | None = None,
     ) -> dict[str, Any]:
         """Create the controller-internal provider observation used by admission.
@@ -1187,10 +1391,23 @@ class Store:
             or isinstance(active_jobs, bool)
             or not isinstance(active_jobs, int)
             or active_jobs != 0
-            or not isinstance(provider_reconciliation_digest, str)
-            or not _SHA256_DIGEST.fullmatch(provider_reconciliation_digest)
         ):
             raise ValueError("provider idle proof is invalid")
+        try:
+            canonical_observation, _, provider_reconciliation_digest = (
+                _validate_provider_observation(
+                    provider_observation,
+                    schema="qdev-worker-provider-observation-v1",
+                    repository=repository,
+                    worker_name=worker_name,
+                    provider_runner_id=provider_runner_id,
+                    provider_status=provider_status,
+                    provider_busy=provider_busy,
+                    labels=labels,
+                )
+            )
+        except ValueError as error:
+            raise ValueError("provider idle proof is invalid") from error
         timestamp = (
             time.time()
             if observed_at is None
@@ -1205,6 +1422,7 @@ class Store:
             "provider_status": provider_status,
             "provider_busy": provider_busy,
             "active_jobs": active_jobs,
+            "provider_observation": canonical_observation,
             "provider_reconciliation_digest": provider_reconciliation_digest,
             "observed_at": timestamp,
         }
@@ -1234,6 +1452,7 @@ class Store:
             "provider_status",
             "provider_busy",
             "active_jobs",
+            "provider_observation",
             "provider_reconciliation_digest",
             "observed_at",
             "digest",
@@ -1270,6 +1489,19 @@ class Store:
         except ValueError as error:
             raise ValueError("provider idle proof is invalid") from error
         proof_age = now - observed_at
+        try:
+            _, _, provider_reconciliation_digest = _validate_provider_observation(
+                proof["provider_observation"],
+                schema="qdev-worker-provider-observation-v1",
+                repository=repository,
+                worker_name=worker_name,
+                provider_runner_id=proof["provider_runner_id"],
+                provider_status=proof["provider_status"],
+                provider_busy=proof["provider_busy"],
+                labels=labels,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("provider idle proof is invalid") from error
         if (
             proof["schema"] != "qdev-worker-provider-idle-proof-v1"
             or proof["worker_name"] != worker_name
@@ -1285,6 +1517,7 @@ class Store:
             or proof["active_jobs"] != 0
             or not isinstance(proof["provider_reconciliation_digest"], str)
             or not _SHA256_DIGEST.fullmatch(proof["provider_reconciliation_digest"])
+            or proof["provider_reconciliation_digest"] != provider_reconciliation_digest
             or proof_age < 0
             or (max_age_seconds is not None and proof_age > max_age_seconds)
             or not isinstance(proof["digest"], str)
@@ -1311,14 +1544,22 @@ class Store:
         provider_status: str,
         provider_busy: bool,
         active_jobs: int,
-        provider_reconciliation_digest: str,
+        provider_observation: dict[str, Any],
         canary_repository: str,
         canary_workflow: str,
         canary_ref: str,
         canary_head_sha: str,
+        canary_dispatch_correlation: str,
+        canary_temporary_label: str,
+        canary_dispatch_observed_label: str,
+        canary_run_observed_label: str,
+        canary_baseline_run_id: int,
         canary_run_id: int,
         canary_run_attempt: int,
         canary_job_id: int,
+        canary_job_labels: tuple[str, ...],
+        canary_job_runner_id: int,
+        canary_job_runner_name: str,
         canary_runner_id: int,
         canary_runner_name: str,
         canary_status: str,
@@ -1343,6 +1584,7 @@ class Store:
             canary_run_id,
             canary_run_attempt,
             canary_job_id,
+            canary_job_runner_id,
             canary_runner_id,
         )
         valid_runner_transition = (
@@ -1365,6 +1607,9 @@ class Store:
             or any(
                 isinstance(value, bool) or not isinstance(value, int) for value in integer_values
             )
+            or isinstance(canary_baseline_run_id, bool)
+            or not isinstance(canary_baseline_run_id, int)
+            or canary_baseline_run_id < 0
             or any(value <= 0 for value in integer_values)
             or matching_runner_count != 1
             or not valid_runner_transition
@@ -1373,8 +1618,6 @@ class Store:
             or isinstance(active_jobs, bool)
             or not isinstance(active_jobs, int)
             or active_jobs != 0
-            or not isinstance(provider_reconciliation_digest, str)
-            or not _SHA256_DIGEST.fullmatch(provider_reconciliation_digest)
             or canary_repository != repository
             or not isinstance(canary_workflow, str)
             or not _CANARY_WORKFLOW.fullmatch(canary_workflow)
@@ -1382,6 +1625,16 @@ class Store:
             or not _valid_canary_ref(canary_ref)
             or not isinstance(canary_head_sha, str)
             or not _GIT_REVISION.fullmatch(canary_head_sha)
+            or canary_dispatch_correlation != _worker_recovery_dispatch_correlation(operation_id)
+            or canary_temporary_label != _worker_recovery_temporary_label(operation_id)
+            or canary_dispatch_observed_label != canary_temporary_label
+            or canary_run_observed_label != canary_temporary_label
+            or canary_run_id <= canary_baseline_run_id
+            or not isinstance(canary_job_labels, tuple)
+            or len({label.lower() for label in canary_job_labels}) != len(canary_job_labels)
+            or canary_job_labels != labels + (canary_temporary_label,)
+            or canary_job_runner_id != provider_runner_id
+            or canary_job_runner_name != worker_name
             or canary_runner_id != provider_runner_id
             or canary_runner_name != worker_name
             or canary_status != "completed"
@@ -1398,6 +1651,47 @@ class Store:
         )
         if timestamp < completed_at:
             raise ValueError("worker recovery acceptance proof is invalid")
+        canary_observation = {
+            "repository": canary_repository,
+            "workflow": canary_workflow,
+            "ref": canary_ref,
+            "head_sha": canary_head_sha,
+            "dispatch_correlation": canary_dispatch_correlation,
+            "temporary_label": canary_temporary_label,
+            "dispatch_observed_label": canary_dispatch_observed_label,
+            "run_observed_label": canary_run_observed_label,
+            "baseline_run_id": canary_baseline_run_id,
+            "run_id": canary_run_id,
+            "run_attempt": canary_run_attempt,
+            "job_id": canary_job_id,
+            "job_labels": list(canary_job_labels),
+            "job_runner_id": canary_job_runner_id,
+            "job_runner_name": canary_job_runner_name,
+            "status": canary_status,
+            "conclusion": canary_conclusion,
+            "completed_at": completed_at,
+        }
+        try:
+            canonical_observation, _, provider_reconciliation_digest = (
+                _validate_provider_observation(
+                    provider_observation,
+                    schema="qdev-worker-recovery-provider-observation-v1",
+                    repository=repository,
+                    worker_name=worker_name,
+                    provider_runner_id=provider_runner_id,
+                    provider_status=provider_status,
+                    provider_busy=provider_busy,
+                    labels=labels,
+                    canary=canary_observation,
+                )
+            )
+            observed_runners = _provider_runner_observations(canonical_observation)
+        except ValueError as error:
+            raise ValueError("worker recovery acceptance proof is invalid") from error
+        if prior_provider_runner_disposition == "absent" and any(
+            runner["id"] == prior_provider_runner_id for runner in observed_runners
+        ):
+            raise ValueError("worker recovery acceptance proof is invalid")
         payload = {
             "schema": "qdev-worker-recovery-acceptance-proof-v1",
             "operation_id": operation_id,
@@ -1411,14 +1705,23 @@ class Store:
             "provider_status": provider_status,
             "provider_busy": provider_busy,
             "active_jobs": active_jobs,
+            "provider_observation": canonical_observation,
             "provider_reconciliation_digest": provider_reconciliation_digest,
             "canary_repository": canary_repository,
             "canary_workflow": canary_workflow,
             "canary_ref": canary_ref,
             "canary_head_sha": canary_head_sha,
+            "canary_dispatch_correlation": canary_dispatch_correlation,
+            "canary_temporary_label": canary_temporary_label,
+            "canary_dispatch_observed_label": canary_dispatch_observed_label,
+            "canary_run_observed_label": canary_run_observed_label,
+            "canary_baseline_run_id": canary_baseline_run_id,
             "canary_run_id": canary_run_id,
             "canary_run_attempt": canary_run_attempt,
             "canary_job_id": canary_job_id,
+            "canary_job_labels": list(canary_job_labels),
+            "canary_job_runner_id": canary_job_runner_id,
+            "canary_job_runner_name": canary_job_runner_name,
             "canary_runner_id": canary_runner_id,
             "canary_runner_name": canary_runner_name,
             "canary_status": canary_status,
@@ -1427,7 +1730,11 @@ class Store:
             "observed_at": timestamp,
         }
         canonical = json.dumps(
-            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
         ).encode("utf-8")
         digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
         signature = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
@@ -1460,14 +1767,23 @@ class Store:
             "provider_status",
             "provider_busy",
             "active_jobs",
+            "provider_observation",
             "provider_reconciliation_digest",
             "canary_repository",
             "canary_workflow",
             "canary_ref",
             "canary_head_sha",
+            "canary_dispatch_correlation",
+            "canary_temporary_label",
+            "canary_dispatch_observed_label",
+            "canary_run_observed_label",
+            "canary_baseline_run_id",
             "canary_run_id",
             "canary_run_attempt",
             "canary_job_id",
+            "canary_job_labels",
+            "canary_job_runner_id",
+            "canary_job_runner_name",
             "canary_runner_id",
             "canary_runner_name",
             "canary_status",
@@ -1504,7 +1820,11 @@ class Store:
             )
             payload = {name: proof[name] for name in required - {"digest", "signature"}}
             canonical = json.dumps(
-                payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                payload,
+                allow_nan=False,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
             ).encode("utf-8")
         except (TypeError, ValueError) as error:
             raise ValueError("worker recovery acceptance proof is invalid") from error
@@ -1517,6 +1837,7 @@ class Store:
             "canary_run_id",
             "canary_run_attempt",
             "canary_job_id",
+            "canary_job_runner_id",
             "canary_runner_id",
         )
         integers_are_valid = all(
@@ -1531,6 +1852,43 @@ class Store:
             and proof["prior_provider_runner_disposition"] == "absent"
             and proof["provider_runner_id"] != prior_provider_runner_id
         )
+        expected_temporary_label = _worker_recovery_temporary_label(operation_id)
+        expected_dispatch_correlation = _worker_recovery_dispatch_correlation(operation_id)
+        canary_observation = {
+            "repository": proof["canary_repository"],
+            "workflow": proof["canary_workflow"],
+            "ref": proof["canary_ref"],
+            "head_sha": proof["canary_head_sha"],
+            "dispatch_correlation": proof["canary_dispatch_correlation"],
+            "temporary_label": proof["canary_temporary_label"],
+            "dispatch_observed_label": proof["canary_dispatch_observed_label"],
+            "run_observed_label": proof["canary_run_observed_label"],
+            "baseline_run_id": proof["canary_baseline_run_id"],
+            "run_id": proof["canary_run_id"],
+            "run_attempt": proof["canary_run_attempt"],
+            "job_id": proof["canary_job_id"],
+            "job_labels": proof["canary_job_labels"],
+            "job_runner_id": proof["canary_job_runner_id"],
+            "job_runner_name": proof["canary_job_runner_name"],
+            "status": proof["canary_status"],
+            "conclusion": proof["canary_conclusion"],
+            "completed_at": completed_at,
+        }
+        try:
+            provider_observation, _, recomputed_provider_digest = _validate_provider_observation(
+                proof["provider_observation"],
+                schema="qdev-worker-recovery-provider-observation-v1",
+                repository=repository,
+                worker_name=worker_name,
+                provider_runner_id=proof["provider_runner_id"],
+                provider_status=proof["provider_status"],
+                provider_busy=proof["provider_busy"],
+                labels=labels,
+                canary=canary_observation,
+            )
+            observed_runners = _provider_runner_observations(provider_observation)
+        except (TypeError, ValueError) as error:
+            raise ValueError("worker recovery acceptance proof is invalid") from error
         now = time.time()
         age = now - observed_at
         if (
@@ -1550,6 +1908,7 @@ class Store:
             or proof["active_jobs"] != 0
             or not isinstance(proof["provider_reconciliation_digest"], str)
             or not _SHA256_DIGEST.fullmatch(proof["provider_reconciliation_digest"])
+            or proof["provider_reconciliation_digest"] != recomputed_provider_digest
             or proof["canary_repository"] != repository
             or not isinstance(proof["canary_workflow"], str)
             or not _CANARY_WORKFLOW.fullmatch(proof["canary_workflow"])
@@ -1557,6 +1916,17 @@ class Store:
             or not _valid_canary_ref(proof["canary_ref"])
             or not isinstance(proof["canary_head_sha"], str)
             or not _GIT_REVISION.fullmatch(proof["canary_head_sha"])
+            or proof["canary_dispatch_correlation"] != expected_dispatch_correlation
+            or proof["canary_temporary_label"] != expected_temporary_label
+            or proof["canary_dispatch_observed_label"] != expected_temporary_label
+            or proof["canary_run_observed_label"] != expected_temporary_label
+            or isinstance(proof["canary_baseline_run_id"], bool)
+            or not isinstance(proof["canary_baseline_run_id"], int)
+            or proof["canary_baseline_run_id"] < 0
+            or proof["canary_run_id"] <= proof["canary_baseline_run_id"]
+            or proof["canary_job_labels"] != list(labels) + [expected_temporary_label]
+            or proof["canary_job_runner_id"] != proof["provider_runner_id"]
+            or proof["canary_job_runner_name"] != worker_name
             or proof["canary_runner_id"] != proof["provider_runner_id"]
             or proof["canary_runner_name"] != worker_name
             or proof["canary_status"] != "completed"
@@ -1571,6 +1941,10 @@ class Store:
             or not isinstance(proof["signature"], str)
             or not _SHA256_HEX.fullmatch(proof["signature"])
             or not hmac.compare_digest(proof["signature"], expected_signature)
+            or (
+                proof["prior_provider_runner_disposition"] == "absent"
+                and any(runner["id"] == prior_provider_runner_id for runner in observed_runners)
+            )
         ):
             raise ValueError("worker recovery acceptance proof is invalid")
         return dict(proof)
@@ -1582,15 +1956,32 @@ class Store:
         value = dict(row)
         try:
             labels = json.loads(str(value.pop("temporary_labels_json")))
+            raw_job_labels = value.pop("job_labels_json")
+            job_labels = None if raw_job_labels is None else json.loads(str(raw_job_labels))
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise ValueError("worker recovery canary durable binding is invalid") from error
+        operation_id = value.get("operation_id")
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+            raise ValueError("worker recovery canary durable binding is invalid")
+        expected_temporary_label = _worker_recovery_temporary_label(operation_id)
         if (
             not isinstance(labels, list)
-            or not labels
+            or labels != [expected_temporary_label]
             or any(not isinstance(label, str) for label in labels)
+            or value.get("temporary_label") != expected_temporary_label
+            or value.get("dispatch_correlation")
+            != _worker_recovery_dispatch_correlation(operation_id)
+            or (
+                job_labels is not None
+                and (
+                    not isinstance(job_labels, list)
+                    or any(not isinstance(label, str) for label in job_labels)
+                )
+            )
         ):
             raise ValueError("worker recovery canary durable binding is invalid")
         value["temporary_labels"] = tuple(labels)
+        value["job_labels"] = None if job_labels is None else tuple(job_labels)
         return value
 
     @staticmethod
@@ -1617,12 +2008,20 @@ class Store:
             "baseline_run_id": canary["baseline_run_id"],
             "provider_runner_id": canary["provider_runner_id"],
             "provider_runner_name": canary["provider_runner_name"],
+            "dispatch_correlation": canary["dispatch_correlation"],
+            "temporary_label": canary["temporary_label"],
             "temporary_labels": list(canary["temporary_labels"]),
+            "dispatch_observed_label": canary["dispatch_observed_label"],
+            "run_observed_label": canary["run_observed_label"],
             "run_id": canary["run_id"],
             "run_attempt": canary["run_attempt"],
             "job_id": canary["job_id"],
+            "job_labels": (None if canary["job_labels"] is None else list(canary["job_labels"])),
+            "job_runner_id": canary["job_runner_id"],
+            "job_runner_name": canary["job_runner_name"],
             "run_status": canary["run_status"],
             "conclusion": canary["conclusion"],
+            "dispatched_at": canary["dispatched_at"],
             "completed_at": canary["completed_at"],
             "cleaned_at": canary["cleaned_at"],
             "accepted_at": canary["accepted_at"],
@@ -1677,6 +2076,7 @@ class Store:
     @staticmethod
     def _validate_worker_recovery_canary_identity(
         *,
+        operation_id: str,
         worker_name: str,
         repository: str,
         workflow: str,
@@ -1686,10 +2086,10 @@ class Store:
         provider_runner_id: int,
         provider_runner_name: str,
         permanent_labels: tuple[str, ...],
-        temporary_labels: tuple[str, ...],
+        dispatch_correlation: str,
+        temporary_label: str,
     ) -> None:
         target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
-        lowered_temporary = [label.lower() for label in temporary_labels]
         if (
             target is None
             or target["repository"] != repository
@@ -1705,14 +2105,10 @@ class Store:
             or not isinstance(provider_runner_id, int)
             or provider_runner_id <= 0
             or provider_runner_name != worker_name
-            or not temporary_labels
-            or any(
-                not isinstance(label, str) or _RUNNER_LABEL.fullmatch(label) is None
-                for label in temporary_labels
-            )
-            or len(set(lowered_temporary)) != len(lowered_temporary)
-            or not any(label.startswith("qdev-job-") for label in lowered_temporary)
-            or set(lowered_temporary).intersection(label.lower() for label in permanent_labels)
+            or dispatch_correlation != _worker_recovery_dispatch_correlation(operation_id)
+            or temporary_label != _worker_recovery_temporary_label(operation_id)
+            or _RUNNER_LABEL.fullmatch(temporary_label) is None
+            or temporary_label.lower() in {label.lower() for label in permanent_labels}
         ):
             raise ValueError("worker recovery canary binding is invalid")
 
@@ -1727,7 +2123,6 @@ class Store:
         baseline_run_id: int,
         provider_runner_id: int,
         provider_runner_name: str,
-        temporary_labels: tuple[str, ...],
     ) -> tuple[dict[str, Any], bool]:
         """Commit an exact canary dispatch intent before any provider action.
 
@@ -1738,6 +2133,9 @@ class Store:
 
         if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
             raise ValueError("worker recovery canary operation identity is invalid")
+        dispatch_correlation = _worker_recovery_dispatch_correlation(operation_id)
+        temporary_label = _worker_recovery_temporary_label(operation_id)
+        temporary_labels = (temporary_label,)
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1757,6 +2155,7 @@ class Store:
                 except (TypeError, json.JSONDecodeError) as error:
                     raise ValueError("worker recovery durable binding is invalid") from error
                 self._validate_worker_recovery_canary_identity(
+                    operation_id=operation_id,
                     worker_name=str(recovery["worker_name"]),
                     repository=repository,
                     workflow=workflow,
@@ -1766,10 +2165,11 @@ class Store:
                     provider_runner_id=provider_runner_id,
                     provider_runner_name=provider_runner_name,
                     permanent_labels=permanent_labels,
-                    temporary_labels=temporary_labels,
+                    dispatch_correlation=dispatch_correlation,
+                    temporary_label=temporary_label,
                 )
                 intent = {
-                    "schema": "qdev-worker-recovery-canary-intent-v1",
+                    "schema": "qdev-worker-recovery-canary-intent-v2",
                     "operation_id": operation_id,
                     "worker_name": recovery["worker_name"],
                     "repository": repository,
@@ -1779,6 +2179,8 @@ class Store:
                     "baseline_run_id": baseline_run_id,
                     "provider_runner_id": provider_runner_id,
                     "provider_runner_name": provider_runner_name,
+                    "dispatch_correlation": dispatch_correlation,
+                    "temporary_label": temporary_label,
                     "temporary_labels": list(temporary_labels),
                 }
                 intent_digest = self._worker_recovery_canary_event_digest(intent)
@@ -1800,8 +2202,14 @@ class Store:
                             "run_id": None,
                             "run_attempt": None,
                             "job_id": None,
+                            "dispatch_observed_label": None,
+                            "run_observed_label": None,
+                            "job_labels": None,
+                            "job_runner_id": None,
+                            "job_runner_name": None,
                             "run_status": None,
                             "conclusion": None,
+                            "dispatched_at": None,
                             "completed_at": None,
                             "cleaned_at": None,
                             "accepted_at": None,
@@ -1825,6 +2233,8 @@ class Store:
                     "baseline_run_id": baseline_run_id,
                     "provider_runner_id": provider_runner_id,
                     "provider_runner_name": provider_runner_name,
+                    "dispatch_correlation": dispatch_correlation,
+                    "temporary_label": temporary_label,
                     "temporary_labels": temporary_labels,
                     "intent_digest": intent_digest,
                     "phase": "dispatch_intent",
@@ -1832,8 +2242,14 @@ class Store:
                     "run_id": None,
                     "run_attempt": None,
                     "job_id": None,
+                    "dispatch_observed_label": None,
+                    "run_observed_label": None,
+                    "job_labels": None,
+                    "job_runner_id": None,
+                    "job_runner_name": None,
                     "run_status": None,
                     "conclusion": None,
+                    "dispatched_at": None,
                     "completed_at": None,
                     "cleaned_at": None,
                     "accepted_at": None,
@@ -1849,10 +2265,13 @@ class Store:
                     "INSERT INTO worker_recovery_canaries("
                     "operation_id,worker_name,repository,workflow,ref,head_sha,"
                     "baseline_run_id,provider_runner_id,provider_runner_name,"
-                    "temporary_labels_json,intent_digest,phase,revision,run_id,"
-                    "run_attempt,job_id,run_status,conclusion,completed_at,cleaned_at,"
+                    "dispatch_correlation,temporary_label,temporary_labels_json,"
+                    "intent_digest,phase,revision,run_id,run_attempt,job_id,"
+                    "dispatch_observed_label,run_observed_label,job_labels_json,"
+                    "job_runner_id,job_runner_name,run_status,conclusion,dispatched_at,"
+                    "completed_at,cleaned_at,"
                     "accepted_at,last_event_digest,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         operation_id,
                         recovery["worker_name"],
@@ -1863,10 +2282,18 @@ class Store:
                         baseline_run_id,
                         provider_runner_id,
                         provider_runner_name,
+                        dispatch_correlation,
+                        temporary_label,
                         json.dumps(list(temporary_labels), separators=(",", ":")),
                         intent_digest,
                         "dispatch_intent",
                         1,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                         None,
                         None,
                         None,
@@ -1909,25 +2336,90 @@ class Store:
     def _worker_recovery_canary_transition_matches(
         canary: dict[str, Any],
         *,
+        phase: str,
+        dispatch_correlation: str | None,
+        observed_temporary_label: str | None,
         run_id: int | None,
         run_attempt: int | None,
         job_id: int | None,
+        job_labels: tuple[str, ...] | None,
+        job_runner_id: int | None,
+        job_runner_name: str | None,
         run_status: str | None,
         conclusion: str | None,
+        completed_at: float | None,
     ) -> bool:
+        if phase in {"dispatched", "run_observed", "job_observed"} and (
+            dispatch_correlation is None or observed_temporary_label is None
+        ):
+            return False
+        if phase == "run_observed" and (run_id is None or run_attempt is None):
+            return False
+        if phase == "job_observed" and (
+            job_id is None
+            or job_labels is None
+            or job_runner_id is None
+            or job_runner_name is None
+            or run_status is None
+        ):
+            return False
+        if phase == "completed" and (
+            run_status is None or conclusion is None or completed_at is None
+        ):
+            return False
         supplied = {
             "run_id": run_id,
             "run_attempt": run_attempt,
             "job_id": job_id,
+            "job_labels": job_labels,
+            "job_runner_id": job_runner_id,
+            "job_runner_name": job_runner_name,
             "run_status": run_status,
             "conclusion": conclusion,
+            "completed_at": completed_at,
         }
-        return all(value is None or canary[name] == value for name, value in supplied.items())
+        observed_field = {
+            "dispatched": "dispatch_observed_label",
+            "run_observed": "run_observed_label",
+        }.get(phase)
+        return (
+            (dispatch_correlation is None or canary["dispatch_correlation"] == dispatch_correlation)
+            and (
+                observed_temporary_label is None
+                or (
+                    observed_field is None and canary["temporary_label"] == observed_temporary_label
+                )
+                or (
+                    observed_field is not None
+                    and canary[observed_field] == observed_temporary_label
+                )
+            )
+            and all(value is None or canary[name] == value for name, value in supplied.items())
+        )
 
     @staticmethod
-    def _validate_worker_recovery_canary_observation(canary: dict[str, Any], *, phase: str) -> None:
+    def _validate_worker_recovery_canary_observation(
+        canary: dict[str, Any],
+        *,
+        phase: str,
+        permanent_labels: tuple[str, ...],
+        native_finalized_at: float,
+    ) -> None:
         if phase == "ambiguous":
             return
+        expected_temporary_label = _worker_recovery_temporary_label(canary["operation_id"])
+        expected_correlation = _worker_recovery_dispatch_correlation(canary["operation_id"])
+        dispatched_phases = {
+            "dispatched",
+            "run_observed",
+            "labels_pending",
+            "labels_applied",
+            "job_observed",
+            "completed",
+            "cleanup_pending",
+            "cleaned",
+            "accepted",
+        }
         run_phases = {
             "run_observed",
             "labels_pending",
@@ -1946,8 +2438,29 @@ class Store:
             "accepted",
         }
         completed_phases = {"completed", "cleanup_pending", "cleaned", "accepted"}
+        if (
+            canary["dispatch_correlation"] != expected_correlation
+            or canary["temporary_label"] != expected_temporary_label
+            or canary["temporary_labels"] != (expected_temporary_label,)
+        ):
+            raise ValueError("worker recovery canary durable binding is invalid")
+        if phase in dispatched_phases:
+            try:
+                dispatched_at = _finite_recovery_number(
+                    canary["dispatched_at"],
+                    field="worker recovery canary dispatch timestamp",
+                )
+            except ValueError as error:
+                raise ValueError(
+                    "worker recovery canary dispatch observation is invalid"
+                ) from error
+            if canary["dispatch_observed_label"] != expected_temporary_label:
+                raise ValueError("worker recovery canary dispatch observation is invalid")
+        else:
+            dispatched_at = 0.0
         if phase in run_phases and (
-            not isinstance(canary["run_id"], int)
+            canary["run_observed_label"] != expected_temporary_label
+            or not isinstance(canary["run_id"], int)
             or isinstance(canary["run_id"], bool)
             or canary["run_id"] <= canary["baseline_run_id"]
             or not isinstance(canary["run_attempt"], int)
@@ -1959,15 +2472,28 @@ class Store:
             not isinstance(canary["job_id"], int)
             or isinstance(canary["job_id"], bool)
             or canary["job_id"] <= 0
+            or canary["job_labels"] != permanent_labels + (expected_temporary_label,)
+            or canary["job_runner_id"] != canary["provider_runner_id"]
+            or canary["job_runner_name"] != canary["provider_runner_name"]
             or canary["run_status"] not in _WORKER_RECOVERY_CANARY_STATUSES
         ):
             raise ValueError("worker recovery canary job observation is invalid")
-        if phase in completed_phases and (
-            canary["run_status"] != "completed"
-            or canary["conclusion"] not in _WORKER_RECOVERY_CANARY_CONCLUSIONS
-            or canary["completed_at"] is None
-        ):
-            raise ValueError("worker recovery canary completion is invalid")
+        if phase in completed_phases:
+            try:
+                completed_at = _finite_recovery_number(
+                    canary["completed_at"],
+                    field="worker recovery canary completion timestamp",
+                )
+            except ValueError as error:
+                raise ValueError("worker recovery canary completion is invalid") from error
+            if (
+                canary["run_status"] != "completed"
+                or canary["conclusion"] not in _WORKER_RECOVERY_CANARY_CONCLUSIONS
+                or completed_at < dispatched_at
+                or completed_at < native_finalized_at
+                or completed_at > time.time()
+            ):
+                raise ValueError("worker recovery canary completion is invalid")
         if phase in {"cleaned", "accepted"} and canary["cleaned_at"] is None:
             raise ValueError("worker recovery canary cleanup is invalid")
         if phase == "accepted" and (
@@ -1983,11 +2509,17 @@ class Store:
         expected_revision: int,
         expected_phase: str,
         phase: str,
+        dispatch_correlation: str | None,
+        observed_temporary_label: str | None,
         run_id: int | None,
         run_attempt: int | None,
         job_id: int | None,
+        job_labels: tuple[str, ...] | None,
+        job_runner_id: int | None,
+        job_runner_name: str | None,
         run_status: str | None,
         conclusion: str | None,
+        completed_at: float | None,
         allow_accepted: bool,
     ) -> tuple[dict[str, Any], bool]:
         row = connection.execute(
@@ -2001,11 +2533,18 @@ class Store:
         if current_revision == expected_revision + 1:
             if current["phase"] != phase or not self._worker_recovery_canary_transition_matches(
                 current,
+                phase=phase,
+                dispatch_correlation=dispatch_correlation,
+                observed_temporary_label=observed_temporary_label,
                 run_id=run_id,
                 run_attempt=run_attempt,
                 job_id=job_id,
+                job_labels=job_labels,
+                job_runner_id=job_runner_id,
+                job_runner_name=job_runner_name,
                 run_status=run_status,
                 conclusion=conclusion,
+                completed_at=completed_at,
             ):
                 raise ValueError("worker recovery canary transition is ambiguous")
             self._require_worker_recovery_canary_event(
@@ -2018,6 +2557,134 @@ class Store:
             raise ValueError("invalid worker recovery canary transition")
         if phase == "accepted" and not allow_accepted:
             raise ValueError("worker recovery canary acceptance is controller-owned")
+
+        recovery = connection.execute(
+            "SELECT labels_json,native_finalized_at FROM worker_recoveries WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+        try:
+            if recovery is None:
+                raise ValueError
+            permanent_labels_value = json.loads(str(recovery["labels_json"]))
+            permanent_labels = tuple(permanent_labels_value)
+            native_finalized_at = _finite_recovery_number(
+                recovery["native_finalized_at"],
+                field="native recovery finalization timestamp",
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("worker recovery durable binding is invalid") from error
+
+        if phase in {"dispatched", "run_observed", "job_observed"} and (
+            dispatch_correlation != current["dispatch_correlation"]
+            or observed_temporary_label != current["temporary_label"]
+        ):
+            raise ValueError("worker recovery canary provider binding is invalid")
+        unexpected_evidence = {
+            "dispatching": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "labels_pending": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "labels_applied": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "cleanup_pending": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "cleaned": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "accepted": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+            "ambiguous": (
+                dispatch_correlation,
+                observed_temporary_label,
+                run_id,
+                run_attempt,
+                job_id,
+                job_labels,
+                job_runner_id,
+                job_runner_name,
+                run_status,
+                conclusion,
+                completed_at,
+            ),
+        }.get(phase)
+        if unexpected_evidence is not None and any(
+            value is not None for value in unexpected_evidence
+        ):
+            raise ValueError("worker recovery canary transition has unexpected evidence")
+
+        if phase == "dispatched":
+            current["dispatch_observed_label"] = observed_temporary_label
+        elif phase == "run_observed":
+            current["run_observed_label"] = observed_temporary_label
+        elif phase == "job_observed":
+            current["job_labels"] = job_labels
+            current["job_runner_id"] = job_runner_id
+            current["job_runner_name"] = job_runner_name
 
         for name, supplied in (
             ("run_id", run_id),
@@ -2037,29 +2704,35 @@ class Store:
             current["run_status"] = run_status
         if conclusion is not None and conclusion not in _WORKER_RECOVERY_CANARY_CONCLUSIONS:
             raise ValueError("worker recovery canary conclusion is invalid")
-        if phase == "ambiguous" and any(
-            value is not None for value in (run_id, run_attempt, job_id, run_status, conclusion)
-        ):
-            raise ValueError("ambiguous canary transition cannot select provider evidence")
-
         now = time.time()
         current["phase"] = phase
         current["revision"] = current_revision + 1
         current["updated_at"] = now
-        if phase == "completed" and current["completed_at"] is None:
-            current["completed_at"] = now
+        if phase == "dispatched" and current["dispatched_at"] is None:
+            current["dispatched_at"] = now
+        if phase == "completed":
+            if completed_at is None:
+                raise ValueError("provider canary completion timestamp is required")
+            current["completed_at"] = completed_at
         if phase == "cleaned" and current["cleaned_at"] is None:
             current["cleaned_at"] = now
         if phase == "accepted" and current["accepted_at"] is None:
             current["accepted_at"] = now
-        self._validate_worker_recovery_canary_observation(current, phase=phase)
+        self._validate_worker_recovery_canary_observation(
+            current,
+            phase=phase,
+            permanent_labels=permanent_labels,
+            native_finalized_at=native_finalized_at,
+        )
         event_payload = self._worker_recovery_canary_event_payload(
             current, from_phase=expected_phase, recorded_at=now
         )
         event_digest = self._worker_recovery_canary_event_digest(event_payload)
         updated = connection.execute(
             "UPDATE worker_recovery_canaries SET phase=?,revision=?,run_id=?,"
-            "run_attempt=?,job_id=?,run_status=?,conclusion=?,completed_at=?,"
+            "run_attempt=?,job_id=?,dispatch_observed_label=?,run_observed_label=?,"
+            "job_labels_json=?,job_runner_id=?,job_runner_name=?,run_status=?,"
+            "conclusion=?,dispatched_at=?,completed_at=?,"
             "cleaned_at=?,accepted_at=?,last_event_digest=?,updated_at=? "
             "WHERE operation_id=? AND revision=? AND phase=?",
             (
@@ -2068,8 +2741,16 @@ class Store:
                 current["run_id"],
                 current["run_attempt"],
                 current["job_id"],
+                current["dispatch_observed_label"],
+                current["run_observed_label"],
+                None
+                if current["job_labels"] is None
+                else json.dumps(list(current["job_labels"]), separators=(",", ":")),
+                current["job_runner_id"],
+                current["job_runner_name"],
                 current["run_status"],
                 current["conclusion"],
+                current["dispatched_at"],
                 current["completed_at"],
                 current["cleaned_at"],
                 current["accepted_at"],
@@ -2111,11 +2792,17 @@ class Store:
         expected_revision: int,
         expected_phase: str,
         phase: str,
+        dispatch_correlation: str | None = None,
+        observed_temporary_label: str | None = None,
         run_id: int | None = None,
         run_attempt: int | None = None,
         job_id: int | None = None,
+        job_labels: tuple[str, ...] | None = None,
+        job_runner_id: int | None = None,
+        job_runner_name: str | None = None,
         run_status: str | None = None,
         conclusion: str | None = None,
+        completed_at: float | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """CAS one durable canary phase; exact replay is explicitly reported."""
 
@@ -2129,7 +2816,7 @@ class Store:
             or phase not in _WORKER_RECOVERY_CANARY_PHASES
         ):
             raise ValueError("worker recovery canary transition binding is invalid")
-        for value in (run_id, run_attempt, job_id):
+        for value in (run_id, run_attempt, job_id, job_runner_id):
             if value is not None and (
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
             ):
@@ -2138,6 +2825,34 @@ class Store:
             raise ValueError("worker recovery canary status is invalid")
         if conclusion is not None and conclusion not in _WORKER_RECOVERY_CANARY_CONCLUSIONS:
             raise ValueError("worker recovery canary conclusion is invalid")
+        if dispatch_correlation is not None and (
+            not isinstance(dispatch_correlation, str)
+            or not _RECOVERY_KEY.fullmatch(dispatch_correlation)
+        ):
+            raise ValueError("worker recovery canary correlation is invalid")
+        if observed_temporary_label is not None and (
+            not isinstance(observed_temporary_label, str)
+            or _RUNNER_LABEL.fullmatch(observed_temporary_label) is None
+        ):
+            raise ValueError("worker recovery canary label is invalid")
+        if job_labels is not None and (
+            not isinstance(job_labels, tuple)
+            or not job_labels
+            or any(
+                not isinstance(label, str) or _RUNNER_LABEL.fullmatch(label) is None
+                for label in job_labels
+            )
+            or len({label.lower() for label in job_labels}) != len(job_labels)
+        ):
+            raise ValueError("worker recovery canary job labels are invalid")
+        if job_runner_name is not None and (
+            not isinstance(job_runner_name, str) or job_runner_name not in _WORKER_RECOVERY_BINDINGS
+        ):
+            raise ValueError("worker recovery canary job runner is invalid")
+        if completed_at is not None:
+            completed_at = _finite_recovery_number(
+                completed_at, field="worker recovery canary completion timestamp"
+            )
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -2147,11 +2862,17 @@ class Store:
                     expected_revision=expected_revision,
                     expected_phase=expected_phase,
                     phase=phase,
+                    dispatch_correlation=dispatch_correlation,
+                    observed_temporary_label=observed_temporary_label,
                     run_id=run_id,
                     run_attempt=run_attempt,
                     job_id=job_id,
+                    job_labels=job_labels,
+                    job_runner_id=job_runner_id,
+                    job_runner_name=job_runner_name,
                     run_status=run_status,
                     conclusion=conclusion,
+                    completed_at=completed_at,
                     allow_accepted=False,
                 )
                 connection.execute("COMMIT")
@@ -2223,6 +2944,16 @@ class Store:
             raise ValueError("worker recovery canary durable proof is missing")
         canary = Store._worker_recovery_canary_row(row)
         try:
+            permanent_labels_value = json.loads(str(recovery["labels_json"]))
+            permanent_labels = tuple(permanent_labels_value)
+            native_finalized_at = _finite_recovery_number(
+                recovery["native_finalized_at"],
+                field="native recovery finalization timestamp",
+            )
+            dispatched_at = _finite_recovery_number(
+                canary["dispatched_at"],
+                field="worker recovery canary dispatch timestamp",
+            )
             completed_at = _finite_recovery_number(
                 canary["completed_at"],
                 field="worker recovery canary completion timestamp",
@@ -2235,10 +2966,47 @@ class Store:
                 accepted["observed_at"],
                 field="worker recovery acceptance timestamp",
             )
-        except (KeyError, TypeError, ValueError) as error:
+            canary_observation = {
+                "repository": accepted["canary_repository"],
+                "workflow": accepted["canary_workflow"],
+                "ref": accepted["canary_ref"],
+                "head_sha": accepted["canary_head_sha"],
+                "dispatch_correlation": accepted["canary_dispatch_correlation"],
+                "temporary_label": accepted["canary_temporary_label"],
+                "dispatch_observed_label": accepted["canary_dispatch_observed_label"],
+                "run_observed_label": accepted["canary_run_observed_label"],
+                "baseline_run_id": accepted["canary_baseline_run_id"],
+                "run_id": accepted["canary_run_id"],
+                "run_attempt": accepted["canary_run_attempt"],
+                "job_id": accepted["canary_job_id"],
+                "job_labels": accepted["canary_job_labels"],
+                "job_runner_id": accepted["canary_job_runner_id"],
+                "job_runner_name": accepted["canary_job_runner_name"],
+                "status": accepted["canary_status"],
+                "conclusion": accepted["canary_conclusion"],
+                "completed_at": completed_at,
+            }
+            provider_observation, _, provider_reconciliation_digest = (
+                _validate_provider_observation(
+                    accepted["provider_observation"],
+                    schema="qdev-worker-recovery-provider-observation-v1",
+                    repository=str(recovery["repository"]),
+                    worker_name=str(recovery["worker_name"]),
+                    provider_runner_id=int(accepted["provider_runner_id"]),
+                    provider_status="online",
+                    provider_busy=False,
+                    labels=permanent_labels,
+                    canary=canary_observation,
+                )
+            )
+            observed_runners = _provider_runner_observations(provider_observation)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise ValueError("worker recovery canary durable proof is invalid") from error
         if (
-            canary["phase"] != phase
+            not permanent_labels
+            or any(not isinstance(label, str) or not label for label in permanent_labels)
+            or len(set(permanent_labels)) != len(permanent_labels)
+            or canary["phase"] != phase
             or canary["worker_name"] != recovery["worker_name"]
             or canary["repository"] != recovery["repository"]
             or canary["workflow"] != accepted["canary_workflow"]
@@ -2246,17 +3014,39 @@ class Store:
             or canary["head_sha"] != accepted["canary_head_sha"]
             or canary["provider_runner_id"] != accepted["provider_runner_id"]
             or canary["provider_runner_name"] != accepted["canary_runner_name"]
+            or canary["dispatch_correlation"] != accepted["canary_dispatch_correlation"]
+            or canary["temporary_label"] != accepted["canary_temporary_label"]
+            or canary["dispatch_observed_label"] != accepted["canary_dispatch_observed_label"]
+            or canary["run_observed_label"] != accepted["canary_run_observed_label"]
+            or canary["baseline_run_id"] != accepted["canary_baseline_run_id"]
             or canary["run_id"] != accepted["canary_run_id"]
             or canary["run_attempt"] != accepted["canary_run_attempt"]
             or canary["job_id"] != accepted["canary_job_id"]
+            or list(canary["job_labels"] or ()) != accepted["canary_job_labels"]
+            or canary["job_runner_id"] != accepted["canary_job_runner_id"]
+            or canary["job_runner_name"] != accepted["canary_job_runner_name"]
             or canary["run_status"] != accepted["canary_status"]
             or canary["conclusion"] != accepted["canary_conclusion"]
             or completed_at != accepted["canary_completed_at"]
+            or accepted["provider_reconciliation_digest"] != provider_reconciliation_digest
+            or (
+                accepted["prior_provider_runner_disposition"] == "absent"
+                and any(
+                    runner["id"] == recovery["provider_runner_id"] for runner in observed_runners
+                )
+            )
+            or dispatched_at > completed_at
+            or native_finalized_at > completed_at
             or completed_at > cleaned_at
             or cleaned_at > observed_at
         ):
             raise ValueError("worker recovery acceptance is not bound to the durable canary")
-        Store._validate_worker_recovery_canary_observation(canary, phase=phase)
+        Store._validate_worker_recovery_canary_observation(
+            canary,
+            phase=phase,
+            permanent_labels=permanent_labels,
+            native_finalized_at=native_finalized_at,
+        )
         Store._require_worker_recovery_canary_event(
             connection,
             canary,
@@ -2358,6 +3148,9 @@ class Store:
                         "SELECT * FROM worker_recovery_acceptances WHERE operation_id=?",
                         (row["operation_id"],),
                     ).fetchone()
+                    _, provider_observation_json, _ = _canonical_provider_observation(
+                        accepted["provider_observation"]
+                    )
                     if (
                         acceptance_row is None
                         or row["acceptance_proof_digest"] != accepted["digest"]
@@ -2365,6 +3158,14 @@ class Store:
                         or row["accepted_provider_runner_id"] != accepted["provider_runner_id"]
                         or acceptance_row["proof_digest"] != accepted["digest"]
                         or acceptance_row["signature"] != accepted["signature"]
+                        or acceptance_row["provider_reconciliation_digest"]
+                        != accepted["provider_reconciliation_digest"]
+                        or acceptance_row["provider_observation_json"] != provider_observation_json
+                        or acceptance_row["canary_run_id"] != accepted["canary_run_id"]
+                        or acceptance_row["canary_run_attempt"] != accepted["canary_run_attempt"]
+                        or acceptance_row["canary_job_id"] != accepted["canary_job_id"]
+                        or acceptance_row["canary_runner_id"] != accepted["canary_runner_id"]
+                        or acceptance_row["canary_completed_at"] != accepted["canary_completed_at"]
                     ):
                         raise ValueError("worker recovery acceptance is bound to another proof")
                     self._require_worker_recovery_canary_acceptance(
@@ -2442,23 +3243,33 @@ class Store:
                         expected_revision=int(canary["revision"]),
                         expected_phase="cleaned",
                         phase="accepted",
-                        run_id=int(canary["run_id"]),
-                        run_attempt=int(canary["run_attempt"]),
-                        job_id=int(canary["job_id"]),
-                        run_status=str(canary["run_status"]),
-                        conclusion=str(canary["conclusion"]),
+                        dispatch_correlation=None,
+                        observed_temporary_label=None,
+                        run_id=None,
+                        run_attempt=None,
+                        job_id=None,
+                        job_labels=None,
+                        job_runner_id=None,
+                        job_runner_name=None,
+                        run_status=None,
+                        conclusion=None,
+                        completed_at=None,
                         allow_accepted=True,
+                    )
+                    _, provider_observation_json, _ = _canonical_provider_observation(
+                        accepted["provider_observation"]
                     )
                     connection.execute(
                         "INSERT INTO worker_recovery_acceptances("
                         "proof_digest,operation_id,worker_name,repository,labels_json,"
                         "prior_provider_runner_id,prior_provider_runner_disposition,"
                         "provider_runner_id,matching_runner_count,"
-                        "provider_reconciliation_digest,provider_observed_at,"
+                        "provider_reconciliation_digest,provider_observation_json,"
+                        "provider_observed_at,"
                         "canary_repository,canary_workflow,canary_ref,canary_head_sha,"
                         "canary_run_id,canary_run_attempt,canary_job_id,canary_runner_id,"
                         "canary_status,canary_conclusion,canary_completed_at,signature,"
-                        "accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             accepted["digest"],
                             row["operation_id"],
@@ -2470,6 +3281,7 @@ class Store:
                             accepted["provider_runner_id"],
                             accepted["matching_runner_count"],
                             accepted["provider_reconciliation_digest"],
+                            provider_observation_json,
                             accepted["observed_at"],
                             accepted["canary_repository"],
                             accepted["canary_workflow"],
@@ -2550,9 +3362,13 @@ class Store:
         operation_id: str,
         worker_name: str,
         request_fingerprint: str,
+        recovery_action: str,
+        request_nonce: str,
+        provider_reconciliation_digest: str,
         agent_certificate_sha256: str,
         outcome: str,
         outcome_digest: str,
+        agent_release_digest: str,
         reconciliation_key: str,
         observed_at: float | None = None,
         proof_max_age_seconds: float = 120.0,
@@ -2577,8 +3393,20 @@ class Store:
             request_fingerprint
         ):
             raise ValueError("native recovery request digest is invalid")
+        if recovery_action not in _RECOVERY_ACTIONS:
+            raise ValueError("native recovery action is invalid")
+        if not isinstance(request_nonce, str) or not _RECOVERY_KEY.fullmatch(request_nonce):
+            raise ValueError("native recovery request nonce is invalid")
+        if not isinstance(provider_reconciliation_digest, str) or not _SHA256_DIGEST.fullmatch(
+            provider_reconciliation_digest
+        ):
+            raise ValueError("native recovery provider reconciliation binding is invalid")
         if not isinstance(outcome_digest, str) or not _SHA256_DIGEST.fullmatch(outcome_digest):
             raise ValueError("native recovery outcome digest is invalid")
+        if not isinstance(agent_release_digest, str) or not _SHA256_DIGEST.fullmatch(
+            agent_release_digest
+        ):
+            raise ValueError("native recovery agent release is invalid")
         if not isinstance(agent_certificate_sha256, str) or not _SHA256_HEX.fullmatch(
             agent_certificate_sha256
         ):
@@ -2601,13 +3429,50 @@ class Store:
                 if row is None or (
                     row["worker_name"],
                     row["request_digest"],
+                    row["recovery_action"],
+                    row["request_nonce"],
+                    row["provider_reconciliation_digest"],
+                    row["agent_release_digest"],
                     row["expected_agent_certificate_sha256"],
                 ) != (
                     worker_name,
                     request_fingerprint,
+                    recovery_action,
+                    request_nonce,
+                    provider_reconciliation_digest,
+                    agent_release_digest,
                     agent_certificate_sha256,
                 ):
                     raise ValueError("native outcome does not match recovery operation")
+                try:
+                    permanent_labels = tuple(json.loads(str(row["labels_json"])))
+                    stored_observation = json.loads(str(row["provider_observation_json"]))
+                    _, canonical_observation, recomputed_provider_digest = (
+                        _validate_provider_observation(
+                            stored_observation,
+                            schema="qdev-worker-provider-observation-v1",
+                            repository=str(row["repository"]),
+                            worker_name=worker_name,
+                            provider_runner_id=int(row["provider_runner_id"]),
+                            provider_status="offline",
+                            provider_busy=False,
+                            labels=permanent_labels,
+                        )
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ValueError(
+                        "native recovery provider reconciliation binding is invalid"
+                    ) from error
+                if (
+                    row["provider_observation_json"] != canonical_observation
+                    or provider_reconciliation_digest != recomputed_provider_digest
+                ):
+                    raise ValueError("native recovery provider reconciliation binding is invalid")
+                policy_digest = row["policy_digest"]
+                if not isinstance(policy_digest, str) or not _SHA256_DIGEST.fullmatch(
+                    policy_digest
+                ):
+                    raise ValueError("native recovery policy binding is invalid")
                 prior_outcome = connection.execute(
                     "SELECT * FROM worker_recovery_outcomes "
                     "WHERE operation_id=? AND outcome_digest=?",
@@ -2619,12 +3484,20 @@ class Store:
                         prior_outcome["request_digest"],
                         prior_outcome["agent_certificate_sha256"],
                         prior_outcome["provider_reconciliation_digest"],
+                        prior_outcome["recovery_action"],
+                        prior_outcome["request_nonce"],
+                        prior_outcome["policy_digest"],
+                        prior_outcome["agent_release_digest"],
                         prior_outcome["outcome"],
                     ) != (
                         worker_name,
                         request_fingerprint,
                         agent_certificate_sha256,
-                        row["provider_reconciliation_digest"],
+                        provider_reconciliation_digest,
+                        recovery_action,
+                        request_nonce,
+                        policy_digest,
+                        agent_release_digest,
                         outcome,
                     ):
                         raise ValueError("native outcome digest is bound to another result")
@@ -2644,11 +3517,6 @@ class Store:
                     raise ValueError("native recovery operation is not awaiting outcome")
                 if row["native_outcome"] in {"completed", "not_applied"}:
                     raise ValueError("native recovery terminal outcome cannot be changed")
-                provider_reconciliation_digest = row["provider_reconciliation_digest"]
-                if not isinstance(
-                    provider_reconciliation_digest, str
-                ) or not _SHA256_DIGEST.fullmatch(provider_reconciliation_digest):
-                    raise ValueError("native recovery provider reconciliation binding is invalid")
                 receipt_payload = {
                     "schema": "qdev-worker-recovery-native-outcome-v1",
                     "operation_id": operation_id,
@@ -2656,6 +3524,10 @@ class Store:
                     "request_digest": request_fingerprint,
                     "agent_certificate_sha256": agent_certificate_sha256,
                     "provider_reconciliation_digest": provider_reconciliation_digest,
+                    "recovery_action": recovery_action,
+                    "request_nonce": request_nonce,
+                    "policy_digest": policy_digest,
+                    "agent_release_digest": agent_release_digest,
                     "outcome": outcome,
                     "outcome_digest": outcome_digest,
                     "observed_at": native_observed_at,
@@ -2674,8 +3546,9 @@ class Store:
                     "INSERT INTO worker_recovery_outcomes("
                     "receipt_digest,operation_id,worker_name,request_digest,"
                     "agent_certificate_sha256,provider_reconciliation_digest,"
+                    "recovery_action,request_nonce,policy_digest,agent_release_digest,"
                     "outcome,outcome_digest,signature,observed_at,reconciled_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         receipt_digest,
                         operation_id,
@@ -2683,6 +3556,10 @@ class Store:
                         request_fingerprint,
                         agent_certificate_sha256,
                         provider_reconciliation_digest,
+                        recovery_action,
+                        request_nonce,
+                        policy_digest,
+                        agent_release_digest,
                         outcome,
                         outcome_digest,
                         signature,

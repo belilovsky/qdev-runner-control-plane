@@ -111,9 +111,9 @@ def _replacement_command(*, expires_at: datetime, token_expires_at: datetime) ->
     return {
         "operation_id": "a" * 64,
         "request_fingerprint": "b" * 64,
-        "target_id": "target-01",
-        "worker_name": "worker-01",
-        "repository": "owner/repository",
+        "target_id": "qdev-qazstack-01",
+        "worker_name": "qdev-qazstack-01",
+        "repository": "belilovsky/qazstack",
         "provider_runner_id": 21,
         "labels": ("self-hosted", "Linux", "X64", "qdev-ci"),
         "recovery_action": "replace_existing_registration",
