@@ -37,6 +37,9 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
             raise ValueError("recovery requires the nonempty repository owner actor")
         if environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             raise ValueError("recovery requires manual workflow_dispatch")
+        ref = environment.get("GITHUB_REF", "")
+        if not ref.startswith("refs/heads/") or ref == "refs/heads/":
+            raise ValueError("recovery requires a selected repository branch")
         if environment.get("QDEV_OWNER_RECOVERY") != "true" or not expected:
             raise ValueError("explicit owner recovery confirmation and exact SHA are required")
 

@@ -61,6 +61,20 @@ There is no silent automatic fallback: GitHub assigns a job from its declared
 `runs-on` selector, so recovery uses an explicit workflow dispatch or reviewed
 reusable workflow. Recovery evidence must not be reported as a hosted check.
 
+### Controller candidate verification
+
+Owner decision (2026-09-05): the controller's manual verification workflow may
+run a selected same-repository branch, not only `main`, so an unmerged exact
+candidate can receive complete recovery CI. This is a CI-only rule change;
+it does not authorize a controller release or relax fleet-bootstrap policy.
+The owner must explicitly select recovery and supply the complete expected
+SHA. The preflight and common verification entrypoint bind that SHA to the
+actual provider checkout; tags, pull-request refs, non-owner actors and
+automatic events are rejected. A signed immutable FIFO claim is still required
+for the ephemeral worker, and recovery never cancels an earlier run.
+Rollback is to restore the `refs/heads/main` selector and preflight in
+`runner-smoke.yml`; no runtime state or provider policy is changed by this rule.
+
 ## Runtime changes
 
 - Never restart a worker while it reports an active job.

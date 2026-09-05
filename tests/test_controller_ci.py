@@ -20,6 +20,7 @@ def recovery() -> dict[str, str]:
     return {
         "GITHUB_ACTIONS": "true",
         "GITHUB_SHA": SHA,
+        "GITHUB_REF": "refs/heads/main",
         "QDEV_EXPECTED_SHA": SHA,
         "RUNNER_ENVIRONMENT": "self-hosted",
         "GITHUB_REPOSITORY_OWNER": "belilovsky",
@@ -41,6 +42,10 @@ def recovery() -> dict[str, str]:
         ("QDEV_EXPECTED_SHA", ""),
         ("QDEV_EXPECTED_SHA", "2" * 40),
         ("GITHUB_SHA", "2" * 40),
+        ("GITHUB_REF", ""),
+        ("GITHUB_REF", "refs/heads/"),
+        ("GITHUB_REF", "refs/tags/release"),
+        ("GITHUB_REF", "refs/pull/1/merge"),
         ("RUNNER_ENVIRONMENT", "github-hosted"),
     ],
 )
@@ -51,8 +56,11 @@ def test_recovery_rejects_untrusted_context(key: str, value: str) -> None:
         CI.validate_context("controller-recovery", environment, SHA)
 
 
-def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted() -> None:
-    CI.validate_context("controller-recovery", recovery(), SHA)
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/codex/admission-candidate"])
+def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted(ref: str) -> None:
+    environment = recovery()
+    environment["GITHUB_REF"] = ref
+    CI.validate_context("controller-recovery", environment, SHA)
     with pytest.raises(ValueError):
         CI.validate_context("hosted", recovery(), SHA)
     with pytest.raises(ValueError):
@@ -78,6 +86,13 @@ def test_every_lane_uses_full_shared_suite() -> None:
     manual = yaml.safe_load((ROOT / ".github/workflows/runner-smoke.yml").read_text())
     assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "hosted"
     assert manual["concurrency"]["cancel-in-progress"] is False
+    recovery_job = manual["jobs"]["runner-smoke"]
+    assert "startsWith(github.ref, 'refs/heads/')" in recovery_job["if"]
+    assert "github.actor == github.repository_owner" in recovery_job["if"]
+    assert "github.ref == 'refs/heads/main'" not in recovery_job["if"]
+    preflight = recovery_job["steps"][0]
+    assert preflight["env"]["QDEV_EXPECTED_SHA"] == "${{ inputs.expected_sha }}"
+    assert 'test "${GITHUB_SHA}" = "${QDEV_EXPECTED_SHA}"' in preflight["run"]
     for job in [normal["jobs"]["verify"], *manual["jobs"].values()]:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
 
