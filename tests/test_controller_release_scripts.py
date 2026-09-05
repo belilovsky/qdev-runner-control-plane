@@ -191,6 +191,9 @@ def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
     )[0]
     assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
     assert "currently deployed product remains available" in guard_function
+    assert "--verify-only" in guard_function
+    assert "qazcoop_release_guard_verified=$release_revision" in guard_function
+    assert '"$guard_verified" != true' in guard_function
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:

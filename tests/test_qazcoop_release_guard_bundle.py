@@ -259,6 +259,25 @@ def test_staged_paths_are_not_pid_predictable(tmp_path: Path) -> None:
     assert f".{os.getpid()}." not in first.name
 
 
+def test_exact_deployed_file_rejects_digest_mismatch(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    source = tmp_path / "source"
+    deployed = tmp_path / "deployed"
+    source.write_text("expected\n", encoding="utf-8")
+    deployed.write_text("changed\n", encoding="utf-8")
+    deployed.chmod(0o640)
+    status = deployed.stat()
+
+    with pytest.raises(ValueError, match="does not match its bundle"):
+        installer._validate_exact_deployed_file(
+            deployed,
+            source,
+            mode=0o640,
+            uid=status.st_uid,
+            gid=status.st_gid,
+        )
+
+
 def test_safe_root_directory_rejects_existing_symlink(tmp_path: Path) -> None:
     _bundle_path, installer = _bundle(tmp_path)
     target = tmp_path / "target"
