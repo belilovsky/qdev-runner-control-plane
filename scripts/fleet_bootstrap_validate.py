@@ -38,6 +38,15 @@ ROOT = Path(__file__).resolve().parents[1]
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _SAFE_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:/()\-]{0,127}$")
+_GITHUB_OIDC_HOSTS = frozenset(
+    {
+        "token.actions.githubusercontent.com",
+        # GitHub Actions currently uses this host for the OIDC request URL on
+        # some runner pools.  Keep the allowlist exact; do not accept an
+        # arbitrary subdomain of githubusercontent.com.
+        "pipelines.actions.githubusercontent.com",
+    }
+)
 
 
 class BootstrapValidationError(RuntimeError):
@@ -70,11 +79,21 @@ def _source_sha() -> str:
     return current
 
 
-def _https_url(name: str, value: str, *, allowed_host: str | None = None) -> str:
+def _https_url(
+    name: str,
+    value: str,
+    *,
+    allowed_host: str | None = None,
+    allowed_hosts: frozenset[str] | None = None,
+) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise BootstrapValidationError(f"{name} must be an HTTPS URL")
+    if allowed_host is not None and allowed_hosts is not None:
+        raise BootstrapValidationError(f"{name} has conflicting host allowlists")
     if allowed_host is not None and parsed.hostname != allowed_host:
+        raise BootstrapValidationError(f"{name} host is not allowlisted")
+    if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
         raise BootstrapValidationError(f"{name} host is not allowlisted")
     return value
 
@@ -108,7 +127,7 @@ def _oidc_token(audience: str) -> str:
     endpoint = _https_url(
         "ACTIONS_ID_TOKEN_REQUEST_URL",
         _required("ACTIONS_ID_TOKEN_REQUEST_URL"),
-        allowed_host="token.actions.githubusercontent.com",
+        allowed_hosts=_GITHUB_OIDC_HOSTS,
     )
     token = _required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     if not audience or len(audience) > 256:
