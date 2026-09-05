@@ -571,6 +571,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
         "fence",
         "lease_expires_at",
         "rollback_anchor",
+        "candidate_evidence",
         "issued_at",
         "expires_at",
         "nonce",
@@ -583,6 +584,11 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
     assert claim["job"] == "release-qaz-tours"
     assert claim["lease_expires_at"] == job["lease_expires_at"]
     assert claim["rollback_anchor"] == job["rollback_anchor"]
+    assert claim["candidate_evidence"] == job["candidate_evidence"]
+    assert claim["candidate_evidence"]["schema"] == (
+        "qdev-release-candidate-evidence-v1"
+    )
+    assert len(claim["candidate_evidence"]["candidate_receipt_sha256"]) == 64
     assert claim["expires_at"] - claim["issued_at"] == 120
     canonical = json.dumps(
         claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")
@@ -1728,6 +1734,60 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
         WORKER_NAME,
         registered_profiles=("qdev-ci", "qdev-ci-docker"),
     ) is None
+
+
+def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
+    _seed_pending_job(
+        client,
+        41,
+        "blocked-admin-platform-row",
+        repository="belilovsky/qazposter",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(
+        client,
+        42,
+        "first-admissible-row",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazlake",
+            "head_sha": "b" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "admissible FIFO head after blocked managed row",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazposter",
+            "run_id": 84000000041,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazposter",
+            "reason": "admin-platform-candidate-not-active",
+        }
+    ]
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:

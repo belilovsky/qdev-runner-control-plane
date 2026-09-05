@@ -55,6 +55,20 @@ def _variant(profile: object, marker: str) -> dict[str, str]:
 
 
 def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
+    if profile.name == "qmt":
+        dependencies = {"qmt_version": "4.4.2"}
+        provenance = {
+            "candidate_receipt_sha256": "4" * 64,
+            "migration_receipt_digest": "sha256:" + "5" * 64,
+            "contract_digest": "6" * 64,
+        }
+    else:
+        dependencies = {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"}
+        provenance = {
+            "qak_wheel_sha256": "1" * 64,
+            "avds_artifact_sha256": "2" * 64,
+            "avds_source_sha": "3" * 40,
+        }
     return {
         "schema": AGENT.NATIVE_RECEIPT_SCHEMA,
         "project_id": profile.project_id,
@@ -62,12 +76,23 @@ def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
         **release,
         "readiness": profile.readiness,
         "runtime_identity": {**release, "measured": True},
-        "dependency_identity": {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"},
-        "artifact_provenance": {
-            "qak_wheel_sha256": "1" * 64,
-            "avds_artifact_sha256": "2" * 64,
-            "avds_source_sha": "3" * 40,
-        },
+        "dependency_identity": dependencies,
+        "artifact_provenance": provenance,
+    }
+
+
+def _candidate_evidence(profile: object) -> dict[str, str]:
+    if profile.name == "qmt":
+        return {
+            "schema": "qdev-qmt-candidate-evidence-v1",
+            "candidate_receipt_sha256": "4" * 64,
+            "release_version": "4.4.2",
+            "migration_receipt_digest": "sha256:" + "5" * 64,
+            "contract_digest": "6" * 64,
+        }
+    return {
+        "schema": "qdev-release-candidate-evidence-v1",
+        "candidate_receipt_sha256": "4" * 64,
     }
 
 
@@ -99,6 +124,7 @@ def _signed_job(
         lease_expires_at = issued_at + 3600
     if rollback_anchor is None:
         rollback_anchor = _variant(profile, "b")
+    candidate_evidence = _candidate_evidence(profile)
     claim = {
         "schema": AGENT.HOST_DISPATCH_CLAIM_SCHEMA,
         "repository": profile.repository,
@@ -120,6 +146,7 @@ def _signed_job(
         "fence": FENCE,
         "lease_expires_at": lease_expires_at,
         "rollback_anchor": rollback_anchor,
+        "candidate_evidence": candidate_evidence,
         "issued_at": issued_at,
         "expires_at": min(issued_at + 120, lease_expires_at),
         "nonce": nonce,
@@ -135,6 +162,7 @@ def _signed_job(
         "fence": FENCE,
         "lease_expires_at": lease_expires_at,
         "rollback_anchor": rollback_anchor,
+        "candidate_evidence": candidate_evidence,
         "dispatch_claim": claim,
         "dispatch_claim_signature": hmac.new(
             SECRET, AGENT._canonical_bytes(claim), hashlib.sha256
@@ -589,7 +617,7 @@ def test_controller_initial_heartbeat_establishes_one_measured_anchor(
 
 
 def test_agent_profiles_bind_each_release_to_a_compiled_native_adapter() -> None:
-    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter"}
+    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt"}
     for profile in AGENT.PROFILES.values():
         release = _release(profile)
         assert AGENT._release(release, profile) == release
@@ -606,6 +634,78 @@ def test_agent_profiles_bind_each_release_to_a_compiled_native_adapter() -> None
             raise AssertionError("untrusted artifact reference was accepted")
 
 
+def test_qmt_candidate_evidence_is_exact_and_version_bound() -> None:
+    profile = AGENT.PROFILES["qmt"]
+    evidence = _candidate_evidence(profile)
+    assert AGENT._candidate_evidence(evidence, profile) == evidence
+    for field, invalid in (
+        ("release_version", "4.4.1"),
+        ("migration_receipt_digest", "sha256:" + "z" * 64),
+        ("contract_digest", "0" * 63),
+    ):
+        with pytest.raises(AGENT.AgentError, match="QMT candidate evidence"):
+            AGENT._candidate_evidence({**evidence, field: invalid}, profile)
+    with pytest.raises(AGENT.AgentError, match="shape"):
+        AGENT._candidate_evidence({**evidence, "image_digest": DIGEST}, profile)
+
+
+def test_qmt_native_release_receives_only_signed_candidate_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = AGENT.PROFILES["qmt"]
+    release = _release(profile)
+    evidence = _candidate_evidence(profile)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(AGENT, "_ensure_dispatcher", lambda _: None)
+    monkeypatch.setattr(
+        AGENT,
+        "_run",
+        lambda command, **_: commands.append(command) or b"",
+    )
+    with pytest.raises(AGENT.AgentError, match="signed candidate evidence"):
+        AGENT.invoke_native(profile, "release", release)
+    AGENT.invoke_native(profile, "release", release, evidence)
+    command = commands[-1]
+    assert command[0] == str(profile.release_dispatcher)
+    assert command[1:3] == ["--action", "release"]
+    for flag, value in (
+        ("--candidate-receipt-sha256", evidence["candidate_receipt_sha256"]),
+        ("--release-version", "4.4.2"),
+        ("--migration-receipt-digest", evidence["migration_receipt_digest"]),
+        ("--contract-digest", evidence["contract_digest"]),
+    ):
+        assert command[command.index(flag) + 1] == value
+
+
+def test_qmt_runtime_receipt_must_match_signed_candidate_evidence() -> None:
+    profile = AGENT.PROFILES["qmt"]
+    release = _release(profile)
+    receipt = _native_receipt(profile, release)
+    assert AGENT._validate_native_runtime(receipt, profile, release)
+    wrong_version = {
+        **receipt,
+        "dependency_identity": {"qmt_version": "4.4.1"},
+    }
+    with pytest.raises(AGENT.AgentError, match="QMT dependency identity"):
+        AGENT._validate_native_runtime(wrong_version, profile, release)
+    wrong_migration = {
+        **receipt,
+        "artifact_provenance": {
+            **receipt["artifact_provenance"],
+            "migration_receipt_digest": "sha256:" + "9" * 64,
+        },
+    }
+    assert AGENT._validate_native_runtime(wrong_migration, profile, release)
+    assert wrong_migration["artifact_provenance"] != {
+        key: _candidate_evidence(profile)[key]
+        for key in (
+            "candidate_receipt_sha256",
+            "migration_receipt_digest",
+            "contract_digest",
+        )
+    }
+
+
 def test_agent_rejects_unsigned_expired_or_foreign_dispatch_claims() -> None:
     profile = AGENT.PROFILES["total"]
     config = _config(profile)
@@ -620,6 +720,7 @@ def test_agent_rejects_unsigned_expired_or_foreign_dispatch_claims() -> None:
         NONCE,
         now + 3600,
         _variant(profile, "b"),
+        _candidate_evidence(profile),
     )
     with pytest.raises(AGENT.AgentError):
         AGENT._validated_job({**job, "placement": "arbitrary-host"}, profile, config, now=now)

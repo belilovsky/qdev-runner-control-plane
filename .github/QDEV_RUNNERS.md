@@ -1,8 +1,9 @@
 # QDev runner control-plane CI
 
-Paid GitHub-hosted compute is the normal lane for this repository. `CI / verify`
-and `QDev runner contract / qdev-runner-contract` are provider checks and must
-be evaluated on the exact pull-request SHA.
+`CI / verify` and `QDev runner contract / qdev-runner-contract` run on the
+existing `qdev-ci` pool while provider-hosted jobs are unavailable. They are
+allowlisted in `.github/qdev-runner.yml`, reject fork pull requests, use unique
+job labels, and must be evaluated on the exact pull-request SHA.
 
 The self-hosted pool is an explicit recovery lane. Only workflows listed in
 `recovery_workflows` may select a QDev self-hosted profile, and each must be

@@ -410,7 +410,11 @@ def main() -> None:
             normalise_repository_name(name, args.owner) for name in args.repository
         }
         existing_repositories = existing.get("repositories")
-        if not isinstance(existing_repositories, list):
+        if not isinstance(existing_repositories, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("full_name"), str)
+            for item in existing_repositories
+        ):
             parser.error("existing inventory has no repositories list")
         try:
             validate_inventory_uniqueness(existing_repositories)
@@ -446,23 +450,32 @@ def main() -> None:
             except RuntimeError as exc:
                 parser.error(str(exc))
             refreshed[item["full_name"]] = item
-        merged = [
-            refreshed.get(item["full_name"], item) for item in existing_repositories
-        ]
+        refreshed_merged: list[dict[str, Any]] = []
+        for item in existing_repositories:
+            # The shape check above narrows this at runtime; the explicit copy
+            # keeps the inventory payload statically typed as well.
+            assert isinstance(item, dict)
+            full_name = item["full_name"]
+            assert isinstance(full_name, str)
+            refreshed_merged.append(refreshed.get(full_name, item))
         try:
-            validate_inventory_uniqueness(merged)
+            validate_inventory_uniqueness(refreshed_merged)
         except RuntimeError as exc:
             parser.error(str(exc))
         payload = inventory_payload(
             owner=existing.get("owner", args.owner),
-            active_count=int(existing.get("active_repository_count", len(merged))),
-            repositories=merged,
+            active_count=int(
+                existing.get("active_repository_count", len(refreshed_merged))
+            ),
+            repositories=refreshed_merged,
         )
         write_inventory(payload)
         print(
             "inventory_ok targeted="
             + ",".join(sorted(refreshed))
-            + f" repositories={len(merged)} active={payload['active_repository_count']}"
+            + " repositories="
+            + str(len(refreshed_merged))
+            + f" active={payload['active_repository_count']}"
         )
         return
 

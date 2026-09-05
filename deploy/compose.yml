@@ -37,9 +37,9 @@ services:
       QDEV_DATABASE: /var/lib/qdev-runner/broker-state/broker.db
       QDEV_CLAIM_SCOPES: /nonexistent/claim-scopes.json
       QDEV_ARTIFACT_ROOT: /var/lib/qdev-runner/artifacts
-      # Public health exposes only the signed, measured controller identity.
-      # Mount the durable status directory read-only so atomic receipt updates
-      # remain visible without giving this surface controller authority.
+      # Public health exposes only the signed, text-free controller release
+      # tuple.  Mount the containing directory read-only so atomic status-file
+      # replacement remains visible without exposing any controller journals.
       QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro

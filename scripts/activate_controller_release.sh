@@ -268,6 +268,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qazcoop_update_hook.py
     src/qdev_runner/qazcoop_release_guard.py
     scripts/qdev_admin_platform_release_host_agent.py
+    scripts/qmt_native_release_adapter.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py

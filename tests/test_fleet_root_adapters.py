@@ -421,3 +421,9 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source
         assert "shell=True" not in source
+
+    activation = (ROOT / "scripts" / "qdev_controller_activation_adapter.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'str(candidate / "src" / "qdev_runner" / "controller_release.py")' not in activation
+    assert 'str(candidate / "src")' in activation

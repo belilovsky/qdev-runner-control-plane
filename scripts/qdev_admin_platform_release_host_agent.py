@@ -37,6 +37,7 @@ _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _HOST_IDENTITY = re.compile(r"^qdev-host-agent:[a-z0-9][a-z0-9-]{2,127}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_QMT_VERSION = re.compile(r"^4\.4\.[0-9]+$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 STATE_SCHEMA = "qdev-release-host-state-v1"
 NATIVE_RECEIPT_SCHEMA = "qdev-admin-platform-native-receipt-v1"
@@ -159,6 +160,21 @@ PROFILES = {
         release_dispatcher=Path("/usr/local/sbin/qazposter-controller-release"),
         rollback_dispatcher=Path("/usr/local/sbin/qazposter-controller-rollback"),
         receipt_dispatcher=Path("/usr/local/sbin/qazposter-controller-receipt"),
+    ),
+    "qmt": Profile(
+        name="qmt",
+        lane="qdev-release-qmt",
+        project_id="kaztilshi",
+        repository="belilovsky/kazakh-translate",
+        placement="srv138jump",
+        artifact_prefix="registry.ci.qdev.run/kaztilshi",
+        adapter="qmt-native-release-v1",
+        minimum_free_gib=0,
+        state_path=_STATE_ROOT / "qmt.json",
+        lock_path=_LOCK_ROOT / "qdev-admin-platform-qmt.lock",
+        release_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
+        rollback_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
+        receipt_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
     ),
 }
 
@@ -442,6 +458,8 @@ def native_receipt(
     _ensure_dispatcher(profile.receipt_dispatcher)
     try:
         args = _current_dispatcher_args() if current else _dispatcher_args(release or {})
+        if profile.name == "qmt":
+            args = ["--action", "receipt", *args]
         document = json.loads(_run([str(profile.receipt_dispatcher), *args]))
     except json.JSONDecodeError as error:
         raise AgentError("native receipt dispatcher did not return JSON") from error
@@ -477,13 +495,68 @@ def native_receipt(
     return document
 
 
-def invoke_native(profile: Profile, action: str, release: dict[str, str]) -> None:
+def invoke_native(
+    profile: Profile,
+    action: str,
+    release: dict[str, str],
+    candidate_evidence: dict[str, Any] | None = None,
+) -> None:
     dispatchers = {"release": profile.release_dispatcher, "rollback": profile.rollback_dispatcher}
     dispatcher = dispatchers.get(action)
     if dispatcher is None:
         raise AgentError("native action is not allowlisted")
     _ensure_dispatcher(dispatcher)
-    _run([str(dispatcher), *_dispatcher_args(release)])
+    args = _dispatcher_args(release)
+    if profile.name == "qmt":
+        args = ["--action", action, *args]
+        if action == "release":
+            if candidate_evidence is None:
+                raise AgentError("QMT release requires signed candidate evidence")
+            args.extend(
+                [
+                    "--candidate-receipt-sha256",
+                    candidate_evidence["candidate_receipt_sha256"],
+                    "--release-version",
+                    candidate_evidence["release_version"],
+                    "--migration-receipt-digest",
+                    candidate_evidence["migration_receipt_digest"],
+                    "--contract-digest",
+                    candidate_evidence["contract_digest"],
+                ]
+            )
+    _run([str(dispatcher), *args])
+
+
+def _candidate_evidence(document: object, profile: Profile) -> dict[str, Any]:
+    generic_fields = {"schema", "candidate_receipt_sha256"}
+    qmt_fields = generic_fields | {
+        "release_version",
+        "migration_receipt_digest",
+        "contract_digest",
+    }
+    expected = qmt_fields if profile.name == "qmt" else generic_fields
+    if not isinstance(document, dict) or set(document) != expected:
+        raise AgentError("controller candidate evidence shape is invalid")
+    expected_schema = (
+        "qdev-qmt-candidate-evidence-v1"
+        if profile.name == "qmt"
+        else "qdev-release-candidate-evidence-v1"
+    )
+    if (
+        document.get("schema") != expected_schema
+        or not isinstance(document.get("candidate_receipt_sha256"), str)
+        or not _HEX64.fullmatch(document["candidate_receipt_sha256"])
+    ):
+        raise AgentError("controller candidate evidence identity is invalid")
+    if profile.name == "qmt" and (
+        document.get("release_version") != "4.4.2"
+        or not isinstance(document.get("migration_receipt_digest"), str)
+        or not _DIGEST.fullmatch(document["migration_receipt_digest"])
+        or not isinstance(document.get("contract_digest"), str)
+        or not _HEX64.fullmatch(document["contract_digest"])
+    ):
+        raise AgentError("controller QMT candidate evidence is invalid")
+    return document
 
 
 def heartbeat(
@@ -524,7 +597,16 @@ def _validated_job(
     config: Config,
     *,
     now: float | None = None,
-) -> tuple[str, dict[str, str], str, str, str, int, dict[str, str]]:
+) -> tuple[
+    str,
+    dict[str, str],
+    str,
+    str,
+    str,
+    int,
+    dict[str, str],
+    dict[str, Any],
+]:
     expected = {
         "schema",
         "release_id",
@@ -538,6 +620,7 @@ def _validated_job(
         "fence",
         "lease_expires_at",
         "rollback_anchor",
+        "candidate_evidence",
         "dispatch_claim",
         "dispatch_claim_signature",
     }
@@ -587,6 +670,7 @@ def _validated_job(
         "fence",
         "lease_expires_at",
         "rollback_anchor",
+        "candidate_evidence",
         "issued_at",
         "expires_at",
         "nonce",
@@ -627,6 +711,7 @@ def _validated_job(
     ):
         raise AgentError("controller host dispatch CI identity is invalid")
     rollback_anchor = _release(document.get("rollback_anchor"), profile)
+    candidate_evidence = _candidate_evidence(document.get("candidate_evidence"), profile)
     if rollback_anchor == release:
         raise AgentError("controller rollback anchor matches the candidate")
     expected_claim = {
@@ -650,6 +735,7 @@ def _validated_job(
         "fence": fence,
         "lease_expires_at": lease_expires_at,
         "rollback_anchor": rollback_anchor,
+        "candidate_evidence": candidate_evidence,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "nonce": nonce,
@@ -670,6 +756,7 @@ def _validated_job(
         nonce,
         lease_expires_at,
         rollback_anchor,
+        candidate_evidence,
     )
 
 
@@ -681,7 +768,7 @@ def validate_job(
     now: float | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Validate one signed, short-lived controller dispatch for this fixed host."""
-    release_id, release, _, _, nonce, _, _ = _validated_job(
+    release_id, release, _, _, nonce, _, _, _ = _validated_job(
         document, profile, config, now=now
     )
     if _dispatch_nonce_seen(profile, nonce):
@@ -829,17 +916,53 @@ def _runtime_evidence(
         not isinstance(value, str) or not value.strip() for value in dependencies.values()
     ):
         raise AgentError("native dependency identity is incomplete")
-    if set(provenance) != {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}:
-        raise AgentError("native artifact provenance is incomplete")
-    if (
-        not isinstance(provenance["qak_wheel_sha256"], str)
-        or not re.fullmatch(r"[0-9a-f]{64}", provenance["qak_wheel_sha256"])
-        or not isinstance(provenance["avds_artifact_sha256"], str)
-        or not re.fullmatch(r"[0-9a-f]{64}", provenance["avds_artifact_sha256"])
-        or not isinstance(provenance["avds_source_sha"], str)
-        or not _SHA.fullmatch(provenance["avds_source_sha"])
-    ):
-        raise AgentError("native artifact provenance is invalid")
+    if profile.name == "qmt":
+        qmt_version = dependencies.get("qmt_version")
+        if not isinstance(qmt_version, str) or not _QMT_VERSION.fullmatch(qmt_version):
+            raise AgentError("native QMT dependency identity is invalid")
+        candidate_fields = {
+            "candidate_receipt_sha256",
+            "migration_receipt_digest",
+            "contract_digest",
+        }
+        legacy_fields = {"legacy_runtime_receipt_sha256"}
+        if set(provenance) == candidate_fields:
+            if qmt_version != "4.4.2":
+                raise AgentError("native QMT dependency identity is invalid")
+            if (
+                not isinstance(provenance["candidate_receipt_sha256"], str)
+                or not _HEX64.fullmatch(provenance["candidate_receipt_sha256"])
+                or not isinstance(provenance["migration_receipt_digest"], str)
+                or not _DIGEST.fullmatch(provenance["migration_receipt_digest"])
+                or not isinstance(provenance["contract_digest"], str)
+                or not _HEX64.fullmatch(provenance["contract_digest"])
+            ):
+                raise AgentError("native QMT artifact provenance is invalid")
+        elif set(provenance) == legacy_fields:
+            if (
+                qmt_version == "4.4.2"
+                or not isinstance(provenance["legacy_runtime_receipt_sha256"], str)
+                or not _HEX64.fullmatch(provenance["legacy_runtime_receipt_sha256"])
+            ):
+                raise AgentError("native QMT legacy provenance is invalid")
+        else:
+            raise AgentError("native QMT artifact provenance is invalid")
+    else:
+        if set(provenance) != {
+            "qak_wheel_sha256",
+            "avds_artifact_sha256",
+            "avds_source_sha",
+        }:
+            raise AgentError("native artifact provenance is incomplete")
+        if (
+            not isinstance(provenance["qak_wheel_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", provenance["qak_wheel_sha256"])
+            or not isinstance(provenance["avds_artifact_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", provenance["avds_artifact_sha256"])
+            or not isinstance(provenance["avds_source_sha"], str)
+            or not _SHA.fullmatch(provenance["avds_source_sha"])
+        ):
+            raise AgentError("native artifact provenance is invalid")
     return {
         "runtime_identity": runtime,
         "dependency_identity": dependencies,
@@ -2147,6 +2270,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             dispatch_nonce,
             lease_expires_at,
             rollback_anchor,
+            candidate_evidence,
         ) = _validated_job(job_document, profile, config)
         if _dispatch_nonce_seen(profile, dispatch_nonce):
             raise AgentError("controller host dispatch claim was already consumed")
@@ -2177,9 +2301,28 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         )
         try:
             _ensure_live_lease(lease_expires_at)
-            invoke_native(profile, "release", candidate)
+            if profile.name == "qmt":
+                invoke_native(profile, "release", candidate, candidate_evidence)
+            else:
+                invoke_native(profile, "release", candidate)
             candidate_native = native_receipt(profile, current=True)
             _validate_native_runtime(candidate_native, profile, candidate)
+            if profile.name == "qmt" and (
+                candidate_native.get("dependency_identity")
+                != {
+                    "qmt_version": candidate_evidence["release_version"]
+                }
+                or candidate_native.get("artifact_provenance")
+                != {
+                    key: candidate_evidence[key]
+                    for key in (
+                        "candidate_receipt_sha256",
+                        "migration_receipt_digest",
+                        "contract_digest",
+                    )
+                }
+            ):
+                raise AgentError("native QMT receipt does not bind candidate evidence")
             runtime_receipt = _completion_receipt(
                 profile, candidate, active, candidate_native
             )

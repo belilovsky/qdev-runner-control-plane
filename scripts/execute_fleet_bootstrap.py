@@ -25,6 +25,8 @@ from qdev_runner.fleet_bootstrap import (
     FleetBootstrapRequest,
 )
 from qdev_runner.fleet_bootstrap_executor import (
+    BootstrapExecution,
+    RecoveryExecution,
     execute_bootstrap_operation,
     execute_existing_worker_recovery,
 )
@@ -80,6 +82,7 @@ def run(argv: list[str] | None = None) -> int:
     try:
         request = _request(arguments.request)
         policy = FleetBootstrapPolicy(arguments.policy, arguments.release_lanes)
+        result: BootstrapExecution | RecoveryExecution
         if request.action == "restore-existing-worker":
             if arguments.active_jobs is None:
                 raise FleetBootstrapError("worker recovery requires active job observation")
