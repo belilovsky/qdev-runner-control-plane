@@ -1,4 +1,5 @@
 """Real RSA signature admission, with synthetic GitHub and controller state."""
+
 from __future__ import annotations
 
 import copy
@@ -6,7 +7,16 @@ import time
 from pathlib import Path
 
 import pytest
-from bootstrap_support import KEY, GitHub, claims, policy, register, request
+from bootstrap_support import (
+    KEY,
+    GitHub,
+    candidate_artifact,
+    candidate_receipt,
+    claims,
+    policy,
+    register,
+    request,
+)
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
 from test_github_oidc import _jwk, _token
@@ -22,22 +32,58 @@ def rsa_key():
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
-def admit(tmp_path, rsa_key, *, changes=None, job_changes=None, run_changes=None, registered=True):
+def admit(
+    tmp_path,
+    rsa_key,
+    *,
+    changes=None,
+    job_changes=None,
+    run_changes=None,
+    registered=True,
+    bootstrap_request=None,
+    corrupt_candidate_artifact=False,
+):
     controller = Store(tmp_path / "broker.db")
     if registered:
         register(controller)
     identity = policy()
     verifier = GitHubActionsArtifactOIDCVerifier(
-        audience=identity.identity.audience, fetch_jwks=lambda: {"keys": [_jwk(rsa_key)]},
+        audience=identity.identity.audience,
+        fetch_jwks=lambda: {"keys": [_jwk(rsa_key)]},
     )
     github = GitHub()
     github.job.update(job_changes or {})
     github.run.update(run_changes or {})
+    selected_request = bootstrap_request or request()
+    if selected_request.action == "activate-controller":
+        receipt = selected_request.controller_candidate_receipt
+        assert receipt is not None
+        artifact = candidate_artifact(tmp_path / "artifacts", receipt)
+        if corrupt_candidate_artifact:
+            artifact.write_bytes(b"not-a-valid-archive")
     return authorize_bootstrap(
-        token=_token(rsa_key, claims() | (changes or {})), request=request(),
-        idempotency_key="worker-recovery-001", policy=identity, verifier=verifier,
-        github=github, controller_store=controller, signing_key=KEY,
+        token=_token(rsa_key, claims() | (changes or {})),
+        request=selected_request,
+        idempotency_key="worker-recovery-001",
+        policy=identity,
+        verifier=verifier,
+        github=github,
+        controller_store=controller,
+        artifact_root=tmp_path / "artifacts",
+        signing_key=KEY,
     )
+
+
+def activation_request() -> FleetBootstrapRequest:
+    raw = request().model_dump(mode="json", by_alias=True)
+    raw.update(
+        {
+            "action": "activate-controller",
+            "worker_name": None,
+            "controller_candidate_receipt": candidate_receipt(),
+        }
+    )
+    return FleetBootstrapRequest.model_validate(raw)
 
 
 def test_real_oidc_signature_produces_bounded_verified_operation(tmp_path: Path, rsa_key):
@@ -46,34 +92,82 @@ def test_real_oidc_signature_produces_bounded_verified_operation(tmp_path: Path,
     payload = operation.directive["payload"]
     assert 0 < payload["expires_at"] - payload["issued_at"] <= 300
     assert set(payload) == {
-        "schema", "request", "idempotency_key", "fence", "issued_at", "expires_at",
+        "schema",
+        "request",
+        "idempotency_key",
+        "fence",
+        "issued_at",
+        "expires_at",
+        "candidate_provenance",
     }
+    assert payload["candidate_provenance"] is None
 
 
-@pytest.mark.parametrize("changes", [
-    {"iss": "https://untrusted.invalid"}, {"aud": "qdev-artifact-v1"},
-    {"repository": "belilovsky/other"}, {"ref": "refs/heads/other"},
-    {"sha": "b" * 40}, {"run_id": "124"}, {"run_attempt": "2"},
-    {"workflow_ref": "belilovsky/other/.github/workflows/fleet-bootstrap.yml@refs/heads/main"},
-    {"job_workflow_ref": "belilovsky/other/.github/workflows/reusable.yml@refs/heads/main"},
-    {"event_name": "pull_request"}, {"event_name": "push"},
-    {"iat": False}, {"iat": float("nan")}, {"exp": float("inf")},
-    {"iat": int(time.time()) + 30}, {"exp": int(time.time()) - 1},
-    {"iat": int(time.time()) - 500, "exp": int(time.time()) + 500},
-])
+def test_activation_binds_completed_job_and_stored_candidate_artifact(
+    tmp_path: Path, rsa_key
+) -> None:
+    operation = admit(tmp_path, rsa_key, bootstrap_request=activation_request())
+    provenance = operation.directive["payload"]["candidate_provenance"]
+    assert provenance["job_id"] == 778
+    assert provenance["candidate_artifact_digest"]
+    assert len(provenance["candidate_artifact_digest"]) == 64
+
+
+def test_activation_rejects_corrupt_stored_candidate_artifact(tmp_path: Path, rsa_key) -> None:
+    with pytest.raises(FleetBootstrapError, match="candidate artifact is invalid"):
+        admit(
+            tmp_path,
+            rsa_key,
+            bootstrap_request=activation_request(),
+            corrupt_candidate_artifact=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"iss": "https://untrusted.invalid"},
+        {"aud": "qdev-artifact-v1"},
+        {"repository": "belilovsky/other"},
+        {"ref": "refs/heads/other"},
+        {"sha": "b" * 40},
+        {"run_id": "124"},
+        {"run_attempt": "2"},
+        {"workflow_ref": "belilovsky/other/.github/workflows/fleet-bootstrap.yml@refs/heads/main"},
+        {"job_workflow_ref": "belilovsky/other/.github/workflows/reusable.yml@refs/heads/main"},
+        {"event_name": "pull_request"},
+        {"event_name": "push"},
+        {"iat": False},
+        {"iat": float("nan")},
+        {"exp": float("inf")},
+        {"iat": int(time.time()) + 30},
+        {"exp": int(time.time()) - 1},
+        {"iat": int(time.time()) - 500, "exp": int(time.time()) + 500},
+    ],
+)
 def test_rejects_oidc_binding_changes(tmp_path, rsa_key, changes):
     with pytest.raises((FleetBootstrapError, GitHubActionsOIDCError)):
         admit(tmp_path, rsa_key, changes=changes)
 
 
-@pytest.mark.parametrize("job_changes,run_changes", [
-    ({"id": 457}, {}), ({"run_id": 124}, {}), ({"run_attempt": 2}, {}),
-    ({"head_sha": "b" * 40}, {}), ({"status": "completed"}, {}),
-    ({"name": "fleet-bootstrap-validate"}, {}), ({}, {"id": 124}),
-    ({}, {"run_attempt": 2}), ({}, {"head_sha": "b" * 40}),
-    ({}, {"head_branch": "other"}), ({}, {"event": "push"}),
-    ({}, {"path": ".github/workflows/other.yml"}), ({}, {"status": "completed"}),
-])
+@pytest.mark.parametrize(
+    "job_changes,run_changes",
+    [
+        ({"id": 457}, {}),
+        ({"run_id": 124}, {}),
+        ({"run_attempt": 2}, {}),
+        ({"head_sha": "b" * 40}, {}),
+        ({"status": "completed"}, {}),
+        ({"name": "fleet-bootstrap-validate"}, {}),
+        ({}, {"id": 124}),
+        ({}, {"run_attempt": 2}),
+        ({}, {"head_sha": "b" * 40}),
+        ({}, {"head_branch": "other"}),
+        ({}, {"event": "push"}),
+        ({}, {"path": ".github/workflows/other.yml"}),
+        ({}, {"status": "completed"}),
+    ],
+)
 def test_rejects_github_attempt_mismatch(tmp_path, rsa_key, job_changes, run_changes):
     with pytest.raises(FleetBootstrapError, match="GitHub job attempt"):
         admit(tmp_path, rsa_key, job_changes=job_changes, run_changes=run_changes)

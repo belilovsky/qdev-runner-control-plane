@@ -51,13 +51,10 @@ class Policy:
             repository = self.repositories.get(repository_name)
             if repository is None or repository.archived:
                 raise PolicyError(
-                    "repository admission override is not in the active allowlist: "
-                    f"{full_name}"
+                    f"repository admission override is not in the active allowlist: {full_name}"
                 )
             if not isinstance(profile_overrides, dict):
-                raise PolicyError(
-                    f"repository admission overrides must be a mapping: {full_name}"
-                )
+                raise PolicyError(f"repository admission overrides must be a mapping: {full_name}")
             for profile_name, raw_disk_mb in profile_overrides.items():
                 profile_key = str(profile_name)
                 profile = self.profiles.get(profile_key)

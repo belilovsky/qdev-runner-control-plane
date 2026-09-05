@@ -40,12 +40,9 @@ def install(checkout: Path) -> list[Path]:
 
     targets = {
         checkout / ".github/QDEV_RUNNERS.md": TEMPLATES / "QDEV_RUNNERS.md",
-        checkout / ".github/workflows/qdev-runner-contract.yml": TEMPLATES
-        / contract_workflow,
-        checkout / ".github/scripts/qdev-runner-policy.py": TEMPLATES
-        / "qdev-runner-policy.py",
-        checkout / ".github/scripts/qdev-upload-artifact.sh": TEMPLATES
-        / "qdev-upload-artifact.sh",
+        checkout / ".github/workflows/qdev-runner-contract.yml": TEMPLATES / contract_workflow,
+        checkout / ".github/scripts/qdev-runner-policy.py": TEMPLATES / "qdev-runner-policy.py",
+        checkout / ".github/scripts/qdev-upload-artifact.sh": TEMPLATES / "qdev-upload-artifact.sh",
     }
     changed: list[Path] = []
     agents = checkout / "AGENTS.md"

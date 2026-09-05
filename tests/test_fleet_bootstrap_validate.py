@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import urllib.parse
 import urllib.request
 import urllib.response
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from bootstrap_support import candidate_receipt
 
 ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -315,3 +317,95 @@ def test_json_request_never_follows_bearer_redirect(
     assert seen == [("https://api.github.com/original", "Bearer synthetic-bearer")]
     assert "sensitive" not in str(error.value)
     assert "synthetic-bearer" not in str(error.value)
+
+
+def _bootstrap_request() -> Any:
+    return validator.FleetBootstrapRequest.model_validate(
+        {
+            "schema": validator.REQUEST_SCHEMA,
+            "action": "activate-controller",
+            "source_sha": "a" * 40,
+            "run_id": 42,
+            "job_id": 9001,
+            "attempt": 2,
+            "claim_ttl_seconds": 900,
+            "controller_revision": "a" * 40,
+            "controller_release_digest": "sha256:" + "b" * 64,
+            "controller_candidate_receipt": candidate_receipt(),
+            "release_lane": None,
+            "worker_name": None,
+        }
+    )
+
+
+def test_execute_submits_exact_validated_request_and_scrubs_oidc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _bootstrap_request()
+    fingerprint = validator.bootstrap_request_fingerprint(request)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        validator,
+        "_validated_operation",
+        lambda: (request, "bootstrap-once-001", "short-lived-oidc"),
+    )
+    previous_value = "existing-value"
+    monkeypatch.setenv("QDEV_BOOTSTRAP_OIDC_TOKEN", previous_value)
+
+    def run(arguments: list[str]) -> dict[str, Any]:
+        seen["arguments"] = arguments
+        seen["oidc"] = validator.os.environ["QDEV_BOOTSTRAP_OIDC_TOKEN"]
+        request_path = Path(arguments[arguments.index("--request") + 1])
+        seen["request_path"] = request_path
+        seen["request"] = request_path.read_text(encoding="utf-8")
+        return {
+            "schema": "qdev-controller-receipt-v2",
+            "payload": {
+                "kind": "fleet-bootstrap",
+                "status": "completed",
+                "operation_status": "completed",
+                "action": "activate-controller",
+                "idempotency_key": "bootstrap-once-001",
+                "request_fingerprint": fingerprint,
+            },
+        }
+
+    monkeypatch.setattr(validator, "operator_run", run)
+
+    result = validator.execute()
+
+    assert result["status"] == "completed"
+    assert seen["oidc"] == "short-lived-oidc"
+    assert json.loads(seen["request"]) == request.model_dump(mode="json", by_alias=True)
+    assert not seen["request_path"].exists()
+    assert validator.os.environ["QDEV_BOOTSTRAP_OIDC_TOKEN"] == previous_value
+
+
+def test_execute_fails_when_controller_does_not_complete_exact_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _bootstrap_request()
+    monkeypatch.setattr(
+        validator,
+        "_validated_operation",
+        lambda: (request, "bootstrap-once-001", "short-lived-oidc"),
+    )
+    monkeypatch.setattr(
+        validator,
+        "operator_run",
+        lambda arguments: {
+            "payload": {
+                "kind": "fleet-bootstrap",
+                "status": "access_blocked",
+                "operation_status": "pending",
+                "action": "activate-controller",
+                "idempotency_key": "bootstrap-once-001",
+                "request_fingerprint": validator.bootstrap_request_fingerprint(request),
+            }
+        },
+    )
+
+    with pytest.raises(validator.BootstrapValidationError, match="did not complete the exact"):
+        validator.execute()
+
+    assert "QDEV_BOOTSTRAP_OIDC_TOKEN" not in validator.os.environ

@@ -627,12 +627,14 @@ class ReleaseStore:
         self.jobs_root = root / "jobs"
         self.locks_root = root / "locks"
         self.operations_root = root / "operations"
+        self.enrolments_root = root / "enrolments"
         for path in (
             self.root,
             self.agents_root,
             self.jobs_root,
             self.locks_root,
             self.operations_root,
+            self.enrolments_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
             path.chmod(0o700)
@@ -692,6 +694,33 @@ class ReleaseStore:
 
     def _operation_path(self, lane_name: str) -> Path:
         return self.operations_root / f"{self._safe_name(lane_name)}.json"
+
+    def _enrolment_path(self, lane_name: str, operation_fence: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{24,128}", operation_fence):
+            raise ReleaseLaneError("host enrolment fence is invalid")
+        identity = hashlib.sha256(operation_fence.encode("utf-8")).hexdigest()
+        return self.enrolments_root / f"{self._safe_name(lane_name)}.{identity}.json"
+
+    def record_enrolment_ack(
+        self, lane: ReleaseLane, operation_fence: str, acknowledgement: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist one immutable mTLS challenge acknowledgement."""
+
+        path = self._enrolment_path(lane.name, operation_fence)
+        with self._lock(lane.name):
+            current = self._read(path)
+            if current is not None:
+                if current != acknowledgement:
+                    raise ReleaseLaneError("host enrolment acknowledgement cannot be replaced")
+                return current
+            self._write(path, acknowledgement)
+        return acknowledgement
+
+    def enrolment_ack(self, lane: ReleaseLane, operation_fence: str) -> dict[str, Any] | None:
+        """Return the immutable acknowledgement for an exact operation fence."""
+
+        with self._lock(lane.name):
+            return self._read(self._enrolment_path(lane.name, operation_fence))
 
     def _sync_operation(self, lane: ReleaseLane, job: dict[str, Any]) -> None:
         # The job is authoritative. Retrying an acknowledgement repairs this

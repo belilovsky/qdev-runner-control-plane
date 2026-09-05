@@ -7,9 +7,12 @@ Wants=network-online.target
 Type=oneshot
 User=root
 Group=root
-ExecStart=/opt/qdev-runner-control-plane/current/scripts/qdev_product_release_host_agent.py --profile qmt --config /etc/qdev-release-agents/qmt.env --once
+ExecStart=/opt/qdev-release-bootstrap/current/scripts/qdev_product_release_host_agent.py --profile qmt --config /etc/qdev-release-agents/qmt.env --once
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/lib/qdev-release-agents /run /var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

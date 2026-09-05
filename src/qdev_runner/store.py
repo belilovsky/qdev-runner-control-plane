@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -52,6 +53,13 @@ CREATE TABLE IF NOT EXISTS workers (
 CREATE TABLE IF NOT EXISTS worker_recovery_holds (
     worker_name TEXT PRIMARY KEY REFERENCES workers(name),
     operation_fence TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS controller_operation_hold (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    operation_fence TEXT NOT NULL UNIQUE,
+    target_id TEXT NOT NULL,
+    state_revision TEXT NOT NULL,
     created_at REAL NOT NULL
 );
 """
@@ -243,6 +251,11 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM controller_operation_hold WHERE singleton=1"
+            ).fetchone():
+                connection.execute("COMMIT")
+                return None
             if connection.execute(
                 "SELECT 1 FROM worker_recovery_holds WHERE worker_name=?", (worker_name,)
             ).fetchone():
@@ -514,7 +527,9 @@ class Store:
             )
         return updated.rowcount == 1
 
-    def acquire_recovery_hold(self, worker_name: str, operation_fence: str) -> int:
+    def acquire_recovery_hold_state(
+        self, worker_name: str, operation_fence: str
+    ) -> tuple[int, str]:
         """Fence an existing worker and atomically observe all controller-owned work.
 
         No queue rows are modified. A hold survives a broker crash; only the
@@ -535,17 +550,148 @@ class Store:
             if hold is not None and hold["operation_fence"] != operation_fence:
                 raise ValueError("worker recovery is already fenced")
             running = connection.execute(
-                "SELECT COUNT(*) FROM jobs WHERE worker_name=? "
-                "AND status IN ('claimed','running')", (worker_name,),
+                "SELECT COUNT(*) FROM jobs WHERE worker_name=? AND status IN ('claimed','running')",
+                (worker_name,),
             ).fetchone()[0]
             active = max(int(worker["active_jobs"]), int(running))
+            revision = hashlib.sha256(
+                json.dumps(
+                    {
+                        "worker_name": worker_name,
+                        "operation_fence": operation_fence,
+                        "heartbeat_active_jobs": int(worker["active_jobs"]),
+                        "controller_active_jobs": int(running),
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
             if active == 0:
                 connection.execute(
                     "INSERT OR IGNORE INTO worker_recovery_holds VALUES(?,?,?)",
                     (worker_name, operation_fence, time.time()),
                 )
             connection.execute("COMMIT")
-            return active
+            return active, revision
+
+    def acquire_recovery_hold(self, worker_name: str, operation_fence: str) -> int:
+        active, _revision = self.acquire_recovery_hold_state(worker_name, operation_fence)
+        return active
+
+    def worker_recovery_observation(self, worker_name: str, operation_fence: str) -> dict[str, Any]:
+        """Return controller-owned worker state while an exact recovery hold exists.
+
+        The recovery executor uses this snapshot before invoking the privileged
+        adapter and again afterwards.  Adapter output is deliberately excluded:
+        only a later broker heartbeat can prove that the recovered worker has
+        rejoined with usable capacity.
+        """
+
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            worker = connection.execute(
+                "SELECT profiles_json, active_jobs, last_seen, detail_json "
+                "FROM workers WHERE name=?",
+                (worker_name,),
+            ).fetchone()
+            hold = connection.execute(
+                "SELECT operation_fence FROM worker_recovery_holds WHERE worker_name=?",
+                (worker_name,),
+            ).fetchone()
+            connection.execute("COMMIT")
+        if worker is None:
+            raise ValueError("recovery worker is not registered")
+        if hold is None or hold["operation_fence"] != operation_fence:
+            raise ValueError("worker recovery hold is unavailable")
+        profiles = json.loads(worker["profiles_json"])
+        detail = json.loads(worker["detail_json"])
+        if (
+            not isinstance(profiles, list)
+            or not profiles
+            or not all(isinstance(profile, str) and profile for profile in profiles)
+            or not isinstance(detail, dict)
+        ):
+            raise ValueError("worker recovery observation is invalid")
+        concurrency = _worker_concurrency(detail)
+        active_jobs = int(worker["active_jobs"])
+        return {
+            "worker_name": worker_name,
+            "profiles": tuple(profiles),
+            "active_jobs": active_jobs,
+            "last_seen": float(worker["last_seen"]),
+            "allowed": detail.get("allowed", True) is True,
+            "concurrency": concurrency,
+            "slots_available": max(0, concurrency - active_jobs),
+            "authenticated_certificate_sha256": detail.get("authenticated_certificate_sha256"),
+        }
+
+    def acquire_controller_hold(
+        self, operation_fence: str, target_id: str, *, exclude_job_id: int
+    ) -> tuple[int, str]:
+        """Atomically stop new claims and attest the quiescent scheduler state.
+
+        The hold is controller-owned and survives process failure.  A retry of
+        the same operation receives the same revision; a different operation
+        cannot replace it.  The caller signs the returned revision before it
+        crosses the privileged boundary.
+        """
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT operation_fence, target_id, state_revision "
+                "FROM controller_operation_hold WHERE singleton=1"
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["operation_fence"] != operation_fence
+                    or existing["target_id"] != target_id
+                ):
+                    connection.execute("ROLLBACK")
+                    raise ValueError("controller scheduler is already fenced")
+                connection.execute("COMMIT")
+                return 0, str(existing["state_revision"])
+            rows = connection.execute(
+                "SELECT job_id, status, COALESCE(worker_name, '') AS worker_name, updated_at "
+                "FROM jobs WHERE status IN ('claimed','running') AND job_id<>? "
+                "ORDER BY job_id",
+                (exclude_job_id,),
+            ).fetchall()
+            active = len(rows)
+            snapshot = {
+                "operation_fence": operation_fence,
+                "target_id": target_id,
+                "exclude_job_id": exclude_job_id,
+                "active": [
+                    [
+                        int(row["job_id"]),
+                        str(row["status"]),
+                        str(row["worker_name"]),
+                        row["updated_at"],
+                    ]
+                    for row in rows
+                ],
+            }
+            revision = hashlib.sha256(
+                json.dumps(
+                    snapshot, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if active == 0:
+                connection.execute(
+                    "INSERT INTO controller_operation_hold VALUES(1,?,?,?,?)",
+                    (operation_fence, target_id, revision, time.time()),
+                )
+            connection.execute("COMMIT")
+            return active, revision
+
+    def release_controller_hold(self, operation_fence: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM controller_operation_hold WHERE singleton=1 AND operation_fence=?",
+                (operation_fence,),
+            )
 
     def release_recovery_hold(self, worker_name: str, operation_fence: str) -> None:
         with self.connect() as connection:
@@ -553,6 +699,21 @@ class Store:
                 "DELETE FROM worker_recovery_holds WHERE worker_name=? AND operation_fence=?",
                 (worker_name, operation_fence),
             )
+
+    def active_job_count(self, *, exclude_job_id: int | None = None) -> int:
+        """Return controller-owned claimed/running work, optionally excluding itself."""
+
+        with self.connect() as connection:
+            if exclude_job_id is None:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('claimed','running')"
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('claimed','running') AND job_id<>?",
+                    (exclude_job_id,),
+                ).fetchone()
+        return int(row[0])
 
     def health(self) -> dict[str, Any]:
         with self.connect() as connection:

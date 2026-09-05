@@ -15,6 +15,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any, Literal
 
 from .bootstrap_authority import (
     VerifiedBootstrapOperation,
+    create_quiescence_receipt,
     renew_bootstrap_operation,
     verify_directive,
 )
@@ -38,7 +40,14 @@ from .store import Store
 RECOVERY_RESULT_SCHEMA = "qdev-fleet-worker-recovery-result-v1"
 RECOVERY_RECEIPT_SCHEMA = "qdev-fleet-worker-recovery-receipt-v1"
 RECOVERY_STATUSES = frozenset(
-    {"completed", "access_blocked", "active_work", "target_unregistered", "failed"}
+    {
+        "completed",
+        "capacity_pending",
+        "access_blocked",
+        "active_work",
+        "target_unregistered",
+        "failed",
+    }
 )
 _ADAPTER_STATUSES = frozenset(
     {"completed", "already_completed", "access_blocked", "target_unregistered", "failed"}
@@ -51,7 +60,12 @@ class RecoveryExecution:
     """A non-secret result suitable for a private operator receipt."""
 
     status: Literal[
-        "completed", "access_blocked", "active_work", "target_unregistered", "failed"
+        "completed",
+        "capacity_pending",
+        "access_blocked",
+        "active_work",
+        "target_unregistered",
+        "failed",
     ]
     operation_status: Literal["pending", "completed"]
     idempotency_key: str
@@ -120,6 +134,7 @@ def _invoke_adapter(
     request: FleetBootstrapRequest,
     target: WorkerRecoveryTarget,
     active_jobs: int,
+    quiescence: dict[str, Any],
     timeout_seconds: float,
 ) -> tuple[str, dict[str, Any] | None]:
     envelope = {
@@ -132,8 +147,10 @@ def _invoke_adapter(
             "service_unit": target.service_unit,
             "host_binding": target.host_binding,
             "labels": list(target.labels),
+            "certificate_fingerprint_sha256": target.certificate_fingerprint_sha256,
         },
         "active_jobs": active_jobs,
+        "quiescence": quiescence,
     }
     try:
         completed = subprocess.run(  # noqa: S603
@@ -229,6 +246,8 @@ def execute_existing_worker_recovery(
     controller_store: Store,
     adapter: Path | None = None,
     timeout_seconds: float = 120,
+    heartbeat_timeout_seconds: float = 30,
+    heartbeat_poll_seconds: float = 0.25,
     receipt_path: Path | None = None,
 ) -> RecoveryExecution:
     """Verify authority and fence the target before any privileged side effect."""
@@ -248,18 +267,24 @@ def execute_existing_worker_recovery(
         if original_authority is not None:
             admitted = operation
             operation = renew_bootstrap_operation(
-                original_authority, admitted, policy=policy, signing_key=signing_key,
+                original_authority,
+                admitted,
+                policy=policy,
+                signing_key=signing_key,
             )
             # Keep every fresh workflow attempt independently auditable without
             # changing the immutable intent or the privileged adapter's fence.
             audit_path = store.path.with_suffix(f".admission-{admitted.fence}.json")
             # One attempt can mint multiple equivalent short-lived credentials;
             # audit the immutable identity rather than its changing timestamps.
-            _persist_receipt(audit_path, {
-                "original_fence": operation.fence,
-                "admission_fence": admitted.fence,
-                "request": admitted.request.model_dump(mode="json", by_alias=True),
-            })
+            _persist_receipt(
+                audit_path,
+                {
+                    "original_fence": operation.fence,
+                    "admission_fence": admitted.fence,
+                    "request": admitted.request.model_dump(mode="json", by_alias=True),
+                },
+            )
         else:
             _persist_receipt(authority_path, operation.directive)
         request = operation.request
@@ -272,15 +297,45 @@ def execute_existing_worker_recovery(
         observed = record.status == "completed"
         resolved_adapter = _adapter_path(adapter) if record.status != "completed" else None
         if record.status != "completed" and resolved_adapter is not None:
-            active_jobs = controller_store.acquire_recovery_hold(
-                request.worker_name, operation.fence,
+            active_jobs, state_revision = controller_store.acquire_recovery_hold_state(
+                request.worker_name,
+                operation.fence,
+            )
+            baseline = (
+                controller_store.worker_recovery_observation(
+                    request.worker_name,
+                    operation.fence,
+                )
+                if active_jobs == 0
+                else None
+            )
+            quiescence = create_quiescence_receipt(
+                operation,
+                target_id=policy.worker_target(request.worker_name).target_id,  # type: ignore[union-attr]
+                state_revision=state_revision,
+                active_jobs=active_jobs,
+                signing_key=signing_key,
             )
             observed = True
+        else:
+            baseline = None
+            quiescence = None
         result = _execute_existing_worker_recovery(
-            policy=policy, store=store, request=request, operation=operation,
-            idempotency_key=operation.idempotency_key, active_jobs=active_jobs,
-            adapter=resolved_adapter, signing_key=signing_key,
-            timeout_seconds=timeout_seconds, receipt_path=receipt_path,
+            policy=policy,
+            store=store,
+            request=request,
+            operation=operation,
+            idempotency_key=operation.idempotency_key,
+            active_jobs=active_jobs,
+            quiescence=quiescence,
+            adapter=resolved_adapter,
+            signing_key=signing_key,
+            timeout_seconds=timeout_seconds,
+            controller_store=controller_store,
+            baseline=baseline,
+            heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+            heartbeat_poll_seconds=heartbeat_poll_seconds,
+            receipt_path=receipt_path,
         )
         if result.operation_status == "completed":
             controller_store.release_recovery_hold(request.worker_name, operation.fence)
@@ -297,7 +352,12 @@ def _execute_existing_worker_recovery(
     operation: VerifiedBootstrapOperation,
     idempotency_key: str,
     active_jobs: int,
+    quiescence: dict[str, Any] | None,
     signing_key: str,
+    controller_store: Store,
+    baseline: dict[str, Any] | None,
+    heartbeat_timeout_seconds: float,
+    heartbeat_poll_seconds: float,
     adapter: Path | None = None,
     timeout_seconds: float = 120,
     receipt_path: Path | None = None,
@@ -307,7 +367,8 @@ def _execute_existing_worker_recovery(
     The caller must provide a controller-observed active job count.  Missing
     or non-zero work is never treated as safe.  A missing adapter or registry
     target leaves the operation pending and returns ``access_blocked``;
-    ``completed`` is emitted only after the adapter reports success.
+    ``completed`` is emitted only after the adapter reports success and the
+    controller observes a later healthy heartbeat from the same worker.
     """
 
     policy.validate(request)
@@ -383,12 +444,18 @@ def _execute_existing_worker_recovery(
     # No privileged side effect may start after its short-lived authority expires.
     # SQLite hold acquisition and journal I/O may have waited past the TTL.
     operation = verify_directive(operation.directive, policy=policy, signing_key=signing_key)
+    if quiescence is None:
+        raise FleetBootstrapError("signed worker quiescence receipt is unavailable")
+    if baseline is None:
+        raise FleetBootstrapError("worker recovery baseline is unavailable")
+    adapter_started = time.monotonic()
     adapter_status, adapter_result = _invoke_adapter(
         adapter,
         operation=operation,
         request=request,
         target=target,
         active_jobs=active_jobs,
+        quiescence=quiescence,
         timeout_seconds=timeout_seconds,
     )
     if adapter_status not in {"completed", "already_completed"}:
@@ -405,6 +472,56 @@ def _execute_existing_worker_recovery(
                 error_code=(adapter_result or {}).get("error_code", "adapter_rejected"),
             )
         )
+    if (
+        not isinstance(heartbeat_timeout_seconds, (int, float))
+        or isinstance(heartbeat_timeout_seconds, bool)
+        or heartbeat_timeout_seconds < 0
+        or not isinstance(heartbeat_poll_seconds, (int, float))
+        or isinstance(heartbeat_poll_seconds, bool)
+        or heartbeat_poll_seconds <= 0
+    ):
+        raise FleetBootstrapError("worker heartbeat observation timeout is invalid")
+    adapter_elapsed = time.monotonic() - adapter_started
+    heartbeat_budget = min(
+        float(heartbeat_timeout_seconds),
+        max(0.0, float(timeout_seconds) - adapter_elapsed),
+    )
+    deadline = time.monotonic() + heartbeat_budget
+    observation: dict[str, Any] | None = None
+    expected_profiles = tuple(
+        label for label in target.labels if label not in {"self-hosted", "Linux", "X64"}
+    )
+    while True:
+        current = controller_store.worker_recovery_observation(
+            target.worker_name,
+            operation.fence,
+        )
+        if (
+            current["last_seen"] > baseline["last_seen"]
+            and current["profiles"] == expected_profiles
+            and current["active_jobs"] == 0
+            and current["allowed"]
+            and current["slots_available"] > 0
+            and current["authenticated_certificate_sha256"] == target.certificate_fingerprint_sha256
+        ):
+            observation = current
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(float(heartbeat_poll_seconds), max(0.0, deadline - time.monotonic())))
+    if observation is None:
+        return finish(
+            RecoveryExecution(
+                status="capacity_pending",
+                operation_status="pending",
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+                worker_name=request.worker_name,
+                target_id=target.target_id,
+                service_unit=target.service_unit,
+                error_code="fresh_worker_heartbeat_pending",
+            )
+        )
     completion_result = {
         "action": "restore-existing-worker",
         "worker_name": target.worker_name,
@@ -413,6 +530,11 @@ def _execute_existing_worker_recovery(
         "host_binding": target.host_binding,
         "adapter_status": adapter_status,
         "active_jobs": active_jobs,
+        "heartbeat_last_seen": observation["last_seen"],
+        "profiles_json": json.dumps(
+            observation["profiles"], ensure_ascii=True, separators=(",", ":")
+        ),
+        "capacity_slots": observation["slots_available"],
     }
     # Adapter output may not overwrite controller-verified identity fields.
     # Its bounded result was validated above; immutable identities come only

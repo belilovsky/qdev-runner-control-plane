@@ -34,9 +34,7 @@ def audit(deploy_workflow: str, ci_workflow: str = "jobs: {}\n") -> dict[str, ob
             "release_registry_workflows:\n  - deploy.yml\n"
         ),
         "AGENTS.md": (
-            "<!-- qdev-runner-policy:start -->\n"
-            "managed\n"
-            "<!-- qdev-runner-policy:end -->\n"
+            "<!-- qdev-runner-policy:start -->\nmanaged\n<!-- qdev-runner-policy:end -->\n"
         ),
         ".github/QDEV_RUNNERS.md": "managed\n",
         ".github/scripts/qdev-runner-policy.py": "managed\n",

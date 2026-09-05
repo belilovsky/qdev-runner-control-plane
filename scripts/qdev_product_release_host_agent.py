@@ -784,7 +784,7 @@ def _operation_path(config: Config) -> Path:
 
 def _snapshot_path(config: Config, job: dict[str, Any]) -> Path:
     # release_id was validated before this function; no caller-selected path.
-    return config.state_path.parent / "rollback-config" / job["release_id"]
+    return config.state_path.parent / "rollback-config" / str(job["release_id"])
 
 
 def _own_version(image: dict[str, Any], profile: Profile) -> str | None:

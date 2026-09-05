@@ -68,9 +68,7 @@ def strip_yaml_comment(line: str) -> str:
         if char == '"' and not single:
             double = not double
             continue
-        if char == "#" and not single and not double and (
-            index == 0 or line[index - 1].isspace()
-        ):
+        if char == "#" and not single and not double and (index == 0 or line[index - 1].isspace()):
             return line[:index].rstrip()
     return line
 
@@ -246,9 +244,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         ):
             release_registry_workflows = set(release_registry_value)
         else:
-            violations.append(
-                violation(contract_path, 1, "invalid-release-registry-workflows")
-            )
+            violations.append(violation(contract_path, 1, "invalid-release-registry-workflows"))
     recovery_workflows: set[str] = set()
     recovery_value = contract.get("recovery_workflows")
     if recovery_value is not None:
@@ -313,9 +309,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             )
         )
     for workflow_name in sorted(recovery_workflows - available_workflows):
-        violations.append(
-            violation(contract_path, 1, "recovery-workflow-missing", workflow_name)
-        )
+        violations.append(violation(contract_path, 1, "recovery-workflow-missing", workflow_name))
     if smoke_path not in paths:
         violations.append(violation(smoke_path, 1, "missing-runner-smoke"))
     for path in paths:
@@ -334,9 +328,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         if is_recovery_workflow and not is_manual_only_workflow(triggers):
             violations.append(violation(path, 1, "recovery-workflow-not-manual-only"))
         if allow_ghcr and pull_request_triggered:
-            violations.append(
-                violation(path, 1, "release-registry-workflow-pull-request")
-            )
+            violations.append(violation(path, 1, "release-registry-workflow-pull-request"))
         visited_actions: set[str] = set()
         for line_number, raw in enumerate(text.splitlines(), start=1):
             line = strip_yaml_comment(raw)
@@ -422,10 +414,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                     if (
                         isinstance(strategy, dict)
                         and strategy.get("matrix") is not None
-                        and (
-                            unique_label is None
-                            or MATRIX_JOB_INDEX.search(unique_label) is None
-                        )
+                        and (unique_label is None or MATRIX_JOB_INDEX.search(unique_label) is None)
                     ):
                         violations.append(
                             violation(path, 1, "matrix-job-label-not-unique", str(job_name))
@@ -439,9 +428,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                             )
                         else:
                             unique_labels[label] = str(job_name)
-                elif not (isinstance(runner, str) and "${{" in runner) and not (
-                    release_runners.intersection(labels)
-                ) and not (allow_hosted and any(HOSTED.fullmatch(label) for label in labels)):
+                elif (
+                    not (isinstance(runner, str) and "${{" in runner)
+                    and not (release_runners.intersection(labels))
+                    and not (allow_hosted and any(HOSTED.fullmatch(label) for label in labels))
+                ):
                     violations.append(
                         violation(path, 1, "unapproved-runner-profile", str(job_name))
                     )

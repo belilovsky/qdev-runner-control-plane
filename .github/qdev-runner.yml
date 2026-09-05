@@ -4,6 +4,7 @@ schema_version: qdev-runner-v1
 github_hosted_fallback: false
 profiles:
   - qdev-ci
+  - qdev-ci-docker
 trusted_events:
   - push
   - workflow_dispatch

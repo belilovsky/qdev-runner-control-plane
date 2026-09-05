@@ -3,6 +3,7 @@ name: qdev-runner
 services:
   broker-public:
     container_name: qdev-runner-broker-public
+    image: ${QDEV_CONTROLLER_BROKER_PUBLIC_IMAGE:-qdev-runner-broker-public:local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker
@@ -20,11 +21,15 @@ services:
       QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
       QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
       QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
-      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
+      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_FLEET_CONTROLLER_ACTIVATION_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_FLEET_HOST_ENROLMENT_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_BOOTSTRAP_EXECUTOR_SOCKET: /run/qdev-runner-bootstrap/executor.sock
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
       - /var/log/qdev-runner:/var/log/qdev-runner
+      - /run/qdev-runner-bootstrap:/run/qdev-runner-bootstrap
     networks:
       - qdev_edge
     read_only: true
@@ -36,6 +41,7 @@ services:
 
   broker-internal:
     container_name: qdev-runner-broker-internal
+    image: ${QDEV_CONTROLLER_BROKER_INTERNAL_IMAGE:-qdev-runner-broker-internal:local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker
@@ -58,11 +64,15 @@ services:
       QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
       QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
       QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
-      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
+      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_FLEET_CONTROLLER_ACTIVATION_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_FLEET_HOST_ENROLMENT_EXECUTABLE: /usr/local/bin/qdev-bootstrap-adapter-client
+      QDEV_BOOTSTRAP_EXECUTOR_SOCKET: /run/qdev-runner-bootstrap/executor.sock
     volumes:
       - /etc/qdev-runner:/etc/qdev-runner:ro
       - /var/lib/qdev-runner:/var/lib/qdev-runner
       - /var/log/qdev-runner:/var/log/qdev-runner
+      - /run/qdev-runner-bootstrap:/run/qdev-runner-bootstrap
     networks:
       - qdev_runner_internal
       # The broker accepts no host-published traffic, but it must reach the

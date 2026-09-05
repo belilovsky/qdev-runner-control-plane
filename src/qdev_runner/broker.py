@@ -36,8 +36,14 @@ from .fleet_bootstrap import (
     FleetBootstrapRequest,
 )
 from .fleet_bootstrap_executor import execute_existing_worker_recovery
+from .fleet_bootstrap_operation_executor import execute_bootstrap_operation
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
+from .host_enrolment_challenge import (
+    HostEnrolmentChallenge,
+    create_host_enrolment_ack,
+    verify_host_enrolment_ack,
+)
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
 from .models import QueuedJob
@@ -67,6 +73,10 @@ from .store import Store
 
 LOGGER = logging.getLogger("qdev-runner-broker")
 _CONTROLLER_RELEASE_SCHEMA = "qdev-controller-release-status-v1"
+_CONTROLLER_RELEASE_SCHEMAS = {
+    "qdev-controller-release-status-v1",
+    "qdev-controller-release-status-v2",
+}
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -88,8 +98,11 @@ def controller_release_status(path: Path) -> dict[str, Any]:
         return unavailable
     if not isinstance(value, dict):
         return unavailable
+    schema = value.get("schema")
     required = {"schema", "state", "revision", "release_digest", "activated_at"}
-    if set(value) != required or value.get("schema") != _CONTROLLER_RELEASE_SCHEMA:
+    if schema == "qdev-controller-release-status-v2":
+        required.add("artifact_digest")
+    if set(value) != required or schema not in _CONTROLLER_RELEASE_SCHEMAS:
         return unavailable
     if value.get("state") != "active":
         return unavailable
@@ -99,6 +112,13 @@ def controller_release_status(path: Path) -> dict[str, Any]:
     if not isinstance(revision, str) or not _GIT_REVISION.fullmatch(revision):
         return unavailable
     if not isinstance(release_digest, str) or not _SHA256_DIGEST.fullmatch(release_digest):
+        return unavailable
+    artifact_digest = value.get("artifact_digest")
+    if schema == "qdev-controller-release-status-v2" and (
+        not isinstance(artifact_digest, str)
+        or not artifact_digest.startswith("sha256:")
+        or not _SHA256_DIGEST.fullmatch(artifact_digest.removeprefix("sha256:"))
+    ):
         return unavailable
     if not isinstance(activated_at, str):
         return unavailable
@@ -635,6 +655,55 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="host-agent capacity is below release minimum"
             )
+
+    @app.post("/internal/v1/release-hosts/{placement}/enrolment-challenge")
+    def release_host_enrolment_challenge(
+        placement: str,
+        request: HostEnrolmentChallenge,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Prove that the allowlisted host certificate reached the controller edge."""
+
+        try:
+            lane = release_policy().lane(request.release_lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=404, detail="release lane is not registered") from error
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        if (
+            placement != lane.placement
+            or request.placement != lane.placement
+            or request.project_id != lane.project_id
+        ):
+            raise HTTPException(status_code=403, detail="host enrolment target differs")
+        if not x_qdev_client_certificate_sha256 or not secrets.compare_digest(
+            x_qdev_client_certificate_sha256,
+            request.certificate_fingerprint_sha256,
+        ):
+            raise HTTPException(status_code=403, detail="host certificate fingerprint differs")
+        signing_key = settings.operator_directive_key or ""
+        try:
+            existing = release_state().enrolment_ack(lane, request.operation_fence)
+            if existing is not None:
+                verify_host_enrolment_ack(
+                    existing,
+                    request=request,
+                    expected_mtls_identity=lane.host_agent_mtls_identity,
+                    signing_key=signing_key,
+                )
+                return existing
+            acknowledgement = create_host_enrolment_ack(
+                request,
+                mtls_identity=lane.host_agent_mtls_identity,
+                signing_key=signing_key,
+            )
+            return release_state().record_enrolment_ack(
+                lane, request.operation_fence, acknowledgement
+            )
+        except (ReleaseLaneError, ValueError) as error:
+            raise HTTPException(
+                status_code=503, detail="host enrolment acknowledgement unavailable"
+            ) from error
 
     def current_worker(worker_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         snapshot = store.health()
@@ -1191,10 +1260,15 @@ def create_app(
             bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
             policy_value = fleet_bootstrap_policy()
             operation = authorize_bootstrap(
-                token=x_qdev_bootstrap_oidc, request=bootstrap_request,
-                idempotency_key=request.idempotency_key, policy=policy_value,
-                verifier=app.state.bootstrap_oidc_verifier, github=github,
-                controller_store=store, signing_key=settings.operator_directive_key or "",
+                token=x_qdev_bootstrap_oidc,
+                request=bootstrap_request,
+                idempotency_key=request.idempotency_key,
+                policy=policy_value,
+                verifier=app.state.bootstrap_oidc_verifier,
+                github=github,
+                controller_store=store,
+                artifact_root=settings.artifact_root,
+                signing_key=settings.operator_directive_key or "",
             )
             operation_path = (
                 settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
@@ -1212,7 +1286,8 @@ def create_app(
             )
         except GitHubError as error:
             raise HTTPException(
-                status_code=503, detail="bootstrap identity service unavailable",
+                status_code=503,
+                detail="bootstrap identity service unavailable",
             ) from error
         except (FleetBootstrapError, ValidationError, ValueError) as error:
             raise HTTPException(
@@ -1233,6 +1308,102 @@ def create_app(
                 "active_jobs": execution.active_jobs,
                 "error_code": execution.error_code,
                 "result": execution.result,
+            }
+        )
+
+    @app.post("/internal/v1/operations/fleet-bootstrap/execute")
+    def execute_fleet_bootstrap(
+        request: FleetBootstrapRecoveryRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+        x_qdev_bootstrap_oidc: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Execute one source-bound controller activation or lane enrolment.
+
+        The caller supplies intent and a short-lived workflow identity only.
+        Policy selects the exact artifact, lane tuple and root-owned adapter.
+        """
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        if not x_qdev_bootstrap_oidc:
+            raise HTTPException(status_code=401, detail="bootstrap workflow identity is required")
+        try:
+            bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
+            policy_value = fleet_bootstrap_policy()
+            operation = authorize_bootstrap(
+                token=x_qdev_bootstrap_oidc,
+                request=bootstrap_request,
+                idempotency_key=request.idempotency_key,
+                policy=policy_value,
+                verifier=app.state.bootstrap_oidc_verifier,
+                github=github,
+                controller_store=store,
+                artifact_root=settings.artifact_root,
+                signing_key=settings.operator_directive_key or "",
+            )
+            operation_path = (
+                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
+            )
+            receipt_path = settings.fleet_bootstrap_receipt_root / f"{request.idempotency_key}.json"
+            operation_state = BootstrapOperationStore(operation_path)
+            if bootstrap_request.action == "restore-existing-worker":
+                recovery = execute_existing_worker_recovery(
+                    policy=policy_value,
+                    store=operation_state,
+                    operation=operation,
+                    signing_key=settings.operator_directive_key or "",
+                    controller_store=store,
+                    adapter=settings.fleet_recovery_executable,
+                    timeout_seconds=request.timeout_seconds,
+                    receipt_path=receipt_path,
+                )
+                execution_payload = {
+                    "action": bootstrap_request.action,
+                    "status": recovery.status,
+                    "operation_status": recovery.operation_status,
+                    "idempotency_key": recovery.idempotency_key,
+                    "request_fingerprint": recovery.request_fingerprint,
+                    "target_id": recovery.target_id or f"worker:{recovery.worker_name}",
+                    "active_jobs": recovery.active_jobs,
+                    "error_code": recovery.error_code,
+                    "result": recovery.result,
+                }
+            else:
+                execution = execute_bootstrap_operation(
+                    policy=policy_value,
+                    store=operation_state,
+                    operation=operation,
+                    signing_key=settings.operator_directive_key or "",
+                    controller_store=store,
+                    activation_adapter=settings.fleet_controller_activation_executable,
+                    enrolment_adapter=settings.fleet_host_enrolment_executable,
+                    timeout_seconds=request.timeout_seconds,
+                    receipt_path=receipt_path,
+                )
+                execution_payload = execution.as_dict()
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503, detail="bootstrap identity service unavailable"
+            ) from error
+        except (FleetBootstrapError, ValidationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422, detail="fleet bootstrap request is invalid"
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "fleet-bootstrap",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "action": execution_payload["action"],
+                "status": execution_payload["status"],
+                "operation_status": execution_payload["operation_status"],
+                "idempotency_key": execution_payload["idempotency_key"],
+                "request_fingerprint": execution_payload["request_fingerprint"],
+                "target_id": execution_payload["target_id"],
+                "active_jobs": execution_payload.get("active_jobs"),
+                "error_code": execution_payload.get("error_code"),
+                "result": execution_payload.get("result"),
             }
         )
 
@@ -2132,18 +2303,43 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
         x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
+        if "authenticated_certificate_sha256" in request.detail:
+            raise HTTPException(status_code=422, detail="worker detail contains reserved identity")
         claim_scope = bound_scope_for_heartbeat(request, x_qdev_client_certificate_sha256)
         require_worker(
             x_qdev_worker_token,
             claim_scope=claim_scope,
             client_certificate_sha256=x_qdev_client_certificate_sha256,
         )
+        # A scoped worker certificate is already bound to its exact worker,
+        # repository, SHA and jobs by ``bound_scope_for_heartbeat``.  Do not
+        # make that established authentication path depend on the separate
+        # fleet-bootstrap policy file.  Ordinary long-lived workers still need
+        # the registered recovery-target fingerprint below.
+        target = (
+            None
+            if claim_scope is not None
+            else fleet_bootstrap_policy().worker_target(request.worker_name)
+        )
+        if target is not None and (
+            not x_qdev_client_certificate_sha256
+            or not secrets.compare_digest(
+                x_qdev_client_certificate_sha256,
+                target.certificate_fingerprint_sha256,
+            )
+        ):
+            raise HTTPException(status_code=403, detail="worker certificate fingerprint differs")
+        trusted_detail = request.detail | {"tier": request.tier}
+        if x_qdev_client_certificate_sha256 and re.fullmatch(
+            r"[0-9a-f]{64}", x_qdev_client_certificate_sha256
+        ):
+            trusted_detail["authenticated_certificate_sha256"] = x_qdev_client_certificate_sha256
         store.heartbeat(
             request.worker_name,
             tuple(request.profiles),
             request.active_jobs,
             tuple(request.active_job_ids),
-            request.detail | {"tier": request.tier},
+            trusted_detail,
         )
         directive = (
             operations.active(

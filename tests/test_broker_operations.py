@@ -11,6 +11,10 @@ import yaml
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import create_app
+from qdev_runner.host_enrolment_challenge import (
+    HostEnrolmentChallenge,
+    verify_host_enrolment_ack,
+)
 from qdev_runner.models import QueuedJob
 from qdev_runner.operator import verify_controller_receipt
 from qdev_runner.policy import Policy
@@ -20,25 +24,21 @@ from qdev_runner.store import Store
 
 OPERATOR_TOKEN = "operator-token"  # noqa: S105 - inert test fixture
 RECEIPT_KEY = "receipt-key"
-DIRECTIVE_KEY = "directive-key"
+DIRECTIVE_KEY = "directive-key-" + "x" * 32
 WORKER_TOKEN = "worker-token"  # noqa: S105 - inert test fixture
 WORKER_NAME = "srv1879763-light-primary"
 OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
-_FLEET_BOOTSTRAP_POLICY = (
-    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
-)
+_FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
 
 
 def _fleet_bootstrap_activation() -> dict[str, str]:
-    activation = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )["activation"]
+    yaml.safe_load(_FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8"))["activation"]
     return {
-        "controller_revision": str(activation["controller_revision"]),
-        "controller_release_digest": str(activation["controller_release_digest"]),
+        "controller_revision": "a" * 40,
+        "controller_release_digest": "sha256:" + "b" * 64,
     }
 
 
@@ -187,6 +187,137 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         github=github or object(),  # type: ignore[arg-type]
     )
     return TestClient(app)
+
+
+def test_host_enrolment_challenge_requires_exact_mtls_certificate(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    challenge = {
+        "schema": "qdev-host-enrolment-challenge-v1",
+        "release_lane": "qdev-release-qmt",
+        "project_id": "kaztilshi",
+        "placement": "srv138jump",
+        "controller_revision": "a" * 40,
+        "operation_fence": "fence-" + "b" * 32,
+        "certificate_fingerprint_sha256": "c" * 64,
+        "nonce": "d" * 64,
+    }
+    headers = {
+        "X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump",
+        "X-QDev-Client-Certificate-SHA256": "c" * 64,
+    }
+
+    response = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+
+    assert response.status_code == 200
+    verified = verify_host_enrolment_ack(
+        response.json(),
+        request=HostEnrolmentChallenge.model_validate(challenge),
+        expected_mtls_identity="qdev-host-agent:srv138jump",
+        signing_key=DIRECTIVE_KEY,
+    )
+    assert verified["certificate_fingerprint_sha256"] == "c" * 64
+
+    wrong_certificate = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers={**headers, "X-QDev-Client-Certificate-SHA256": "e" * 64},
+        json=challenge,
+    )
+    wrong_identity = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers={**headers, "X-QDev-mTLS-Identity": "qdev-host-agent:attacker"},
+        json=challenge,
+    )
+
+    assert wrong_certificate.status_code == 403
+    assert wrong_identity.status_code == 403
+
+
+def test_host_enrolment_challenge_is_immutable_for_one_fence(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    challenge = {
+        "schema": "qdev-host-enrolment-challenge-v1",
+        "release_lane": "qdev-release-qmt",
+        "project_id": "kaztilshi",
+        "placement": "srv138jump",
+        "controller_revision": "a" * 40,
+        "operation_fence": "fence-" + "b" * 32,
+        "certificate_fingerprint_sha256": "c" * 64,
+        "nonce": "d" * 64,
+    }
+    headers = {
+        "X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump",
+        "X-QDev-Client-Certificate-SHA256": "c" * 64,
+    }
+    first = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+    retry = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json=challenge,
+    )
+    changed = client.post(
+        "/internal/v1/release-hosts/srv138jump/enrolment-challenge",
+        headers=headers,
+        json={**challenge, "nonce": "e" * 64},
+    )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json() == first.json()
+    assert changed.status_code == 503
+
+
+def test_registered_recovery_worker_heartbeat_is_bound_to_certificate(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    payload = {
+        "worker_name": "srv1879763-primary",
+        "tier": "primary",
+        "profiles": ["qdev-ci", "qdev-ci-browser", "qdev-ci-docker"],
+        "active_jobs": 0,
+        "active_job_ids": [],
+        "detail": {"allowed": True, "concurrency": 1},
+    }
+    fingerprint = "ed0a503d98a2c163c42b3244f5b4f83c88b7b3ab4a7e028482c890ab814650f3"
+    accepted = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={
+            "X-QDev-Worker-Token": WORKER_TOKEN,
+            "X-QDev-Client-Certificate-SHA256": fingerprint,
+        },
+        json=payload,
+    )
+    missing = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={"X-QDev-Worker-Token": WORKER_TOKEN},
+        json=payload,
+    )
+    forged_detail = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={
+            "X-QDev-Worker-Token": WORKER_TOKEN,
+            "X-QDev-Client-Certificate-SHA256": fingerprint,
+        },
+        json={
+            **payload,
+            "detail": {
+                **payload["detail"],
+                "authenticated_certificate_sha256": "f" * 64,
+            },
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert missing.status_code == 403
+    assert forged_detail.status_code == 422
 
 
 def _release_heartbeat() -> dict[str, Any]:
@@ -601,7 +732,7 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
         "controller_revision": activation["controller_revision"],
         "controller_release_digest": activation["controller_release_digest"],
         "release_lane": None,
-        "worker_name": "qdev-platform-ci-187",
+        "worker_name": "srv1879763-primary",
     }
     body = {
         "request": request,
@@ -629,8 +760,8 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     assert payload["kind"] == "fleet-bootstrap-recovery"
     assert payload["status"] == "access_blocked"
     assert payload["operation_status"] == "pending"
-    assert payload["worker_name"] == "qdev-platform-ci-187"
-    assert payload["target_id"].endswith("qdev-platform-ci-187")
+    assert payload["worker_name"] == "srv1879763-primary"
+    assert payload["target_id"] == "controller.worker.srv1879763-primary"
     assert payload["active_jobs"] is None
     private_receipt = tmp_path / "fleet-bootstrap-receipts" / "worker-recovery-001.json"
     assert not private_receipt.exists()

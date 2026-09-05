@@ -76,13 +76,18 @@ class BrokerSettings:
     )
     github_actions_oidc_audience: str = "qdev-artifact-v1"
     fleet_bootstrap_policy_path: Path = Path("/etc/qdev-runner/fleet-bootstrap.yml")
-    fleet_bootstrap_operation_root: Path = Path(
-        "/var/lib/qdev-runner/operations/fleet-bootstrap"
-    )
+    fleet_bootstrap_operation_root: Path = Path("/var/lib/qdev-runner/operations/fleet-bootstrap")
     fleet_bootstrap_receipt_root: Path = Path(
         "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
     )
-    fleet_recovery_executable: Path = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
+    # All three policy-selected operations cross the same narrow Unix-socket
+    # client. The root-owned peer independently revalidates the signed
+    # directive and chooses a fixed native helper for the requested action.
+    fleet_recovery_executable: Path = Path("/usr/local/bin/qdev-bootstrap-adapter-client")
+    fleet_controller_activation_executable: Path = Path(
+        "/usr/local/bin/qdev-bootstrap-adapter-client"
+    )
+    fleet_host_enrolment_executable: Path = Path("/usr/local/bin/qdev-bootstrap-adapter-client")
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -110,9 +115,7 @@ class BrokerSettings:
             operator_directive_key=(
                 os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
             ),
-            controller_claim_key=(
-                os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None
-            ),
+            controller_claim_key=(os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None),
             operations_root=Path(
                 os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")
             ),
@@ -175,7 +178,19 @@ class BrokerSettings:
             fleet_recovery_executable=Path(
                 os.environ.get(
                     "QDEV_FLEET_RECOVERY_EXECUTABLE",
-                    "/usr/local/sbin/qdev-fleet-worker-recovery",
+                    "/usr/local/bin/qdev-bootstrap-adapter-client",
+                )
+            ),
+            fleet_controller_activation_executable=Path(
+                os.environ.get(
+                    "QDEV_FLEET_CONTROLLER_ACTIVATION_EXECUTABLE",
+                    "/usr/local/bin/qdev-bootstrap-adapter-client",
+                )
+            ),
+            fleet_host_enrolment_executable=Path(
+                os.environ.get(
+                    "QDEV_FLEET_HOST_ENROLMENT_EXECUTABLE",
+                    "/usr/local/bin/qdev-bootstrap-adapter-client",
                 )
             ),
         )

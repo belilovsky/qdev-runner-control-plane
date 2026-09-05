@@ -48,9 +48,7 @@ def hosted_repository(tmp_path: Path, workflow: str) -> Path:
 def declare_release_registry_workflow(root: Path, name: str = "deploy.yml") -> None:
     contract = root / ".github/qdev-runner.yml"
     contract.write_text(
-        contract.read_text(encoding="utf-8")
-        + "release_registry_workflows:\n"
-        + f"  - {name}\n",
+        contract.read_text(encoding="utf-8") + "release_registry_workflows:\n" + f"  - {name}\n",
         encoding="utf-8",
     )
 

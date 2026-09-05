@@ -344,9 +344,7 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
         )
     )
     profile_disk_mb = {"qdev-ci-docker": 20480}
-    repository_profile_disk_mb = {
-        ("belilovsky/qazshield", "qdev-ci-docker"): 15360
-    }
+    repository_profile_disk_mb = {("belilovsky/qazshield", "qdev-ci-docker"): 15360}
 
     claimed = store.claim(
         "primary-1",

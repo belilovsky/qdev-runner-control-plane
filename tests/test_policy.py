@@ -18,8 +18,7 @@ def add_repository_disk_override(
     profiles.write_text(
         "repository_admission_disk_mb:\n"
         f"  {repository}:\n"
-        f"    {profile}: {disk_mb}\n"
-        + profiles.read_text(encoding="utf-8"),
+        f"    {profile}: {disk_mb}\n" + profiles.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 

@@ -27,9 +27,7 @@ def test_claim_scope_uses_fifo_endpoint(
 
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
 
-    def fake_request(
-        settings: operator.OperatorSettings, **kwargs: Any
-    ) -> dict[str, Any]:
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
         captured["settings"] = settings
         captured.update(kwargs)
         return {"schema": "qdev-controller-receipt-v2"}

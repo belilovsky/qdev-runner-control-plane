@@ -4,23 +4,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    script = (ROOT / "scripts/activate_controller_release_native.sh").read_text(encoding="utf-8")
 
     assert "broker-public broker-internal" in script
     assert "--no-deps" in script
-    assert script.count("--force-recreate") == 3
+    assert script.count("--force-recreate") == 2
     assert "compose down" not in script
     assert "systemctl" not in script
     assert "mv -Tf" in script
     assert "rollback" in script
-    assert "QDEV_CONTROLLER_MIN_FREE_GIB:-30" in script
-    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-85" in script
-    assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
-    assert (
-        "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
-        in script
-    )
-    assert "min_free_gib * 1048576" in script
+    assert "QDEV_CONTROLLER_MIN_FREE_GIB" not in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT" not in script
+    assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" not in script
+    assert "candidate_bytes" in script
+    assert "previous_bytes" in script
+    assert "required_scratch_bytes" in script
+    assert "controller_capacity_verified" in script
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script
@@ -46,7 +45,15 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qaz-fund.service" in script
     assert "deploy/qdev-release-qaz-events.service" in script
     assert "deploy/qdev-release-qmt.service" in script
+    assert "deploy/qdev-release-qmt.timer" in script
     assert "deploy/qdev-release-qmt.compose.yml" in script
+    assert "scripts/activate_controller_release_native.sh" in script
+    assert "src/qdev_runner/controller_transaction.py" in script
+    assert "scripts/provision_bootstrap_executor.sh" in script
+    assert "scripts/provision_qmt_host_agent.sh" in script
+    assert "src/qdev_runner/host_agent_enrolment_adapter.py" in script
+    assert "src/qdev_runner/qmt_host_agent_enrol_native.py" in script
+    assert "src/qdev_runner/worker_recovery_native.py" in script
     assert "scripts/qdev_admin_platform_release_host_agent.py" in script
     assert "deploy/qdev-release-ortcom.service" in script
     assert "deploy/qdev-release-cmnt.service" in script
@@ -58,17 +65,15 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert 'if [[ "$legacy_rollback" == true ]]; then' in script
     assert (
         'install -m 0644 -- "$release/config/admin-platform-ledger.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
-        in script
+        "/etc/qdev-runner/admin-platform-ledger.yml" in script
     )
     assert (
         'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
-        in script
+        "/etc/qdev-runner/admin-platform-ledger.yml" in script
     )
     assert script.index('if [[ "$legacy_rollback" == true ]]; then') < script.index(
         'install -m 0644 -- "$release/config/admin-platform-ledger-v2.yml" '
-        '/etc/qdev-runner/admin-platform-ledger.yml'
+        "/etc/qdev-runner/admin-platform-ledger.yml"
     )
     assert (
         '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
@@ -88,6 +93,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "restore_operator_identity_metadata()" in script
     assert '"$release/scripts/provision_operator_identity.sh"' in script
     assert "operator mTLS identity is not usable" in script
+    assert script.index('"${compose[@]}" build broker-public broker-internal') < script.index(
+        'install -m 0644 -- "$release/inventory/repos.json" /etc/qdev-runner/repos.json'
+    )
+    assert "up -d --force-recreate --no-build --no-deps" in script
 
 
 def test_controller_provisions_only_the_operator_identity_permissions() -> None:
@@ -104,55 +113,108 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    script = (ROOT / "scripts/activate_controller_release_native.sh").read_text(encoding="utf-8")
 
     assert "controller-release.json" in script
     assert "QDEV_CONTROLLER_RELEASE_REVISION" in script
     assert "write_release_status()" in script
     assert "restore_release_status()" in script
     assert "controller_release_receipt=active" in script
-    assert "for release_file in" in script
-    assert '"$release/scripts/qaz_tours_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-qaz-tours.service"' in script
-    assert '"$release/scripts/qdev_product_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-qaz-fund.service"' in script
-    assert '"$release/deploy/qdev-release-qaz-events.service"' in script
-    assert '"$release/deploy/qdev-release-qmt.service"' in script
-    assert '"$release/deploy/qdev-release-qmt.compose.yml"' in script
-    assert '"$release/scripts/qdev_admin_platform_release_host_agent.py"' in script
-    assert '"$release/deploy/qdev-release-ortcom.service"' in script
-    assert '"$release/deploy/qdev-release-cmnt.service"' in script
-    assert '"$release/deploy/qdev-release-total.service"' in script
-    assert '"$release/deploy/qdev-release-qazposter.service"' in script
-    assert 'sha256sum -- "$release_file"' in script
+    assert "qdev_runner.controller_release_bundle" in script
+    assert "--bundle-digest" in script
+    assert "QDEV_CONTROLLER_ARTIFACT_DIGEST" in script
+    assert "QDEV_CONTROLLER_RELEASE_DIGEST" in script
+    for required in (
+        "scripts/qaz_tours_release_host_agent.py",
+        "deploy/qdev-release-qaz-tours.service",
+        "scripts/qdev_product_release_host_agent.py",
+        "deploy/qdev-release-qaz-fund.service",
+        "deploy/qdev-release-qaz-events.service",
+        "deploy/qdev-release-qmt.service",
+        "deploy/qdev-release-qmt.timer",
+        "deploy/qdev-release-qmt.compose.yml",
+        "scripts/activate_controller_release_native.sh",
+        "src/qdev_runner/controller_transaction.py",
+        "scripts/provision_bootstrap_executor.sh",
+        "scripts/provision_qmt_host_agent.sh",
+        "src/qdev_runner/host_agent_enrolment_adapter.py",
+        "src/qdev_runner/qmt_host_agent_enrol_native.py",
+        "src/qdev_runner/worker_recovery_native.py",
+        "scripts/qdev_admin_platform_release_host_agent.py",
+        "deploy/qdev-release-ortcom.service",
+        "deploy/qdev-release-cmnt.service",
+        "deploy/qdev-release-total.service",
+        "deploy/qdev-release-qazposter.service",
+    ):
+        assert required in script
     assert script.index('if ! "${compose[@]}" "${compose_action[@]}"; then') < script.index(
         "if ! write_release_status; then"
     )
 
 
-def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+def test_privileged_bootstrap_provisioning_is_fixed_and_secret_safe() -> None:
+    script = (ROOT / "scripts/provision_bootstrap_executor.sh").read_text(encoding="utf-8")
+    unit = (ROOT / "deploy/qdev-bootstrap-privileged-executor.service").read_text(encoding="utf-8")
 
-    assert "QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
-    assert "forward activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
-    assert 'release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/' in script
-    assert "flock -n 9" in script
-    assert "read_active_release_revision()" in script
-    assert "qdev-controller-release-status-v1" in script
-    assert "controller release compare-and-swap rejected" in script
-    assert script.count("assert_expected_current_revision") == 3
-    assert script.index("assert_expected_current_revision\n# Forward activation") < script.index(
-        'install -d -o "$runtime_uid" -g "$runtime_gid"'
-    )
-    assert script.index("# Recheck at the last non-mutating boundary") < script.index(
-        'install -m 0644 -- "$release/inventory/repos.json"'
-    )
+    assert "controller_release_bundle import verify" not in script
+    assert '"$expected_revision" "$expected_bundle_digest"' in script
+    assert "QDEV_BOOTSTRAP_OWNER_OVERRIDE" in script
+    assert 'self_path="$(realpath -e -- "$0")"' in script
+    assert "QDEV_OPERATOR_DIRECTIVE_KEY=" in script
+    assert "source $broker_env" not in script
+    assert "--system-site-packages" not in script
+    assert "--no-index --no-deps" in script
+    assert 'PYTHONPATH="$release/src"' not in script
+    assert "qdev-bootstrap-privileged-executor" in script
+    assert "wheelhouse/*.whl" not in script
+    assert 'systemctl enable "$unit"' in script
+    assert 'systemctl restart "$unit"' in script
+    assert "rollback_activation()" in script
+    assert "executor-identity.json" in script
+    assert "MainPID" in script
+    assert "InvocationID" in script
+    assert 'identity["bundle_digest"] != bundle_digest' in script
+    assert "runtime package escaped activated release" in script
+    assert 'unit_backup="$(mktemp /etc/systemd/system/' in script
+    assert 'install -o root -g root -m 0644 -- "$unit_backup" "$unit_path"' in script
+    assert 'rm -f -- "$unit_path"' in script
+    assert "systemctl daemon-reload || rollback_failed=true" in script
+    assert "/opt/qdev-runner-bootstrap/current/venv/bin" in unit
+    assert "--runtime-release-root /opt/qdev-runner-bootstrap/current" in unit
+    assert "--runtime-identity-file /run/qdev-runner-bootstrap/executor-identity.json" in unit
+
+
+def test_qmt_host_agent_provisioning_installs_no_credentials_or_product() -> None:
+    script = (ROOT / "scripts/provision_qmt_host_agent.sh").read_text(encoding="utf-8")
+    service = (ROOT / "deploy/qdev-release-qmt.service").read_text(encoding="utf-8")
+
+    assert "controller_release_bundle import verify" in script
+    assert "qdev-qmt-host-agent-enrol-native" in script
+    assert "qdev_product_release_host_agent.py" in script
+    assert "systemctl daemon-reload" in script
+    assert "systemctl enable" not in script
+    assert "docker pull" not in script
+    assert "openssl" not in script
+    assert "/opt/qdev-release-bootstrap/current/scripts" in service
 
 
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
 
-    assert "QDEV_CONTROLLER_NO_BUILD=true" in script
+    assert "TRANSACTION_ID" in script
+    assert "qdev_runner.controller_transaction" in script
+    assert "--rollback" in script
+    assert "QDEV_CONTROLLER_NO_BUILD" not in script
+    assert "LEGACY_ROLLBACK" not in script
+
+
+def test_controller_activation_wrapper_delegates_to_durable_transaction() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "qdev_runner.controller_transaction" in script
+    assert "/opt/qdev-runner-control-plane/releases/*" in script
+    assert "activate_controller_release_native.sh" not in script
+    assert "docker " not in script
 
 
 def test_controller_compose_project_is_namespaced() -> None:

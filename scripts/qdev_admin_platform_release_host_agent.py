@@ -23,7 +23,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from urllib.parse import urlsplit
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -402,10 +402,7 @@ def native_receipt(
     ):
         raise AgentError("native receipt does not bind the requested release tuple")
     measured_release = _release(
-        {
-            field: document.get(field)
-            for field in ("source_sha", "artifact_digest", "artifact_ref")
-        },
+        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
     if release is not None and measured_release != release:
@@ -477,10 +474,18 @@ def _validated_job(
         raise AgentError("controller release lease is invalid")
     if fence is not None and (not isinstance(fence, str) or not _FENCE.fullmatch(fence)):
         raise AgentError("controller release fence is invalid")
-    return release_id, _release(
-        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
-        profile,
-    ), lease_id, fence
+    return (
+        release_id,
+        _release(
+            {
+                field: document.get(field)
+                for field in ("source_sha", "artifact_digest", "artifact_ref")
+            },
+            profile,
+        ),
+        lease_id,
+        fence,
+    )
 
 
 def validate_job(document: object, profile: Profile) -> tuple[str, dict[str, str]]:
@@ -719,7 +724,7 @@ def rollback_remote(
     return receipt
 
 
-def _acquire_lock(path: Path):
+def _acquire_lock(path: Path) -> TextIO:
     _root_directory(path.parent)
     if path.exists():
         _private(path)
@@ -756,9 +761,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             # both active and rollback anchor until the first verified
             # promotion.  Keep that state readable, but never accept an
             # identical tuple from a non-bootstrap heartbeat.
-            active, rollback = read_state(
-                profile.state_path, profile, allow_bootstrap=True
-            )
+            active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
             bootstrap = active == rollback
         # A ready heartbeat is meaningful only when a product-owned native
         # proof confirms the release the state file claims is active.
@@ -847,9 +850,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                         "controller completion outcome is unresolved"
                     ) from reconcile_error
                 if reconciled.get("status") not in {"completed", "verified"}:
-                    raise AgentError(
-                        "controller completion was not accepted"
-                    ) from error
+                    raise AgentError("controller completion was not accepted") from error
             _write_journal(
                 profile,
                 "verified",

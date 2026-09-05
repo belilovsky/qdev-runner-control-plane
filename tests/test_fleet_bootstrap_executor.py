@@ -17,9 +17,14 @@ def _context(tmp_path: Path, active_jobs: int = 0) -> dict:
     req = request()
     register(controller, active_jobs=active_jobs)
     return {
-        "policy": policy(), "store": BootstrapOperationStore(tmp_path / "operation.json"),
-        "operation": operation(controller, req), "signing_key": KEY, "controller_store": controller,
-        "adapter": tmp_path / "adapter", "receipt_path": tmp_path / "receipt.json",
+        "policy": policy(),
+        "store": BootstrapOperationStore(tmp_path / "operation.json"),
+        "operation": operation(controller, req),
+        "signing_key": KEY,
+        "controller_store": controller,
+        "adapter": tmp_path / "adapter",
+        "receipt_path": tmp_path / "receipt.json",
+        "heartbeat_timeout_seconds": 0,
     }
 
 
@@ -34,13 +39,35 @@ def _allow_adapter(monkeypatch: pytest.MonkeyPatch, context: dict, reply=None) -
         calls.append(envelope)
         target = envelope["target"]
         result = {
-            "schema": executor.RECOVERY_RESULT_SCHEMA, "status": "completed",
-            "worker_name": target["worker_name"], "target_id": target["target_id"],
-            "service_unit": target["service_unit"], "active_jobs": 0, "result": {"native": "ok"},
+            "schema": executor.RECOVERY_RESULT_SCHEMA,
+            "status": "completed",
+            "worker_name": target["worker_name"],
+            "target_id": target["target_id"],
+            "service_unit": target["service_unit"],
+            "active_jobs": 0,
+            "result": {"native": "ok"},
             "operation_fence": envelope["operation"]["payload"]["fence"],
         }
         if reply:
             result.update(reply)
+        if result["status"] in {"completed", "already_completed"}:
+            worker = target["worker_name"]
+            current = next(
+                item
+                for item in context["controller_store"].health()["workers"]
+                if item["name"] == worker
+            )
+            context["controller_store"].heartbeat(
+                worker,
+                tuple(json.loads(current["profiles_json"])),
+                0,
+                (),
+                {
+                    "tier": "primary",
+                    "allowed": True,
+                    "authenticated_certificate_sha256": target["certificate_fingerprint_sha256"],
+                },
+            )
         return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
 
     monkeypatch.setattr(executor.subprocess, "run", run)
@@ -77,9 +104,72 @@ def test_success_is_durable_and_retry_does_not_execute_adapter(tmp_path, monkeyp
     assert not context["controller_store"].health()["workers"][0]["recovery_held"]
 
 
-@pytest.mark.parametrize("reply", [
-    {"worker_name": "other"}, {"operation_fence": "b" * 64}, {"active_jobs": 1},
-])
+def test_adapter_success_without_fresh_heartbeat_keeps_hold_and_pending(
+    tmp_path, monkeypatch
+) -> None:
+    context = _context(tmp_path)
+    calls = _allow_adapter(monkeypatch, context, {"status": "failed"})
+
+    def completed_without_heartbeat(args, **kwargs):
+        envelope = json.loads(kwargs["input"])
+        calls.append(envelope)
+        target = envelope["target"]
+        result = {
+            "schema": executor.RECOVERY_RESULT_SCHEMA,
+            "status": "completed",
+            "worker_name": target["worker_name"],
+            "target_id": target["target_id"],
+            "service_unit": target["service_unit"],
+            "active_jobs": 0,
+            "result": {"native": "ok"},
+            "operation_fence": envelope["operation"]["payload"]["fence"],
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+
+    monkeypatch.setattr(executor.subprocess, "run", completed_without_heartbeat)
+    result = executor.execute_existing_worker_recovery(**context)
+    assert result.status == "capacity_pending"
+    assert result.error_code == "fresh_worker_heartbeat_pending"
+    assert context["controller_store"].health()["workers"][0]["recovery_held"]
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_changed_profiles_or_disallowed_capacity_is_not_accepted(tmp_path, monkeypatch) -> None:
+    context = _context(tmp_path)
+    monkeypatch.setattr(executor, "_adapter_path", lambda path: path)
+
+    def run(args, **kwargs):
+        envelope = json.loads(kwargs["input"])
+        target = envelope["target"]
+        context["controller_store"].heartbeat(
+            target["worker_name"], ("qdev-ci-docker",), 0, (), {"allowed": False}
+        )
+        result = {
+            "schema": executor.RECOVERY_RESULT_SCHEMA,
+            "status": "completed",
+            "worker_name": target["worker_name"],
+            "target_id": target["target_id"],
+            "service_unit": target["service_unit"],
+            "active_jobs": 0,
+            "result": {"native": "ok"},
+            "operation_fence": envelope["operation"]["payload"]["fence"],
+        }
+        return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+
+    monkeypatch.setattr(executor.subprocess, "run", run)
+    result = executor.execute_existing_worker_recovery(**context)
+    assert result.status == "capacity_pending"
+    assert context["controller_store"].health()["workers"][0]["recovery_held"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"worker_name": "other"},
+        {"operation_fence": "b" * 64},
+        {"active_jobs": 1},
+    ],
+)
 def test_adapter_identity_mismatch_keeps_hold_and_pending(tmp_path, monkeypatch, reply) -> None:
     context = _context(tmp_path)
     _allow_adapter(monkeypatch, context, reply)
@@ -157,7 +247,7 @@ def test_expiration_during_hold_acquisition_prevents_adapter(tmp_path, monkeypat
 
     context = _context(tmp_path)
     calls = _allow_adapter(monkeypatch, context)
-    acquire = context["controller_store"].acquire_recovery_hold
+    acquire = context["controller_store"].acquire_recovery_hold_state
     expired = context["operation"].directive["payload"]["expires_at"] + 1
 
     def delayed_acquire(*args):
@@ -165,7 +255,7 @@ def test_expiration_during_hold_acquisition_prevents_adapter(tmp_path, monkeypat
         monkeypatch.setattr(bootstrap_authority.time, "time", lambda: expired)
         return result
 
-    monkeypatch.setattr(context["controller_store"], "acquire_recovery_hold", delayed_acquire)
+    monkeypatch.setattr(context["controller_store"], "acquire_recovery_hold_state", delayed_acquire)
     with pytest.raises(FleetBootstrapError, match="expired"):
         executor.execute_existing_worker_recovery(**context)
     assert not calls
@@ -183,7 +273,9 @@ def _fresh_attempt(context, monkeypatch, **changes):
     monkeypatch.setattr(bootstrap_authority.time, "time", lambda: now)
     req = previous.request.model_copy(update={"run_id": 124, "job_id": 457, **changes})
     payload = {
-        **previous.directive["payload"], "issued_at": now, "expires_at": now + 300,
+        **previous.directive["payload"],
+        "issued_at": now,
+        "expires_at": now + 300,
         "request": req.model_dump(mode="json", by_alias=True),
         "fence": hashlib.sha256(
             f"{previous.idempotency_key}:{bootstrap_request_fingerprint(req)}".encode(),
@@ -191,7 +283,9 @@ def _fresh_attempt(context, monkeypatch, **changes):
     }
     directive = {"payload": payload, "signature": bootstrap_authority._signature(payload, KEY)}
     context["operation"] = bootstrap_authority.verify_directive(
-        directive, policy=context["policy"], signing_key=KEY,
+        directive,
+        policy=context["policy"],
+        signing_key=KEY,
     )
 
 
@@ -222,16 +316,27 @@ def test_pending_reconciles_on_fresh_attempt_with_original_fence(tmp_path, monke
     assert calls[0]["operation"]["payload"]["fence"] == fence
 
 
-@pytest.mark.parametrize("change", [
-    {"worker_name": "qdev-qazstack-01"}, {"source_sha": "b" * 40},
-])
-def test_reconciliation_rejects_changed_target_or_source(tmp_path, monkeypatch, change):
+def test_reconciliation_rejects_changed_source(tmp_path, monkeypatch):
     context = _context(tmp_path)
     _allow_adapter(monkeypatch, context, {"operation_fence": "b" * 64})
     assert executor.execute_existing_worker_recovery(**context).status == "failed"
-    _fresh_attempt(context, monkeypatch, **change)
+    _fresh_attempt(
+        context,
+        monkeypatch,
+        source_sha="b" * 40,
+        controller_revision="b" * 40,
+    )
     calls = _allow_adapter(monkeypatch, context)
     with pytest.raises(FleetBootstrapError, match="intent changed"):
         executor.execute_existing_worker_recovery(**context)
     assert not calls
+    assert context["controller_store"].health()["workers"][0]["recovery_held"]
+
+
+def test_reconciliation_rejects_unregistered_changed_target_before_resume(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    _allow_adapter(monkeypatch, context, {"operation_fence": "b" * 64})
+    assert executor.execute_existing_worker_recovery(**context).status == "failed"
+    with pytest.raises(FleetBootstrapError, match="not allowlisted"):
+        _fresh_attempt(context, monkeypatch, worker_name="qdev-qazstack-01")
     assert context["controller_store"].health()["workers"][0]["recovery_held"]

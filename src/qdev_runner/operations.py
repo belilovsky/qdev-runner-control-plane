@@ -142,6 +142,19 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "error_code",
         "result",
     },
+    "fleet-bootstrap": {
+        "kind",
+        "observed_at",
+        "action",
+        "status",
+        "operation_status",
+        "idempotency_key",
+        "request_fingerprint",
+        "target_id",
+        "active_jobs",
+        "error_code",
+        "result",
+    },
 }
 
 
@@ -373,15 +386,42 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or (value["target_id"] is not None and not isinstance(value["target_id"], str))
         or (value["service_unit"] is not None and not isinstance(value["service_unit"], str))
         or (value["active_jobs"] is None and value["status"] == "completed")
-        or (value["active_jobs"] is not None and (
-            isinstance(value["active_jobs"], bool)
-            or not isinstance(value["active_jobs"], int)
-            or value["active_jobs"] < 0
-        ))
+        or (
+            value["active_jobs"] is not None
+            and (
+                isinstance(value["active_jobs"], bool)
+                or not isinstance(value["active_jobs"], int)
+                or value["active_jobs"] < 0
+            )
+        )
         or (value["error_code"] is not None and not isinstance(value["error_code"], str))
         or (value["result"] is not None and not isinstance(value["result"], dict))
     ):
         raise ValueError("fleet bootstrap recovery payload is invalid")
+    if kind == "fleet-bootstrap" and (
+        value["action"]
+        not in {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
+        or value["status"]
+        not in {"completed", "access_blocked", "active_work", "target_unregistered", "failed"}
+        or value["operation_status"] not in {"pending", "completed"}
+        or not isinstance(value["idempotency_key"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value["idempotency_key"])
+        or not isinstance(value["request_fingerprint"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["request_fingerprint"])
+        or not isinstance(value["target_id"], str)
+        or not value["target_id"]
+        or (
+            value["active_jobs"] is not None
+            and (
+                isinstance(value["active_jobs"], bool)
+                or not isinstance(value["active_jobs"], int)
+                or value["active_jobs"] < 0
+            )
+        )
+        or (value["error_code"] is not None and not isinstance(value["error_code"], str))
+        or (value["result"] is not None and not isinstance(value["result"], dict))
+    ):
+        raise ValueError("fleet bootstrap payload is invalid")
     return value
 
 
