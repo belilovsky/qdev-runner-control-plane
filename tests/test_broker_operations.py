@@ -39,9 +39,9 @@ OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
-_FLEET_BOOTSTRAP_POLICY = (
-    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
-)
+_FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
+
+
 def _fleet_bootstrap_activation() -> dict[str, str]:
     return {
         "controller_revision": "a" * 40,
@@ -50,9 +50,7 @@ def _fleet_bootstrap_activation() -> dict[str, str]:
 
 
 def _initialized_admin_platform_ledger(tmp_path: Path) -> tuple[Path, Path]:
-    template_path = (
-        Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
-    )
+    template_path = Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
     template = yaml.safe_load(template_path.read_text(encoding="utf-8"))
     candidate = AdminPlatformCandidate(**template["active_candidate"])
     state_root = tmp_path / "admin-platform-state"
@@ -127,6 +125,14 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "default_branch": "main",
                         "profiles": ["qdev-ci-docker"],
                     },
+                    {
+                        "id": 5,
+                        "full_name": "belilovsky/qdev-runner-control-plane",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
                 ]
             }
         ),
@@ -141,6 +147,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                     "belilovsky/qazlake": {"qdev-ci-docker": 12288},
                     "belilovsky/example": {"qdev-ci-docker": 15360},
                     "belilovsky/qazposter": {"qdev-ci-docker": 15360},
+                    "belilovsky/qdev-runner-control-plane": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
                     "qdev-ci-docker": {
@@ -202,17 +209,13 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         encoding="utf-8",
     )
     fleet_bootstrap_policy = tmp_path / "fleet-bootstrap.yml"
-    fleet_bootstrap_document = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )
+    fleet_bootstrap_document = yaml.safe_load(_FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8"))
     fleet_bootstrap_document["enrolment"] = {"lanes": ["qdev-release-qmt"]}
     fleet_bootstrap_policy.write_text(
         yaml.safe_dump(fleet_bootstrap_document, sort_keys=False),
         encoding="utf-8",
     )
-    admin_platform_ledger, admin_platform_receipts = (
-        _initialized_admin_platform_ledger(tmp_path)
-    )
+    admin_platform_ledger, admin_platform_receipts = _initialized_admin_platform_ledger(tmp_path)
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -465,9 +468,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
                         "canonical_repository": "belilovsky/qaz-tours",
                         "artifact_ref_prefix": "registry.ci.qdev.run/qaz-tours",
                         "native_host_adapter": "legacy-qaz-tours-v1",
-                        "runtime_endpoints": [
-                            "https://qaza.tours/.well-known/release.json"
-                        ],
+                        "runtime_endpoints": ["https://qaza.tours/.well-known/release.json"],
                         "rollback_reference": "qdev-release-host-state-v1",
                         "required_readiness": ["qazgeo"],
                     }
@@ -505,9 +506,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
             "runner_profile": "qdev-ci-docker",
         }
     )
-    lane = ReleaseLanePolicy(settings.release_lanes_path).lane(
-        "qdev-release-qaz-tours"
-    )
+    lane = ReleaseLanePolicy(settings.release_lanes_path).lane("qdev-release-qaz-tours")
     admission_now = int(time.time())
     candidate = ReleaseAdmissionRequest.model_validate(request)
     controller_claim = controller_claim_payload(
@@ -529,9 +528,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
         hashlib.sha256,
     ).hexdigest()
     release_store = client.app.state.release_store
-    release_store.admit(
-        ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now
-    )
+    release_store.admit(ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now)
 
     next_path = "/internal/v1/release-hosts/vps-hostinger-186/jobs/next"
     blocked = client.get(next_path, headers=host_headers)
@@ -587,17 +584,16 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
     assert claim["lease_expires_at"] == job["lease_expires_at"]
     assert claim["rollback_anchor"] == job["rollback_anchor"]
     assert claim["candidate_evidence"] == job["candidate_evidence"]
-    assert claim["candidate_evidence"]["schema"] == (
-        "qdev-release-candidate-evidence-v1"
-    )
+    assert claim["candidate_evidence"]["schema"] == ("qdev-release-candidate-evidence-v1")
     assert len(claim["candidate_evidence"]["candidate_receipt_sha256"]) == 64
     assert claim["expires_at"] - claim["issued_at"] == 120
-    canonical = json.dumps(
-        claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    assert job["dispatch_claim_signature"] == hmac.new(
-        signing_key.encode("utf-8"), canonical, hashlib.sha256
-    ).hexdigest()
+    canonical = json.dumps(claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    assert (
+        job["dispatch_claim_signature"]
+        == hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    )
     assert signing_key not in response.text
 
 
@@ -982,9 +978,7 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     assert activation_execution["error_code"] == "host_dispatch_unavailable"
     assert activation_execution["release_lane"] is None
     assert activation_execution["host_agent_mtls_identity"] is None
-    assert not (
-        tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json"
-    ).exists()
+    assert not (tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json").exists()
 
     incoming = tmp_path / "fleet-host-dispatch" / "incoming"
     results = tmp_path / "fleet-host-dispatch" / "results"
@@ -1000,25 +994,19 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
             result_uid=os.geteuid(),
         ),
     )
-    queued_body = activation_body | {
-        "idempotency_key": "controller-activation-queued-001"
-    }
+    queued_body = activation_body | {"idempotency_key": "controller-activation-queued-001"}
     queued_response = client.post(
         activation_path,
         json=queued_body,
         headers=OPERATOR_HEADERS,
     )
     assert queued_response.status_code == 200
-    queued_receipt = verify_controller_receipt(
-        queued_response.json(), receipt_key=RECEIPT_KEY
-    )
+    queued_receipt = verify_controller_receipt(queued_response.json(), receipt_key=RECEIPT_KEY)
     queued_execution = queued_receipt["payload"]["execution"]
     assert queued_execution["status"] == "queued"
     assert queued_execution["operation_status"] == "pending"
     assert queued_execution["error_code"] is None
-    assert (
-        incoming / "controller-activation-queued-001.json"
-    ).is_file()
+    assert (incoming / "controller-activation-queued-001.json").is_file()
 
     enrolment_path = "/internal/v1/operations/fleet-bootstrap/enrol-host-agent"
     enrolment_body = {
@@ -1238,9 +1226,9 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
         headers=OPERATOR_HEADERS,
     )
     assert cancelled.status_code == 200
-    cancelled_payload = verify_controller_receipt(
-        cancelled.json(), receipt_key=RECEIPT_KEY
-    )["payload"]
+    cancelled_payload = verify_controller_receipt(cancelled.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
     assert cancelled_payload["operation"]["operation_id"] == operation["operation_id"]
     assert cancelled_payload["operation"]["status"] == "cancelled"
 
@@ -1433,6 +1421,95 @@ def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: 
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "admin platform candidate is not active"
+
+
+def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "active-controller-prerequisite",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["managed_registry_entry"] is None
+    assert payload["admission_ledger"] == "admin-platform"
+    assert payload["admin_platform_ledger_entry"] == "controller"
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/example",
+            "run_id": 84000000041,
+            "head_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": None,
+            "reason": "active-admin-platform-controller-priority",
+        }
+    ]
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_non_active_controller_sha_cannot_bypass_profile_fifo(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    _seed_pending_job(
+        client,
+        42,
+        "non-active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha="f" * 40,
+    )
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "non-active-controller-candidate",
+        "duration_seconds": 900,
+    }
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "job is not the FIFO head for its profile"
 
 
 def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path: Path) -> None:
@@ -1764,10 +1841,13 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "capacity override target is not the durable FIFO head"
-    assert client.app.state.operations.active(
-        WORKER_NAME,
-        registered_profiles=("qdev-ci", "qdev-ci-docker"),
-    ) is None
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
 
 
 def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
@@ -1807,9 +1887,7 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
     )
 
     assert response.status_code == 200
-    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)[
-        "payload"
-    ]
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
     assert payload["immutable_tuple"]["job_id"] == 42
     assert payload["fifo_skipped"] == [
         {
