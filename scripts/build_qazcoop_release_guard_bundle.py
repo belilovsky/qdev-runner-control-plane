@@ -170,9 +170,11 @@ def build_bundle(
         installed["qdev-controller-verify-admission"] = launcher
 
         key_id = public_key_id(public)
+        signed_files = {name: digest(path) for name, path in sorted(installed.items())}
         canary_payload = {
             "contract": "qazcoop-release-guard-key-canary/v1",
             "controller_revision": revision,
+            "files": signed_files,
             "public_key_id": key_id,
             "repository": {"id": REPOSITORY_ID, "full_name": REPOSITORY},
         }

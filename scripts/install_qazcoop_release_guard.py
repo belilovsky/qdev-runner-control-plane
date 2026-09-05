@@ -150,6 +150,11 @@ def _verify_key_canary(bundle: Path, revision: str) -> None:
     expected_payload = {
         "contract": "qazcoop-release-guard-key-canary/v1",
         "controller_revision": revision,
+        "files": {
+            name: digest(bundle / relative)
+            for name, relative in sorted(EXPECTED_FILES.items())
+            if name != "key-canary.json"
+        },
         "public_key_id": key_id,
         "repository": {
             "id": EXPECTED_REPOSITORY_ID,
@@ -344,12 +349,26 @@ def _backup_managed_file(source: Path, destination: Path, *, gid: int) -> None:
 
 
 def _restore_file(destination: Path, backup: Path | None) -> None:
-    destination.unlink(missing_ok=True)
-    if backup is not None:
-        shutil.copyfile(backup, destination, follow_symlinks=False)
+    if backup is None:
+        destination.unlink(missing_ok=True)
+        return
+    staged = destination.with_name(f".{destination.name}.{os.getpid()}.restore")
+    try:
+        shutil.copyfile(backup, staged, follow_symlinks=False)
         status = backup.stat()
-        os.chown(destination, status.st_uid, status.st_gid)
-        destination.chmod(stat.S_IMODE(status.st_mode))
+        os.chown(staged, status.st_uid, status.st_gid)
+        staged.chmod(stat.S_IMODE(status.st_mode))
+        os.replace(staged, destination)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _backup_state_id(hook: Path, launcher: Path) -> str:
+    state = {
+        "hook": digest(hook) if hook.exists() else None,
+        "launcher": digest(launcher) if launcher.exists() else None,
+    }
+    return "sha256-" + hashlib.sha256(canonical(state)).hexdigest()
 
 
 def _run_as_identity(command: list[str], uid: int, gid: int) -> None:
@@ -388,15 +407,15 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
     trust_root = trust_parent / "release-controller"
     launcher = Path("/usr/local/sbin/qdev-controller-verify-admission")
     hook = candidate / "hooks/update"
-    previous_hook = _managed_file(hook, HOOK_MARKER, allow_legacy_hook=True)
-    previous_launcher = _managed_file(launcher, LAUNCHER_MARKER)
+    _managed_file(hook, HOOK_MARKER, allow_legacy_hook=True)
+    _managed_file(launcher, LAUNCHER_MARKER)
     version_preexisting = version_root.exists() or version_root.is_symlink()
     if version_preexisting:
         if version_root.is_symlink() or not version_root.is_dir():
             raise ValueError("installed guard revision path is invalid")
         _validate_installed_version(version_root, manifest, gid=receive_gid)
 
-    backup_id = previous_hook or previous_launcher or "first-install"
+    backup_id = _backup_state_id(hook, launcher)
     backup_root = trust_parent / "release-controller-backups" / backup_id
     transaction_old_trust = trust_parent / f".release-controller.previous.{os.getpid()}"
     version_parent = version_root.parent
@@ -483,27 +502,39 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
         trust_tmp = None
         installed_trust = True
 
-        release_root = Path("/var/lib/qazcoop/release")
+        state_parent = Path("/var/lib/qazcoop")
+        release_root = state_parent / "release"
         receipt_root = release_root / "admissions"
         replay_store = release_root / "consumed-admissions.sqlite3"
-        for directory in (release_root, receipt_root):
-            directory.mkdir(parents=True, exist_ok=True, mode=0o750)
-            os.chown(directory, 0, receive_gid)
-            directory.chmod(0o750)
+        if not state_parent.exists():
+            _validate_root_directory(state_parent.parent)
+            state_parent.mkdir(mode=0o750)
+        for directory in (state_parent, release_root, receipt_root):
+            _safe_root_directory(directory, mode=0o750, gid=receive_gid)
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         try:
             descriptor = os.open(replay_store, flags, 0o600)
         except FileExistsError as error:
-            if replay_store.is_symlink() or not replay_store.is_file():
+            status = replay_store.lstat()
+            if (
+                not stat.S_ISREG(status.st_mode)
+                or stat.S_ISLNK(status.st_mode)
+                or status.st_uid != receive_uid
+                or status.st_gid != receive_gid
+                or status.st_nlink != 1
+                or stat.S_IMODE(status.st_mode) != 0o600
+            ):
                 raise ValueError("replay store path is invalid") from error
         else:
             os.close(descriptor)
         os.chown(replay_store, receive_uid, receive_gid)
         replay_store.chmod(0o600)
 
+        # The hook moves first. A new hook paired with an old launcher rejects
+        # updates, while the inverse pairing could accept an incomplete receipt.
         for source, destination in (
-            (bundle / EXPECTED_FILES["qdev-controller-verify-admission"], launcher),
             (bundle / EXPECTED_FILES["qazcoop-update"], hook),
+            (bundle / EXPECTED_FILES["qdev-controller-verify-admission"], launcher),
         ):
             staged = destination.with_name(f".{destination.name}.{os.getpid()}.new")
             _copy_fixed(source, staged, mode=0o750, gid=receive_gid)
@@ -517,10 +548,10 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
         if trust_moved:
             shutil.rmtree(transaction_old_trust)
     except Exception:
-        if installed_hook:
-            _restore_file(hook, hook_backup)
         if installed_launcher:
             _restore_file(launcher, launcher_backup)
+        if installed_hook and hook_backup is not None:
+            _restore_file(hook, hook_backup)
         if installed_trust and (trust_root.exists() or trust_root.is_symlink()):
             shutil.rmtree(trust_root, ignore_errors=True)
         if trust_moved and transaction_old_trust.exists():

@@ -124,6 +124,22 @@ def test_bundle_validation_rejects_resigned_manifest_with_tampered_canary(
         installer.validate_bundle(bundle)
 
 
+def test_bundle_validation_rejects_manifest_rewrite_for_changed_guard_file(
+    tmp_path: Path,
+) -> None:
+    bundle, installer = _bundle(tmp_path)
+    guard = bundle / installer.EXPECTED_FILES["controller_admission.py"]
+    guard.write_text("changed\n", encoding="utf-8")
+    _rewrite_manifest_digest(
+        bundle,
+        "controller_admission.py",
+        installer.EXPECTED_FILES["controller_admission.py"],
+    )
+
+    with pytest.raises(ValueError, match="key canary payload is invalid"):
+        installer.validate_bundle(bundle)
+
+
 def test_builder_rejects_dirty_tracked_source(tmp_path: Path) -> None:
     builder = _script("build_qazcoop_release_guard_bundle.py")
     repository, revision = _source_repository(tmp_path, builder)
@@ -175,3 +191,49 @@ def test_preinstalled_guard_must_match_exact_inventory_and_digests(tmp_path: Pat
             gid=installed.stat().st_gid,
             uid=installed.stat().st_uid,
         )
+
+
+def test_backup_state_id_binds_hook_and_launcher(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    hook = tmp_path / "update"
+    launcher = tmp_path / "launcher"
+    hook.write_text("same hook\n", encoding="utf-8")
+    launcher.write_text("first launcher\n", encoding="utf-8")
+    first = installer._backup_state_id(hook, launcher)
+    launcher.write_text("second launcher\n", encoding="utf-8")
+
+    assert installer._backup_state_id(hook, launcher) != first
+
+
+def test_restore_replaces_managed_file_atomically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    destination = tmp_path / "update"
+    backup = tmp_path / "backup"
+    destination.write_text("new\n", encoding="utf-8")
+    backup.write_text("old\n", encoding="utf-8")
+    observed_existing_destination = False
+    replace = installer.os.replace
+
+    def checked_replace(source: Path, target: Path) -> None:
+        nonlocal observed_existing_destination
+        observed_existing_destination = target.exists()
+        replace(source, target)
+
+    monkeypatch.setattr(installer.os, "replace", checked_replace)
+    installer._restore_file(destination, backup)
+
+    assert observed_existing_destination is True
+    assert destination.read_text(encoding="utf-8") == "old\n"
+
+
+def test_safe_root_directory_rejects_existing_symlink(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "release"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="managed directory is unsafe"):
+        installer._safe_root_directory(link, mode=0o750)
