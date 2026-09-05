@@ -5,6 +5,9 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+from worker_evidence import seed_worker, worker_detail
+
 from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
@@ -77,6 +80,8 @@ def test_store_repairs_invalid_legacy_queue_timestamp_from_updated_at(tmp_path: 
 
 def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
+    seed_worker(store, "worker-2")
     store.enqueue(job())
     claimed = store.claim("worker-1", ("qdev-ci",))
     assert claimed is not None
@@ -86,6 +91,7 @@ def test_claim_is_atomic_and_profile_aware(tmp_path: Path) -> None:
 
 def test_repository_bound_claim_cannot_leapfrog_profile_fifo(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
     assert store.enqueue(job("foreign", 100, repository="belilovsky/qazstack"))
     assert store.enqueue(job("target", 101, repository="belilovsky/qazlake"))
 
@@ -110,6 +116,7 @@ def test_repository_bound_claim_cannot_leapfrog_profile_fifo(tmp_path: Path) -> 
 
 def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), concurrency=2)
     assert store.enqueue(job("first", 100, "qdev-ci", repository="belilovsky/qazagents"))
     assert store.enqueue(job("second", 101, "qdev-ci-docker", repository="belilovsky/qazagents"))
     assert store.enqueue(job("foreign", 102, "qdev-ci", repository="belilovsky/other"))
@@ -139,6 +146,7 @@ def test_scoped_claim_is_exact_fifo_and_cannot_claim_other_work(tmp_path: Path) 
 
 def test_scoped_claim_follows_allowlist_order_not_queue_arrival_order(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"), concurrency=2)
     assert store.enqueue(job("second", 101, "qdev-ci-docker", repository="belilovsky/qazagents"))
     assert store.enqueue(job("first", 100, "qdev-ci", repository="belilovsky/qazagents"))
     scope = ClaimScope(
@@ -160,6 +168,7 @@ def test_scoped_claim_follows_allowlist_order_not_queue_arrival_order(tmp_path: 
 
 def test_scoped_claim_rejects_wrong_sha_and_profile(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-maturity-primary")
     assert store.enqueue(
         job("wrong-sha", 100, "qdev-ci", repository="belilovsky/qazagents", head_sha="b" * 40)
     )
@@ -179,6 +188,7 @@ def test_scoped_claim_rejects_wrong_sha_and_profile(tmp_path: Path) -> None:
 
 def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-portfolio-primary")
     assert store.enqueue(job("older", 100, repository="belilovsky/qazlake", head_sha="a" * 40))
     assert store.enqueue(
         job(
@@ -216,6 +226,7 @@ def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
 
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-portfolio-primary")
     assert store.enqueue(
         job(
             repository="belilovsky/qazlake",
@@ -250,6 +261,7 @@ def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
 
 def test_requeue_clears_scope_binding_before_a_job_can_return_to_fifo(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-maturity-primary")
     assert store.enqueue(job(repository="belilovsky/qazagents"))
     scope = ClaimScope(
         scope_id="maturity-20260828",
@@ -273,6 +285,7 @@ def test_claim_does_not_starve_eligible_job_behind_large_ineligible_backlog(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
     for index in range(101):
         assert store.enqueue(job(f"browser-{index}", index + 1, "qdev-ci-browser"))
     assert store.enqueue(job("eligible", 1000, "qdev-ci"))
@@ -288,6 +301,7 @@ def test_claim_repairs_late_invalid_timestamp_without_reordering_valid_jobs(
 ) -> None:
     database = tmp_path / "broker.db"
     store = Store(database)
+    seed_worker(store)
     assert store.enqueue(job("valid", 100))
     assert store.enqueue(job("invalid", 101))
     payload = {"workflow_job": {"created_at": "2099-01-01T00:00:00Z"}}
@@ -308,6 +322,7 @@ def test_claim_repairs_late_invalid_timestamp_without_reordering_valid_jobs(
 
 def test_claim_reserves_profile_disk_above_worker_floor(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1", ("qdev-ci", "qdev-ci-docker"))
     store.enqueue(job(profile="qdev-ci-docker"))
     store.enqueue(job("delivery-2", 101, "qdev-ci"))
 
@@ -327,6 +342,13 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path / "broker.db")
+    detail = worker_detail("primary-1", ("qdev-ci-docker",), disk_free_gib=22, concurrency=2)
+    detail.update({
+        "min_disk_free_gib": 6.5, "capacity_directive_id": "test-disk-only",
+        "capacity_directive_expires_at": time.time() + 600,
+    })
+    detail["baseline_capacity"].update(allowed=False, blockers=["disk_free_gib"])
+    seed_worker(store, "primary-1", ("qdev-ci-docker",), detail=detail)
     assert store.enqueue(
         job(
             "qazshield",
@@ -359,6 +381,7 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
 
     assert claimed is not None
     assert claimed["job_id"] == 100
+    store.complete_from_webhook(100, "success")
     assert (
         store.claim(
             "primary-1",
@@ -373,22 +396,106 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
     assert store.job_status(101) == "pending"
 
 
+def test_unscoped_claim_cannot_skip_disk_blocked_profile_head(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser")
+    seed_worker(store, "primary-1", profiles, disk_free_gib=45)
+    assert store.enqueue(job("large-head", 100, repository="belilovsky/qazstack"))
+    assert store.enqueue(job("small-later", 101, repository="belilovsky/qazlake"))
+    costs = {("belilovsky/qazlake", "qdev-ci"): 5120}
+    profile_costs = {"qdev-ci": 20480, "qdev-ci-browser": 10240}
+
+    assert store.claim(
+        "primary-1", profiles, profile_disk_mb=profile_costs,
+        repository_profile_disk_mb=costs,
+    ) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+    # A blocked profile does not block a different profile's available head.
+    assert store.enqueue(job("browser-head", 102, "qdev-ci-browser"))
+    claimed = store.claim(
+        "primary-1", profiles, profile_disk_mb=profile_costs,
+        repository_profile_disk_mb=costs,
+    )
+    assert claimed is not None and claimed["job_id"] == 102
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_reserve_claims_other_profile_head_when_primary_can_take_first(
+    tmp_path: Path, scoped: bool,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser", "qdev-ci-docker")
+    seed_worker(store, "primary-1", ("qdev-ci",))
+    seed_worker(store, "reserve-1", profiles, tier="reserve")
+    for job_id, profile in zip((100, 101, 102), profiles, strict=True):
+        assert store.enqueue(job(str(job_id), job_id, profile))
+    scope = ClaimScope(
+        scope_id="reserve-profile-heads", worker_name="reserve-1", tier="reserve",
+        repository=None, head_sha=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=tuple(
+            ScopedJob(
+                job_id, profile, repository="belilovsky/private-repo", run_id=200,
+                attempt=1, exact_sha="a" * 40,
+            )
+            for job_id, profile in zip((100, 101, 102), profiles, strict=True)
+        ),
+        schema=SCHEMA_V2,
+    ) if scoped else None
+
+    # Profile argument order must not override the global age of available heads.
+    claimed = store.claim("reserve-1", tuple(reversed(profiles)), tier="reserve", claim_scope=scope)
+    assert claimed is not None and claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+    assert store.job_status(102) == "pending"
+
+
+def test_reserve_cannot_skip_primary_eligible_head_within_profile(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1", disk_free_gib=45)
+    seed_worker(store, "reserve-1", tier="reserve", disk_free_gib=100)
+    assert store.enqueue(job("small-head", 100, repository="belilovsky/qazlake"))
+    assert store.enqueue(job("large-later", 101, repository="belilovsky/qazstack"))
+
+    assert store.claim(
+        "reserve-1", ("qdev-ci",), tier="reserve",
+        profile_disk_mb={"qdev-ci": 20480},
+        repository_profile_disk_mb={("belilovsky/qazlake", "qdev-ci"): 5120},
+    ) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
+def test_legacy_reserve_scope_keeps_signed_sequence_when_primary_can_take_first(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser")
+    seed_worker(store, "primary-1", ("qdev-ci",))
+    seed_worker(store, "reserve-1", profiles, tier="reserve")
+    assert store.enqueue(job("browser-first-in-queue", 100, "qdev-ci-browser"))
+    assert store.enqueue(job("ci-first-in-scope", 101, "qdev-ci"))
+    scope = ClaimScope(
+        scope_id="legacy-ordered", worker_name="reserve-1", tier="reserve",
+        repository="belilovsky/private-repo", head_sha="a" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(ScopedJob(101, "qdev-ci"), ScopedJob(100, "qdev-ci-browser")),
+    )
+
+    assert store.claim("reserve-1", profiles, tier="reserve", claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
 def test_reserve_claims_profile_that_primary_cannot_fit(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job(profile="qdev-ci-docker"))
-    store.heartbeat(
-        "primary-1",
-        ("qdev-ci-docker",),
-        0,
-        (),
-        {
-            "tier": "primary",
-            "allowed": True,
-            "concurrency": 1,
-            "disk_free_gib": 45,
-            "min_disk_free_gib": 30,
-        },
-    )
+    seed_worker(store, "primary-1", ("qdev-ci-docker",), disk_free_gib=45)
+    seed_worker(store, "reserve-1", ("qdev-ci-docker",), tier="reserve", disk_free_gib=60)
 
     claimed = store.claim(
         "reserve-1",
@@ -406,19 +513,8 @@ def test_reserve_claims_profile_that_primary_cannot_fit(tmp_path: Path) -> None:
 def test_reserve_waits_when_primary_has_profile_headroom(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job(profile="qdev-ci-docker"))
-    store.heartbeat(
-        "primary-1",
-        ("qdev-ci-docker",),
-        0,
-        (),
-        {
-            "tier": "primary",
-            "allowed": True,
-            "concurrency": 1,
-            "disk_free_gib": 55,
-            "min_disk_free_gib": 30,
-        },
-    )
+    seed_worker(store, "primary-1", ("qdev-ci-docker",), disk_free_gib=55)
+    seed_worker(store, "reserve-1", ("qdev-ci-docker",), tier="reserve", disk_free_gib=60)
 
     assert (
         store.claim(
@@ -435,6 +531,7 @@ def test_reserve_waits_when_primary_has_profile_headroom(tmp_path: Path) -> None
 
 def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
     store.enqueue(job())
     store.claim("worker-1", ("qdev-ci",))
     store.set_status(100, "running")
@@ -446,6 +543,8 @@ def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path)
 
 def test_runner_exit_before_pickup_requeues_active_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
+    seed_worker(store, "worker-2")
     store.enqueue(job())
     store.claim("worker-1", ("qdev-ci",))
     store.set_status(100, "running")
@@ -456,6 +555,8 @@ def test_runner_exit_before_pickup_requeues_active_job(tmp_path: Path) -> None:
 
 def test_requeue_restores_pending_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store)
+    seed_worker(store, "worker-2")
     store.enqueue(job())
     store.enqueue(job("delivery-2", 101))
     store.claim("worker-1", ("qdev-ci",))
@@ -467,6 +568,7 @@ def test_requeue_restores_pending_job(tmp_path: Path) -> None:
 
 def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
     store.heartbeat(
@@ -482,13 +584,7 @@ def test_busy_primary_does_not_block_reserve_and_renews_job(tmp_path: Path) -> N
 
 def test_idle_primary_blocks_reserve(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
-    store.heartbeat(
-        "primary-1",
-        ("qdev-ci",),
-        0,
-        (),
-        {"tier": "primary", "concurrency": 1},
-    )
+    seed_worker(store, "primary-1")
     assert store.has_available_tier_slot("primary", 90)
 
 
@@ -509,13 +605,7 @@ def test_capacity_blocked_primary_does_not_block_reserve(tmp_path: Path) -> None
 
 def test_health_distinguishes_capacity_from_free_slots(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
-    store.heartbeat(
-        "primary-1",
-        ("qdev-ci",),
-        1,
-        (),
-        {"tier": "primary", "allowed": True, "concurrency": 2},
-    )
+    seed_worker(store, "primary-1", concurrency=2, active_ids=(100,))
     worker = store.health()["workers"][0]
     assert worker["capacity_allowed"] is True
     assert worker["concurrency"] == 2
@@ -525,6 +615,8 @@ def test_health_distinguishes_capacity_from_free_slots(tmp_path: Path) -> None:
 
 def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "lost-worker")
+    seed_worker(store, "reserve-1")
     store.enqueue(job())
     store.claim("lost-worker", ("qdev-ci",))
     with store.connect() as connection:
@@ -537,6 +629,7 @@ def test_stale_worker_job_is_recovered(tmp_path: Path) -> None:
 
 def test_fresh_idle_worker_orphaned_claim_is_recoverable(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
     with store.connect() as connection:
@@ -550,6 +643,7 @@ def test_fresh_idle_worker_orphaned_claim_is_recoverable(tmp_path: Path) -> None
 
 def test_heartbeat_does_not_requeue_jobs_worker_no_longer_reports(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
     store.set_status(100, "running")
@@ -561,6 +655,7 @@ def test_heartbeat_does_not_requeue_jobs_worker_no_longer_reports(tmp_path: Path
 
 def test_heartbeat_renews_only_reported_job(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1")
     store.enqueue(job())
     store.claim("primary-1", ("qdev-ci",))
     store.set_status(100, "running")

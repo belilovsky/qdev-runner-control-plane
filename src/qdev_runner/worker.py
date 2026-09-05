@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import ssl
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -22,6 +23,7 @@ from .operations import (
     verify_capacity_override,
 )
 from .settings import WorkerSettings
+from .worker_runtime_audit import evaluate as evaluate_runtime
 
 LOGGER = logging.getLogger("qdev-runner-worker")
 
@@ -63,8 +65,55 @@ class Worker:
         self.active_job_ids: set[int] = set()
         self.docker_sidecars: dict[int, str] = {}
         self.stopping = asyncio.Event()
+        self.runtime_audit: dict[str, Any] = {}
+        self.runtime_audit_deadline = 0.0
+        self.runtime_audit_task: asyncio.Task[None] | None = None
+
+    def inspect_runtime(self) -> dict[str, Any]:
+        # Read the actual process settings, not a potentially shadowed env
+        # file. No credential or arbitrary environment field enters evidence.
+        settings = self.settings
+        values = {
+            "QDEV_WORKER_NAME": settings.worker_name,
+            "QDEV_WORKER_TIER": settings.tier,
+            "QDEV_WORKER_PROFILES": ",".join(settings.profiles),
+            "QDEV_CONTAINER_ENGINE": settings.container_engine,
+            "QDEV_RUNNER_IMAGE": settings.runner_images.get("qdev-ci", ""),
+            "QDEV_RUNNER_BROWSER_IMAGE": settings.runner_images.get("qdev-ci-browser", ""),
+            "QDEV_RUNNER_DOCKER_IMAGE": settings.runner_images.get("qdev-ci-docker", ""),
+            "QDEV_DOCKER_SIDECAR_IMAGE": settings.docker_sidecar_image,
+        }
+        # Use the start time, so a slow/hung image inspection cannot refresh
+        # old observations by recording the end of its timeout as freshness.
+        observed_at = datetime.now(UTC).isoformat()
+        result = evaluate_runtime(values, image_release_manifest=settings.image_release_manifest)
+        return {
+            **result,
+            "schema": "qdev-runner-worker-runtime-audit-v1",
+            "observed_at": observed_at,
+            "profiles": list(settings.profiles),
+            "status": "passed" if not result["errors"] else "failed",
+        }
+
+    async def refresh_runtime_audit(self) -> None:
+        try:
+            self.runtime_audit = await asyncio.to_thread(self.inspect_runtime)
+        except Exception as error:
+            # Runtime inspection must fail closed for new claims, without
+            # interrupting lease heartbeats or leaking environment details.
+            self.runtime_audit = {
+                "schema": "qdev-runner-worker-runtime-audit-v1",
+                "observed_at": datetime.now(UTC).isoformat(),
+                "status": "failed",
+                "errors": [f"runtime_inspection_failed:{type(error).__name__}"],
+            }
+        finally:
+            self.runtime_audit_deadline = time.monotonic() + 30
 
     async def close(self) -> None:
+        if self.runtime_audit_task is not None:
+            self.runtime_audit_task.cancel()
+            await asyncio.gather(self.runtime_audit_task, return_exceptions=True)
         await self.client.aclose()
 
     def job_task_done(self, task: asyncio.Task[None], *, job_id: int) -> None:
@@ -157,6 +206,7 @@ class Worker:
                 "baseline_capacity": asdict(state.baseline),
                 "effective_capacity": asdict(state.effective),
                 "effective_profiles": list(state.profiles),
+                "runtime_audit": self.runtime_audit,
                 "configured_claim_scope_id": self.settings.claim_scope_id,
                 "capacity_directive_id": state.directive_id,
                 "capacity_directive_repository": state.directive_repository,
@@ -175,6 +225,13 @@ class Worker:
         }
 
     async def heartbeat(self) -> AdmissionState:
+        if time.monotonic() >= self.runtime_audit_deadline and (
+            self.runtime_audit_task is None or self.runtime_audit_task.done()
+        ):
+            # Image inspection can time out. Keep at most one inspection in
+            # flight and never make an active job's lease depend on its speed.
+            # Missing or expired evidence denies new claims at the controller.
+            self.runtime_audit_task = asyncio.create_task(self.refresh_runtime_audit())
         measured = measure_raw()
         baseline_state = self.admission_state(raw=measured)
         response = await self.client.post(

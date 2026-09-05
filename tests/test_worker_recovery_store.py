@@ -460,8 +460,13 @@ def test_offline_recovery_rejects_provider_work_and_durable_claims(tmp_path: Pat
 
     store.enqueue(_queued_job())
     _heartbeat(store)
-    assert store.claim(WORKER, ("qdev-platform-ci",)) is not None
+    # Fixed production workers are never admitted to the ephemeral CI queue.
+    # Model an existing durable job from the legacy runtime for recovery.
+    assert store.claim(WORKER, ("qdev-platform-ci",)) is None
     with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET worker_name=?, status='claimed'", (WORKER,)
+        )
         connection.execute("DELETE FROM workers WHERE name=?", (WORKER,))
     with pytest.raises(ValueError, match="durable active work"):
         store.begin_worker_recovery(**_begin_arguments())

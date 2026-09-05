@@ -5,9 +5,14 @@ import json
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def load_module() -> ModuleType:
-    path = Path(__file__).resolve().parents[1] / "scripts/audit_worker_runtime.py"
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/qdev_runner/worker_runtime_audit.py"
+    )
     spec = importlib.util.spec_from_file_location("audit_worker_runtime", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -72,7 +77,8 @@ def test_audit_rejects_name_tier_mismatch() -> None:
     values = {
         "QDEV_WORKER_NAME": "mail-qdev-primary",
         "QDEV_WORKER_TIER": "reserve",
-        "QDEV_WORKER_PROFILES": "",
+        "QDEV_WORKER_PROFILES": "qdev-ci",
+        "QDEV_RUNNER_IMAGE": "registry.example/qdev/general@sha256:" + "a" * 64,
     }
 
     result = module.evaluate(values, inspector=lambda _engine, _reference: (True, "id"))
@@ -99,7 +105,42 @@ def test_audit_rejects_mutable_or_missing_executor_references() -> None:
     ]
 
 
-def test_audit_requires_manifest_to_bind_the_enabled_image_references(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profiles", ["", " , ", "qdev-ci-brower", "qdev-ci,unknown"])
+def test_audit_rejects_empty_or_unknown_profiles(profiles: str) -> None:
+    module = load_module()
+    inspected: list[str] = []
+
+    def inspector(_engine: str, reference: str) -> tuple[bool, str]:
+        inspected.append(reference)
+        return True, "id"
+
+    values = {
+        "QDEV_WORKER_NAME": "srv-qdev-primary",
+        "QDEV_WORKER_TIER": "primary",
+        "QDEV_WORKER_PROFILES": profiles,
+        "QDEV_RUNNER_IMAGE": "registry.example/qdev/general@sha256:" + "a" * 64,
+    }
+    result = module.evaluate(values, inspector=inspector)
+    assert result["errors"] == ["invalid_worker_profiles"]
+    assert result["image_release"]["status"] != "verified"
+    assert inspected == []
+
+
+def test_default_profiles_still_require_every_executor_image() -> None:
+    module = load_module()
+    assert {key for key, _ in module.required_images({})} == set(module.IMAGE_KEYS)
+
+
+def test_profile_whitespace_and_duplicates_do_not_duplicate_image_checks() -> None:
+    module = load_module()
+    assert module.required_images({"QDEV_WORKER_PROFILES": " qdev-ci, qdev-ci ,"}) == [
+        ("QDEV_RUNNER_IMAGE", "")
+    ]
+
+
+def test_audit_requires_manifest_to_bind_the_enabled_image_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = load_module()
     values = {
         "QDEV_WORKER_NAME": "srv-qdev-primary",
@@ -158,6 +199,24 @@ def test_audit_requires_manifest_to_bind_the_enabled_image_references(tmp_path: 
         image_release_manifest=manifest,
     )
 
+    # A structurally valid envelope without its signed evidence must fail closed.
+    assert result["errors"] == ["image_release_manifest_invalid"]
+    assert result["image_release"]["status"] == "invalid"
+
+    # Isolate reference binding after the strict evidence verifier has succeeded.
+    # Cryptographic failure/tampering cases are exercised in test_runner_image_release.py.
+    original_load = module.load_image_release
+
+    def verified_load(path: Path, *, strict_evidence: bool = False) -> tuple[dict[str, str], str]:
+        assert strict_evidence is True
+        return original_load(path)
+
+    monkeypatch.setattr(module, "load_image_release", verified_load)
+    result = module.evaluate(
+        values,
+        inspector=lambda _engine, _reference: (True, "id"),
+        image_release_manifest=manifest,
+    )
     assert result["errors"] == []
     assert result["image_release"]["status"] == "verified"
     assert result["image_release"]["checked_artifacts"] == ["QDEV_RUNNER_IMAGE"]

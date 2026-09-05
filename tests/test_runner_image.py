@@ -56,7 +56,7 @@ def test_browser_image_pins_the_playwright_1_62_1_chromium_bundle() -> None:
 def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     settings = (ROOT / "src/qdev_runner/settings.py").read_text(encoding="utf-8")
     builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
-    worker_audit = (ROOT / "scripts/audit_worker_runtime.py").read_text(encoding="utf-8")
+    worker_audit = (ROOT / "src/qdev_runner/worker_runtime_audit.py").read_text(encoding="utf-8")
 
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings

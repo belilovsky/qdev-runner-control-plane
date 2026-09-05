@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,16 @@ def evaluate(
 ) -> Capacity:
     """Re-evaluate measured host metrics against explicit admission thresholds."""
     blockers: list[str] = []
+    metrics = (
+        measured.disk_used_pct, measured.disk_free_gib, measured.memory_available_gib,
+        measured.load_15, measured.cpu_psi_avg10, measured.cpus,
+    )
+    if (
+        any(not math.isfinite(value) or value < 0 for value in metrics)
+        or measured.cpus < 1 or measured.cpus != int(measured.cpus)
+        or measured.disk_used_pct > 100 or measured.cpu_psi_avg10 > 100
+    ):
+        blockers.append("resource_measurements_missing_or_invalid")
     if measured.disk_used_pct >= max_disk_used_pct:
         blockers.append("disk_used_pct")
     if measured.disk_free_gib < min_disk_free_gib:
@@ -55,15 +66,19 @@ def _cpu_psi_avg10(path: Path | None = None) -> float:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return 0.0
+        return -1.0
     for line in lines:
         if not line.startswith("some "):
             continue
         for field in line.split()[1:]:
             name, _, raw_value = field.partition("=")
             if name == "avg10":
-                return float(raw_value)
-    return 0.0
+                try:
+                    value = float(raw_value)
+                except ValueError:
+                    return -1.0
+                return value if math.isfinite(value) and 0 <= value <= 100 else -1.0
+    return -1.0
 
 
 def measure_raw(
@@ -86,7 +101,7 @@ def measure_raw(
             break
     load_15 = os.getloadavg()[2]
     cpu_psi_avg10 = _cpu_psi_avg10(cpu_psi_path)
-    cpus = os.cpu_count() or 1
+    cpus = os.cpu_count() or 0
     disk_free_gib = disk_free / 1024**3
     memory_available_gib = memory_available_kib / 1024**2
     return Capacity(

@@ -64,6 +64,7 @@ from .operations import (
     MAX_OVERRIDE_SECONDS,
     CapacityOverrideConflict,
     OperationStore,
+    parse_utc,
 )
 from .policy import Policy, PolicyError
 from .release_lane import (
@@ -421,7 +422,8 @@ def _worker_audit(
                 now=datetime.fromtimestamp(now, UTC),
             )
             capacity_allowed = bool(
-                directive is not None and directive.operation_id == str(directive_id)
+                worker.get("capacity_allowed") is True
+                and directive is not None and directive.operation_id == str(directive_id)
             )
     effective_profiles = _json_strings(detail.get("effective_profiles", []))
     if not capacity_allowed:
@@ -431,8 +433,8 @@ def _worker_audit(
         "tier": str(worker.get("tier") or detail.get("tier") or ""),
         "profiles": list(profiles),
         "active_jobs": int(worker.get("active_jobs") or 0),
-        "slots_available": int(worker.get("slots_available") or 0),
-        "fresh": now - float(worker.get("last_seen") or 0) < 90,
+        "slots_available": int(worker.get("slots_available") or 0) if capacity_allowed else 0,
+        "fresh": 0 <= now - float(worker.get("last_seen") or 0) < 90,
         "last_seen": float(worker.get("last_seen") or 0),
         "raw_capacity": raw,
         "baseline_capacity": baseline,
@@ -443,6 +445,7 @@ def _worker_audit(
             "allowed": capacity_allowed,
             "directive_id": directive_id,
             "profiles": list(effective_profiles),
+            "blockers": list(worker.get("admission_blockers") or []),
         },
     }
 
@@ -2559,13 +2562,6 @@ def create_app(
             claim_scope=claim_scope,
             client_certificate_sha256=x_qdev_client_certificate_sha256,
         )
-        store.heartbeat(
-            request.worker_name,
-            tuple(request.profiles),
-            request.active_jobs,
-            tuple(request.active_job_ids),
-            request.detail | {"tier": request.tier},
-        )
         directive = (
             operations.active(
                 request.worker_name,
@@ -2573,6 +2569,48 @@ def create_app(
             )
             if operations is not None
             else None
+        )
+        enrollment = policy.worker_enrollments.get(request.worker_name, {})
+        enrolled = bool(
+            enrollment.get("tier") == request.tier
+            and request.profiles
+            and set(request.profiles).issubset(enrollment.get("profiles", []))
+        )
+        # Bound certificates authenticate the existing lease above, not the
+        # worker's advertised enrollment. Even an authenticated active scope
+        # must not enroll extra profiles or admit another job after expiry.
+        detail = request.detail | {
+            "tier": request.tier,
+            "controller_enrollment": {
+                "schema": "qdev-worker-enrollment-v1",
+                "worker_name": request.worker_name,
+                "tier": request.tier,
+                "profiles": list(request.profiles),
+                "authenticated": enrolled,
+            },
+        }
+        directive_id = detail.get("capacity_directive_id")
+        try:
+            expiry_matches = bool(
+                directive is not None
+                and parse_utc(str(detail.get("capacity_directive_expires_at")))
+                == parse_utc(directive.expires_at)
+            )
+        except (ValueError, TypeError, OverflowError):
+            expiry_matches = False
+        if directive_id and (
+            directive is None or directive.operation_id != directive_id
+            or not expiry_matches
+            or detail.get("capacity_directive_repository") != directive.repository
+            or detail.get("capacity_directive_head_sha") != directive.head_sha
+            or _json_strings(detail.get("effective_profiles")) != directive.profiles
+            or detail.get("min_disk_free_gib") != directive.min_disk_free_gib
+            or detail.get("max_disk_used_pct") != directive.max_disk_used_pct
+        ):
+            detail["allowed"] = False
+        store.heartbeat(
+            request.worker_name, tuple(request.profiles), request.active_jobs,
+            tuple(request.active_job_ids), detail,
         )
         return {
             "schema": "qdev-worker-directives-v1",

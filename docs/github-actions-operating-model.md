@@ -61,6 +61,20 @@ There is no silent automatic fallback: GitHub assigns a job from its declared
 `runs-on` selector, so recovery uses an explicit workflow dispatch or reviewed
 reusable workflow. Recovery evidence must not be reported as a hosted check.
 
+### Controller candidate verification
+
+Owner decision (2026-09-05): the controller's manual verification workflow may
+run a selected same-repository branch, not only `main`, so an unmerged exact
+candidate can receive complete recovery CI. This is a CI-only rule change;
+it does not authorize a controller release or relax fleet-bootstrap policy.
+The owner must explicitly select recovery and supply the complete expected
+SHA. The preflight and common verification entrypoint bind that SHA to the
+actual provider checkout; tags, pull-request refs, non-owner actors and
+automatic events are rejected. A signed immutable FIFO claim is still required
+for the ephemeral worker, and recovery never cancels an earlier run.
+Rollback is to restore the `refs/heads/main` selector and preflight in
+`runner-smoke.yml`; no runtime state or provider policy is changed by this rule.
+
 ## Runtime changes
 
 - Never restart a worker while it reports an active job.
@@ -77,6 +91,10 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   free for the exact pending profile. Claim admission preserves the configured
   free-space floor plus that profile's declared disk budget; a merely present,
   busy, or undersized primary does not block reserve.
+- Ordinary and v2 claims consider only the oldest pending job of each profile.
+  Disk pressure cannot promote a cheaper later job within that profile. A
+  primary-eligible head does not block reserve from the oldest eligible head
+  of another profile. Existing v1 scopes retain their signed sequence.
 - Preserve the previous controller release and host configuration before a
   bounded activation. Do not broad-prune shared Docker data.
 - A runner-image cleanup allowlist is configuration-bound. Inspect every image
@@ -134,3 +152,15 @@ sudo qdev-runner-worker-gate release \
 
 Use `--require-primary-slot` or `--require-reserve-slot` only for a controlled
 idle failover test; a busy but healthy tier is not otherwise a defect.
+
+The worker audit rejects explicitly empty or unknown profile sets; an omitted
+profile setting retains the worker's default of all three profiles. Its
+`image_release.status=verified` requires strict verification of the local
+evidence files, digest bindings and Ed25519 provenance signatures, not merely
+a structurally valid digest envelope. Existing v1 manifests stay structurally
+readable by the standalone validator, but cannot authorize recovery without
+their complete evidence bundle. Provision that bundle before releasing a
+worker gate; do not manufacture a passing receipt or remove the strict check.
+The audit's v1 receipt shape and gate consumers are unchanged. This trusted-admin
+check does not by itself establish publisher trust, the effective systemd
+configuration, browser/client compatibility, or an exact-SHA CI conclusion.
