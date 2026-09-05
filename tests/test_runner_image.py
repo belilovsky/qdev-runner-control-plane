@@ -61,7 +61,18 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert 'QDEV_RUNNER_VERSION:-2.337.0-r5' in builder
+    assert 'QDEV_RUNNER_VERSION:-2.337.0-r7' in builder
+
+
+def test_browser_release_is_flattened_before_publication() -> None:
+    builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
+
+    assert 'browser_staging_image="${browser_image}-rootfs"' in builder
+    assert '"$engine" export --output "${browser_export_root}/rootfs.tar"' in builder
+    assert '"$engine" import' in builder
+    assert "A Dockerfile whiteout" in builder
+    assert 'ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]' in builder
+    assert '"$engine" image rm "${browser_staging_image}"' in builder
 
 
 def test_actions_runner_release_and_digest_are_current_and_pinned() -> None:
@@ -86,9 +97,31 @@ def test_embedded_node_runtimes_replace_npm_with_pinned_verified_release() -> No
     ) in dockerfile
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node20") == 2
     assert dockerfile.count("install-pinned-npm /home/runner/actions-runner/externals/node24") == 2
-    assert "install-pinned-npm /usr \"${NPM_VERSION}\" \"${NPM_SHA512}\"" in dockerfile
     assert "sha512sum --check" in installer
     assert 'test "${actual_version}" = "${npm_version}"' in installer
+
+
+def test_browser_system_npm_is_pinned_hardened_and_cache_free() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    installer = (ROOT / "images/runner/install-pinned-node-package.sh").read_text(
+        encoding="utf-8"
+    )
+
+    _, browser = dockerfile.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    assert "ARG SYSTEM_NPM_VERSION=12.0.2" in dockerfile
+    assert "ARG BRACE_EXPANSION_VERSION=5.0.9" in dockerfile
+    assert "ARG IP_ADDRESS_VERSION=10.3.1" in dockerfile
+    assert "ARG TAR_VERSION=7.5.21" in dockerfile
+    assert 'install-pinned-npm /usr "${SYSTEM_NPM_VERSION}"' in browser
+    assert browser.count("install-pinned-node-package /usr/lib/node_modules/npm/node_modules") == 3
+    assert "rm -rf /root/.npm" in browser
+    assert "test ! -e /root/.npm" in browser
+    assert "FROM scratch AS browser" in browser
+    assert "COPY --from=browser-build / /" in browser
+    assert "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright" in browser
+    assert "sha512sum --check" in installer
+    assert 'test "${actual_name}" = "${package_name}"' in installer
+    assert 'test "${actual_version}" = "${package_version}"' in installer
 
 
 def test_docker_profile_has_compose_plugin() -> None:
