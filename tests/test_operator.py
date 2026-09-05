@@ -273,6 +273,58 @@ def test_recovery_prepare_uses_live_bindings_and_typed_endpoint(
     }
 
 
+def test_recovery_accept_binds_owner_supplied_exact_canary_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    monkeypatch.setattr(
+        operator,
+        "_fresh_recovery_provenance",
+        lambda settings: {"schema": "qdev-runner-recovery-provenance-v1"},
+    )
+
+    def fake_request(
+        settings: operator.OperatorSettings, **kwargs: Any
+    ) -> operator.RecoveryOperationResponse:
+        captured.update(kwargs)
+        return operator.RecoveryOperationResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-operation-v1",
+                "operation_id": "5" * 64,
+                "request_fingerprint": "6" * 64,
+                "target_id": "qdev-platform-ci-187",
+                "worker_name": "qdev-platform-ci-187",
+                "repository": "belilovsky/platform-portal",
+                "provider_runner_id": 187,
+                "state": "pending_canary",
+                "native_outcome": "completed",
+                "controller_revision": "1" * 40,
+                "controller_release_digest": "2" * 64,
+                "policy_digest": "sha256:" + "3" * 64,
+                "agent_release_digest": "sha256:" + "4" * 64,
+                "idempotent_replay": False,
+            }
+        )
+
+    monkeypatch.setattr(operator, "recovery_request", fake_request)
+    result = operator.run(
+        [
+            "recovery-accept",
+            "--operation-id",
+            "5" * 64,
+            "--request-fingerprint",
+            "6" * 64,
+            "--canary-head-sha",
+            "7" * 40,
+        ]
+    )
+
+    assert result["state"] == "pending_canary"
+    assert captured["path"] == "/internal/v1/operations/worker-recovery/accept"
+    assert captured["body"]["canary_head_sha"] == "7" * 40
+
+
 def test_retired_recovery_command_is_not_exposed() -> None:
     with pytest.raises(SystemExit):
         operator.build_parser().parse_args(["recover-existing-worker"])

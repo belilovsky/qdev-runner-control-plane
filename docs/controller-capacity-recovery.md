@@ -61,9 +61,22 @@ cannot choose a host, service, executable, certificate or CA key.
    Each agent persists private native proof before reconciling it to the
    controller. A retry resumes pending reconciliation or returns idle; it does
    not repeat a completed mutation.
-5. Run controller acceptance and then read the exact transaction:
+5. Persist controller acceptance intent with the exact current default-branch
+   SHA. Then dispatch that exact intent with an authenticated owner identity;
+   the controller GitHub App deliberately has read-only Actions access for
+   correlation and never receives Contents or Actions-write permission:
 
    ```bash
+   qdev-runner-operator recovery-accept \
+     --operation-id OPERATION_ID \
+     --request-fingerprint REQUEST_FINGERPRINT \
+     --canary-head-sha EXACT_40_CHARACTER_DEFAULT_BRANCH_SHA
+   gh workflow run WORKFLOW --repo REPOSITORY --ref DEFAULT_BRANCH \
+     -f operation_id=OPERATION_ID \
+     -f dispatch_correlation=qdev-recovery-OPERATION_ID \
+     -f runner_label=qdev-job-recovery-OPERATION_ID
+   # QazStack self-hosted-recovery.yml additionally requires:
+   #   -f confirm_recovery=RECOVER_QAZSTACK_RUNNER
    qdev-runner-operator recovery-accept \
      --operation-id OPERATION_ID \
      --request-fingerprint REQUEST_FINGERPRINT
@@ -73,8 +86,9 @@ cannot choose a host, service, executable, certificate or CA key.
    ```
 
    Acceptance requires the expected permanent labels, GitHub `online` and
-   `busy=false`, zero active jobs, a controller-dispatched exact-default-SHA
-   canary on the same runner, and a successful provider-visible terminal job.
+   `busy=false`, zero active jobs, an owner-dispatched and
+   controller-correlated exact-default-SHA canary on the same runner, and a
+   successful provider-visible terminal job.
    Only `completed` or `already_completed` closes recovery. Replay the same
    prepare request and confirm `idempotent_replay=true` without a new mutation.
 

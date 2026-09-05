@@ -650,7 +650,7 @@ def test_project_maps_released_completion_and_validates_target_lookup(
         )
 
 
-def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
+def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
     harness = _harness(tmp_path, policy_files)
@@ -669,7 +669,6 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
     assert reconciled.status_code == 200
 
     harness.github.status = "online"
-    harness.github.dispatch_status_code = 500
     accept_body = {
         "schema": "qdev-runner-recovery-accept-v1",
         "operation_id": prepared["operation_id"],
@@ -682,11 +681,26 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
         headers=OPERATOR_HEADERS,
     )
     assert failed.status_code == 409
-    assert harness.github.dispatch_calls == 1
+    assert failed.json()["detail"] == "worker recovery request rejected"
+    assert harness.github.dispatch_calls == 0
+    assert harness.client.app.state.store.worker_recovery_canary(
+        prepared["operation_id"]
+    ) is None
+
+    accept_body["canary_head_sha"] = "5" * 40
+    pending = harness.client.post(
+        "/internal/v1/operations/worker-recovery/accept",
+        json=accept_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert pending.status_code == 200
+    assert pending.json()["state"] == "pending_canary"
+    assert harness.github.dispatch_calls == 0
 
     canary = harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"])
     assert canary is not None
-    assert canary["phase"] == "dispatching"
+    assert canary["phase"] == "dispatch_intent"
+    assert canary["head_sha"] == "5" * 40
     assert canary["dispatched_at"] is None
 
     replay = harness.client.post(
@@ -696,4 +710,10 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
     )
     assert replay.status_code == 200
     assert replay.json()["state"] == "pending_canary"
-    assert harness.github.dispatch_calls == 1
+    assert harness.github.dispatch_calls == 0
+
+
+def test_platform_recovery_canary_targets_the_real_default_branch() -> None:
+    target = RECOVERY_TARGETS["qdev-platform-ci-187"]
+    assert target.ref == "master"
+    assert target.workflow == ".github/workflows/runner-smoke.yml"

@@ -350,8 +350,11 @@ controller transaction in `docs/controller-capacity-recovery.md`. The operator
 can select only `qdev-platform-ci-187` or `qdev-qazstack-01`; the controller and
 certificate-bound host agents own the repository, permanent labels, native
 action and service identity. A prepared operation fences admission until the
-provider reports the runner online and idle and a controller-dispatched,
-exact-SHA canary succeeds. Replaying an accepted operation is idempotent.
+provider reports the runner online and idle and an owner-dispatched,
+controller-correlated exact-SHA canary succeeds. Replaying an accepted
+operation is idempotent. The controller GitHub App remains read-only for
+Actions correlation; it never receives repository Contents or Actions-write
+permission for recovery dispatch.
 
 The retired
 `/internal/v1/operations/fleet-bootstrap/recover-existing-worker` route always
@@ -360,7 +363,9 @@ activation packages the fixed host agents and one-shot units, but an operator
 must install their private certificate/release bindings on the already
 assigned hosts; no workflow receives SSH, CA material or a general command.
 Use `qdev-runner-operator recovery-prepare`, start the corresponding fixed
-one-shot host service, then use `recovery-accept` and `recovery-status`. The
+one-shot host service, then use `recovery-accept` with the exact default-branch
+SHA, dispatch the persisted canary intent with owner-scoped repository
+credentials, and finish with `recovery-accept` and `recovery-status`. The
 operator reads live source bindings before every typed request and never
 self-asserts the edge-owned proxy or verified-certificate headers.
 

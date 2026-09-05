@@ -171,6 +171,7 @@ class RecoveryAcceptRequest(BaseModel):
     )
     operation_id: Sha256Hex
     request_fingerprint: Sha256Hex
+    canary_head_sha: GitRevision | None = None
     provenance: RecoveryRequestProvenance
 
 
