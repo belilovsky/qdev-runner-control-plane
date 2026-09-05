@@ -3663,9 +3663,7 @@ def create_app(
                 )
             except (TypeError, ValueError):
                 remote_run_matches = False
-            if (registered_test_job and not remote_run_matches) or (
-                remote_run_id is not None and not remote_run_matches
-            ):
+            if registered_test_job and not remote_run_matches:
                 store.set_status(job_id, "rejected", "GitHub job run differs from queued run")
                 raise PolicyError("GitHub job run differs from queued run")
             if str(remote_job.get("status")) != "queued":
