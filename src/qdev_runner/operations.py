@@ -120,6 +120,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "operation",
         "required_free_gib",
         "immutable_tuple",
+        "fifo_skipped",
     },
     "capacity-override-cancelled": {"kind", "observed_at", "worker_audit", "operation"},
     "stale-job-audit": {
@@ -382,6 +383,39 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         raise ValueError("capacity override creation payload is invalid")
     if kind == "capacity-override-created":
         _validate_durable_queue_head(value["immutable_tuple"], require_attempt=True)
+        fifo_skipped = value["fifo_skipped"]
+        if not isinstance(fifo_skipped, list) or len(fifo_skipped) > 512:
+            raise ValueError("capacity override fifo skip list is invalid")
+        for item in fifo_skipped:
+            if not isinstance(item, dict) or set(item) != {
+                "job_id",
+                "repository",
+                "run_id",
+                "head_sha",
+                "profile",
+                "managed_registry_entry",
+                "reason",
+            }:
+                raise ValueError("capacity override fifo skip item is invalid")
+            if (
+                not isinstance(item["job_id"], int)
+                or isinstance(item["job_id"], bool)
+                or item["job_id"] <= 0
+                or not isinstance(item["run_id"], int)
+                or isinstance(item["run_id"], bool)
+                or item["run_id"] <= 0
+                or not isinstance(item["repository"], str)
+                or not _REPOSITORY.fullmatch(item["repository"])
+                or not isinstance(item["head_sha"], str)
+                or not _SOURCE_SHA.fullmatch(item["head_sha"])
+                or not isinstance(item["profile"], str)
+                or not _WORKER_NAME.fullmatch(item["profile"])
+                or not isinstance(item["managed_registry_entry"], str)
+                or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
+                or not isinstance(item["reason"], str)
+                or item["reason"] not in _FIFO_SKIP_REASONS
+            ):
+                raise ValueError("capacity override fifo skip item is invalid")
     if kind == "capacity-override-cancelled" and not (
         isinstance(value["operation"], dict) or value["operation"] is None
     ):

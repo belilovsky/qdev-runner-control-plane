@@ -1730,6 +1730,52 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
     ) is None
 
 
+def test_capacity_override_skips_inactive_admin_platform_head_with_evidence(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
+    _seed_pending_job(
+        client,
+        41,
+        "stale-admin-head",
+        repository="belilovsky/qazposter",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(client, 42, "effective-head")
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/example",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 90.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "inactive managed row must not block unrelated FIFO",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazposter",
+            "run_id": 84000000041,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazposter",
+            "reason": "admin-platform-candidate-not-active",
+        }
+    ]
+
+
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
     _seed_stale_running_job(client)
