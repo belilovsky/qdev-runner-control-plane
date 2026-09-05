@@ -2,15 +2,17 @@
 
 This repository is the recovery control plane for ephemeral self-hosted GitHub
 Actions runners used by the active `belilovsky` repositories. Paid
-GitHub-hosted compute is the normal execution path. The QDev pool is the
-explicit recovery path when hosted compute or its billing lane is unavailable;
-it still depends on GitHub orchestration and the GitHub API.
+GitHub-hosted compute is the normal execution path. Exact workflows may declare
+the existing QDev pool as a bounded primary lane while hosted compute or its
+billing lane is unavailable; it still depends on GitHub orchestration and the
+GitHub API.
 
 ## Contract
 
-- A v2 repository contract declares `github-hosted-primary` and keeps a
-  separately dispatchable self-hosted recovery workflow. Legacy v1 contracts
-  remain valid until their repository is deliberately migrated.
+- A v2 repository contract declares `github-hosted-primary`, keeps a separately
+  dispatchable self-hosted recovery workflow, and may allowlist exact primary
+  self-hosted workflow filenames. Legacy v1 contracts remain valid until their
+  repository is deliberately migrated.
 - Recovery jobs select exactly one of `qdev-ci`, `qdev-ci-browser` or
   `qdev-ci-docker` together with `self-hosted`, `Linux`, `X64`.
 - A queued `workflow_job` webhook is accepted only for a repository in
@@ -86,9 +88,10 @@ python3 /path/to/checkout/.github/scripts/qdev-runner-policy.py \
 ```
 
 For v2 products, declare manual-only self-hosted recovery workflow filenames
-under `recovery_workflows`; normal CI must keep GitHub-hosted runners. For v2
-products whose protected release workflow uses GHCR, declare the exact
-workflow filename under `release_registry_workflows` in
+under `recovery_workflows`. A bounded existing-capacity primary lane must be
+listed by exact filename under `primary_self_hosted_workflows`; unlisted normal
+CI remains GitHub-hosted. For v2 products whose protected release workflow uses
+GHCR, declare the exact workflow filename under `release_registry_workflows` in
 `.github/qdev-runner.yml`. The exemption is limited to `ghcr.io` inside that
 non-PR release lane; caches, Actions artifacts, and GitHub Packages remain
 policy violations.
