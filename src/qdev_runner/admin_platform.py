@@ -90,7 +90,10 @@ _SHA256 = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _RELEASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _REFERENCE = re.compile(r"^refs/(?:heads|tags)/[A-Za-z0-9._/-]+$")
-_RECEIPT_URI = re.compile(r"^receipts/[A-Za-z0-9][A-Za-z0-9._-]{0,190}\.json$")
+_RECEIPT_URI = re.compile(
+    r"^receipts/(?:[A-Za-z0-9][A-Za-z0-9._-]{0,190}\.json|"
+    r"transactions/[0-9a-f]{64}/[0-9a-f]{64}\.json)$"
+)
 _RECEIPT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _MAX_LEDGER_BYTES = 4 * 1024 * 1024
@@ -180,8 +183,9 @@ class AdminPlatformLedger:
         self._receipt_key = receipt_key
         self._receipt_root = receipt_root or path.parent / "receipts"
         self._pending_receipts: list[dict[str, Any]] = []
+        self._transaction_bindings: dict[str, dict[str, Any]] = {}
 
-        document = self._load(path)
+        document, self._ledger_sha256 = self._load(path)
         schema_version = document.get("schema_version")
         if schema_version != SCHEMA_V3:
             raise AdminPlatformLedgerError("canonical admin platform ledger must use schema v3")
@@ -189,7 +193,7 @@ class AdminPlatformLedger:
         self._verify_pending_receipts()
 
     @staticmethod
-    def _load(path: Path) -> dict[str, Any]:
+    def _load(path: Path) -> tuple[dict[str, Any], str]:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:
             ledger_fd = os.open(path, os.O_RDONLY | nofollow)
@@ -217,7 +221,7 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError("admin platform ledger is unavailable") from error
         if not isinstance(document, dict):
             raise AdminPlatformLedgerError("admin platform ledger shape is invalid")
-        return cast(dict[str, Any], document)
+        return cast(dict[str, Any], document), hashlib.sha256(raw).hexdigest()
 
     def _load_v3(self, document: dict[str, Any]) -> None:
         if set(document) != {
@@ -746,7 +750,8 @@ class AdminPlatformLedger:
     def _read_receipt(self, receipt_uri: str, receipt_sha256: str) -> dict[str, Any]:
         if self._receipt_key is None:
             raise AdminPlatformLedgerError("admin platform receipt verification key is unavailable")
-        filename = receipt_uri.removeprefix("receipts/")
+        relative = receipt_uri.removeprefix("receipts/")
+        parts = relative.split("/")
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -754,27 +759,59 @@ class AdminPlatformLedger:
         except OSError as error:
             raise AdminPlatformLedgerError("admin platform receipt root is unavailable") from error
         try:
-            try:
-                receipt_fd = os.open(filename, os.O_RDONLY | nofollow, dir_fd=root_fd)
-            except OSError as error:
-                raise AdminPlatformLedgerError("admin platform receipt is unavailable") from error
-            try:
-                metadata = os.fstat(receipt_fd)
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_RECEIPT_BYTES:
-                    raise AdminPlatformLedgerError("admin platform receipt file is unsafe")
-                chunks: list[bytes] = []
-                remaining = _MAX_RECEIPT_BYTES + 1
-                while remaining:
-                    chunk = os.read(receipt_fd, min(65536, remaining))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    remaining -= len(chunk)
-                raw = b"".join(chunks)
-                if len(raw) > _MAX_RECEIPT_BYTES:
-                    raise AdminPlatformLedgerError("admin platform receipt file is too large")
-            finally:
-                os.close(receipt_fd)
+            if len(parts) == 1:
+                raw = self._read_receipt_file(root_fd, parts[0], nofollow)
+            elif len(parts) == 3 and parts[0] == "transactions":
+                transaction_id, filename = parts[1], parts[2]
+                try:
+                    transactions_fd = os.open(
+                        "transactions",
+                        directory_flags | nofollow,
+                        dir_fd=root_fd,
+                    )
+                except OSError as error:
+                    raise AdminPlatformLedgerError(
+                        "admin platform receipt transaction is unavailable"
+                    ) from error
+                try:
+                    transactions_metadata = os.fstat(transactions_fd)
+                    if not stat.S_ISDIR(transactions_metadata.st_mode):
+                        raise AdminPlatformLedgerError(
+                            "admin platform receipt transaction root is unsafe"
+                        )
+                    try:
+                        transaction_fd = os.open(
+                            transaction_id,
+                            directory_flags | nofollow,
+                            dir_fd=transactions_fd,
+                        )
+                    except OSError as error:
+                        raise AdminPlatformLedgerError(
+                            "admin platform receipt transaction is unavailable"
+                        ) from error
+                finally:
+                    os.close(transactions_fd)
+                try:
+                    transaction_metadata = os.fstat(transaction_fd)
+                    if not stat.S_ISDIR(transaction_metadata.st_mode):
+                        raise AdminPlatformLedgerError(
+                            "admin platform receipt transaction is unsafe"
+                        )
+                    raw = self._read_receipt_file(transaction_fd, filename, nofollow)
+                    binding_raw = self._read_receipt_file(
+                        transaction_fd, "ledger-binding.json", nofollow
+                    )
+                finally:
+                    os.close(transaction_fd)
+                self._verify_transaction_binding(
+                    binding_raw,
+                    receipt_root_fd=root_fd,
+                    transaction_id=transaction_id,
+                    receipt_uri=receipt_uri,
+                    receipt_sha256=receipt_sha256,
+                )
+            else:  # pragma: no cover - URI validation rejects this first
+                raise AdminPlatformLedgerError("admin platform receipt URI is invalid")
         finally:
             os.close(root_fd)
         if hashlib.sha256(raw).hexdigest() != receipt_sha256:
@@ -788,6 +825,132 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError(
                 "admin platform controller receipt is invalid"
             ) from error
+
+    @staticmethod
+    def _read_receipt_file(directory_fd: int, filename: str, nofollow: int) -> bytes:
+        try:
+            receipt_fd = os.open(filename, os.O_RDONLY | nofollow, dir_fd=directory_fd)
+        except OSError as error:
+            raise AdminPlatformLedgerError("admin platform receipt is unavailable") from error
+        try:
+            metadata = os.fstat(receipt_fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_RECEIPT_BYTES:
+                raise AdminPlatformLedgerError("admin platform receipt file is unsafe")
+            chunks: list[bytes] = []
+            remaining = _MAX_RECEIPT_BYTES + 1
+            while remaining:
+                chunk = os.read(receipt_fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > _MAX_RECEIPT_BYTES:
+                raise AdminPlatformLedgerError("admin platform receipt file is too large")
+            return raw
+        finally:
+            os.close(receipt_fd)
+
+    def _verify_transaction_binding(
+        self,
+        raw: bytes,
+        *,
+        receipt_root_fd: int,
+        transaction_id: str,
+        receipt_uri: str,
+        receipt_sha256: str,
+    ) -> None:
+        try:
+            document = json.loads(raw)
+            if not isinstance(document, dict):
+                raise ValueError("transaction binding is not an object")
+            verified = verify_controller_receipt(
+                document,
+                receipt_key=cast(str, self._receipt_key),
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise AdminPlatformLedgerError(
+                "admin platform receipt transaction binding is invalid"
+            ) from error
+        payload = verified["payload"]
+        expected_receipt = {
+            "receipt_uri": receipt_uri,
+            "receipt_sha256": receipt_sha256,
+        }
+        if (
+            payload.get("kind") != "admin-platform-state-transaction"
+            or payload.get("transaction_id") != transaction_id
+            or expected_receipt not in payload.get("receipts", [])
+        ):
+            raise AdminPlatformLedgerError(
+                "admin platform receipt transaction is not bound to this ledger"
+            )
+        target_ledger_sha256 = cast(str, payload["target_ledger_sha256"])
+        if target_ledger_sha256 != self._ledger_sha256:
+            self._require_ledger_descendant(
+                receipt_root_fd,
+                ancestor_sha256=target_ledger_sha256,
+            )
+        existing = self._transaction_bindings.setdefault(transaction_id, payload)
+        if existing != payload:
+            raise AdminPlatformLedgerError(
+                "admin platform receipt transaction binding is inconsistent"
+            )
+
+    def _require_ledger_descendant(
+        self,
+        receipt_root_fd: int,
+        *,
+        ancestor_sha256: str,
+    ) -> None:
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            links_fd = os.open(
+                "ledger-links",
+                directory_flags | nofollow,
+                dir_fd=receipt_root_fd,
+            )
+        except OSError as error:
+            raise AdminPlatformLedgerError(
+                "admin platform ledger lineage is unavailable"
+            ) from error
+        cursor = self._ledger_sha256
+        visited: set[str] = set()
+        try:
+            for _ in range(4096):
+                if cursor == ancestor_sha256:
+                    return
+                if cursor in visited:
+                    break
+                visited.add(cursor)
+                raw = self._read_receipt_file(links_fd, f"{cursor}.json", nofollow)
+                try:
+                    document = json.loads(raw)
+                    if not isinstance(document, dict):
+                        raise ValueError("ledger link is not an object")
+                    verified = verify_controller_receipt(
+                        document,
+                        receipt_key=cast(str, self._receipt_key),
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                    raise AdminPlatformLedgerError(
+                        "admin platform ledger lineage is invalid"
+                    ) from error
+                link = verified["payload"]
+                if (
+                    link.get("kind") != "admin-platform-ledger-link"
+                    or link.get("target_ledger_sha256") != cursor
+                ):
+                    raise AdminPlatformLedgerError(
+                        "admin platform ledger lineage is inconsistent"
+                    )
+                cursor = cast(str, link["previous_ledger_sha256"])
+        finally:
+            os.close(links_fd)
+        raise AdminPlatformLedgerError(
+            "admin platform receipt transaction is not in the ledger lineage"
+        )
 
     def _verify_pending_receipts(self) -> None:
         for expected in self._pending_receipts:
@@ -809,6 +972,22 @@ class AdminPlatformLedger:
             if document["payload"] != expected_payload:
                 raise AdminPlatformLedgerError(
                     "admin platform receipt does not match the ledger evidence tuple"
+                )
+        referenced = {
+            (
+                cast(str, expected["receipt_uri"]),
+                cast(str, expected["receipt_sha256"]),
+            )
+            for expected in self._pending_receipts
+        }
+        for binding in self._transaction_bindings.values():
+            committed_group = {
+                (cast(str, receipt["receipt_uri"]), cast(str, receipt["receipt_sha256"]))
+                for receipt in cast(list[dict[str, Any]], binding["receipts"])
+            }
+            if not committed_group.issubset(referenced):
+                raise AdminPlatformLedgerError(
+                    "admin platform receipt transaction is only partially committed"
                 )
 
     @staticmethod

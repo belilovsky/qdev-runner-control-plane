@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -28,7 +29,7 @@ from .admin_platform_ledger import AdminPlatformLedger as LegacyAdminPlatformLed
 from .admin_platform_ledger import (
     AdminPlatformLedgerError as LegacyAdminPlatformLedgerError,
 )
-from .operations import format_utc, parse_utc
+from .operations import format_utc, parse_utc, payload_digest, sign_payload
 from .operator import verify_controller_receipt
 
 _MAX_LEDGER_BYTES = 4 * 1024 * 1024
@@ -562,9 +563,15 @@ class AdminPlatformStateStore:
             ):
                 raise AdminPlatformStateError("candidate release id was already used")
 
-            result_uri, result_checksum = self._persist_receipt(result_document)
-            terminal_uri, terminal_checksum = self._persist_receipt(terminal_document)
-            source_uri, source_checksum = self._persist_receipt(source_document)
+            transaction_id, transaction_receipts = self._transaction_receipts(
+                (result_document, terminal_document, source_document),
+                previous_raw=raw,
+            )
+            (
+                (result_uri, result_checksum, _),
+                (terminal_uri, terminal_checksum, _),
+                (source_uri, source_checksum, _),
+            ) = transaction_receipts
             self._append_result(entry, result, result_uri, result_checksum)
             previous_attempt.update(
                 {
@@ -597,6 +604,13 @@ class AdminPlatformStateStore:
             document["active_candidate"] = asdict(candidate)
             document["program"]["status"] = "active"
             self._touch(document, cast(str, source["observed_at"]))
+            self._persist_receipt_transaction(
+                transaction_id=transaction_id,
+                receipts=transaction_receipts,
+                previous_raw=raw,
+                document=document,
+                observed_at=cast(str, source["observed_at"]),
+            )
             return self._commit_locked(
                 raw,
                 document,
@@ -941,9 +955,7 @@ class AdminPlatformStateStore:
         return latest
 
     def _persist_receipt(self, receipt: dict[str, Any]) -> tuple[str, str]:
-        raw = (
-            json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
-        ).encode("utf-8")
+        raw = self._receipt_raw(receipt)
         if len(raw) > _MAX_RECEIPT_BYTES:
             raise AdminPlatformStateError("admin platform receipt is too large")
         receipt_id = receipt.get("receipt_id")
@@ -996,6 +1008,246 @@ class AdminPlatformStateStore:
         return f"receipts/{filename}", hashlib.sha256(raw).hexdigest()
 
     @staticmethod
+    def _receipt_raw(receipt: Mapping[str, Any]) -> bytes:
+        raw = (
+            json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            + "\n"
+        ).encode("utf-8")
+        if len(raw) > _MAX_RECEIPT_BYTES:
+            raise AdminPlatformStateError("admin platform receipt is too large")
+        return raw
+
+    def _transaction_receipts(
+        self,
+        receipts: tuple[dict[str, Any], ...],
+        *,
+        previous_raw: bytes,
+    ) -> tuple[str, tuple[tuple[str, str, bytes], ...]]:
+        encoded: list[tuple[str, str, bytes]] = []
+        identities: list[dict[str, str]] = []
+        for receipt in receipts:
+            raw = self._receipt_raw(receipt)
+            receipt_id = receipt.get("receipt_id")
+            if (
+                not isinstance(receipt_id, str)
+                or len(receipt_id) != 64
+                or any(character not in "0123456789abcdef" for character in receipt_id)
+            ):
+                raise AdminPlatformStateError("admin platform receipt id is invalid")
+            checksum = hashlib.sha256(raw).hexdigest()
+            identities.append({"receipt_id": receipt_id, "receipt_sha256": checksum})
+            encoded.append((receipt_id, checksum, raw))
+        transaction_id = payload_digest(
+            {
+                "previous_ledger_sha256": hashlib.sha256(previous_raw).hexdigest(),
+                "receipts": identities,
+            }
+        )
+        bound = tuple(
+            (
+                f"receipts/transactions/{transaction_id}/{receipt_id}.json",
+                checksum,
+                raw,
+            )
+            for receipt_id, checksum, raw in encoded
+        )
+        return transaction_id, bound
+
+    def _persist_receipt_transaction(
+        self,
+        *,
+        transaction_id: str,
+        receipts: tuple[tuple[str, str, bytes], ...],
+        previous_raw: bytes,
+        document: dict[str, Any],
+        observed_at: str,
+    ) -> None:
+        target_ledger_sha256 = hashlib.sha256(self._encode_ledger(document)).hexdigest()
+        payload = {
+            "kind": "admin-platform-state-transaction",
+            "observed_at": observed_at,
+            "transaction_id": transaction_id,
+            "previous_ledger_sha256": hashlib.sha256(previous_raw).hexdigest(),
+            "target_ledger_sha256": target_ledger_sha256,
+            "receipts": [
+                {"receipt_uri": uri, "receipt_sha256": checksum}
+                for uri, checksum, _ in receipts
+            ],
+        }
+        binding = self._signed_receipt(payload)
+        binding_raw = self._receipt_raw(binding)
+
+        self.receipt_root.mkdir(parents=True, exist_ok=True)
+        transactions_root = self.receipt_root / "transactions"
+        transactions_root.mkdir(mode=0o700, exist_ok=True)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            root_fd = os.open(transactions_root, directory_flags | nofollow)
+        except OSError as error:
+            raise AdminPlatformStateError(
+                "admin platform receipt transaction root is unavailable"
+            ) from error
+        temporary_name = f".{transaction_id}.{secrets.token_hex(8)}.tmp"
+        transaction_fd: int | None = None
+        try:
+            metadata = os.fstat(root_fd)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise AdminPlatformStateError(
+                    "admin platform receipt transaction root is unsafe"
+                )
+            self._set_runtime_owner(root_fd)
+            os.fchmod(root_fd, 0o700)
+            os.mkdir(temporary_name, mode=0o700, dir_fd=root_fd)
+            transaction_fd = os.open(
+                temporary_name,
+                directory_flags | nofollow,
+                dir_fd=root_fd,
+            )
+            self._set_runtime_owner(transaction_fd)
+            os.fchmod(transaction_fd, 0o700)
+            for uri, _, raw in receipts:
+                self._write_transaction_file(
+                    transaction_fd,
+                    uri.rsplit("/", 1)[1],
+                    raw,
+                )
+            self._write_transaction_file(
+                transaction_fd,
+                "ledger-binding.json",
+                binding_raw,
+            )
+            os.fsync(transaction_fd)
+            os.close(transaction_fd)
+            transaction_fd = None
+            try:
+                os.rename(
+                    temporary_name,
+                    transaction_id,
+                    src_dir_fd=root_fd,
+                    dst_dir_fd=root_fd,
+                )
+                os.fsync(root_fd)
+            except OSError as error:
+                if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                    raise
+                with suppress(FileNotFoundError):
+                    os.rmdir(temporary_name, dir_fd=root_fd)
+                existing_fd = os.open(
+                    transaction_id,
+                    directory_flags | nofollow,
+                    dir_fd=root_fd,
+                )
+                try:
+                    for uri, _, raw in receipts:
+                        if self._read_regular_file_at(
+                            existing_fd,
+                            uri.rsplit("/", 1)[1],
+                            _MAX_RECEIPT_BYTES,
+                        ) != raw:
+                            raise AdminPlatformStateError(
+                                "immutable receipt transaction collision"
+                            )
+                    if self._read_regular_file_at(
+                        existing_fd,
+                        "ledger-binding.json",
+                        _MAX_RECEIPT_BYTES,
+                    ) != binding_raw:
+                        raise AdminPlatformStateError(
+                            "immutable receipt transaction binding collision"
+                        )
+                finally:
+                    os.close(existing_fd)
+        finally:
+            if transaction_fd is not None:
+                os.close(transaction_fd)
+            with suppress(FileNotFoundError, OSError):
+                os.rmdir(temporary_name, dir_fd=root_fd)
+            os.close(root_fd)
+
+    def _write_transaction_file(self, directory_fd: int, filename: str, raw: bytes) -> None:
+        descriptor = os.open(
+            filename,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            self._set_runtime_owner(descriptor)
+            os.fchmod(descriptor, 0o600)
+            view = memoryview(raw)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _signed_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        digest = payload_digest(payload)
+        unsigned: dict[str, Any] = {
+            "schema": "qdev-controller-receipt-v2",
+            "receipt_id": digest,
+            "payload": dict(payload),
+            "digest": digest,
+            "enforcement": "enforced",
+        }
+        receipt = unsigned | {"signature": sign_payload(unsigned, self.receipt_key)}
+        return verify_controller_receipt(receipt, receipt_key=self.receipt_key)
+
+    def _persist_ledger_link(
+        self,
+        *,
+        previous_ledger_sha256: str,
+        target_ledger_sha256: str,
+        observed_at: str,
+    ) -> None:
+        receipt = self._signed_receipt(
+            {
+                "kind": "admin-platform-ledger-link",
+                "observed_at": observed_at,
+                "previous_ledger_sha256": previous_ledger_sha256,
+                "target_ledger_sha256": target_ledger_sha256,
+            }
+        )
+        raw = self._receipt_raw(receipt)
+        self.receipt_root.mkdir(parents=True, exist_ok=True)
+        link_root = self.receipt_root / "ledger-links"
+        link_root.mkdir(mode=0o700, exist_ok=True)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            directory = os.open(link_root, directory_flags | nofollow)
+        except OSError as error:
+            raise AdminPlatformStateError(
+                "admin platform ledger lineage root is unavailable"
+            ) from error
+        filename = f"{target_ledger_sha256}.json"
+        try:
+            metadata = os.fstat(directory)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise AdminPlatformStateError(
+                    "admin platform ledger lineage root is unsafe"
+                )
+            self._set_runtime_owner(directory)
+            os.fchmod(directory, 0o700)
+            try:
+                self._write_transaction_file(directory, filename, raw)
+            except FileExistsError as error:
+                existing = self._read_regular_file_at(
+                    directory,
+                    filename,
+                    _MAX_RECEIPT_BYTES,
+                )
+                if existing != raw:
+                    raise AdminPlatformStateError(
+                        "immutable admin platform ledger lineage collision"
+                    ) from error
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    @staticmethod
     def _touch(document: dict[str, Any], observed_at: str) -> None:
         document["program"]["updated_at"] = observed_at
 
@@ -1007,7 +1259,7 @@ class AdminPlatformStateStore:
         *,
         migration_archive_uri: str | None = None,
     ) -> AdminPlatformStateUpdate:
-        encoded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
+        encoded = self._encode_ledger(document)
         if len(encoded) > _MAX_LEDGER_BYTES:
             raise AdminPlatformStateError("admin platform ledger is too large")
         directory = os.open(
@@ -1035,6 +1287,11 @@ class AdminPlatformStateStore:
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = None
+            self._persist_ledger_link(
+                previous_ledger_sha256=hashlib.sha256(previous_raw).hexdigest(),
+                target_ledger_sha256=hashlib.sha256(encoded).hexdigest(),
+                observed_at=cast(str, document["program"]["updated_at"]),
+            )
             AdminPlatformLedger(
                 temporary_path,
                 receipt_key=self.receipt_key,
@@ -1075,6 +1332,13 @@ class AdminPlatformStateStore:
             receipt_uris=receipt_uris,
             migration_archive_uri=migration_archive_uri,
         )
+
+    @staticmethod
+    def _encode_ledger(document: Mapping[str, Any]) -> bytes:
+        encoded = yaml.safe_dump(dict(document), sort_keys=False).encode("utf-8")
+        if len(encoded) > _MAX_LEDGER_BYTES:
+            raise AdminPlatformStateError("admin platform ledger is too large")
+        return encoded
 
     def _set_runtime_owner(self, descriptor: int) -> None:
         """Assign files created by a root bootstrap to the rootless broker."""

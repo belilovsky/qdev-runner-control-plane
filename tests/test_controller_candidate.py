@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from qdev_runner.admin_platform import AdminPlatformCandidate
+from qdev_runner.admin_platform import (
+    AdminPlatformCandidate,
+    AdminPlatformLedger,
+    AdminPlatformLedgerError,
+)
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.controller_candidate import (
     REFERENCE,
@@ -185,8 +190,9 @@ def test_prepare_controller_candidate_resumes_after_terminal_transition(
 def test_prepare_controller_candidate_survives_commit_failure_without_split_state(
     tmp_path: Path,
 ) -> None:
-    state, _, ledger, _, _ = _initialize(tmp_path)
+    state, _, ledger, receipts, _ = _initialize(tmp_path)
     before = ledger.read_bytes()
+    before_digest = hashlib.sha256(before).hexdigest()
 
     with patch.object(
         AdminPlatformStateStore,
@@ -200,6 +206,17 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
     assert interrupted["program"]["status"] == "active"
     assert interrupted["active_candidate"]["source_sha"] == CURRENT_SHA
     assert len(interrupted["entries"][0]["attempts"]) == 1
+    interrupted_transactions = sorted((receipts / "transactions").iterdir())
+    assert len(interrupted_transactions) == 1
+    interrupted_binding = json.loads(
+        (interrupted_transactions[0] / "ledger-binding.json").read_text()
+    )["payload"]
+    assert interrupted_binding["previous_ledger_sha256"] == before_digest
+    assert interrupted_binding["target_ledger_sha256"] != before_digest
+    assert all(
+        receipt["receipt_uri"].encode() not in before
+        for receipt in interrupted_binding["receipts"]
+    )
 
     result = _prepare(tmp_path)
 
@@ -211,6 +228,56 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
         "blocked",
         None,
     ]
+    committed_bindings = [
+        json.loads((transaction / "ledger-binding.json").read_text())["payload"]
+        for transaction in (receipts / "transactions").iterdir()
+    ]
+    assert any(
+        binding["target_ledger_sha256"] == result["ledger_sha256"]
+        for binding in committed_bindings
+    )
+    AdminPlatformLedger(
+        ledger,
+        receipt_key=RECEIPT_KEY,
+        receipt_root=receipts,
+    )
+
+
+def test_transaction_receipts_fail_closed_when_ledger_lineage_is_missing(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    digest, snapshot = state.current()
+    intermediate = AdminPlatformCandidate(**snapshot["active_candidate"])
+    advanced = state.record_result(
+        expected_sha256=digest,
+        receipt=_evidence(
+            signer,
+            candidate=intermediate,
+            observed_at=snapshot["program"]["updated_at"],
+            lane="ci",
+            outcome="passed",
+        ),
+    )
+    (receipts / "ledger-links" / f"{advanced.ledger_sha256}.json").unlink()
+
+    with pytest.raises(
+        AdminPlatformLedgerError,
+        match="admin platform receipt is unavailable",
+    ):
+        AdminPlatformLedger(
+            ledger,
+            receipt_key=RECEIPT_KEY,
+            receipt_root=receipts,
+        )
 
 
 def test_prepare_controller_candidate_uses_monotonic_durable_timestamps(
