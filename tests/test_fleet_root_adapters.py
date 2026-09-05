@@ -105,7 +105,7 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
         )
 
 
-def test_activation_adapter_normalizes_legacy_runtime_digest(
+def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status = tmp_path / "controller-release.json"
@@ -129,6 +129,32 @@ def test_activation_adapter_normalizes_legacy_runtime_digest(
         return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
 
     monkeypatch.setattr(Path, "lstat", root_owned)
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
+        ACTIVATION._read_status()
+
+    status.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v2",
+                "state": "active",
+                "revision": SHA,
+                "release_digest": DIGEST,
+                "activated_at": "2026-09-05T00:00:00Z",
+                "runtime_identity": {
+                    "source_revision": SHA,
+                    "source_digest": "sha256:" + "c" * 64,
+                    "public_image_id": "sha256:" + "d" * 64,
+                    "internal_image_id": "sha256:" + "e" * 64,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "f" * 64,
+                    "public_installed_digest": "sha256:" + "1" * 64,
+                    "internal_installed_digest": "sha256:" + "1" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     assert ACTIVATION._read_status() == (SHA, DIGEST)
 
 

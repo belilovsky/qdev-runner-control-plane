@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,10 @@ from qdev_runner.fleet_bootstrap import (
 from qdev_runner.fleet_bootstrap_executor import (
     execute_bootstrap_operation,
     execute_existing_worker_recovery,
+)
+from qdev_runner.fleet_host_dispatch import (
+    DEFAULT_CONTROLLER_STATUS,
+    verified_controller_runtime_anchor,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--release-lanes", type=Path, default=ROOT / "config" / "release-lanes.yml"
     )
+    parser.add_argument(
+        "--controller-status", type=Path, default=DEFAULT_CONTROLLER_STATUS
+    )
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
@@ -94,6 +102,14 @@ def run(argv: list[str] | None = None) -> int:
                 idempotency_key=arguments.idempotency_key,
                 timeout_seconds=arguments.timeout_seconds,
                 receipt_path=arguments.receipt,
+                controller_runtime=(
+                    verified_controller_runtime_anchor(
+                        arguments.controller_status,
+                        expected_uid=os.geteuid(),
+                    )
+                    if request.action == "activate-controller"
+                    else None
+                ),
             )
     except (FleetBootstrapError, ValueError) as error:
         print(f"fleet_bootstrap_execution_failed: {error}", file=sys.stderr)
