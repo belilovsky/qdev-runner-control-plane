@@ -84,6 +84,24 @@ def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
     return latest + timedelta(microseconds=1)
 
 
+def _candidate_release_id(entry: dict[str, Any], *, source_sha: str) -> str:
+    """Return the first durable release id not consumed by an earlier attempt."""
+
+    attempts = cast(list[dict[str, Any]], entry.get("attempts", []))
+    used_release_ids = {
+        cast(str, attempt["release_id"])
+        for attempt in attempts
+        if isinstance(attempt, dict) and isinstance(attempt.get("release_id"), str)
+    }
+    base = f"controller-v3-{source_sha}"
+    if base not in used_release_ids:
+        return base
+    retry = 1
+    while f"{base}:retry-{retry}" in used_release_ids:
+        retry += 1
+    return f"{base}:retry-{retry}"
+
+
 def _blocking_lane(entry: dict[str, Any], *, release_id: str) -> str:
     """Select the first unfinished lane whose prerequisites already passed."""
 
@@ -193,12 +211,6 @@ def prepare_controller_candidate(
     ):
         if len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
             raise ControllerCandidateError(f"{label} is invalid")
-    candidate = AdminPlatformCandidate(
-        release_id=f"controller-v3-{source_sha}",
-        repository=REPOSITORY,
-        source_sha=source_sha,
-        reference=REFERENCE,
-    )
     state = AdminPlatformStateStore(
         ledger_path,
         receipt_key=receipt_key,
@@ -221,7 +233,14 @@ def prepare_controller_candidate(
     program = snapshot.get("program")
     program_status = program.get("status") if isinstance(program, dict) else None
 
-    if active_candidate == candidate:
+    if active_candidate.source_sha == source_sha:
+        if (
+            active_candidate.repository != REPOSITORY
+            or active_candidate.reference != REFERENCE
+        ):
+            raise ControllerCandidateError(
+                "matching controller source has invalid repository or reference"
+            )
         if program_status != "active" or entry.get("status") not in {
             "candidate",
             "ci_queued",
@@ -232,11 +251,18 @@ def prepare_controller_candidate(
         return {
             "schema": "qdev-controller-candidate-preparation-v1",
             "status": "already_completed",
-            "candidate": asdict(candidate),
+            "candidate": asdict(active_candidate),
             "previous_candidate": asdict(active_candidate),
             "ledger_sha256": digest,
             "receipt_uris": [],
         }
+
+    candidate = AdminPlatformCandidate(
+        release_id=_candidate_release_id(entry, source_sha=source_sha),
+        repository=REPOSITORY,
+        source_sha=source_sha,
+        reference=REFERENCE,
+    )
 
     previous = active_candidate
     if previous.repository != REPOSITORY:
