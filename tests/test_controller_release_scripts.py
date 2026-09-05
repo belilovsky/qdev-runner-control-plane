@@ -152,6 +152,27 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
 
 
+def test_controller_provisions_root_owned_admission_signer() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/etc/qdev-runner/admission" in provisioning
+    assert "/run/qdev-controller" in provisioning
+    assert "/usr/local/sbin/qdev-controller-admission" in provisioning
+    assert "scripts/qdev_controller_admission_host.sh" in activation
+    assert "admission_host_tool_backup" in activation
+    assert "admission_host_tool_was_present" in activation
+    assert "--network none" in wrapper
+    assert "--read-only" in wrapper
+    assert "--user 0:0" in wrapper
+    assert "--cap-drop ALL" in wrapper
+    assert "qdev-runner-broker-internal" in wrapper
+    assert "--entrypoint qdev-controller-admission" in wrapper
+
+
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 

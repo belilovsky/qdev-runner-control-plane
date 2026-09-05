@@ -48,8 +48,8 @@ CREATE TABLE consumed_receipts (
     functional_source_sha TEXT NOT NULL,
     consumer TEXT NOT NULL,
     consumed_at TEXT NOT NULL,
-    UNIQUE (key_id, admission_id),
-    UNIQUE (key_id, claim_id)
+    UNIQUE (admission_id),
+    UNIQUE (claim_id)
 )
 """
 
@@ -542,8 +542,8 @@ def _validate_replay_store_schema(connection: sqlite3.Connection) -> None:
         unique_columns.add(tuple(str(row[2]) for row in rows))
     required_unique_columns = {
         ("fingerprint",),
-        ("key_id", "admission_id"),
-        ("key_id", "claim_id"),
+        ("admission_id",),
+        ("claim_id",),
     }
     if unique_columns != required_unique_columns:
         raise ControllerAdmissionError("receipt replay store uniqueness is invalid")

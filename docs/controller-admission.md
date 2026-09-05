@@ -15,6 +15,13 @@ qdev-controller-admission generate-keypair \
   --public-key /etc/qdev-runner/admission/public.pem
 ```
 
+Controller provisioning installs this root-only host command as a constrained
+one-shot invocation of the exact image used by the active internal broker. It
+has no network, capabilities, or writable root filesystem and mounts only
+`/etc/qdev-runner/admission` and `/run/qdev-controller`. The signing command is
+therefore available to the host operator without exposing the private key to
+the rootless long-running broker.
+
 The private key must be owner-only and never leaves the controller. Distribute
 the public key to the root-owned product release verifier through the immutable
 controller bundle.
@@ -53,6 +60,7 @@ qdev-controller-admission verify \
 Verification fails on malformed or duplicate JSON fields, an unknown key,
 tampering, a source, workflow, profile or job-ID mismatch, future or expired
 timestamps, and replay of a receipt, admission ID, or claim ID. Consumption
+keeps admission and claim IDs unique across signing-key rotation. Consumption
 requires all exact repository, ref, source, controller, workflow and job
 expectations. The trust key, consuming verifier directory and ledger must be
 trusted regular files and must not be writable by group or other users; an

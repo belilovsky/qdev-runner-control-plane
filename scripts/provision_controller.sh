@@ -23,6 +23,8 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0755 /etc/qdev-runner
+install -d -o root -g root -m 0700 /etc/qdev-runner/admission
+install -d -o root -g root -m 0700 /run/qdev-controller
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator
@@ -73,6 +75,7 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.service \
   /etc/systemd/system/qdev-fleet-host-dispatch.service
 install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
+install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path

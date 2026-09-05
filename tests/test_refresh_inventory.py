@@ -146,6 +146,33 @@ def test_inventory_uniqueness_is_identity_bound(
         module.validate_inventory_uniqueness(repositories)
 
 
+def test_targeted_refresh_rejects_numeric_repository_rebinding() -> None:
+    module = load_refresh_inventory()
+    expected = {"id": 1, "nameWithOwner": "belilovsky/existing"}
+    refreshed = {"id": 2, "full_name": "belilovsky/existing"}
+
+    with pytest.raises(RuntimeError, match="repository identity changed"):
+        module.validate_refreshed_identity(expected, refreshed)
+
+
+def test_inventory_lock_uses_shared_git_lock_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = load_refresh_inventory()
+    lock_path = tmp_path / "common.git" / "qdev-runner-inventory.lock"
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "command", lambda *_args: str(lock_path))
+    monkeypatch.setattr(module.fcntl, "flock", lambda fd, mode: calls.append((fd, mode)))
+
+    handle = module.acquire_inventory_lock()
+    try:
+        assert handle.name == str(lock_path)
+        assert calls == [(handle.fileno(), module.fcntl.LOCK_EX)]
+    finally:
+        handle.close()
+
+
 def test_add_repository_preserves_existing_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -177,6 +204,7 @@ def test_add_repository_preserves_existing_records(
         encoding="utf-8",
     )
     monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "acquire_inventory_lock", lambda: (tmp_path / "lock").open("a+b"))
     monkeypatch.setattr(
         module,
         "repository_metadata",

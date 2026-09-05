@@ -267,6 +267,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
     scripts/provision_fleet_host_dispatch_state.py
+    scripts/qdev_controller_admission_host.sh
     deploy/qdev-runner-recovery-platform.service
     deploy/qdev-runner-recovery-qazstack.service
     deploy/qdev-release-ortcom.service
@@ -449,10 +450,17 @@ managed_registry_was_present=false
 managed_release_ledger_was_present=false
 release_status_was_present=false
 operator_identity_metadata_backup="$(mktemp /tmp/qdev-runner-operator-mtls-metadata.XXXXXX)"
+admission_host_tool_backup="$(mktemp /tmp/qdev-controller-admission-host.XXXXXX)"
+admission_host_tool_path=/usr/local/sbin/qdev-controller-admission
+admission_host_tool_was_present=false
 operator_identity_was_present=false
 if [[ -f /etc/qdev-runner/repos.json ]]; then
   install -m 0600 -- /etc/qdev-runner/repos.json "$repos_backup"
   repos_were_present=true
+fi
+if [[ -f "$admission_host_tool_path" && ! -L "$admission_host_tool_path" ]]; then
+  install -m 0700 -- "$admission_host_tool_path" "$admission_host_tool_backup"
+  admission_host_tool_was_present=true
 fi
 if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
@@ -512,7 +520,7 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup" "$admission_host_tool_backup"; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -1095,6 +1103,11 @@ install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/manag
 # independently validated above and is intentionally neither installed nor
 # restored from this release checkout.
 install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml
+if [[ "$rollback_mode" != true ]]; then
+  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller
+  install -o root -g root -m 0755 -- \
+    "$release/scripts/qdev_controller_admission_host.sh" "$admission_host_tool_path"
+fi
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -1248,6 +1261,12 @@ rollback() {
   # actually been restored and measured by their immutable image IDs.
   rm -f -- "$release_status_path"
   restore_operator_identity_metadata
+  if [[ "$admission_host_tool_was_present" == true ]]; then
+    install -o root -g root -m 0755 -- \
+      "$admission_host_tool_backup" "$admission_host_tool_path"
+  else
+    rm -f -- "$admission_host_tool_path"
+  fi
   restore_controller_configuration
   if [[ -z "$previous" || ! -d "$previous" ]]; then
     docker compose -p qdev-runner -f "$release/deploy/compose.yml" \

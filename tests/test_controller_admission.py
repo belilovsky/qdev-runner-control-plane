@@ -108,6 +108,36 @@ def test_sign_and_verify_exact_admission(tmp_path: Path) -> None:
     assert receipt["signature"]["algorithm"] == "Ed25519"
 
 
+def test_replay_ids_remain_consumed_after_signing_key_rotation(tmp_path: Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first_private, first_public = _keys(first_dir)
+    second_private, second_public = _keys(second_dir)
+    first_receipt = sign_payload(_payload(), first_private)
+    second_receipt = sign_payload(_payload(), second_private)
+    ledger = tmp_path / "state" / "consumed.sqlite3"
+
+    verify_and_consume_receipt(
+        first_receipt,
+        first_public,
+        ledger,
+        consumer="qazcoop-release-1",
+        now=NOW,
+        **cast(Any, _exact_expectations()),
+    )
+    with pytest.raises(ControllerAdmissionError, match="already been consumed"):
+        verify_and_consume_receipt(
+            second_receipt,
+            second_public,
+            ledger,
+            consumer="qazcoop-release-2",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "expected"),
     [

@@ -3,18 +3,36 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import json
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 EXACT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def acquire_inventory_lock() -> BinaryIO:
+    """Serialize every inventory read/modify/write across Git worktrees."""
+
+    lock_path_text = command(
+        "git", "-C", str(ROOT), "rev-parse", "--git-path", "qdev-runner-inventory.lock"
+    ).strip()
+    if not lock_path_text:
+        raise RuntimeError("cannot resolve the shared inventory lock path")
+    lock_path = Path(lock_path_text)
+    if not lock_path.is_absolute():
+        lock_path = ROOT / lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
 
 
 def command(*args: str) -> str:
@@ -229,6 +247,18 @@ def validate_inventory_uniqueness(repositories: list[dict[str, Any]]) -> None:
         repository_ids.add(repository_id)
 
 
+def validate_refreshed_identity(
+    expected: dict[str, Any], refreshed: dict[str, Any]
+) -> None:
+    expected_name = expected.get("nameWithOwner")
+    expected_id = expected.get("id")
+    if refreshed.get("full_name") != expected_name or refreshed.get("id") != expected_id:
+        raise RuntimeError(
+            f"repository identity changed for {expected_name}: "
+            f"expected id {expected_id}, got {refreshed.get('id')}"
+        )
+
+
 def write_inventory(payload: dict[str, Any]) -> None:
     repositories = payload["repositories"]
     write_atomic(
@@ -284,6 +314,11 @@ def main() -> None:
     parser.add_argument("--expected-full-name")
     parser.add_argument("--expected-default-branch")
     args = parser.parse_args()
+
+    try:
+        inventory_lock = acquire_inventory_lock()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        parser.error(f"cannot acquire inventory lock: {exc}")
 
     if args.add_repository:
         if args.repository:
@@ -377,6 +412,10 @@ def main() -> None:
         existing_repositories = existing.get("repositories")
         if not isinstance(existing_repositories, list):
             parser.error("existing inventory has no repositories list")
+        try:
+            validate_inventory_uniqueness(existing_repositories)
+        except RuntimeError as exc:
+            parser.error(str(exc))
         existing_by_name = {item["full_name"]: item for item in existing_repositories}
         missing = selected_names - existing_by_name.keys()
         if missing:
@@ -385,6 +424,7 @@ def main() -> None:
             )
         repo_metadata = [
             {
+                "id": int(existing_by_name[name]["id"]),
                 "nameWithOwner": name,
                 "isArchived": bool(existing_by_name[name].get("archived", False)),
                 "isPrivate": bool(existing_by_name[name].get("private", False)),
@@ -401,10 +441,18 @@ def main() -> None:
             item = inspect_repo(repo, ref=args.ref)
             if item is None:
                 parser.error(f"repository has no workflows: {repo['nameWithOwner']}")
+            try:
+                validate_refreshed_identity(repo, item)
+            except RuntimeError as exc:
+                parser.error(str(exc))
             refreshed[item["full_name"]] = item
         merged = [
             refreshed.get(item["full_name"], item) for item in existing_repositories
         ]
+        try:
+            validate_inventory_uniqueness(merged)
+        except RuntimeError as exc:
+            parser.error(str(exc))
         payload = inventory_payload(
             owner=existing.get("owner", args.owner),
             active_count=int(existing.get("active_repository_count", len(merged))),
@@ -452,6 +500,7 @@ def main() -> None:
         )
     )
     print(f"inventory_ok repositories={len(inspected)} active={len(active)}")
+    inventory_lock.close()
 
 
 if __name__ == "__main__":
