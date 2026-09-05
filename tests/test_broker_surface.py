@@ -99,3 +99,22 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
     assert "control-state/claim-scopes.json" not in public
     assert 'QDEV_GITHUB_WEBHOOK_SECRET: ""' in internal
     assert "QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json" in internal
+
+
+def test_public_broker_reads_only_non_secret_controller_release_projection() -> None:
+    compose = (Path(__file__).parents[1] / "deploy" / "compose.yml").read_text(
+        encoding="utf-8"
+    )
+    public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
+
+    assert (
+        "QDEV_CONTROLLER_RELEASE_STATUS: "
+        "/var/lib/qdev-runner/controller-status/controller-release.json"
+    ) in public
+    assert (
+        "- /var/lib/qdev-runner/controller-status:"
+        "/var/lib/qdev-runner/controller-status:ro"
+    ) in public
+    assert "/var/lib/qdev-runner/operations" not in public
+    assert "/var/lib/qdev-runner/release-jobs" not in public
+    assert "/var/lib/qdev-runner/admin-platform-receipts" not in public

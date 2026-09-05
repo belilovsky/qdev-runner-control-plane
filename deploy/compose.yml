@@ -24,17 +24,19 @@ services:
       QDEV_GITHUB_APP_PRIVATE_KEY: /nonexistent/qdev-github-app.pem
       QDEV_REGISTRY_PASSWORD: ""
       QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /nonexistent/qdev-release-host-dispatch-keys.json
-      # Only the queue database and artifact upload tree are shared with the
-      # internal broker.  Controller journals, release jobs and signing
-      # receipts are deliberately outside the public mount namespace.
+      # Only the queue database, artifact upload tree and non-secret controller
+      # release status are shared with the internal broker. Controller journals,
+      # release jobs and signing receipts stay outside the public mount namespace.
       QDEV_DATABASE: /var/lib/qdev-runner/broker-state/broker.db
       QDEV_CLAIM_SCOPES: /nonexistent/claim-scopes.json
       QDEV_ARTIFACT_ROOT: /var/lib/qdev-runner/artifacts
+      QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
       - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro
       - /var/lib/qdev-runner/broker-state:/var/lib/qdev-runner/broker-state
       - /var/lib/qdev-runner/artifacts:/var/lib/qdev-runner/artifacts
+      - /var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro
     networks:
       - qdev_edge
     read_only: true
