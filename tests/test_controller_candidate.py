@@ -18,6 +18,7 @@ from qdev_runner.operations import OperationStore, parse_utc
 
 RECEIPT_KEY = "controller-candidate-test-receipt-key"
 CURRENT_SHA = "8" * 40
+INTERMEDIATE_SHA = "a" * 40
 NEXT_SHA = "9" * 40
 
 
@@ -207,7 +208,7 @@ def test_prepare_controller_candidate_fails_closed_without_mutation(
 
     with pytest.raises(
         ControllerCandidateError,
-        match="does not match the active runtime",
+        match="active runtime is not an unambiguous terminal controller attempt",
     ):
         prepare_controller_candidate(
             source_sha=NEXT_SHA,
@@ -222,3 +223,95 @@ def test_prepare_controller_candidate_fails_closed_without_mutation(
     assert ledger.read_bytes() == before_raw
     assert before_digest == after_digest == hashlib.sha256(before_raw).hexdigest()
     assert sorted(path.name for path in receipts.rglob("*.json")) == before_receipts
+
+
+def test_prepare_controller_candidate_supersedes_non_deployed_durable_candidate(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    first = prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    digest, snapshot = state.current()
+    intermediate = AdminPlatformCandidate(**snapshot["active_candidate"])
+    observed_at = snapshot["program"]["updated_at"]
+    ci_passed = state.record_result(
+        expected_sha256=digest,
+        receipt=_evidence(
+            signer,
+            candidate=intermediate,
+            observed_at=observed_at,
+            lane="ci",
+            outcome="passed",
+        ),
+    )
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert first["candidate"]["source_sha"] == INTERMEDIATE_SHA
+    assert ci_passed.active_status == "ci_passed"
+    assert result["status"] == "completed"
+    assert result["previous_candidate"]["source_sha"] == INTERMEDIATE_SHA
+    _, current = state.current()
+    assert current["active_candidate"]["source_sha"] == NEXT_SHA
+    assert [attempt["terminal_state"] for attempt in current["entries"][0]["attempts"]] == [
+        "blocked",
+        "blocked",
+        None,
+    ]
+
+
+def test_prepare_controller_candidate_rejects_durable_candidate_with_deploy_evidence(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    digest, snapshot = state.current()
+    intermediate = AdminPlatformCandidate(**snapshot["active_candidate"])
+    observed_at = snapshot["program"]["updated_at"]
+    for lane in ("ci", "publication", "deploy"):
+        update = state.record_result(
+            expected_sha256=digest,
+            receipt=_evidence(
+                signer,
+                candidate=intermediate,
+                observed_at=observed_at,
+                lane=lane,
+                outcome="passed",
+            ),
+        )
+        digest = update.ledger_sha256
+
+    before_raw = ledger.read_bytes()
+    with pytest.raises(
+        ControllerCandidateError,
+        match="durable controller candidate has entered deployment",
+    ):
+        prepare_controller_candidate(
+            source_sha=NEXT_SHA,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+    assert ledger.read_bytes() == before_raw

@@ -112,6 +112,58 @@ def _blocking_lane(entry: dict[str, Any]) -> str:
     raise ControllerCandidateError("active controller attempt has no admissible blocking lane")
 
 
+def _require_active_runtime_lineage(
+    entry: dict[str, Any],
+    *,
+    active_candidate: AdminPlatformCandidate,
+    active_runtime_source_sha: str,
+) -> None:
+    """Verify that a non-deployed durable candidate may be superseded safely."""
+
+    if active_candidate.source_sha == active_runtime_source_sha:
+        return
+    if entry.get("status") not in {"candidate", "ci_queued", "ci_passed"}:
+        raise ControllerCandidateError(
+            "durable controller candidate has entered deployment"
+        )
+
+    results = cast(list[dict[str, Any]], entry.get("results", []))
+    if any(
+        result.get("release_id") == active_candidate.release_id
+        and result.get("lane") == "deploy"
+        for result in results
+        if isinstance(result, dict)
+    ):
+        raise ControllerCandidateError(
+            "durable controller candidate has deploy evidence"
+        )
+
+    attempts = cast(list[dict[str, Any]], entry.get("attempts", []))
+    runtime_attempts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt, dict)
+        and attempt.get("source_sha") == active_runtime_source_sha
+        and attempt.get("terminal_state") in {"blocked", "rolled_back"}
+        and isinstance(attempt.get("finished_at"), str)
+    ]
+    if len(runtime_attempts) != 1:
+        raise ControllerCandidateError(
+            "active runtime is not an unambiguous terminal controller attempt"
+        )
+    runtime_release_id = runtime_attempts[0].get("release_id")
+    if not isinstance(runtime_release_id, str) or not any(
+        result.get("release_id") == runtime_release_id
+        and result.get("lane") == "source"
+        and result.get("outcome") == "passed"
+        for result in results
+        if isinstance(result, dict)
+    ):
+        raise ControllerCandidateError(
+            "active runtime controller attempt has no passing source evidence"
+        )
+
+
 def prepare_controller_candidate(
     *,
     source_sha: str,
@@ -186,10 +238,11 @@ def prepare_controller_candidate(
     previous = active_candidate
     if previous.repository != REPOSITORY:
         raise ControllerCandidateError("active controller repository is invalid")
-    if previous.source_sha != expected_current_source_sha:
-        raise ControllerCandidateError(
-            "durable controller candidate does not match the active runtime"
-        )
+    _require_active_runtime_lineage(
+        entry,
+        active_candidate=previous,
+        active_runtime_source_sha=expected_current_source_sha,
+    )
 
     receipts: list[str] = []
     if program_status == "active":
