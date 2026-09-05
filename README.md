@@ -292,6 +292,18 @@ mode 0600 on the controller host and is never copied into the evidence root.
 The publisher refuses mutable references, dirty source, a revision mismatch,
 Critical findings, and unreviewed High findings.
 
+The worker provisioner does not download a BuildKit release archive.  The
+Docker executor image is built from the pinned BuildKit source and carries
+`/usr/local/share/qdev-buildkit/source-revision` and `source-sha256` markers.
+Before provisioning, the release operator must either stage that exact
+materialization as a root-owned artifact directory (with `bin/buildkitd`,
+`bin/buildctl`, and the two read-only markers) and set
+`QDEV_BUILDKIT_ARTIFACT_ROOT`, or provide the immutable
+`QDEV_BUILDKIT_IMAGE_REF` digest so the stopped worker can copy and validate
+the binaries from the published image.  The installer rejects symlinks,
+unexpected ownership or permissions, marker mismatches, mutable image tags,
+and any existing unverified materialization.
+
 Validate both the envelope and its protected files before placing matching
 references in `worker.env`:
 

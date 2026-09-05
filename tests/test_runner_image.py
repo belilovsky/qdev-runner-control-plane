@@ -61,18 +61,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert "QDEV_RUNNER_VERSION:-2.337.0-r9" in builder
-
-
-def test_sidecar_is_built_and_published_from_the_source_bound_dockerfile() -> None:
-    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
-    builder = (ROOT / "scripts/build_runner_images.sh").read_text(encoding="utf-8")
-
-    assert "AS sidecar" in dockerfile
-    assert 'ENTRYPOINT ["dockerd"]' in dockerfile
-    assert 'sidecar_image="${registry}/docker-sidecar:${version}"' in builder
-    assert '"$engine" build --pull --target sidecar' in builder
-    assert '"$engine" push "${sidecar_image}"' in builder
+    assert 'QDEV_RUNNER_VERSION:-2.337.0-r8' in builder
 
 
 def test_browser_release_is_flattened_before_publication() -> None:
@@ -93,7 +82,8 @@ def test_actions_runner_release_and_digest_are_current_and_pinned() -> None:
 
     assert "ARG RUNNER_VERSION=2.337.0" in dockerfile
     assert (
-        "ARG RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
+        "ARG RUNNER_SHA256="
+        "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
     ) in dockerfile
 
 
@@ -115,7 +105,9 @@ def test_embedded_node_runtimes_replace_npm_with_pinned_verified_release() -> No
 
 def test_browser_system_npm_is_pinned_hardened_and_cache_free() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
-    installer = (ROOT / "images/runner/install-pinned-node-package.sh").read_text(encoding="utf-8")
+    installer = (ROOT / "images/runner/install-pinned-node-package.sh").read_text(
+        encoding="utf-8"
+    )
 
     _, browser = dockerfile.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
     assert "ARG SYSTEM_NPM_VERSION=12.0.2" in dockerfile
@@ -140,18 +132,37 @@ def test_docker_profile_has_compose_plugin() -> None:
     assert "docker.io docker-buildx docker-compose-v2" in dockerfile
 
 
-def test_docker_profile_uses_verified_buildkit_release_without_critical_findings() -> None:
+def test_docker_profile_uses_source_built_pinned_buildkit() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
     provisioner = (ROOT / "scripts/provision_worker.sh").read_text(encoding="utf-8")
+    settings = (ROOT / "src/qdev_runner/settings.py").read_text(encoding="utf-8")
 
     assert "ARG BUILDKIT_VERSION=0.33.0" in dockerfile
     assert (
-        "ARG BUILDKIT_SHA256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+        "ARG BUILDKIT_SOURCE_SHA256="
+        "c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
     ) in dockerfile
+    assert "ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173" in dockerfile
+    assert "FROM golang:1.26.8-alpine3.23@sha256:" in dockerfile
+    assert "github.com/moby/go-archive@v${BUILDKIT_GO_ARCHIVE_VERSION}" in dockerfile
+    assert "COPY --from=buildkit-builder /out/buildkitd /usr/local/bin/buildkitd" in dockerfile
+    assert "COPY --from=buildkit-builder /out/buildctl /usr/local/bin/buildctl" in dockerfile
+    assert "source-revision" in dockerfile
+    assert "source-sha256" in dockerfile
+    assert 'org.qdev.buildkit.source-revision="${BUILDKIT_SOURCE_REVISION}"' in dockerfile
+    assert "buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz" not in dockerfile
     assert "buildkit_version=0.33.0" in provisioner
     assert (
-        "buildkit_sha256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+        "buildkit_source_sha256="
+        "c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
     ) in provisioner
+    assert "buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173" in provisioner
+    assert "QDEV_BUILDKIT_ARTIFACT_ROOT" in provisioner
+    assert "QDEV_BUILDKIT_IMAGE_REF" in provisioner
+    assert "source-bound BuildKit artifact failed validation" in provisioner
+    assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in provisioner
+    assert "/opt/qdev-buildkit/0.33.0/bin/buildkitd" in settings
+    assert "/opt/qdev-buildkit/0.33.0/bin/buildctl" in settings
 
 
 def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:
