@@ -15,7 +15,10 @@ from qdev_runner.admin_platform import (
     AdminPlatformLedger,
     AdminPlatformLedgerError,
 )
-from qdev_runner.admin_platform_state import AdminPlatformStateStore
+from qdev_runner.admin_platform_state import (
+    AdminPlatformStateError,
+    AdminPlatformStateStore,
+)
 from qdev_runner.controller_candidate import (
     REFERENCE,
     REPOSITORY,
@@ -448,6 +451,48 @@ def test_child_receipt_directory_retry_fsyncs_interrupted_existing_edge(
         os.close(receipt_root_fd)
 
     assert receipts.stat().st_ino in synced_inodes
+
+
+def test_durable_directory_open_closes_child_when_parent_fsync_fails(
+    tmp_path: Path,
+) -> None:
+    state = AdminPlatformStateStore(
+        tmp_path / "ledger.yml",
+        receipt_key=RECEIPT_KEY,
+        receipt_root=tmp_path / "receipts",
+    )
+    opened: list[int] = []
+    real_open = os.open
+
+    def record_open(*args: object, **kwargs: object) -> int:
+        descriptor = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        opened.append(descriptor)
+        return descriptor
+
+    with (
+        patch(
+            "qdev_runner.admin_platform_state.os.open",
+            side_effect=record_open,
+        ),
+        patch(
+            "qdev_runner.admin_platform_state.os.fsync",
+            side_effect=OSError(errno.EIO, "simulated parent fsync failure"),
+        ),
+        pytest.raises(
+            AdminPlatformStateError,
+            match="unavailable",
+        ),
+    ):
+        state._open_durable_directory_path(
+            state.receipt_root,
+            unavailable="unavailable",
+            unsafe="unsafe",
+        )
+
+    assert len(opened) >= 2
+    for descriptor in opened:
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(descriptor)
 
 
 def test_stale_transaction_directory_is_safely_reaped(tmp_path: Path) -> None:

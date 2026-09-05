@@ -1255,27 +1255,32 @@ class AdminPlatformStateStore:
         try:
             for component in absolute.parts[1:]:
                 created = False
+                child: int | None = None
                 try:
-                    os.mkdir(component, mode=0o700, dir_fd=descriptor)
-                    created = True
-                except FileExistsError:
-                    pass
-                child = os.open(
-                    component,
-                    directory_flags | nofollow,
-                    dir_fd=descriptor,
-                )
-                metadata = os.fstat(child)
-                if not stat.S_ISDIR(metadata.st_mode):
-                    os.close(child)
-                    raise AdminPlatformStateError(unsafe)
-                if created:
-                    self._set_runtime_owner(child)
-                    os.fchmod(child, 0o700)
-                # Existing components may be remnants of an interrupted mkdir
-                # whose parent edge was never made durable. Sync every validated
-                # parent on replay, not only the invocation that created it.
-                os.fsync(descriptor)
+                    try:
+                        os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                        created = True
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        component,
+                        directory_flags | nofollow,
+                        dir_fd=descriptor,
+                    )
+                    metadata = os.fstat(child)
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        raise AdminPlatformStateError(unsafe)
+                    if created:
+                        self._set_runtime_owner(child)
+                        os.fchmod(child, 0o700)
+                    # Existing components may be remnants of an interrupted
+                    # mkdir whose parent edge was never made durable. Sync every
+                    # validated parent on replay, not only its creator.
+                    os.fsync(descriptor)
+                except BaseException:
+                    if child is not None:
+                        os.close(child)
+                    raise
                 os.close(descriptor)
                 descriptor = child
             return descriptor
