@@ -61,7 +61,12 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
     assert "src/qdev_runner/durable_state.py" in script
+    assert "scripts/qdev_runner_recovery_host_agent.py" in script
+    assert "scripts/install_qdev_runner_recovery_host_agent.sh" in script
+    assert "scripts/issue_scoped_worker_certificate.sh" in script
     assert "scripts/provision_fleet_host_dispatch_state.py" in script
+    assert "deploy/qdev-runner-recovery-platform.service" in script
+    assert "deploy/qdev-runner-recovery-qazstack.service" in script
     assert "/usr/local/sbin/qdev-controller-activate" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
