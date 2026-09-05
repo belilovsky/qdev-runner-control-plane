@@ -39,6 +39,20 @@ _DIGEST = _KEY_ID
 _SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{86}$")
 _TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
+_REPLAY_TABLE_SQL = """
+CREATE TABLE consumed_receipts (
+    fingerprint TEXT PRIMARY KEY,
+    key_id TEXT NOT NULL,
+    admission_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    functional_source_sha TEXT NOT NULL,
+    consumer TEXT NOT NULL,
+    consumed_at TEXT NOT NULL,
+    UNIQUE (key_id, admission_id),
+    UNIQUE (key_id, claim_id)
+)
+"""
+
 _TOP_LEVEL_FIELDS = frozenset({"schema", "payload", "signature"})
 _PAYLOAD_FIELDS = frozenset(
     {
@@ -490,6 +504,18 @@ def _mapping_job_ids(value: object) -> dict[str, int]:
 
 
 def _validate_replay_store_schema(connection: sqlite3.Connection) -> None:
+    schema_row = connection.execute(
+        "SELECT type, sql FROM sqlite_master WHERE name = 'consumed_receipts'"
+    ).fetchone()
+    expected_sql = " ".join(_REPLAY_TABLE_SQL.upper().split())
+    if (
+        schema_row is None
+        or schema_row[0] != "table"
+        or not isinstance(schema_row[1], str)
+        or " ".join(schema_row[1].upper().split()) != expected_sql
+    ):
+        raise ControllerAdmissionError("receipt replay store schema is invalid")
+
     columns = connection.execute("PRAGMA table_info(consumed_receipts)").fetchall()
     expected_columns = [
         ("fingerprint", "TEXT", 0, 1),
@@ -592,24 +618,14 @@ def _consume_verified_receipt(
         with sqlite3.connect(replay_store_path, timeout=5) as connection:
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA synchronous=FULL")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumed_receipts (
-                    fingerprint TEXT PRIMARY KEY,
-                    key_id TEXT NOT NULL,
-                    admission_id TEXT NOT NULL,
-                    claim_id TEXT NOT NULL,
-                    functional_source_sha TEXT NOT NULL,
-                    consumer TEXT NOT NULL,
-                    consumed_at TEXT NOT NULL,
-                    UNIQUE (key_id, admission_id),
-                    UNIQUE (key_id, claim_id)
-                )
-                """
-            )
-            _validate_replay_store_schema(connection)
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'consumed_receipts'"
+            ).fetchone()
+            if table_exists is None:
+                connection.execute(_REPLAY_TABLE_SQL)
+            _validate_replay_store_schema(connection)
+            inserted = connection.execute(
                 """
                 INSERT INTO consumed_receipts (
                     fingerprint,
@@ -631,6 +647,8 @@ def _consume_verified_receipt(
                     observed,
                 ),
             )
+            if inserted.rowcount != 1 or connection.execute("SELECT changes()").fetchone() != (1,):
+                raise ControllerAdmissionError("receipt has already been consumed")
     except ControllerAdmissionError:
         raise
     except sqlite3.IntegrityError as error:

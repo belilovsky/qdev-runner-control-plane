@@ -337,6 +337,40 @@ def test_consume_receipt_rejects_replay(tmp_path: Path) -> None:
         )
 
 
+def test_consume_rejects_conflict_ignore_replay_schema(tmp_path: Path) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+    replay_store = tmp_path / "state" / "consumed.sqlite3"
+    replay_store.parent.mkdir()
+    with sqlite3.connect(replay_store) as connection:
+        connection.execute(
+            """
+            CREATE TABLE consumed_receipts (
+                fingerprint TEXT PRIMARY KEY ON CONFLICT IGNORE,
+                key_id TEXT NOT NULL,
+                admission_id TEXT NOT NULL,
+                claim_id TEXT NOT NULL,
+                functional_source_sha TEXT NOT NULL,
+                consumer TEXT NOT NULL,
+                consumed_at TEXT NOT NULL,
+                UNIQUE (key_id, admission_id) ON CONFLICT IGNORE,
+                UNIQUE (key_id, claim_id) ON CONFLICT IGNORE
+            )
+            """
+        )
+    replay_store.chmod(0o600)
+
+    with pytest.raises(ControllerAdmissionError, match="schema is invalid"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            replay_store,
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+
+
 def test_consume_requires_every_exact_binding(tmp_path: Path) -> None:
     private, public = _keys(tmp_path)
     receipt = sign_payload(_payload(), private)

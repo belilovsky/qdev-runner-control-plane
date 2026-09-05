@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+EXACT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def command(*args: str) -> str:
@@ -155,6 +157,14 @@ def repository_metadata(full_name: str) -> dict[str, Any]:
     }
 
 
+def validate_exact_commit(full_name: str, ref: str) -> None:
+    if EXACT_SHA.fullmatch(ref) is None:
+        raise RuntimeError(f"{full_name}: --ref must be a full lowercase commit SHA")
+    commit = api(f"/repos/{full_name}/git/commits/{ref}")
+    if not isinstance(commit, dict) or commit.get("sha") != ref:
+        raise RuntimeError(f"{full_name}: --ref did not resolve to the exact commit SHA")
+
+
 def validate_add_candidate(
     repo: dict[str, Any],
     *,
@@ -291,6 +301,7 @@ def main() -> None:
                 expected_full_name=args.expected_full_name,
                 expected_default_branch=args.expected_default_branch,
             )
+            validate_exact_commit(full_name, args.ref)
             item = inspect_repo(repo, ref=args.ref)
         except RuntimeError as exc:
             parser.error(str(exc))

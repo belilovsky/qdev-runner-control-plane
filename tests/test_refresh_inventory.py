@@ -103,6 +103,22 @@ def test_validate_add_candidate_rejects_identity_drift() -> None:
         )
 
 
+def test_validate_exact_commit_rejects_symbolic_ref() -> None:
+    module = load_refresh_inventory()
+    with pytest.raises(RuntimeError, match="full lowercase commit SHA"):
+        module.validate_exact_commit("belilovsky/qazcoop", "main")
+
+
+def test_validate_exact_commit_rejects_resolution_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_refresh_inventory()
+    requested = "1" * 40
+    monkeypatch.setattr(module, "api", lambda _: {"sha": "2" * 40})
+    with pytest.raises(RuntimeError, match="exact commit SHA"):
+        module.validate_exact_commit("belilovsky/qazcoop", requested)
+
+
 def test_add_repository_preserves_existing_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -160,6 +176,7 @@ def test_add_repository_preserves_existing_records(
             "workflow_files": [],
         },
     )
+    monkeypatch.setattr(module, "validate_exact_commit", lambda _name, _ref: None)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -168,7 +185,7 @@ def test_add_repository_preserves_existing_records(
             "--add-repository",
             "belilovsky/qazcoop",
             "--ref",
-            "exact-sha",
+            "1111111111111111111111111111111111111111",
             "--expected-repository-id",
             "42",
             "--expected-full-name",
