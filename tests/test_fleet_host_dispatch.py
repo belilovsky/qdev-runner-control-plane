@@ -18,6 +18,7 @@ from qdev_runner.fleet_host_dispatch import (
     FleetHostDispatcher,
     FleetHostDispatchError,
     FleetHostDispatchSpool,
+    verified_controller_runtime_anchor,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,35 @@ def _controller_status(tmp_path: Path) -> Path:
     )
     path.chmod(0o600)
     return path
+
+
+def test_verified_controller_runtime_anchor_accepts_exact_legacy_migration_receipt(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "controller-release.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": "c" * 40,
+                "release_digest": "d" * 64,
+                "activated_at": "2026-09-05T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    assert verified_controller_runtime_anchor(path, expected_uid=os.geteuid()) == (
+        "c" * 40,
+        "sha256:" + "d" * 64,
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["runtime_identity"] = {}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FleetHostDispatchError, match="shape is invalid"):
+        verified_controller_runtime_anchor(path, expected_uid=os.geteuid())
 
 
 def _request(

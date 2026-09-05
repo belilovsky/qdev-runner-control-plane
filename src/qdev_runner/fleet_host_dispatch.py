@@ -196,30 +196,51 @@ def verified_controller_runtime_anchor(
         _read_regular(path, expected_uid=expected_uid),
         label="controller runtime status",
     )
-    if set(raw) != {
+    schema = raw.get("schema")
+    legacy_keys = {
         "schema",
         "state",
         "revision",
         "release_digest",
         "activated_at",
-        "runtime_identity",
-        "dependency_identity",
-    }:
+    }
+    measured_keys = legacy_keys | {"runtime_identity", "dependency_identity"}
+    expected_keys = (
+        legacy_keys
+        if schema == "qdev-controller-release-status-v1"
+        else measured_keys
+    )
+    if (
+        schema
+        not in {"qdev-controller-release-status-v1", "qdev-controller-release-status-v2"}
+        or set(raw) != expected_keys
+    ):
         raise FleetHostDispatchError(
             "fleet host dispatch controller runtime status shape is invalid"
         )
     revision = raw.get("revision")
     release_digest = raw.get("release_digest")
-    runtime_identity = raw.get("runtime_identity")
-    dependency_identity = raw.get("dependency_identity")
+    if isinstance(release_digest, str) and re.fullmatch(r"[0-9a-f]{64}", release_digest):
+        release_digest = f"sha256:{release_digest}"
     if (
-        raw.get("schema") != "qdev-controller-release-status-v2"
-        or raw.get("state") != "active"
+        raw.get("state") != "active"
         or not isinstance(revision, str)
         or not _SHA.fullmatch(revision)
         or not isinstance(release_digest, str)
         or not _DIGEST.fullmatch(release_digest)
-        or not isinstance(runtime_identity, dict)
+    ):
+        raise FleetHostDispatchError(
+            "fleet host dispatch controller runtime identity is invalid"
+        )
+    # A root-owned v1 receipt is a bounded migration anchor.  It carries no
+    # measured runtime/dependency claims, so only its exact legacy shape can
+    # authorize the one-way activation that publishes a v2 receipt.
+    if schema == "qdev-controller-release-status-v1":
+        return revision, release_digest
+    runtime_identity = raw.get("runtime_identity")
+    dependency_identity = raw.get("dependency_identity")
+    if (
+        not isinstance(runtime_identity, dict)
         or set(runtime_identity)
         != {
             "source_revision",

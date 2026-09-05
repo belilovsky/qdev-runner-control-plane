@@ -170,23 +170,19 @@ def _read_status() -> tuple[str, str]:
         payload = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterError("runtime_status_unavailable") from exc
+    schema = payload.get("schema") if isinstance(payload, dict) else None
+    legacy_keys = {"schema", "state", "revision", "release_digest", "activated_at"}
+    measured_keys = legacy_keys | {"runtime_identity", "dependency_identity"}
+    expected_keys = legacy_keys if schema == "qdev-controller-release-status-v1" else measured_keys
     if (
         not stat.S_ISREG(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or metadata.st_uid != 0
         or stat.S_IMODE(metadata.st_mode) & 0o022
         or not isinstance(payload, dict)
-        or set(payload)
-        != {
-            "schema",
-            "state",
-            "revision",
-            "release_digest",
-            "activated_at",
-            "runtime_identity",
-            "dependency_identity",
-        }
-        or payload.get("schema") != "qdev-controller-release-status-v2"
+        or schema
+        not in {"qdev-controller-release-status-v1", "qdev-controller-release-status-v2"}
+        or set(payload) != expected_keys
         or payload.get("state") != "active"
     ):
         raise AdapterError("runtime_status_invalid")
@@ -194,8 +190,12 @@ def _read_status() -> tuple[str, str]:
     digest = payload.get("release_digest")
     if not isinstance(revision, str) or not SHA.fullmatch(revision):
         raise AdapterError("runtime_revision_invalid")
+    if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+        digest = f"sha256:{digest}"
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AdapterError("runtime_digest_invalid")
+    if schema == "qdev-controller-release-status-v1":
+        return revision, digest
     runtime_identity = payload.get("runtime_identity")
     dependency_identity = payload.get("dependency_identity")
     if (

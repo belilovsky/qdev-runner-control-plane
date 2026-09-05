@@ -107,7 +107,7 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
         )
 
 
-def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
+def test_activation_adapter_accepts_legacy_migration_anchor_and_measured_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status = tmp_path / "controller-release.json"
@@ -118,6 +118,7 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
                 "state": "active",
                 "revision": SHA,
                 "release_digest": "b" * 64,
+                "activated_at": "2026-09-05T00:00:00Z",
             }
         ),
         encoding="utf-8",
@@ -131,8 +132,7 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
         return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
 
     monkeypatch.setattr(Path, "lstat", root_owned)
-    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
-        ACTIVATION._read_status()
+    assert ACTIVATION._read_status() == (SHA, DIGEST)
 
     status.write_text(
         json.dumps(
@@ -190,8 +190,7 @@ def test_candidate_preparation_requires_same_measured_runtime_anchor(
         encoding="utf-8",
     )
     status.chmod(0o600)
-    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
-        PREPARE._active_runtime_source_sha()
+    assert PREPARE._active_runtime_source_sha() == SHA
 
     measured = {
         "schema": "qdev-controller-release-status-v2",
