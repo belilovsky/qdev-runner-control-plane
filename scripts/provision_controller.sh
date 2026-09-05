@@ -23,6 +23,9 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0755 /etc/qdev-runner
+install -d -o root -g root -m 0700 /etc/qdev-runner/admission
+install -d -o root -g root -m 0700 /etc/qdev-runner/qazcoop-release-signing
+install -d -o root -g root -m 0700 /run/qdev-controller
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator
@@ -63,6 +66,8 @@ install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
   /usr/local/sbin/qdev-fleet-worker-recovery
 install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
+install -o root -g root -m 0755 scripts/provision_worker_recovery_bindings.py \
+  /usr/local/sbin/qdev-worker-recovery-bindings-provision
 /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
 install -m 0644 deploy/qdev-runner-broker.service /etc/systemd/system/qdev-runner-broker.service
 install -m 0644 deploy/qdev-artifact-retention.service /etc/systemd/system/qdev-artifact-retention.service
@@ -71,9 +76,11 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.service \
   /etc/systemd/system/qdev-fleet-host-dispatch.service
 install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
+install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
+PYTHONPATH="$PWD/src" python3 scripts/provision_qazcoop_release_signing_key.py
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path
 # Reconcile any processing record that survived a dispatcher or host crash.
 systemctl start qdev-fleet-host-dispatch.service
-printf 'controller provisioning complete; install broker.env, GitHub App key and mTLS files before start\n'
+printf 'controller provisioning complete; install broker.env, GitHub App key, mTLS files and recovery bindings before start\n'

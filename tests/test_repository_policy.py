@@ -533,6 +533,46 @@ jobs:
     assert run_guard(root).returncode == 0
 
 
+def test_hosted_contract_allows_explicit_primary_self_hosted_workflow(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(
+        tmp_path,
+        """on:
+  pull_request:
+jobs:
+  test:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-test"
+""",
+    )
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "primary_self_hosted_workflows:\n  - ci.yml\n",
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_hosted_contract_rejects_unlisted_primary_self_hosted_workflow(
+    tmp_path: Path,
+) -> None:
+    root = hosted_repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "self-hosted-runner-outside-recovery" in result.stdout
+
+
 def test_guard_enforces_contract_profiles(tmp_path: Path) -> None:
     root = repository(
         tmp_path,

@@ -159,14 +159,20 @@ def _bootstrap_target(
     *,
     policy: FleetBootstrapPolicy,
     request: FleetBootstrapRequest,
+    controller_runtime: tuple[str, str] | None = None,
 ) -> tuple[dict[str, Any], ReleaseLane | None]:
     if request.action == "activate-controller":
+        if controller_runtime is None:
+            raise FleetBootstrapError(
+                "verified current controller runtime is required for activation"
+            )
+        rollback_revision, rollback_release_digest = controller_runtime
         return (
             {
                 "controller_revision": request.controller_revision,
                 "controller_release_digest": request.controller_release_digest,
-                "rollback_revision": policy.activation.rollback_revision,
-                "rollback_release_digest": policy.activation.rollback_release_digest,
+                "rollback_revision": rollback_revision,
+                "rollback_release_digest": rollback_release_digest,
             },
             None,
         )
@@ -379,6 +385,7 @@ def execute_bootstrap_operation(
     adapter: Path | None = None,
     timeout_seconds: float = 120,
     receipt_path: Path | None = None,
+    controller_runtime: tuple[str, str] | None = None,
 ) -> BootstrapExecution:
     """Activate the controller or enrol one allowlisted product host agent.
 
@@ -392,7 +399,11 @@ def execute_bootstrap_operation(
     if request.action not in {"activate-controller", "enrol-host-agent"}:
         raise FleetBootstrapError("executor accepts only activation or host-agent enrolment")
     action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
-    target, lane = _bootstrap_target(policy=policy, request=request)
+    target, lane = _bootstrap_target(
+        policy=policy,
+        request=request,
+        controller_runtime=controller_runtime,
+    )
     record = store.begin(idempotency_key, request)
     fingerprint = bootstrap_request_fingerprint(request)
 

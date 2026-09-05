@@ -266,6 +266,7 @@ def test_capacity_override_receipt_requires_full_immutable_fifo_tuple() -> None:
         "worker_audit": {},
         "operation": {},
         "required_free_gib": 8.0,
+        "fifo_skipped": [],
         "immutable_tuple": {
             "repository": "belilovsky/qazshield",
             "run_id": 84_000_000_042,

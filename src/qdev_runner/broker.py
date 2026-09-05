@@ -1118,6 +1118,7 @@ def create_app(
                 )
             response["lease_expires_at"] = lease_expires_at
             response["rollback_anchor"] = rollback_anchor
+            response["candidate_evidence"] = claim.get("candidate_evidence")
             response["dispatch_claim"] = claim
             response["dispatch_claim_signature"] = signature
         return response
@@ -2015,7 +2016,55 @@ def create_app(
                 status_code=409,
                 detail="repository-scoped capacity override requires exactly one profile",
             )
-        profile_heads, _ = durable_profile_heads(store.pending_jobs(), policy)
+        pending_for_override: list[dict[str, Any]] = []
+        fifo_skipped: list[dict[str, Any]] = []
+        queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        requested_profile = requested_profiles[0]
+        for queued in store.pending_jobs():
+            try:
+                queued_profile = policy.profile_for_labels(
+                    str(queued["repository"]), _json_strings(queued["labels_json"])
+                )
+            except PolicyError:
+                continue
+            if queued_profile.name != requested_profile:
+                continue
+            try:
+                queued_managed = managed_registry().validate_claim_if_managed(
+                    str(queued["repository"]), queued_profile.name
+                )
+            except ManagedRegistryError:
+                # Malformed managed rows remain strict FIFO blockers.
+                pending_for_override.append(queued)
+                continue
+            if queued_managed is not None and queued_managed.admission_ledger == "admin-platform":
+                if queued_admin_platform_ledger is None:
+                    try:
+                        queued_admin_platform_ledger = admin_platform_ledger()
+                    except AdminPlatformLedgerError as exc:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"admin platform ledger unavailable: {exc}",
+                        ) from exc
+                admitted, reason = queued_admin_platform_ledger.classify_admission(
+                    queued_managed.entry_id, str(queued["head_sha"])
+                )
+                if not admitted:
+                    assert reason is not None
+                    fifo_skipped.append(
+                        {
+                            "job_id": int(queued["job_id"]),
+                            "repository": str(queued["repository"]),
+                            "run_id": int(queued["run_id"]),
+                            "head_sha": str(queued["head_sha"]),
+                            "profile": queued_profile.name,
+                            "managed_registry_entry": queued_managed.entry_id,
+                            "reason": reason,
+                        }
+                    )
+                    continue
+            pending_for_override.append(queued)
+        profile_heads, _ = durable_profile_heads(pending_for_override, policy)
         fifo_head = next(
             (item for item in profile_heads if item["profile"] == requested_profiles[0]),
             None,
@@ -2095,6 +2144,7 @@ def create_app(
             "operation": directive.model_dump(mode="json", by_alias=True),
             "required_free_gib": round(required_free_gib, 3),
             "immutable_tuple": fifo_head,
+            "fifo_skipped": fifo_skipped,
         }
         return operation_store.receipt(payload)
 
@@ -2286,8 +2336,10 @@ def create_app(
         raw_job = payload.get("workflow_job") or {}
         repository = payload.get("repository") or {}
         try:
-            policy.repository(str(repository["full_name"]))
-        except (KeyError, PolicyError) as error:
+            policy.repository(
+                str(repository["full_name"]), repository_id=int(repository["id"])
+            )
+        except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected webhook: %s", error)
             return Response(status_code=202)
         job_id = int(raw_job["id"])

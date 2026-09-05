@@ -3,9 +3,10 @@ set -euo pipefail
 
 engine="${QDEV_CONTAINER_ENGINE:-docker}"
 registry="${QDEV_REGISTRY:-registry.ci.qdev.run/qdev}"
-version="${QDEV_RUNNER_VERSION:-2.337.0-r8}"
+version="${QDEV_RUNNER_VERSION:-2.337.0-r9}"
 browser_image="${registry}/actions-runner-browser:${version}"
 browser_staging_image="${browser_image}-rootfs"
+sidecar_image="${registry}/docker-sidecar:${version}"
 browser_export_root=""
 browser_container=""
 
@@ -52,14 +53,17 @@ browser_export_root=""
 "$engine" image rm "${browser_staging_image}" >/dev/null
 "$engine" build --pull --target docker \
   --tag "${registry}/actions-runner-buildkit:${version}" images/runner
+"$engine" build --pull --target sidecar \
+  --tag "${sidecar_image}" images/runner
 
 if [[ "${QDEV_PUSH_IMAGES:-false}" == true ]]; then
   "$engine" push "${registry}/actions-runner:${version}"
   "$engine" push "${registry}/actions-runner-browser:${version}"
   "$engine" push "${registry}/actions-runner-buildkit:${version}"
+  "$engine" push "${sidecar_image}"
 fi
 
-for image in actions-runner actions-runner-browser actions-runner-buildkit; do
+for image in actions-runner actions-runner-browser actions-runner-buildkit docker-sidecar; do
   "$engine" image inspect "${registry}/${image}:${version}" \
     --format '{{.Id}} {{join .RepoDigests " "}}'
 done

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,65 @@ EVIDENCE_PREFIXES = {
 
 class RunnerImageReleaseError(ValueError):
     """Raised when an image release cannot identify verified immutable inputs."""
+
+
+def _utc_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise RunnerImageReleaseError(f"{field} must be a UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise RunnerImageReleaseError(f"{field} must be a UTC timestamp") from error
+    if parsed.tzinfo != UTC:
+        raise RunnerImageReleaseError(f"{field} must be a UTC timestamp")
+    return parsed
+
+
+def validate_remediation_receipt(
+    value: object,
+    *,
+    image_reference: str,
+    critical: int,
+    high: int,
+    require_current: bool = False,
+) -> dict[str, Any]:
+    """Validate one bounded owner risk acceptance for an exact image digest."""
+
+    receipt = _require_mapping(value, "remediation receipt")
+    if receipt.get("schema") != "qdev-runner-remediation-v1":
+        raise RunnerImageReleaseError("remediation receipt schema is invalid")
+    if receipt.get("image_reference") != image_reference:
+        raise RunnerImageReleaseError("remediation receipt image reference mismatch")
+    if receipt.get("findings") != {"critical": critical, "high": high}:
+        raise RunnerImageReleaseError("remediation receipt finding counts mismatch")
+    decision = _require_mapping(receipt.get("decision"), "remediation receipt decision")
+    if decision.get("status") != "accepted":
+        raise RunnerImageReleaseError("remediation receipt decision is not accepted")
+    for field in ("decision_id", "owner", "reason"):
+        if not isinstance(decision.get(field), str) or not decision[field].strip():
+            raise RunnerImageReleaseError(f"remediation receipt decision.{field} is required")
+    reviewed_at = _utc_timestamp(
+        decision.get("reviewed_at"), "remediation receipt decision.reviewed_at"
+    )
+    review_by = _utc_timestamp(decision.get("review_by"), "remediation receipt decision.review_by")
+    if review_by <= reviewed_at:
+        raise RunnerImageReleaseError("remediation receipt review window is invalid")
+    if (review_by - reviewed_at).days > 31:
+        raise RunnerImageReleaseError("remediation receipt review window exceeds 31 days")
+    if require_current:
+        now = datetime.now(UTC)
+        if reviewed_at > now:
+            raise RunnerImageReleaseError("remediation receipt review time is in the future")
+        if review_by <= now:
+            raise RunnerImageReleaseError("remediation receipt review window has expired")
+    controls = decision.get("compensating_controls")
+    if (
+        not isinstance(controls, list)
+        or not controls
+        or not all(isinstance(control, str) and control.strip() for control in controls)
+    ):
+        raise RunnerImageReleaseError("remediation receipt compensating controls are required")
+    return receipt
 
 
 def _require_mapping(value: object, field: str) -> dict[str, Any]:
@@ -138,10 +198,14 @@ def validate(value: object, *, expected_revision: str | None = None) -> dict[str
             raise RunnerImageReleaseError(
                 f"artifacts[{index}].vulnerability_review.high must be non-negative"
             )
-        if high > 0 or "remediation_digest" in vulnerability:
+        if high > 0:
             _require_digest(
                 vulnerability.get("remediation_digest"),
                 f"artifacts[{index}].vulnerability_review.remediation_digest",
+            )
+        elif "remediation_digest" in vulnerability:
+            raise RunnerImageReleaseError(
+                f"artifacts[{index}] has a remediation receipt without High findings"
             )
         references[key] = reference
 
@@ -217,6 +281,8 @@ def verify_evidence(value: object, *, manifest_path: Path | None = None) -> None
         artifact = _require_mapping(raw_artifact, f"artifacts[{index}]")
         key = artifact.get("environment_key")
         assert isinstance(key, str)
+        reference = artifact.get("reference")
+        assert isinstance(reference, str)
         files = _require_mapping(
             artifact.get("evidence_files"), f"artifacts[{index}].evidence_files"
         )
@@ -250,13 +316,28 @@ def verify_evidence(value: object, *, manifest_path: Path | None = None) -> None
         )
         if _sha256(security_path) != review.get("report_digest"):
             raise RunnerImageReleaseError(f"{key} security report digest mismatch")
+        high = review.get("high")
+        if isinstance(high, int) and not isinstance(high, bool) and high > 0:
+            remediation_name = files.get("remediation")
+            if (
+                not isinstance(remediation_name, str)
+                or Path(remediation_name).name != remediation_name
+            ):
+                raise RunnerImageReleaseError(f"{key} remediation evidence file is required")
+            remediation_path = evidence_root / remediation_name
+            if _sha256(remediation_path) != review.get("remediation_digest"):
+                raise RunnerImageReleaseError(f"{key} remediation receipt digest mismatch")
+            remediation, _ = _load_json(remediation_path, f"{key} remediation receipt")
+            validate_remediation_receipt(
+                remediation,
+                image_reference=reference,
+                critical=0,
+                high=high,
+            )
 
         provenance, provenance_raw = _load_json(provenance_path, f"{key} provenance")
         subject = _require_mapping(provenance.get("subject"), f"{key} provenance.subject")
-        if (
-            subject.get("reference") != artifact.get("reference")
-            or subject.get("environment_key") != key
-        ):
+        if subject.get("reference") != reference or subject.get("environment_key") != key:
             raise RunnerImageReleaseError(f"{key} provenance subject mismatch")
         if subject.get("digest") != signature.get("subject_digest"):
             raise RunnerImageReleaseError(f"{key} provenance digest binding mismatch")
@@ -279,6 +360,8 @@ def verify_evidence(value: object, *, manifest_path: Path | None = None) -> None
             raise RunnerImageReleaseError(f"{key} provenance security binding mismatch")
         if scans.get("license") != _sha256(license_path):
             raise RunnerImageReleaseError(f"{key} provenance license binding mismatch")
+        if high and scans.get("remediation") != review.get("remediation_digest"):
+            raise RunnerImageReleaseError(f"{key} provenance remediation binding mismatch")
         try:
             loaded_key.verify(signature_path.read_bytes(), provenance_raw)
         except (OSError, InvalidSignature) as error:

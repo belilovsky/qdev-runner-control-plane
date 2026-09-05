@@ -185,10 +185,15 @@ identities are allowlisted in `config/release-lanes.yml` and are valid only
 after enrollment through the existing QDev CA. QDev Fleet installs the
 root-owned `/etc/qdev-release-agents/qmt.env`, its referenced certificate,
 key and CA, and the distinct verified active/rollback state through the
-host-agent path. The agent uses the controller-owned fixed overlay, requires
-the image to already be present locally, and never builds or pulls on the
-production host. It completes a job only after `/release.json` proves QMT
-`4.4.1`, matching source and runtime revisions, and `identityStatus=verified`.
+host-agent path. The root-owned `qmt-native-release-v1` adapter may pull only
+`registry.ci.qdev.run/kaztilshi` by an exact OCI digest; mutable tags and
+production builds remain forbidden. Before mutation it measures capacity for
+both images, retains the verified rollback tuple and writes a recovery journal.
+It completes a candidate only after the actual running container, local and
+public health/readiness, and `/release.json` all prove QMT `4.4.2`, matching
+source, OCI, migration, candidate-receipt and contract identities. A failed
+pull, start, identity check or durable-state transition restores and verifies
+the previous release by that release's own version and digests.
 
 ### Admin Platform native host agents
 

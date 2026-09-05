@@ -95,7 +95,11 @@ class OperatorSettings:
 
 
 def verify_controller_receipt(
-    document: Mapping[str, Any], *, receipt_key: str, allow_legacy: bool = False
+    document: Mapping[str, Any],
+    *,
+    receipt_key: str,
+    allow_legacy: bool = False,
+    allow_ledger_bound: bool = False,
 ) -> dict[str, Any]:
     schema = document.get("schema")
     if schema == "qdev-controller-receipt-v1":
@@ -115,14 +119,23 @@ def verify_controller_receipt(
         }
     if set(document) != expected_fields:
         raise ValueError("invalid controller receipt fields")
-    if schema not in {"qdev-controller-receipt-v1", "qdev-controller-receipt-v2"}:
+    if schema not in {
+        "qdev-controller-receipt-v1",
+        "qdev-controller-receipt-v2",
+        "qdev-controller-receipt-v3",
+    }:
         raise ValueError("invalid controller receipt schema")
     if schema == "qdev-controller-receipt-v2" and document.get("enforcement") != "enforced":
         raise ValueError("controller receipt is not enforced")
+    if schema == "qdev-controller-receipt-v3":
+        if document.get("enforcement") != "ledger-bound":
+            raise ValueError("ledger-bound controller receipt has invalid enforcement")
+        if not allow_ledger_bound:
+            raise ValueError("controller receipt requires committed ledger context")
     payload = document.get("payload")
     if not isinstance(payload, dict):
         raise ValueError("invalid controller receipt payload")
-    if schema == "qdev-controller-receipt-v2":
+    if schema in {"qdev-controller-receipt-v2", "qdev-controller-receipt-v3"}:
         validate_controller_receipt_payload(payload)
     digest = payload_digest(payload)
     if document.get("digest") != digest or document.get("receipt_id") != digest:
@@ -133,7 +146,7 @@ def verify_controller_receipt(
         "payload": payload,
         "digest": document["digest"],
     }
-    if schema == "qdev-controller-receipt-v2":
+    if schema in {"qdev-controller-receipt-v2", "qdev-controller-receipt-v3"}:
         unsigned["enforcement"] = document["enforcement"]
     signature = document.get("signature")
     if not isinstance(signature, str) or not hmac.compare_digest(

@@ -1,6 +1,17 @@
+import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_recovery_binding_provisioner():
+    path = ROOT / "scripts/provision_worker_recovery_bindings.py"
+    spec = importlib.util.spec_from_file_location("recovery_binding_provisioner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
@@ -141,6 +152,47 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
 
 
+def test_controller_provisions_root_owned_admission_signer() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/etc/qdev-runner/admission" in provisioning
+    assert "/run/qdev-controller" in provisioning
+    assert "/usr/local/sbin/qdev-controller-admission" in provisioning
+    assert "scripts/qdev_controller_admission_host.sh" in activation
+    assert "admission_host_tool_backup" in activation
+    assert "admission_host_tool_was_present" in activation
+    assert "--network none" in wrapper
+    assert "--read-only" in wrapper
+    assert "--user 0:0" in wrapper
+    assert "--cap-drop ALL" in wrapper
+    assert "qdev-runner-broker-internal" in wrapper
+    assert "--entrypoint qdev-controller-admission" in wrapper
+
+
+def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "scripts/provision_qazcoop_release_signing_key.py" in provisioning
+    assert "/etc/qdev-runner/qazcoop-release-signing" in provisioning
+    assert "install_qazcoop_release_guard()" in activation
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in activation
+    assert "scripts/install_qazcoop_release_guard.py" in activation
+    assert "-o StrictHostKeyChecking=yes" in activation
+    assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
+        "if ! install_qazcoop_release_guard; then"
+    )
+    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
+    assert "currently deployed product remains available" in guard_function
+
+
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
@@ -258,6 +310,22 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     assert install_call.count("if ! install_fleet_host_dispatch; then") == 1
 
 
+def test_historical_controller_rollback_does_not_require_or_replace_admission_wrapper() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
+    forward_required = script.split(
+        'if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1
+    )[1].split("\n  )", 1)[0]
+    assert "qdev_controller_admission_host.sh" not in base_required
+    assert "scripts/qdev_controller_admission_host.sh" in forward_required
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
+    assert (
+        'if [[ "$rollback_mode" != true ]]; then\n'
+        '  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller'
+    ) in script
+
+
 def test_controller_compose_project_is_namespaced() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     service = (ROOT / "deploy/qdev-runner-broker.service").read_text(encoding="utf-8")
@@ -266,13 +334,51 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert service.count("--project-name qdev-runner") == 2
 
 
+def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
+    provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "qdev-worker-recovery-bindings-provision" in provision
+    assert "recovery-controller.env" in helper
+    assert "recovery-edge.env" in helper
+    assert '"QDEV_OPERATOR_PROXY_SECRET": proxy_secret' in helper
+    assert '"QDEV_RECOVERY_AGENT_SIGNING_KEY": signing_key' in helper
+    assert "secrets_rotated" in helper
+
+
+def test_recovery_binding_provisioner_accepts_active_prefixed_release_digest(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    status = tmp_path / "controller-release.json"
+    status.write_text(
+        json.dumps(
+            {
+                "state": "active",
+                "revision": "a" * 40,
+                "release_digest": "sha256:" + "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert helper._active_release(status) == {
+        "revision": "a" * 40,
+        "release_digest": "b" * 64,
+    }
+
+
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
 
     assert "/etc/qdev-runner/controller-release.json:" not in compose
     assert "/etc/qdev-runner/admin-platform-ledger.yml:" not in compose
     assert "/var/lib/qdev-runner/controller-status:" in compose
+    assert "/var/lib/qdev-runner/controller-status:" in public
     assert "/var/lib/qdev-runner/admin-platform-state:" in compose
     assert "QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/" in compose
     assert "QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/" in compose

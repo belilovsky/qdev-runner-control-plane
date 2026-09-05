@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ ACTIVATION = _load("qdev_controller_activation_adapter")
 ENROLMENT = _load("qdev_release_host_agent_enrol_adapter")
 RECOVERY = _load("qdev_fleet_worker_recovery_adapter")
 PROVISION = _load("provision_fleet_host_dispatch_state")
+PREPARE = _load("prepare_controller_candidate")
 
 
 def _request(action: str) -> dict[str, Any]:
@@ -105,7 +107,7 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
         )
 
 
-def test_activation_adapter_normalizes_legacy_runtime_digest(
+def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status = tmp_path / "controller-release.json"
@@ -129,7 +131,93 @@ def test_activation_adapter_normalizes_legacy_runtime_digest(
         return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
 
     monkeypatch.setattr(Path, "lstat", root_owned)
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
+        ACTIVATION._read_status()
+
+    status.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v2",
+                "state": "active",
+                "revision": SHA,
+                "release_digest": DIGEST,
+                "activated_at": "2026-09-05T00:00:00Z",
+                "runtime_identity": {
+                    "source_revision": SHA,
+                    "source_digest": "sha256:" + "c" * 64,
+                    "public_image_id": "sha256:" + "d" * 64,
+                    "internal_image_id": "sha256:" + "e" * 64,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "f" * 64,
+                    "public_installed_digest": "sha256:" + "1" * 64,
+                    "internal_installed_digest": "sha256:" + "1" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     assert ACTIVATION._read_status() == (SHA, DIGEST)
+
+
+def test_candidate_preparation_requires_same_measured_runtime_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status = tmp_path / "controller-release.json"
+    monkeypatch.setattr(PREPARE, "RELEASE_STATUS_PATH", status)
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_uid=os.geteuid(),
+            st_size=metadata.st_size,
+        )
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+
+    status.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": SHA,
+                "release_digest": DIGEST,
+                "activated_at": "2026-09-05T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    status.chmod(0o600)
+    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
+        PREPARE._active_runtime_source_sha()
+
+    measured = {
+        "schema": "qdev-controller-release-status-v2",
+        "state": "active",
+        "revision": SHA,
+        "release_digest": DIGEST,
+        "activated_at": "2026-09-05T00:00:00Z",
+        "runtime_identity": {
+            "source_revision": "c" * 40,
+            "source_digest": "sha256:" + "d" * 64,
+            "public_image_id": "sha256:" + "e" * 64,
+            "internal_image_id": "sha256:" + "f" * 64,
+        },
+        "dependency_identity": {
+            "requirements_digest": "sha256:" + "1" * 64,
+            "public_installed_digest": "sha256:" + "2" * 64,
+            "internal_installed_digest": "sha256:" + "2" * 64,
+        },
+    }
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
+        PREPARE._active_runtime_source_sha()
+
+    measured["runtime_identity"]["source_revision"] = SHA
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    assert PREPARE._active_runtime_source_sha() == SHA
 
 
 def test_enrolment_adapter_rejects_extra_request_fields_and_registry_drift(
@@ -333,3 +421,9 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source
         assert "shell=True" not in source
+
+    activation = (ROOT / "scripts" / "qdev_controller_activation_adapter.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'str(candidate / "src" / "qdev_runner" / "controller_release.py")' not in activation
+    assert 'str(candidate / "src")' in activation

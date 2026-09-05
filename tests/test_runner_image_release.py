@@ -126,6 +126,9 @@ def test_load_returns_the_raw_manifest_digest(tmp_path: Path) -> None:
 
 def test_strict_evidence_verifies_digests_subject_and_ed25519_signature(tmp_path: Path) -> None:
     value = manifest()
+    value["artifacts"][2]["vulnerability_review"].update(  # type: ignore[index,union-attr]
+        {"high": 2, "remediation_digest": digest("c")}
+    )
     value["evidence_root"] = str(tmp_path)
     key = Ed25519PrivateKey.generate()
     public_raw = key.public_key().public_bytes(
@@ -159,17 +162,52 @@ def test_strict_evidence_verifies_digests_subject_and_ed25519_signature(tmp_path
 
         artifact_value["sbom_digest"] = digest_file(sbom)
         artifact_value["vulnerability_review"]["report_digest"] = digest_file(security)
+        remediation_digest = None
+        remediation_name = None
+        if artifact_value["vulnerability_review"]["high"]:
+            remediation = tmp_path / f"{prefix}.remediation.json"
+            remediation.write_text(
+                json.dumps(
+                    {
+                        "schema": "qdev-runner-remediation-v1",
+                        "image_reference": reference,
+                        "findings": {
+                            "critical": 0,
+                            "high": artifact_value["vulnerability_review"]["high"],
+                        },
+                        "decision": {
+                            "status": "accepted",
+                            "decision_id": "runner-test-remediation",
+                            "owner": "Test owner",
+                            "reviewed_at": "2026-09-05T10:00:00Z",
+                            "review_by": "2026-10-05T10:00:00Z",
+                            "reason": "Bounded test fixture.",
+                            "compensating_controls": ["Exact digest binding"],
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            remediation_name = remediation.name
+            remediation_digest = digest_file(remediation)
+            artifact_value["vulnerability_review"]["remediation_digest"] = remediation_digest
+
+        scans = {
+            "sbom": digest_file(sbom),
+            "security": digest_file(security),
+            "license": digest_file(license_report),
+        }
+        if remediation_digest is not None:
+            scans["remediation"] = remediation_digest
         provenance_value = {
             "subject": {
                 "environment_key": artifact_value["environment_key"],
                 "reference": reference,
                 "digest": signature["subject_digest"],
             },
-            "scans": {
-                "sbom": digest_file(sbom),
-                "security": digest_file(security),
-                "license": digest_file(license_report),
-            },
+            "scans": scans,
             "signing": {
                 "algorithm": "Ed25519",
                 "issuer": "https://ci.qdev.run",
@@ -190,8 +228,17 @@ def test_strict_evidence_verifies_digests_subject_and_ed25519_signature(tmp_path
             "provenance": provenance.name,
             "signature": signature_file.name,
         }
+        if remediation_name is not None:
+            artifact_value["evidence_files"]["remediation"] = remediation_name
 
     verify_evidence(value)
+    remediation_path = tmp_path / "image-2.remediation.json"
+    remediation_raw = remediation_path.read_bytes()
+    remediation_path.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RunnerImageReleaseError, match="remediation receipt digest mismatch"):
+        verify_evidence(value)
+    remediation_path.write_bytes(remediation_raw)
+
     (tmp_path / "image-0.provenance.sig").write_bytes(b"x" * 64)
     with pytest.raises(RunnerImageReleaseError, match="signature digest mismatch"):
         verify_evidence(value)

@@ -120,6 +120,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "operation",
         "required_free_gib",
         "immutable_tuple",
+        "fifo_skipped",
     },
     "capacity-override-cancelled": {"kind", "observed_at", "worker_audit", "operation"},
     "stale-job-audit": {
@@ -169,6 +170,20 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "lane",
         "outcome",
     },
+    "admin-platform-state-transaction": {
+        "kind",
+        "observed_at",
+        "transaction_id",
+        "previous_ledger_sha256",
+        "target_ledger_sha256",
+        "receipts",
+    },
+    "admin-platform-ledger-link": {
+        "kind",
+        "observed_at",
+        "previous_ledger_sha256",
+        "target_ledger_sha256",
+    },
 }
 
 
@@ -212,6 +227,41 @@ def _validate_durable_queue_head(value: Any, *, require_attempt: bool = False) -
         or value["created_at"] <= 0
     ):
         raise ValueError("durable queue head is invalid")
+
+
+def _validate_fifo_skipped(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > 512:
+        raise ValueError("fifo skip list is invalid")
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "job_id",
+            "repository",
+            "run_id",
+            "head_sha",
+            "profile",
+            "managed_registry_entry",
+            "reason",
+        }:
+            raise ValueError("fifo skip item is invalid")
+        if (
+            not isinstance(item["job_id"], int)
+            or isinstance(item["job_id"], bool)
+            or item["job_id"] <= 0
+            or not isinstance(item["run_id"], int)
+            or isinstance(item["run_id"], bool)
+            or item["run_id"] <= 0
+            or not isinstance(item["repository"], str)
+            or not _REPOSITORY.fullmatch(item["repository"])
+            or not isinstance(item["head_sha"], str)
+            or not _SOURCE_SHA.fullmatch(item["head_sha"])
+            or not isinstance(item["profile"], str)
+            or not _WORKER_NAME.fullmatch(item["profile"])
+            or not isinstance(item["managed_registry_entry"], str)
+            or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
+            or not isinstance(item["reason"], str)
+            or item["reason"] not in _FIFO_SKIP_REASONS
+        ):
+            raise ValueError("fifo skip item is invalid")
 
 
 def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -325,39 +375,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
     ):
         raise ValueError("claim-scope payload is invalid")
     if kind == "fifo-claim-scope-issued":
-        fifo_skipped = value["fifo_skipped"]
-        if not isinstance(fifo_skipped, list) or len(fifo_skipped) > 512:
-            raise ValueError("claim-scope fifo skip list is invalid")
-        for item in fifo_skipped:
-            if not isinstance(item, dict) or set(item) != {
-                "job_id",
-                "repository",
-                "run_id",
-                "head_sha",
-                "profile",
-                "managed_registry_entry",
-                "reason",
-            }:
-                raise ValueError("claim-scope fifo skip item is invalid")
-            if (
-                not isinstance(item["job_id"], int)
-                or isinstance(item["job_id"], bool)
-                or item["job_id"] <= 0
-                or not isinstance(item["run_id"], int)
-                or isinstance(item["run_id"], bool)
-                or item["run_id"] <= 0
-                or not isinstance(item["repository"], str)
-                or not _REPOSITORY.fullmatch(item["repository"])
-                or not isinstance(item["head_sha"], str)
-                or not _SOURCE_SHA.fullmatch(item["head_sha"])
-                or not isinstance(item["profile"], str)
-                or not _WORKER_NAME.fullmatch(item["profile"])
-                or not isinstance(item["managed_registry_entry"], str)
-                or not _WORKER_NAME.fullmatch(item["managed_registry_entry"])
-                or not isinstance(item["reason"], str)
-                or item["reason"] not in _FIFO_SKIP_REASONS
-            ):
-                raise ValueError("claim-scope fifo skip item is invalid")
+        _validate_fifo_skipped(value["fifo_skipped"])
     if kind.startswith("capacity-override") and not isinstance(value["worker_audit"], dict):
         raise ValueError("capacity override payload is invalid")
     if kind == "capacity-override-created" and (
@@ -368,6 +386,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         raise ValueError("capacity override creation payload is invalid")
     if kind == "capacity-override-created":
         _validate_durable_queue_head(value["immutable_tuple"], require_attempt=True)
+        _validate_fifo_skipped(value["fifo_skipped"])
     if kind == "capacity-override-cancelled" and not (
         isinstance(value["operation"], dict) or value["operation"] is None
     ):
@@ -515,6 +534,44 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             lane is not None or outcome not in _ADMIN_PLATFORM_TERMINAL_STATES
         ):
             raise ValueError("admin platform terminal evidence is invalid")
+    if kind == "admin-platform-state-transaction":
+        receipts = value["receipts"]
+        if (
+            not isinstance(value["transaction_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["transaction_id"])
+            or not isinstance(value["previous_ledger_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["previous_ledger_sha256"])
+            or not isinstance(value["target_ledger_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["target_ledger_sha256"])
+            or not isinstance(receipts, list)
+            or not 1 <= len(receipts) <= 16
+        ):
+            raise ValueError("admin platform state transaction is invalid")
+        expected_uris: set[str] = set()
+        for receipt in receipts:
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != {"receipt_uri", "receipt_sha256"}
+                or not isinstance(receipt["receipt_uri"], str)
+                or not re.fullmatch(
+                    r"receipts/transactions/[0-9a-f]{64}/[0-9a-f]{64}\.json",
+                    receipt["receipt_uri"],
+                )
+                or receipt["receipt_uri"].split("/")[2] != value["transaction_id"]
+                or not isinstance(receipt["receipt_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", receipt["receipt_sha256"])
+                or receipt["receipt_uri"] in expected_uris
+            ):
+                raise ValueError("admin platform state transaction receipts are invalid")
+            expected_uris.add(receipt["receipt_uri"])
+    if kind == "admin-platform-ledger-link" and (
+        not isinstance(value["previous_ledger_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["previous_ledger_sha256"])
+        or not isinstance(value["target_ledger_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["target_ledger_sha256"])
+        or value["previous_ledger_sha256"] == value["target_ledger_sha256"]
+    ):
+        raise ValueError("admin platform ledger link is invalid")
     return value
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,14 @@ from qdev_runner.fleet_bootstrap import (
     FleetBootstrapRequest,
 )
 from qdev_runner.fleet_bootstrap_executor import (
+    BootstrapExecution,
+    RecoveryExecution,
     execute_bootstrap_operation,
     execute_existing_worker_recovery,
+)
+from qdev_runner.fleet_host_dispatch import (
+    DEFAULT_CONTROLLER_STATUS,
+    verified_controller_runtime_anchor,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--release-lanes", type=Path, default=ROOT / "config" / "release-lanes.yml"
     )
+    parser.add_argument(
+        "--controller-status", type=Path, default=DEFAULT_CONTROLLER_STATUS
+    )
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
@@ -72,6 +82,7 @@ def run(argv: list[str] | None = None) -> int:
     try:
         request = _request(arguments.request)
         policy = FleetBootstrapPolicy(arguments.policy, arguments.release_lanes)
+        result: BootstrapExecution | RecoveryExecution
         if request.action == "restore-existing-worker":
             if arguments.active_jobs is None:
                 raise FleetBootstrapError("worker recovery requires active job observation")
@@ -94,6 +105,14 @@ def run(argv: list[str] | None = None) -> int:
                 idempotency_key=arguments.idempotency_key,
                 timeout_seconds=arguments.timeout_seconds,
                 receipt_path=arguments.receipt,
+                controller_runtime=(
+                    verified_controller_runtime_anchor(
+                        arguments.controller_status,
+                        expected_uid=os.geteuid(),
+                    )
+                    if request.action == "activate-controller"
+                    else None
+                ),
             )
     except (FleetBootstrapError, ValueError) as error:
         print(f"fleet_bootstrap_execution_failed: {error}", file=sys.stderr)

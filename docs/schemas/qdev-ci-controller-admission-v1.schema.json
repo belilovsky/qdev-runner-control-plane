@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-ci-controller-admission-v1.schema.json",
+  "title": "QDev CI controller exact-source admission receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "payload", "signature"],
+  "properties": {
+    "schema": {"const": "qdev-ci-controller-admission/v1"},
+    "payload": {"$ref": "#/$defs/payload"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "profile": {"enum": ["qdev-ci", "qdev-ci-docker", "qdev-ci-browser"]},
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "protected_ref",
+        "functional_source_sha",
+        "evidence",
+        "workflow",
+        "required_jobs",
+        "controller_revision",
+        "admission",
+        "issued_at",
+        "expires_at"
+      ],
+      "properties": {
+        "repository": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "full_name"],
+          "properties": {
+            "id": {"type": "integer", "minimum": 1},
+            "full_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            }
+          }
+        },
+        "protected_ref": {
+          "type": "string",
+          "pattern": "^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$"
+        },
+        "functional_source_sha": {"$ref": "#/$defs/sha"},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "release_payload_sha256",
+            "controller_contract_sha256",
+            "release_lock_sha256"
+          ],
+          "properties": {
+            "release_payload_sha256": {"$ref": "#/$defs/digest"},
+            "controller_contract_sha256": {"$ref": "#/$defs/digest"},
+            "release_lock_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "workflow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "run_attempt"],
+          "properties": {
+            "run_id": {"type": "integer", "minimum": 1},
+            "run_attempt": {"type": "integer", "minimum": 1}
+          }
+        },
+        "required_jobs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "$comment": "Runtime validation additionally requires unique name and job_id values.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "controller_profile", "job_id", "conclusion"],
+            "properties": {
+              "name": {"$ref": "#/$defs/identifier"},
+              "controller_profile": {"$ref": "#/$defs/profile"},
+              "job_id": {"type": "integer", "minimum": 1},
+              "conclusion": {"const": "success"}
+            }
+          }
+        },
+        "controller_revision": {"$ref": "#/$defs/sha"},
+        "admission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "claim_id"],
+          "properties": {
+            "id": {"$ref": "#/$defs/identifier"},
+            "claim_id": {"$ref": "#/$defs/identifier"}
+          }
+        },
+        "issued_at": {"$ref": "#/$defs/time"},
+        "expires_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "payload_sha256", "value"],
+      "properties": {
+        "algorithm": {"const": "Ed25519"},
+        "key_id": {"$ref": "#/$defs/digest"},
+        "payload_sha256": {"$ref": "#/$defs/digest"},
+        "value": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+      }
+    }
+  }
+}

@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     BootstrapOperationStore,
+    FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
 )
@@ -18,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "fleet-bootstrap.yml"
 RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
 _CONTROLLER_DIGEST = "sha256:" + "b" * 64
+_CURRENT_CONTROLLER = ("c" * 40, "sha256:" + "d" * 64)
 
 
 def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest:
@@ -202,6 +206,7 @@ def test_controller_activation_missing_adapter_remains_pending(tmp_path: Path) -
         idempotency_key="controller-activation-001",
         adapter=tmp_path / "not-installed",
         receipt_path=tmp_path / "receipt.json",
+        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert result.status == "access_blocked"
     assert result.operation_status == "pending"
@@ -221,6 +226,7 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
         idempotency_key="controller-activation-002",
         adapter=adapter,
         receipt_path=tmp_path / "receipt.json",
+        controller_runtime=_CURRENT_CONTROLLER,
     )
     second = execute_bootstrap_operation(
         policy=policy,
@@ -228,12 +234,13 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
         request=request,
         idempotency_key="controller-activation-002",
         adapter=tmp_path / "no-longer-needed",
+        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert first.status == second.status == "completed"
     assert first.operation_status == second.operation_status == "completed"
     assert first.result is not None
-    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
-    assert first.result["rollback_source_sha"] == policy.activation.rollback_revision
+    assert first.result["rollback_source_sha"] == _CURRENT_CONTROLLER[0]
+    assert first.result["rollback_artifact_digest"] == _CURRENT_CONTROLLER[1]
     assert json.loads((tmp_path / "receipt.json").read_text())["status"] == "completed"
 
 
@@ -244,10 +251,26 @@ def test_controller_activation_rejects_adapter_identity_mismatch(tmp_path: Path)
         request=_bootstrap_request("activate-controller"),
         idempotency_key="controller-activation-003",
         adapter=_bootstrap_adapter(tmp_path / "activate", identity_mismatch=True),
+        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert result.status == "failed"
     assert result.operation_status == "pending"
     assert result.error_code == "adapter_identity_mismatch"
+
+
+def test_controller_activation_requires_verified_runtime_anchor(tmp_path: Path) -> None:
+    request = _bootstrap_request("activate-controller")
+    with pytest.raises(
+        FleetBootstrapError,
+        match="verified current controller runtime",
+    ):
+        execute_bootstrap_operation(
+            policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+            store=BootstrapOperationStore(tmp_path / "activation.json"),
+            request=request,
+            idempotency_key="controller-activation-004",
+            adapter=_bootstrap_adapter(tmp_path / "activate"),
+        )
 
 
 def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Path) -> None:

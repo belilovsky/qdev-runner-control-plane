@@ -16,7 +16,12 @@ from typing import Any
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from qdev_runner.runner_image_release import RunnerImageReleaseError, validate, verify_evidence
+from qdev_runner.runner_image_release import (
+    RunnerImageReleaseError,
+    validate,
+    validate_remediation_receipt,
+    verify_evidence,
+)
 
 _REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -28,6 +33,7 @@ class ImageInput:
     prefix: str
     reference: str
     dockerfile: str | None
+    remediation: Path | None = None
 
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
@@ -116,6 +122,24 @@ def count_findings(report: object) -> tuple[int, int]:
             critical += severity == "CRITICAL"
             high += severity == "HIGH"
     return critical, high
+
+
+def load_remediation_receipt(
+    path: Path, *, image_reference: str, critical: int, high: int
+) -> dict[str, Any]:
+    """Validate a bounded owner risk acceptance for one exact image digest."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RunnerImageReleaseError("remediation receipt is unavailable or invalid") from error
+    return validate_remediation_receipt(
+        value,
+        image_reference=image_reference,
+        critical=critical,
+        high=high,
+        require_current=True,
+    )
 
 
 def _run_to_file(runner: CommandRunner, command: list[str], output: Path) -> None:
@@ -251,10 +275,23 @@ def publish(
                 raise RunnerImageReleaseError(
                     f"{image.environment_key} has Critical vulnerabilities"
                 )
+            remediation_digest: str | None = None
             if high:
-                raise RunnerImageReleaseError(
-                    f"{image.environment_key} has High vulnerabilities without remediation receipt"
+                if image.remediation is None:
+                    raise RunnerImageReleaseError(
+                        f"{image.environment_key} has High vulnerabilities "
+                        "without remediation receipt"
+                    )
+                remediation = load_remediation_receipt(
+                    image.remediation,
+                    image_reference=image.reference,
+                    critical=critical,
+                    high=high,
                 )
+                remediation_path = evidence_root / f"{prefix}.remediation.json"
+                remediation_path.write_bytes(canonical_json(remediation))
+                paths["remediation"] = remediation_path
+                remediation_digest = sha256_file(remediation_path)
             digest = "sha256:" + image.reference.rsplit("@sha256:", 1)[1]
             binding = source_binding | {
                 "dockerfile": image.dockerfile,
@@ -279,6 +316,11 @@ def publish(
                     "sbom": sha256_file(paths["sbom"]),
                     "security": sha256_file(paths["security"]),
                     "license": sha256_file(paths["license"]),
+                    **(
+                        {"remediation": remediation_digest}
+                        if remediation_digest is not None
+                        else {}
+                    ),
                 },
                 "signing": {
                     "algorithm": "Ed25519",
@@ -308,6 +350,11 @@ def publish(
                         "scanner": scanner_version,
                         "critical": critical,
                         "high": high,
+                        **(
+                            {"remediation_digest": remediation_digest}
+                            if remediation_digest is not None
+                            else {}
+                        ),
                     },
                 }
             )

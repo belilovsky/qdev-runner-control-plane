@@ -214,6 +214,51 @@ def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
     assert store.job_status(101) == "pending"
 
 
+def test_exact_capacity_directive_uses_fifo_within_its_validated_tuple(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("inadmissible-older", 100, repository="belilovsky/other"))
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/platform-portal",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="platform-contract-20260905",
+        worker_name="qdev-platform-primary",
+        tier="primary",
+        repository=None,
+        head_sha=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/platform-portal",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+    )
+
+    claimed = store.claim(
+        "qdev-platform-primary",
+        ("qdev-ci",),
+        claim_scope=scope,
+        repository="belilovsky/platform-portal",
+        head_sha="b" * 40,
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+
+
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     assert store.enqueue(

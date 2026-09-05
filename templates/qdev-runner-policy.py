@@ -223,6 +223,7 @@ def workflow_violations(
     release_runners: set[str],
     release_registry_workflows: set[str],
     recovery_workflows: set[str],
+    primary_self_hosted_workflows: set[str],
     allow_hosted: bool,
 ) -> list[str]:
     rel = path.relative_to(root).as_posix()
@@ -234,6 +235,9 @@ def workflow_violations(
     blocks = job_blocks(lines)
     allow_ghcr = allow_hosted and path.name in release_registry_workflows
     is_recovery_workflow = allow_hosted and path.name in recovery_workflows
+    is_primary_self_hosted_workflow = (
+        allow_hosted and path.name in primary_self_hosted_workflows
+    )
     if is_recovery_workflow and not is_manual_only_workflow(lines):
         errors.append(f"{rel}:1: recovery-workflow-not-manual-only")
     if allow_ghcr and has_pull_request_trigger(lines):
@@ -306,7 +310,9 @@ def workflow_violations(
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         selected_profiles = set(QDEV_PROFILE.findall(selector))
         if selected_profiles:
-            if allow_hosted and not is_recovery_workflow:
+            if allow_hosted and not (
+                is_recovery_workflow or is_primary_self_hosted_workflow
+            ):
                 errors.append(f"{rel}:{number}: self-hosted-runner-outside-recovery")
             if len(selected_profiles) != 1:
                 errors.append(f"{rel}:{number}: multiple-runner-profiles")
@@ -345,6 +351,7 @@ def check_repository(root: Path) -> list[str]:
     release_runners: set[str] = set()
     release_registry_workflows: set[str] = set()
     recovery_workflows: set[str] = set()
+    primary_self_hosted_workflows: set[str] = set()
     allow_hosted = False
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
@@ -376,6 +383,9 @@ def check_repository(root: Path) -> list[str]:
         release_runners.update(contract_list(text, "release_runners"))
         release_registry_workflows.update(contract_list(text, "release_registry_workflows"))
         recovery_workflows.update(contract_list(text, "recovery_workflows"))
+        primary_self_hosted_workflows.update(
+            contract_list(text, "primary_self_hosted_workflows")
+        )
         if allow_hosted and not recovery_workflows:
             errors.append(".github/qdev-runner.yml:1: missing-recovery-workflows")
         if recovery_workflows and not allow_hosted:
@@ -412,6 +422,11 @@ def check_repository(root: Path) -> list[str]:
         errors.append(
             ".github/qdev-runner.yml:1: recovery-workflow-missing " + workflow_name
         )
+    for workflow_name in sorted(primary_self_hosted_workflows - available_workflows):
+        errors.append(
+            ".github/qdev-runner.yml:1: primary-self-hosted-workflow-missing "
+            + workflow_name
+        )
     for path in sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml"))):
         errors.extend(
             workflow_violations(
@@ -421,6 +436,7 @@ def check_repository(root: Path) -> list[str]:
                 release_runners,
                 release_registry_workflows,
                 recovery_workflows,
+                primary_self_hosted_workflows,
                 allow_hosted,
             )
         )
