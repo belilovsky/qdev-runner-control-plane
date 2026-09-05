@@ -478,7 +478,7 @@ def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
     assert verifier_calls[0][-1] == "--require-authoritative-admission"
 
 
-def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
+def test_update_hook_keeps_active_lock_and_allows_incomplete_evidence_without_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     private = tmp_path / "private.pem"
@@ -502,7 +502,9 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
     controller["admission_id"] = None
     controller["claim_id"] = None
     _write_json(controller_path, controller)
-    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH)
+    historical_lock = json.loads(_git(repository, "show", f"{functional_sha}:{LOCK_PATH}"))
+    _write_json(repository / LOCK_PATH, historical_lock)
+    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH)
     _git(repository, "commit", "--amend", "--no-edit")
     evidence_sha = _git(repository, "rev-parse", "HEAD")
     hook = _hook_module()
@@ -515,13 +517,10 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
             "qdev-controller-verify-admission"
         ):
             verifier_calls.append([str(value) for value in command])
-            return subprocess.CompletedProcess(
-                command, 1, "", "authoritative admission requires a releasable payload\n"
-            )
+            return subprocess.CompletedProcess(command, 0, "", "")
         return original_run(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(hook.subprocess, "run", observed_run)
-    with pytest.raises(hook.GuardError, match="authoritative admission requires"):
-        hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
+    hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
     assert len(verifier_calls) == 1
-    assert verifier_calls[0][-1] == "--require-authoritative-admission"
+    assert "--require-authoritative-admission" not in verifier_calls[0]

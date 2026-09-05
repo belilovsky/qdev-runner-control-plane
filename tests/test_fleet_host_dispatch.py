@@ -108,6 +108,24 @@ def test_verified_controller_runtime_anchor_accepts_exact_legacy_migration_recei
         verified_controller_runtime_anchor(path, expected_uid=os.geteuid())
 
 
+def test_verified_controller_runtime_anchor_rejects_malformed_v2_identity(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "policy").mkdir()
+    path = _controller_status(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["release_digest"] = "d" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FleetHostDispatchError, match="identity is invalid"):
+        verified_controller_runtime_anchor(path, expected_uid=os.geteuid())
+
+    payload["release_digest"] = "sha256:" + "d" * 64
+    payload["activated_at"] = "2026-09-05T00:00:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FleetHostDispatchError, match="identity is invalid"):
+        verified_controller_runtime_anchor(path, expected_uid=os.geteuid())
+
+
 def _request(
     policy: FleetBootstrapPolicy,
     *,

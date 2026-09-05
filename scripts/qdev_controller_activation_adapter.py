@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -164,7 +165,17 @@ def _release_digest(candidate: Path) -> str:
     return digest
 
 
-def _read_status() -> tuple[str, str]:
+def _valid_activated_at(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _read_status(*, require_measured: bool = False) -> tuple[str, str]:
     try:
         metadata = STATUS_PATH.lstat()
         payload = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
@@ -184,13 +195,19 @@ def _read_status() -> tuple[str, str]:
         not in {"qdev-controller-release-status-v1", "qdev-controller-release-status-v2"}
         or set(payload) != expected_keys
         or payload.get("state") != "active"
+        or not _valid_activated_at(payload.get("activated_at"))
+        or (require_measured and schema != "qdev-controller-release-status-v2")
     ):
         raise AdapterError("runtime_status_invalid")
     revision = payload.get("revision")
     digest = payload.get("release_digest")
     if not isinstance(revision, str) or not SHA.fullmatch(revision):
         raise AdapterError("runtime_revision_invalid")
-    if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+    if (
+        schema == "qdev-controller-release-status-v1"
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
         digest = f"sha256:{digest}"
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AdapterError("runtime_digest_invalid")
@@ -269,6 +286,9 @@ def main() -> int:
         current_revision == request["controller_revision"]
         and current_digest == request["controller_release_digest"]
     ):
+        # A legacy v1 status is a migration anchor only.  It cannot prove that
+        # the requested measured release has already been activated.
+        _read_status(require_measured=True)
         response = _response(
             request,
             target,
@@ -302,7 +322,7 @@ def main() -> int:
         raise AdapterError("activation_outcome_unknown") from exc
     if completed.returncode != 0:
         raise AdapterError("activation_failed")
-    runtime_revision, runtime_digest = _read_status()
+    runtime_revision, runtime_digest = _read_status(require_measured=True)
     if (
         runtime_revision != request["controller_revision"]
         or runtime_digest != request["controller_release_digest"]

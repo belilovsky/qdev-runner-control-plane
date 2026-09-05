@@ -133,6 +133,8 @@ def test_activation_adapter_accepts_legacy_migration_anchor_and_measured_runtime
 
     monkeypatch.setattr(Path, "lstat", root_owned)
     assert ACTIVATION._read_status() == (SHA, DIGEST)
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
+        ACTIVATION._read_status(require_measured=True)
 
     status.write_text(
         json.dumps(
@@ -158,6 +160,19 @@ def test_activation_adapter_accepts_legacy_migration_anchor_and_measured_runtime
         encoding="utf-8",
     )
     assert ACTIVATION._read_status() == (SHA, DIGEST)
+    assert ACTIVATION._read_status(require_measured=True) == (SHA, DIGEST)
+
+    measured = json.loads(status.read_text(encoding="utf-8"))
+    measured["release_digest"] = "b" * 64
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_digest_invalid"):
+        ACTIVATION._read_status()
+
+    measured["release_digest"] = DIGEST
+    measured["activated_at"] = "not-a-date"
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
+        ACTIVATION._read_status()
 
 
 def test_candidate_preparation_requires_same_measured_runtime_anchor(

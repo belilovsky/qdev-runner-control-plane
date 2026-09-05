@@ -20,6 +20,7 @@ import stat
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -220,14 +221,30 @@ def verified_controller_runtime_anchor(
         )
     revision = raw.get("revision")
     release_digest = raw.get("release_digest")
-    if isinstance(release_digest, str) and re.fullmatch(r"[0-9a-f]{64}", release_digest):
+    if (
+        schema == "qdev-controller-release-status-v1"
+        and isinstance(release_digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", release_digest)
+    ):
         release_digest = f"sha256:{release_digest}"
+    activated_at = raw.get("activated_at")
+    try:
+        activated = (
+            datetime.fromisoformat(activated_at.replace("Z", "+00:00"))
+            if isinstance(activated_at, str)
+            else None
+        )
+    except ValueError:
+        activated = None
     if (
         raw.get("state") != "active"
         or not isinstance(revision, str)
         or not _SHA.fullmatch(revision)
         or not isinstance(release_digest, str)
         or not _DIGEST.fullmatch(release_digest)
+        or activated is None
+        or activated.tzinfo is None
+        or activated.utcoffset() is None
     ):
         raise FleetHostDispatchError(
             "fleet host dispatch controller runtime identity is invalid"
