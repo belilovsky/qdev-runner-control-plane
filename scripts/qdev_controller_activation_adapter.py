@@ -148,7 +148,13 @@ def _release_digest(candidate: Path) -> str:
             [
                 "/usr/bin/python3",
                 "-I",
-                str(candidate / "src" / "qdev_runner" / "controller_release.py"),
+                "-c",
+                (
+                    "import sys; "
+                    "sys.path.insert(0, sys.argv.pop(1)); "
+                    "from qdev_runner.controller_release import main; main()"
+                ),
+                str(candidate / "src"),
                 str(candidate),
             ],
             check=False,
