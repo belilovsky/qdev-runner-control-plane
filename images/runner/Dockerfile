@@ -123,8 +123,8 @@ WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS docker
-ARG BUILDKIT_VERSION=0.32.2
-ARG BUILDKIT_SHA256=2975d0f651ad96ba8b80b9992ae1f9a964f4408569af5b6dc36544165c3926af
+ARG BUILDKIT_VERSION=0.33.0
+ARG BUILDKIT_SHA256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/* \
