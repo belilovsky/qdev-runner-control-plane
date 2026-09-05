@@ -1,6 +1,17 @@
+import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_recovery_binding_provisioner():
+    path = ROOT / "scripts/provision_worker_recovery_bindings.py"
+    spec = importlib.util.spec_from_file_location("recovery_binding_provisioner", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
@@ -278,6 +289,28 @@ def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() ->
     assert '"QDEV_OPERATOR_PROXY_SECRET": proxy_secret' in helper
     assert '"QDEV_RECOVERY_AGENT_SIGNING_KEY": signing_key' in helper
     assert "secrets_rotated" in helper
+
+
+def test_recovery_binding_provisioner_accepts_active_prefixed_release_digest(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    status = tmp_path / "controller-release.json"
+    status.write_text(
+        json.dumps(
+            {
+                "state": "active",
+                "revision": "a" * 40,
+                "release_digest": "sha256:" + "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert helper._active_release(status) == {
+        "revision": "a" * 40,
+        "release_digest": "b" * 64,
+    }
 
 
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:

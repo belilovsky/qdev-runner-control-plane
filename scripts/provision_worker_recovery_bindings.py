@@ -81,12 +81,12 @@ def _active_release(path: Path) -> dict[str, str]:
         or not isinstance(document, dict)
         or document.get("state") != "active"
         or not re.fullmatch(r"[0-9a-f]{40}", str(document.get("revision", "")))
-        or not HEX.fullmatch(str(document.get("release_digest", "")))
+        or not DIGEST.fullmatch(str(document.get("release_digest", "")))
     ):
         raise ProvisionError("active controller release status is invalid")
     return {
         "revision": str(document["revision"]),
-        "release_digest": str(document["release_digest"]),
+        "release_digest": str(document["release_digest"]).removeprefix("sha256:"),
     }
 
 
