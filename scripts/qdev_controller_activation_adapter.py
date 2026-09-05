@@ -9,18 +9,22 @@ the candidate's fixed activation entrypoint with compare-and-swap semantics.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 RELEASES_ROOT = Path("/opt/qdev-runner-control-plane/releases")
 STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
+RELEASE_LOCK_PATH = Path("/run/lock/qdev-controller-release.lock")
 SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -252,6 +256,27 @@ def _read_status(*, require_measured: bool = False) -> tuple[str, str]:
     return revision, digest
 
 
+@contextmanager
+def _release_lock() -> Iterator[None]:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(RELEASE_LOCK_PATH, flags, 0o600)
+    except OSError as exc:
+        raise AdapterError("controller_release_lock_unavailable") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
+            raise AdapterError("controller_release_lock_invalid")
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise AdapterError("controller_release_busy") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def _response(
     request: dict[str, Any],
     target: dict[str, Any],
@@ -281,27 +306,36 @@ def main() -> int:
     candidate = _candidate(str(request["controller_revision"]))
     if _release_digest(candidate) != request["controller_release_digest"]:
         raise AdapterError("release_digest_mismatch")
-    current_revision, current_digest = _read_status()
-    if (
-        current_revision == request["controller_revision"]
-        and current_digest == request["controller_release_digest"]
-    ):
-        # A legacy v1 status is a migration anchor only.  It cannot prove that
-        # the requested measured release has already been activated.
-        _read_status(require_measured=True)
-        response = _response(
-            request,
-            target,
-            status="already_completed",
-            result={"runtime_revision": current_revision, "runtime_digest": current_digest},
-        )
-        print(json.dumps(response, sort_keys=True, separators=(",", ":")))
-        return 0
-    if (
-        current_revision != target["rollback_revision"]
-        or current_digest != target["rollback_release_digest"]
-    ):
-        raise AdapterError("rollback_anchor_mismatch")
+    with _release_lock():
+        current_revision, current_digest = _read_status()
+        if (
+            current_revision == request["controller_revision"]
+            and current_digest == request["controller_release_digest"]
+        ):
+            # A legacy v1 status is a migration anchor only.  It cannot prove that
+            # the requested measured release has already been activated.
+            runtime_revision, runtime_digest = _read_status(require_measured=True)
+            if (
+                runtime_revision != request["controller_revision"]
+                or runtime_digest != request["controller_release_digest"]
+            ):
+                raise AdapterError("activation_identity_mismatch")
+            response = _response(
+                request,
+                target,
+                status="already_completed",
+                result={
+                    "runtime_revision": runtime_revision,
+                    "runtime_digest": runtime_digest,
+                },
+            )
+            print(json.dumps(response, sort_keys=True, separators=(",", ":")))
+            return 0
+        if (
+            current_revision != target["rollback_revision"]
+            or current_digest != target["rollback_release_digest"]
+        ):
+            raise AdapterError("rollback_anchor_mismatch")
     environment = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C.UTF-8",

@@ -5,6 +5,8 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -105,6 +107,53 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
                 },
             }
         )
+
+
+def test_activation_adapter_replay_rechecks_measured_identity_under_release_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope = _activation_envelope()
+    monkeypatch.setattr(ACTIVATION.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        ACTIVATION.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(ACTIVATION, "_candidate", lambda _revision: Path("/fixed/release"))
+    monkeypatch.setattr(ACTIVATION, "_release_digest", lambda _candidate: DIGEST)
+
+    lock_held = False
+
+    @contextmanager
+    def release_lock() -> Iterator[None]:
+        nonlocal lock_held
+        assert lock_held is False
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    status_reads: list[bool] = []
+    identities = iter(
+        [
+            (SHA, DIGEST),
+            ("e" * 40, "sha256:" + "f" * 64),
+        ]
+    )
+
+    def read_status(*, require_measured: bool = False) -> tuple[str, str]:
+        assert lock_held is True
+        status_reads.append(require_measured)
+        return next(identities)
+
+    monkeypatch.setattr(ACTIVATION, "_release_lock", release_lock)
+    monkeypatch.setattr(ACTIVATION, "_read_status", read_status)
+
+    with pytest.raises(ACTIVATION.AdapterError, match="activation_identity_mismatch"):
+        ACTIVATION.main()
+    assert status_reads == [False, True]
+    assert lock_held is False
 
 
 def test_activation_adapter_accepts_legacy_migration_anchor_and_measured_runtime(

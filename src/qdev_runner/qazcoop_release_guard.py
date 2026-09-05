@@ -29,6 +29,7 @@ CONTROLLER_PATH = "app/contracts/qdev_ci_controller.v1.json"
 LOCK_PATH = "app/contracts/release_lock.v1.json"
 PUBLIC_KEY_MIRROR_PATH = "app/contracts/trust/qdev-ci-controller-ed25519.pub"
 EVIDENCE_ALLOWLIST = frozenset({PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH})
+INCOMPLETE_EVIDENCE_ALLOWLIST = frozenset({PAYLOAD_PATH, CONTROLLER_PATH})
 RELEASABLE = frozenset({"release_ready", "released"})
 EXPECTED_JOBS = {
     "reuse-first": "qdev-ci",
@@ -59,6 +60,20 @@ def _git(repository: Path, *arguments: str, text: bool = True) -> str | bytes:
     except (OSError, subprocess.CalledProcessError) as error:
         raise QazCoopReleaseGuardError("candidate repository cannot be inspected") from error
     return cast(str | bytes, result.stdout.strip() if text else result.stdout)
+
+
+def _require_ancestor(repository: Path, older: str, newer: str, message: str) -> None:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["/usr/bin/git", "merge-base", "--is-ancestor", older, newer],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+        )
+    except OSError as error:
+        raise QazCoopReleaseGuardError("candidate repository cannot be inspected") from error
+    if result.returncode:
+        raise QazCoopReleaseGuardError(message)
 
 
 def _strict_json_bytes(raw: bytes, label: str) -> dict[str, Any]:
@@ -397,8 +412,6 @@ def validate_evidence_commit(
         ).splitlines()
         if line
     }
-    if changed != EVIDENCE_ALLOWLIST:
-        raise QazCoopReleaseGuardError("evidence commit changed files outside the exact allowlist")
     for relative_path in EVIDENCE_ALLOWLIST:
         listing = str(_git(repository, "ls-tree", evidence_sha, "--", relative_path)).split()
         if len(listing) < 4 or listing[0] not in {"100644", "100755"}:
@@ -407,26 +420,44 @@ def validate_evidence_commit(
             )
 
     payload = _object_at(repository, evidence_sha, PAYLOAD_PATH)
-    controller = _object_at(repository, evidence_sha, CONTROLLER_PATH)
-    release_lock = _object_at(repository, evidence_sha, LOCK_PATH)
     if payload.get("contract") != "qazcoop-release-receipt-payload/v3":
         raise QazCoopReleaseGuardError("release payload contract is invalid")
     if payload.get("status") not in {"acceptance_incomplete", *RELEASABLE}:
         raise QazCoopReleaseGuardError("release payload status is invalid")
+    expected_changes = (
+        EVIDENCE_ALLOWLIST
+        if payload["status"] in RELEASABLE
+        else INCOMPLETE_EVIDENCE_ALLOWLIST
+    )
+    if changed != expected_changes:
+        raise QazCoopReleaseGuardError("evidence commit changed files outside the exact allowlist")
     if payload.get("functional_source_sha") != functional_sha:
         raise QazCoopReleaseGuardError("release payload is not bound to its direct parent")
+
+    controller = _object_at(repository, evidence_sha, CONTROLLER_PATH)
+    release_lock = _object_at(repository, evidence_sha, LOCK_PATH)
     _exact_fields(
         release_lock,
         {"contract", "status", "functional_source_sha", "public_marker"},
         "release lock",
     )
+    lock_source = _sha(release_lock.get("functional_source_sha"), "release lock source")
     if (
         release_lock.get("contract") != "qazcoop-release-lock/v1"
         or release_lock.get("status") != "active"
-        or release_lock.get("functional_source_sha") != functional_sha
-        or release_lock.get("public_marker") != f"qazcoop-{functional_sha[:7]}"
+        or release_lock.get("public_marker") != f"qazcoop-{lock_source[:7]}"
     ):
-        raise QazCoopReleaseGuardError("release lock is not bound to the functional parent")
+        raise QazCoopReleaseGuardError("release lock is invalid")
+    if payload["status"] in RELEASABLE:
+        if lock_source != functional_sha:
+            raise QazCoopReleaseGuardError("release lock is not bound to the functional parent")
+    else:
+        _require_ancestor(
+            repository,
+            lock_source,
+            functional_sha,
+            "historical release lock does not point into the functional history",
+        )
     if controller.get("contract") != "qdev-ci-controller-admission/v1":
         raise QazCoopReleaseGuardError("controller contract is invalid")
     _exact_fields(
