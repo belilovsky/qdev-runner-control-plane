@@ -820,7 +820,11 @@ class AdminPlatformLedger:
             document = json.loads(raw)
             if not isinstance(document, dict):
                 raise ValueError("receipt is not an object")
-            return verify_controller_receipt(document, receipt_key=self._receipt_key)
+            return verify_controller_receipt(
+                document,
+                receipt_key=self._receipt_key,
+                allow_ledger_bound=len(parts) == 3,
+            )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise AdminPlatformLedgerError(
                 "admin platform controller receipt is invalid"
@@ -867,6 +871,7 @@ class AdminPlatformLedger:
             verified = verify_controller_receipt(
                 document,
                 receipt_key=cast(str, self._receipt_key),
+                allow_ledger_bound=True,
             )
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise AdminPlatformLedgerError(
@@ -932,6 +937,7 @@ class AdminPlatformLedger:
                     verified = verify_controller_receipt(
                         document,
                         receipt_key=cast(str, self._receipt_key),
+                        allow_ledger_bound=True,
                     )
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
                     raise AdminPlatformLedgerError(

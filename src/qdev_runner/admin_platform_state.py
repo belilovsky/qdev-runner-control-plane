@@ -1026,8 +1026,18 @@ class AdminPlatformStateStore:
         encoded: list[tuple[str, str, bytes]] = []
         identities: list[dict[str, str]] = []
         for receipt in receipts:
-            raw = self._receipt_raw(receipt)
-            receipt_id = receipt.get("receipt_id")
+            try:
+                verified = verify_controller_receipt(receipt, receipt_key=self.receipt_key)
+            except ValueError as error:
+                raise AdminPlatformStateError(
+                    "admin platform transaction receipt is invalid"
+                ) from error
+            ledger_bound = self._signed_receipt(
+                cast(dict[str, Any], verified["payload"]),
+                ledger_bound=True,
+            )
+            raw = self._receipt_raw(ledger_bound)
+            receipt_id = ledger_bound.get("receipt_id")
             if (
                 not isinstance(receipt_id, str)
                 or len(receipt_id) != 64
@@ -1074,30 +1084,19 @@ class AdminPlatformStateStore:
                 for uri, checksum, _ in receipts
             ],
         }
-        binding = self._signed_receipt(payload)
+        binding = self._signed_receipt(payload, ledger_bound=True)
         binding_raw = self._receipt_raw(binding)
 
-        self.receipt_root.mkdir(parents=True, exist_ok=True)
-        transactions_root = self.receipt_root / "transactions"
-        transactions_root.mkdir(mode=0o700, exist_ok=True)
+        receipt_root_fd, root_fd = self._open_durable_child_directory(
+            "transactions",
+            unavailable="admin platform receipt transaction root is unavailable",
+            unsafe="admin platform receipt transaction root is unsafe",
+        )
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
-        try:
-            root_fd = os.open(transactions_root, directory_flags | nofollow)
-        except OSError as error:
-            raise AdminPlatformStateError(
-                "admin platform receipt transaction root is unavailable"
-            ) from error
         temporary_name = f".{transaction_id}.{secrets.token_hex(8)}.tmp"
         transaction_fd: int | None = None
         try:
-            metadata = os.fstat(root_fd)
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise AdminPlatformStateError(
-                    "admin platform receipt transaction root is unsafe"
-                )
-            self._set_runtime_owner(root_fd)
-            os.fchmod(root_fd, 0o700)
             os.mkdir(temporary_name, mode=0o700, dir_fd=root_fd)
             transaction_fd = os.open(
                 temporary_name,
@@ -1131,8 +1130,6 @@ class AdminPlatformStateStore:
             except OSError as error:
                 if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
                     raise
-                with suppress(FileNotFoundError):
-                    os.rmdir(temporary_name, dir_fd=root_fd)
                 existing_fd = os.open(
                     transaction_id,
                     directory_flags | nofollow,
@@ -1158,12 +1155,108 @@ class AdminPlatformStateStore:
                         )
                 finally:
                     os.close(existing_fd)
+                self._remove_temporary_transaction(
+                    root_fd,
+                    temporary_name,
+                    tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts)
+                    + ("ledger-binding.json",),
+                )
         finally:
             if transaction_fd is not None:
                 os.close(transaction_fd)
-            with suppress(FileNotFoundError, OSError):
-                os.rmdir(temporary_name, dir_fd=root_fd)
+            with suppress(FileNotFoundError, AdminPlatformStateError):
+                self._remove_temporary_transaction(
+                    root_fd,
+                    temporary_name,
+                    tuple(uri.rsplit("/", 1)[1] for uri, _, _ in receipts)
+                    + ("ledger-binding.json",),
+                )
             os.close(root_fd)
+            os.close(receipt_root_fd)
+
+    def _open_durable_child_directory(
+        self,
+        child_name: str,
+        *,
+        unavailable: str,
+        unsafe: str,
+    ) -> tuple[int, int]:
+        self.receipt_root.mkdir(parents=True, exist_ok=True)
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            receipt_root_fd = os.open(
+                self.receipt_root,
+                directory_flags | nofollow,
+            )
+        except OSError as error:
+            raise AdminPlatformStateError(unavailable) from error
+        child_fd: int | None = None
+        try:
+            root_metadata = os.fstat(receipt_root_fd)
+            if not stat.S_ISDIR(root_metadata.st_mode):
+                raise AdminPlatformStateError(unsafe)
+            self._set_runtime_owner(receipt_root_fd)
+            os.fchmod(receipt_root_fd, 0o700)
+            created = False
+            try:
+                os.mkdir(child_name, mode=0o700, dir_fd=receipt_root_fd)
+                created = True
+            except FileExistsError:
+                pass
+            if created:
+                os.fsync(receipt_root_fd)
+            child_fd = os.open(
+                child_name,
+                directory_flags | nofollow,
+                dir_fd=receipt_root_fd,
+            )
+            child_metadata = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_metadata.st_mode):
+                raise AdminPlatformStateError(unsafe)
+            self._set_runtime_owner(child_fd)
+            os.fchmod(child_fd, 0o700)
+            return receipt_root_fd, child_fd
+        except BaseException:
+            if child_fd is not None:
+                os.close(child_fd)
+            os.close(receipt_root_fd)
+            raise
+
+    @staticmethod
+    def _remove_temporary_transaction(
+        root_fd: int,
+        temporary_name: str,
+        allowed_filenames: tuple[str, ...],
+    ) -> None:
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            temporary_fd = os.open(
+                temporary_name,
+                directory_flags | nofollow,
+                dir_fd=root_fd,
+            )
+        except FileNotFoundError:
+            return
+        try:
+            entries = os.listdir(temporary_fd)
+            if not set(entries).issubset(set(allowed_filenames)):
+                raise AdminPlatformStateError(
+                    "temporary receipt transaction contains unexpected files"
+                )
+            for filename in entries:
+                metadata = os.stat(filename, dir_fd=temporary_fd, follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise AdminPlatformStateError(
+                        "temporary receipt transaction contains an unsafe file"
+                    )
+                os.unlink(filename, dir_fd=temporary_fd)
+            os.fsync(temporary_fd)
+        finally:
+            os.close(temporary_fd)
+        os.rmdir(temporary_name, dir_fd=root_fd)
+        os.fsync(root_fd)
 
     def _write_transaction_file(self, directory_fd: int, filename: str, raw: bytes) -> None:
         descriptor = os.open(
@@ -1178,22 +1271,37 @@ class AdminPlatformStateStore:
             view = memoryview(raw)
             while view:
                 written = os.write(descriptor, view)
+                if written == 0:
+                    raise OSError(errno.ENOSPC, "receipt write made no progress")
                 view = view[written:]
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
 
-    def _signed_receipt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _signed_receipt(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        ledger_bound: bool = False,
+    ) -> dict[str, Any]:
         digest = payload_digest(payload)
         unsigned: dict[str, Any] = {
-            "schema": "qdev-controller-receipt-v2",
+            "schema": (
+                "qdev-controller-receipt-v3"
+                if ledger_bound
+                else "qdev-controller-receipt-v2"
+            ),
             "receipt_id": digest,
             "payload": dict(payload),
             "digest": digest,
-            "enforcement": "enforced",
+            "enforcement": "ledger-bound" if ledger_bound else "enforced",
         }
         receipt = unsigned | {"signature": sign_payload(unsigned, self.receipt_key)}
-        return verify_controller_receipt(receipt, receipt_key=self.receipt_key)
+        return verify_controller_receipt(
+            receipt,
+            receipt_key=self.receipt_key,
+            allow_ledger_bound=ledger_bound,
+        )
 
     def _persist_ledger_link(
         self,
@@ -1208,31 +1316,27 @@ class AdminPlatformStateStore:
                 "observed_at": observed_at,
                 "previous_ledger_sha256": previous_ledger_sha256,
                 "target_ledger_sha256": target_ledger_sha256,
-            }
+            },
+            ledger_bound=True,
         )
         raw = self._receipt_raw(receipt)
-        self.receipt_root.mkdir(parents=True, exist_ok=True)
-        link_root = self.receipt_root / "ledger-links"
-        link_root.mkdir(mode=0o700, exist_ok=True)
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        try:
-            directory = os.open(link_root, directory_flags | nofollow)
-        except OSError as error:
-            raise AdminPlatformStateError(
-                "admin platform ledger lineage root is unavailable"
-            ) from error
+        receipt_root_fd, directory = self._open_durable_child_directory(
+            "ledger-links",
+            unavailable="admin platform ledger lineage root is unavailable",
+            unsafe="admin platform ledger lineage root is unsafe",
+        )
         filename = f"{target_ledger_sha256}.json"
+        temporary_name = f".{filename}.{secrets.token_hex(8)}.tmp"
         try:
-            metadata = os.fstat(directory)
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise AdminPlatformStateError(
-                    "admin platform ledger lineage root is unsafe"
-                )
-            self._set_runtime_owner(directory)
-            os.fchmod(directory, 0o700)
+            self._write_transaction_file(directory, temporary_name, raw)
             try:
-                self._write_transaction_file(directory, filename, raw)
+                os.link(
+                    temporary_name,
+                    filename,
+                    src_dir_fd=directory,
+                    dst_dir_fd=directory,
+                    follow_symlinks=False,
+                )
             except FileExistsError as error:
                 existing = self._read_regular_file_at(
                     directory,
@@ -1243,9 +1347,14 @@ class AdminPlatformStateStore:
                     raise AdminPlatformStateError(
                         "immutable admin platform ledger lineage collision"
                     ) from error
+            os.unlink(temporary_name, dir_fd=directory)
             os.fsync(directory)
         finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=directory)
+                os.fsync(directory)
             os.close(directory)
+            os.close(receipt_root_fd)
 
     @staticmethod
     def _touch(document: dict[str, Any], observed_at: str) -> None:

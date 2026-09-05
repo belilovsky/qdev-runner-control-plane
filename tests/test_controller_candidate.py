@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -21,6 +23,7 @@ from qdev_runner.controller_candidate import (
     prepare_controller_candidate,
 )
 from qdev_runner.operations import OperationStore, parse_utc
+from qdev_runner.operator import verify_controller_receipt
 
 RECEIPT_KEY = "controller-candidate-test-receipt-key"
 CURRENT_SHA = "8" * 40
@@ -190,7 +193,12 @@ def test_prepare_controller_candidate_resumes_after_terminal_transition(
 def test_prepare_controller_candidate_survives_commit_failure_without_split_state(
     tmp_path: Path,
 ) -> None:
-    state, _, ledger, receipts, _ = _initialize(tmp_path)
+    # A future durable timestamp makes both attempts produce the exact same
+    # transaction ID and therefore exercises immutable-transaction replay.
+    state, _, ledger, receipts, _ = _initialize(
+        tmp_path,
+        observed_at="2099-09-05T00:00:00Z",
+    )
     before = ledger.read_bytes()
     before_digest = hashlib.sha256(before).hexdigest()
 
@@ -217,10 +225,25 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
         receipt["receipt_uri"].encode() not in before
         for receipt in interrupted_binding["receipts"]
     )
+    orphan = json.loads(
+        next(
+            path
+            for path in interrupted_transactions[0].glob("*.json")
+            if path.name != "ledger-binding.json"
+        ).read_text()
+    )
+    with pytest.raises(ValueError, match="requires committed ledger context"):
+        verify_controller_receipt(orphan, receipt_key=RECEIPT_KEY)
+    orphan_binding = json.loads(
+        (interrupted_transactions[0] / "ledger-binding.json").read_text()
+    )
+    with pytest.raises(ValueError, match="requires committed ledger context"):
+        verify_controller_receipt(orphan_binding, receipt_key=RECEIPT_KEY)
 
     result = _prepare(tmp_path)
 
     assert result["status"] == "completed"
+    assert len(list((receipts / "transactions").iterdir())) == 1
     _, recovered = state.current()
     assert recovered["program"]["status"] == "active"
     assert recovered["active_candidate"]["source_sha"] == NEXT_SHA
@@ -278,6 +301,77 @@ def test_transaction_receipts_fail_closed_when_ledger_lineage_is_missing(
             receipt_key=RECEIPT_KEY,
             receipt_root=receipts,
         )
+
+
+def test_child_receipt_directory_creation_fsyncs_receipt_root(tmp_path: Path) -> None:
+    receipts = tmp_path / "receipts"
+    state = AdminPlatformStateStore(
+        tmp_path / "ledger.yml",
+        receipt_key=RECEIPT_KEY,
+        receipt_root=receipts,
+    )
+    synced_inodes: list[int] = []
+    real_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        real_fsync(descriptor)
+
+    with patch(
+        "qdev_runner.admin_platform_state.os.fsync",
+        side_effect=record_fsync,
+    ):
+        receipt_root_fd, child_fd = state._open_durable_child_directory(
+            "transactions",
+            unavailable="unavailable",
+            unsafe="unsafe",
+        )
+        os.close(child_fd)
+        os.close(receipt_root_fd)
+
+    assert receipts.stat().st_ino in synced_inodes
+
+
+def test_torn_ledger_link_does_not_poison_retry(tmp_path: Path) -> None:
+    state, _, _, receipts, _ = _initialize(tmp_path)
+    target = "f" * 64
+
+    def torn_write(directory_fd: int, filename: str, raw: bytes) -> None:
+        descriptor = os.open(
+            filename,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            os.write(descriptor, raw[:16])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        raise OSError(errno.ENOSPC, "simulated torn lineage write")
+
+    with (
+        patch.object(state, "_write_transaction_file", side_effect=torn_write),
+        pytest.raises(OSError, match="simulated torn lineage write"),
+    ):
+        state._persist_ledger_link(
+            previous_ledger_sha256="e" * 64,
+            target_ledger_sha256=target,
+            observed_at="2026-09-05T00:00:00Z",
+        )
+
+    link_root = receipts / "ledger-links"
+    assert not (link_root / f"{target}.json").exists()
+    assert not list(link_root.glob(f".{target}.json.*.tmp"))
+
+    state._persist_ledger_link(
+        previous_ledger_sha256="e" * 64,
+        target_ledger_sha256=target,
+        observed_at="2026-09-05T00:00:00Z",
+    )
+
+    assert (link_root / f"{target}.json").read_bytes()
+    assert not list(link_root.glob(f".{target}.json.*.tmp"))
 
 
 def test_prepare_controller_candidate_uses_monotonic_durable_timestamps(
