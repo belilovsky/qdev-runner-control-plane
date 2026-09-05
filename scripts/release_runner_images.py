@@ -25,6 +25,10 @@ def main() -> int:
     parser.add_argument("--browser", required=True)
     parser.add_argument("--docker", required=True)
     parser.add_argument("--sidecar", required=True)
+    parser.add_argument("--general-remediation", type=Path)
+    parser.add_argument("--browser-remediation", type=Path)
+    parser.add_argument("--docker-remediation", type=Path)
+    parser.add_argument("--sidecar-remediation", type=Path)
     args = parser.parse_args()
     if args.initialize_signing_key:
         initialize_key(args.private_key, args.public_key)
@@ -32,14 +36,34 @@ def main() -> int:
         repo=args.repo.resolve(),
         revision=args.revision,
         images=[
-            ImageInput("QDEV_RUNNER_IMAGE", "general", args.general, "images/runner/Dockerfile"),
             ImageInput(
-                "QDEV_RUNNER_BROWSER_IMAGE", "browser", args.browser, "images/runner/Dockerfile"
+                "QDEV_RUNNER_IMAGE",
+                "general",
+                args.general,
+                "images/runner/Dockerfile",
+                args.general_remediation,
             ),
             ImageInput(
-                "QDEV_RUNNER_DOCKER_IMAGE", "docker", args.docker, "images/runner/Dockerfile"
+                "QDEV_RUNNER_BROWSER_IMAGE",
+                "browser",
+                args.browser,
+                "images/runner/Dockerfile",
+                args.browser_remediation,
             ),
-            ImageInput("QDEV_DOCKER_SIDECAR_IMAGE", "sidecar", args.sidecar, None),
+            ImageInput(
+                "QDEV_RUNNER_DOCKER_IMAGE",
+                "docker",
+                args.docker,
+                "images/runner/Dockerfile",
+                args.docker_remediation,
+            ),
+            ImageInput(
+                "QDEV_DOCKER_SIDECAR_IMAGE",
+                "sidecar",
+                args.sidecar,
+                "images/runner/Dockerfile",
+                args.sidecar_remediation,
+            ),
         ],
         evidence_root=args.evidence_root,
         manifest_path=args.manifest,
