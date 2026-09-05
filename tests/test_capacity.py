@@ -37,7 +37,7 @@ def test_measure_enforces_configured_floor_load_and_psi(tmp_path: Path, monkeypa
     assert result.cpu_psi_avg10 == 20.0
 
 
-def test_measure_allows_missing_cpu_psi_file(tmp_path: Path, monkeypatch) -> None:
+def test_measure_denies_missing_cpu_psi_file(tmp_path: Path, monkeypatch) -> None:
     meminfo = tmp_path / "meminfo"
     _write_meminfo(meminfo)
     monkeypatch.setattr(
@@ -56,5 +56,6 @@ def test_measure_allows_missing_cpu_psi_file(tmp_path: Path, monkeypatch) -> Non
         cpu_psi_path=tmp_path / "missing",
     )
 
-    assert result.allowed is True
-    assert result.cpu_psi_avg10 == 0.0
+    assert result.allowed is False
+    assert result.cpu_psi_avg10 == -1.0
+    assert "resource_measurements_missing_or_invalid" in result.blockers

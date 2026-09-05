@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,6 +105,67 @@ def _allowed_raw() -> Capacity:
         cpus=4,
         blockers=(),
     )
+
+
+async def test_slow_runtime_audit_preserves_lease_heartbeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _worker(tmp_path)
+    worker.active_job_ids.add(321)
+    release_inspector = threading.Event()
+    inspection_calls = 0
+    payloads = []
+
+    def inspect() -> dict:
+        nonlocal inspection_calls
+        inspection_calls += 1
+        assert release_inspector.wait(timeout=5)
+        return {"status": "passed", "observed_at": datetime.now(UTC).isoformat()}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(204)
+
+    monkeypatch.setattr(worker, "inspect_runtime", inspect)
+    monkeypatch.setattr("qdev_runner.worker.measure_raw", _allowed_raw)
+    await worker.client.aclose()
+    worker.client = httpx.AsyncClient(
+        base_url="https://worker.ci.qdev.run", transport=httpx.MockTransport(respond)
+    )
+    try:
+        await asyncio.wait_for(worker.heartbeat(), timeout=1)
+        first_inspection = worker.runtime_audit_task
+        await asyncio.wait_for(worker.heartbeat(), timeout=1)
+        assert worker.runtime_audit_task is first_inspection
+        assert all(payload["active_job_ids"] == [321] for payload in payloads)
+        assert all(payload["detail"]["runtime_audit"] == {} for payload in payloads)
+        release_inspector.set()
+        assert first_inspection is not None
+        await first_inspection
+        assert inspection_calls == 1
+        await worker.heartbeat()
+        assert payloads[-1]["detail"]["runtime_audit"]["status"] == "passed"
+    finally:
+        release_inspector.set()
+        await worker.close()
+
+
+async def test_runtime_inspection_exception_fails_closed_without_secret_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _worker(tmp_path)
+
+    def inspect() -> dict:
+        raise ValueError("private environment material")
+
+    monkeypatch.setattr(worker, "inspect_runtime", inspect)
+    try:
+        await worker.refresh_runtime_audit()
+        assert worker.runtime_audit["status"] == "failed"
+        assert worker.runtime_audit["errors"] == ["runtime_inspection_failed:ValueError"]
+        assert "private" not in json.dumps(worker.runtime_audit)
+    finally:
+        await worker.close()
 
 
 async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) -> None:

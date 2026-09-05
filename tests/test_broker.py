@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from worker_evidence import seed_worker, worker_detail
 
 from qdev_runner.broker import (
     artifact_job_is_active,
@@ -158,6 +159,7 @@ def test_expired_scope_heartbeats_only_its_already_bound_job(
         encoding="utf-8",
     )
     store = Store(tmp_path / "broker.db")
+    seed_worker(store, "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"))
     assert store.enqueue(
         QueuedJob(
             delivery_id="delivery-100",
@@ -205,7 +207,10 @@ def test_expired_scope_heartbeats_only_its_already_bound_job(
         "active_jobs": 1,
         "active_job_ids": [100],
         "claim_scope_id": "maturity-20260831",
-        "detail": {},
+        "detail": worker_detail(
+            "qdev-maturity-primary", ("qdev-ci", "qdev-ci-docker"),
+            concurrency=2, active_ids=(100,),
+        ),
     }
     with TestClient(app) as client:
         accepted = client.post(
@@ -227,3 +232,8 @@ def test_expired_scope_heartbeats_only_its_already_bound_job(
     }
     assert wrong_worker.status_code == 403
     assert rejected.status_code == 401
+    recorded = store.health()["workers"][0]
+    assert not json.loads(recorded["detail_json"])["controller_enrollment"]["authenticated"]
+    assert recorded["capacity_allowed"] is False
+    assert "worker_identity_unenrolled" in recorded["admission_blockers"]
+    assert store.job(100)["status"] == "claimed"

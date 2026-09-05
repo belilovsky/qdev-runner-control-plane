@@ -367,10 +367,20 @@ class WorkerSettings:
     mtls_cert: str | None = None
     mtls_key: str | None = None
     capacity_directive_key: str | None = None
+    image_release_manifest: Path = Path("/etc/qdev-runner/runner-images.json")
 
     @classmethod
     def from_env(cls) -> WorkerSettings:
         worker_name, tier = _worker_identity()
+        profiles = tuple(dict.fromkeys(
+            part.strip() for part in os.environ.get(
+                "QDEV_WORKER_PROFILES", "qdev-ci,qdev-ci-browser,qdev-ci-docker"
+            ).split(",") if part.strip()
+        ))
+        if not profiles or set(profiles).difference(
+            {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+        ):
+            raise RuntimeError("QDEV_WORKER_PROFILES must select supported CI profiles")
         claim_scope_id = os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None
         worker_token = os.environ.get("QDEV_WORKER_TOKEN", "").strip() or None
         if not worker_token and not claim_scope_id:
@@ -403,13 +413,7 @@ class WorkerSettings:
             worker_token=worker_token,
             worker_name=worker_name,
             tier=tier,
-            profiles=tuple(
-                part.strip()
-                for part in os.environ.get(
-                    "QDEV_WORKER_PROFILES", "qdev-ci,qdev-ci-browser,qdev-ci-docker"
-                ).split(",")
-                if part.strip()
-            ),
+            profiles=profiles,
             concurrency=max(1, int(os.environ.get("QDEV_WORKER_CONCURRENCY", "1"))),
             poll_seconds=max(1.0, float(os.environ.get("QDEV_WORKER_POLL_SECONDS", "3"))),
             container_engine=os.environ.get("QDEV_CONTAINER_ENGINE", "docker"),
@@ -444,4 +448,7 @@ class WorkerSettings:
             capacity_directive_key=(
                 os.environ.get("QDEV_CAPACITY_DIRECTIVE_KEY", "").strip() or None
             ),
+            image_release_manifest=Path(os.environ.get(
+                "QDEV_RUNNER_IMAGE_RELEASE_MANIFEST", "/etc/qdev-runner/runner-images.json"
+            )),
         )

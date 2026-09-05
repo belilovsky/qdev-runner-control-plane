@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from worker_evidence import seed_worker, worker_detail
 
 from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
@@ -163,6 +164,10 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "timeout_minutes": 90,
                         "allow_public_pr": True,
                     },
+                },
+                "worker_enrollments": {
+                    WORKER_NAME: {"tier": "primary",
+                                  "profiles": ["qdev-ci-docker", "qdev-ci-browser"]},
                 },
             },
             sort_keys=True,
@@ -674,6 +679,7 @@ def _seed_stale_running_job(client: TestClient) -> float:
         payload={"workflow_job": {"run_attempt": 1}},
     )
     assert store.enqueue(queued) is True
+    seed_worker(store, WORKER_NAME, ("qdev-ci-docker",))
     claimed = store.claim(WORKER_NAME, ("qdev-ci-docker",))
     assert claimed is not None
     store.set_status(42, "running", "runner started")
@@ -696,11 +702,12 @@ def _heartbeat(
     admitted: bool = False,
     scope_id: str | None = None,
     profiles: list[str] | None = None,
+    override: dict[str, Any] | None = None,
 ) -> dict[str, object]:
     registered_profiles = profiles or ["qdev-ci-docker"]
     raw = {
         "allowed": True,
-        "disk_used_pct": 87.0,
+        "disk_used_pct": 40.0 if admitted else 87.0,
         "disk_free_gib": disk_free_gib,
         "memory_available_gib": 8.0,
         "load_15": 0.5,
@@ -709,6 +716,7 @@ def _heartbeat(
         "blockers": [],
     }
     baseline = raw if admitted else raw | {"allowed": False, "blockers": ["disk_used_pct"]}
+    effective = raw if override else baseline
     response = client.post(
         "/internal/v1/workers/heartbeat",
         headers={"X-QDev-Worker-Token": WORKER_TOKEN},
@@ -719,21 +727,54 @@ def _heartbeat(
             "active_jobs": active_jobs,
             "active_job_ids": [42] if active_jobs else [],
             "detail": {
-                **baseline,
+                **worker_detail(WORKER_NAME, tuple(registered_profiles)),
+                **effective,
                 "raw_capacity": raw,
                 "baseline_capacity": baseline,
-                "effective_capacity": baseline,
-                "effective_profiles": registered_profiles if admitted else [],
-                "capacity_directive_id": None,
+                "effective_capacity": effective,
+                "effective_profiles": registered_profiles if admitted or override else [],
+                "capacity_directive_id": override["operation_id"] if override else None,
+                "capacity_directive_expires_at": override["expires_at"] if override else None,
+                "capacity_directive_repository": override["repository"] if override else None,
+                "capacity_directive_head_sha": override["head_sha"] if override else None,
                 "configured_claim_scope_id": scope_id,
                 "concurrency": 1,
                 "slots_available": 0 if active_jobs else 1,
-                "min_disk_free_gib": 30.0,
+                "min_disk_free_gib": override["min_disk_free_gib"] if override else 30.0,
+                "max_disk_used_pct": override["max_disk_used_pct"] if override else 85.0,
             },
         },
     )
     assert response.status_code == 200
     return response.json()
+
+
+@pytest.mark.parametrize("worker_name,profiles", [
+    ("unknown-primary", ["qdev-ci-docker"]),
+    (WORKER_NAME, ["qdev-ci"]),
+])
+def test_heartbeat_cannot_self_enroll_or_borrow_profiles(
+    tmp_path: Path, worker_name: str, profiles: list[str],
+) -> None:
+    client = _app(tmp_path)
+    detail = worker_detail(worker_name, tuple(profiles))
+    _seed_pending_job(client, 901, "cannot-self-enroll")
+    assert detail["controller_enrollment"]["authenticated"] is True
+    response = client.post(
+        "/internal/v1/workers/heartbeat",
+        headers={"X-QDev-Worker-Token": WORKER_TOKEN},
+        json={
+            "worker_name": worker_name, "tier": "primary", "profiles": profiles,
+            "active_jobs": 0, "active_job_ids": [], "detail": detail,
+        },
+    )
+    assert response.status_code == 200
+    store: Store = client.app.state.store
+    recorded = store.health()["workers"][0]
+    assert json.loads(recorded["detail_json"])["controller_enrollment"]["authenticated"] is False
+    assert client.get("/health").json()["primary_capacity_allowed"] is False
+    assert store.claim(worker_name, tuple(profiles)) is None
+    assert store.health()["jobs"]["pending"] == 1
 
 
 def _seed_pending_job(
@@ -1203,6 +1244,9 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     )["payload"]
     assert cancelled_payload["operation"]["operation_id"] == operation["operation_id"]
     assert cancelled_payload["operation"]["status"] == "cancelled"
+    # A worker cannot revive a cancelled directive by replaying its heartbeat.
+    _heartbeat(client, override=operation)
+    assert client.get("/health").json()["primary_capacity_allowed"] is False
 
 
 def test_durable_queue_audit_is_signed_and_reports_profile_heads(tmp_path: Path) -> None:
@@ -1666,15 +1710,21 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             "capacity_head_sha": "a" * 40,
         },
     )
+    bound_claim = claim | {
+        "capacity_directive_id": operation["operation_id"],
+        "capacity_repository": "belilovsky/qazlake",
+        "capacity_head_sha": "b" * 40,
+    }
+    # Issuance is not worker admission. Require fresh evidence that the
+    # authenticated worker applied this exact, still-active directive.
+    assert client.post(
+        "/internal/v1/jobs/claim", headers=headers, json=bound_claim,
+    ).status_code == 204
+    _heartbeat(client, disk_free_gib=20.0, override=operation)
     accepted = client.post(
         "/internal/v1/jobs/claim",
         headers=headers,
-        json=claim
-        | {
-            "capacity_directive_id": operation["operation_id"],
-            "capacity_repository": "belilovsky/qazlake",
-            "capacity_head_sha": "b" * 40,
-        },
+        json=bound_claim,
     )
 
     assert missing_binding.status_code == 403
@@ -1683,7 +1733,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     assert wrong_repository.json()["detail"] == "capacity override binding rejected"
     assert wrong_sha.status_code == 403
     assert wrong_sha.json()["detail"] == "capacity override binding rejected"
-    assert accepted.status_code == 200
+    assert accepted.status_code == 200, store.health()
     assert accepted.json()["job_id"] == 102
     assert accepted.json()["repository"] == "belilovsky/qazlake"
     assert store.job_status(100) == "pending"

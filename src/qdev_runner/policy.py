@@ -43,6 +43,24 @@ class Policy:
             )
 
         self.repository_profile_disk_mb: dict[tuple[str, str], int] = {}
+        self.worker_enrollments: dict[str, dict[str, Any]] = {}
+        workers = profiles_data.get("worker_enrollments", {})
+        if not isinstance(workers, dict):
+            raise PolicyError("worker_enrollments must be a mapping")
+        for name, enrollment in workers.items():
+            if (
+                not isinstance(name, str) or not name
+                or not isinstance(enrollment, dict)
+                or enrollment.get("tier") not in ("primary", "reserve")
+                or not name.endswith("-" + enrollment["tier"])
+                or not isinstance(enrollment.get("profiles"), list)
+                or not enrollment["profiles"]
+                or any(not isinstance(profile, str) or profile not in self.profiles
+                       for profile in enrollment["profiles"])
+                or len(set(enrollment["profiles"])) != len(enrollment["profiles"])
+            ):
+                raise PolicyError("worker enrollment identity/profile is invalid")
+            self.worker_enrollments[name] = enrollment
         raw_overrides = profiles_data.get("repository_admission_disk_mb", {})
         if not isinstance(raw_overrides, dict):
             raise PolicyError("repository_admission_disk_mb must be a mapping")

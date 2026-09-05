@@ -1,4 +1,15 @@
 schema_version: qdev-runner-profiles-v1
+# Existing ephemeral workers only. This does not register GitHub runners,
+# enlarge capacity, or repurpose either fixed production service identity.
+# Other names require their own source-owned enrollment; heartbeat alone is
+# not permission to invent another worker or borrow its profiles.
+worker_enrollments:
+  srv1879763-primary:
+    tier: primary
+    profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+  mail-qdev-reserve:
+    tier: reserve
+    profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
 # QazShield's pinned release-image workflow has a measured bounded build scope.
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.

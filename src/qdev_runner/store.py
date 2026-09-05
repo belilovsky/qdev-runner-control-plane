@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .admission import Admission, worker_admission
 from .claim_scope import SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
@@ -764,6 +765,19 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    def _admission(
+        self, connection: sqlite3.Connection, row: sqlite3.Row, *, now: float,
+        max_age: float = 90,
+    ) -> Admission:
+        durable_active = connection.execute(
+            "SELECT COUNT(*) FROM jobs WHERE worker_name=? AND status IN ('claimed','running')",
+            (row["name"],),
+        ).fetchone()[0]
+        return worker_admission(
+            dict(row), now=now, durable_active=int(durable_active), max_age=max_age,
+            fenced=self._worker_fenced(connection, str(row["name"])),
+        )
+
     def _has_available_tier_slot(
         self,
         connection: sqlite3.Connection,
@@ -781,16 +795,14 @@ class Store:
             (cutoff,),
         ).fetchall()
         for row in rows:
-            if self._worker_fenced(connection, str(row["name"])):
-                continue
+            admission = self._admission(connection, row, now=time.time())
             detail = json.loads(row["detail_json"])
-            worker_profiles = {str(item).lower() for item in json.loads(row["profiles_json"])}
+            worker_profiles = set(admission.profiles)
             if profile is not None and profile.lower() not in worker_profiles:
                 continue
             if (
                 detail.get("tier") == tier
-                and detail.get("allowed", True) is True
-                and int(row["active_jobs"]) < _worker_concurrency(detail)
+                and admission.allowed
                 and _disk_headroom_allowed(detail, profile_disk_mb)
             ):
                 return True
@@ -817,6 +829,29 @@ class Store:
             if self._worker_fenced(connection, worker_name):
                 connection.execute("COMMIT")
                 return None
+            worker = connection.execute(
+                "SELECT * FROM workers WHERE name=?", (worker_name,)
+            ).fetchone()
+            admission = (
+                self._admission(connection, worker, now=now, max_age=primary_max_age_seconds)
+                if worker is not None else None
+            )
+            if (
+                admission is None or not admission.allowed or not profiles
+                or not set(profiles).issubset(admission.profiles)
+                or json.loads(worker["detail_json"]).get("tier") != tier
+            ):
+                connection.execute("COMMIT")
+                return None
+            worker_detail = json.loads(worker["detail_json"])
+            # A request may ask for a stricter disk gate, never contradict a
+            # measured heartbeat to borrow non-existent disk headroom.
+            measured_free = float(worker_detail["raw_capacity"]["disk_free_gib"])
+            measured_floor = float(worker_detail["min_disk_free_gib"])
+            disk_free_gib = min(measured_free, disk_free_gib) if disk_free_gib is not None \
+                else measured_free
+            min_disk_free_gib = max(measured_floor, min_disk_free_gib) \
+                if min_disk_free_gib is not None else measured_floor
             self._repair_invalid_queue_timestamps(connection)
             selected = None
             selected_profile = None
@@ -3663,6 +3698,7 @@ class Store:
         return updated.rowcount == 1
 
     def health(self) -> dict[str, Any]:
+        now = time.time()
         with self.connect() as connection:
             counts = {
                 row["status"]: row["count"]
@@ -3676,12 +3712,10 @@ class Store:
             ).fetchall():
                 detail = json.loads(row["detail_json"])
                 concurrency = _worker_concurrency(detail)
-                active_jobs = int(row["active_jobs"])
-                slots_available = max(0, concurrency - active_jobs)
                 recovery_fenced = self._worker_fenced(connection, str(row["name"]))
-                capacity_allowed = detail.get("allowed", True) is True and not recovery_fenced
-                if recovery_fenced:
-                    slots_available = 0
+                admission = self._admission(connection, row, now=now)
+                slots_available = admission.slots
+                capacity_allowed = admission.allowed
                 workers.append(
                     dict(row)
                     | {
@@ -3691,6 +3725,7 @@ class Store:
                         "slots_available": slots_available,
                         "available": capacity_allowed and slots_available > 0,
                         "recovery_fenced": recovery_fenced,
+                        "admission_blockers": list(admission.blockers),
                     }
                 )
-        return {"jobs": counts, "workers": workers, "now": time.time()}
+        return {"jobs": counts, "workers": workers, "now": now}

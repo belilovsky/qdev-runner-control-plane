@@ -9,7 +9,10 @@ import pytest
 
 
 def load_module() -> ModuleType:
-    path = Path(__file__).resolve().parents[1] / "scripts/audit_worker_runtime.py"
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/qdev_runner/worker_runtime_audit.py"
+    )
     spec = importlib.util.spec_from_file_location("audit_worker_runtime", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
