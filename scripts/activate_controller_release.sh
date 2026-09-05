@@ -243,6 +243,7 @@ required=(
   config/managed-registry.yml \
   config/managed-release-ledger.yml \
   scripts/bootstrap_admin_platform_ledger_v3.py \
+  scripts/prepare_controller_candidate.py \
   scripts/dispatch_fleet_bootstrap.py \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
@@ -259,6 +260,7 @@ required=(
 if [[ "$rollback_mode" != true ]]; then
   required+=(
     src/qdev_runner/durable_state.py
+    src/qdev_runner/controller_candidate.py
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
