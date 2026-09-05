@@ -916,17 +916,10 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     )
 
     response = client.post(path, json=body, headers=OPERATOR_HEADERS)
-    assert response.status_code == 200
-    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
-    payload = receipt["payload"]
-    assert payload["kind"] == "fleet-bootstrap-recovery"
-    assert payload["status"] == "access_blocked"
-    assert payload["operation_status"] == "pending"
-    assert payload["worker_name"] == "qdev-platform-ci-187"
-    assert payload["target_id"].endswith("qdev-platform-ci-187")
-    assert payload["active_jobs"] == 0
+    assert response.status_code == 410
+    assert response.json()["detail"] == "legacy worker recovery endpoint is retired"
     operation = tmp_path / "fleet-bootstrap-operations" / "worker-recovery-001.json"
-    assert json.loads(operation.read_text(encoding="utf-8"))["status"] == "pending"
+    assert not operation.exists()
 
 
 def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(

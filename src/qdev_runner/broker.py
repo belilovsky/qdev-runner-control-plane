@@ -9,9 +9,10 @@ import re
 import secrets
 import ssl
 import stat
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeVar, cast
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
@@ -46,7 +47,16 @@ from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
-from .models import QueuedJob
+from .models import (
+    QueuedJob,
+    RecoveryAcceptRequest,
+    RecoveryAgentClaimRequest,
+    RecoveryBindingsResponse,
+    RecoveryOperationResponse,
+    RecoveryPrepareRequest,
+    RecoveryReconcileRequest,
+    RecoveryStatusRequest,
+)
 from .operations import (
     DISK_ONLY_BLOCKERS,
     HARD_MAX_DISK_USED_PCT,
@@ -70,10 +80,16 @@ from .release_lane import (
 )
 from .settings import BrokerSettings
 from .store import Store
+from .worker_recovery import (
+    WorkerRecoveryConfigurationError,
+    WorkerRecoveryController,
+    WorkerRecoveryError,
+)
 
 LOGGER = logging.getLogger("qdev-runner-broker")
 _CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V1
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_RecoveryResult = TypeVar("_RecoveryResult")
 
 
 def controller_release_status(path: Path) -> dict[str, Any]:
@@ -195,17 +211,6 @@ class StaleJobRecoveryRequest(BaseModel):
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
-
-
-class FleetBootstrapRecoveryRequest(BaseModel):
-    """Controller-observed request for one existing-worker recovery."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    request: dict[str, Any] = Field(min_length=1)
-    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
-    active_jobs: int = Field(ge=0)
-    timeout_seconds: float = Field(default=120.0, gt=0, le=600)
 
 
 class FleetBootstrapOperationRequest(BaseModel):
@@ -557,6 +562,15 @@ def create_app(
     app.state.github = github
     app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
     app.state.operations = operations
+    worker_recovery = WorkerRecoveryController(
+        settings=settings,
+        store=store,
+        github=cast(GitHubAppClient, github),
+        release_status_reader=lambda: controller_release_status(
+            settings.controller_release_status_path
+        ),
+    )
+    app.state.worker_recovery = worker_recovery
     release_store: ReleaseStore | None = None
 
     @app.middleware("http")
@@ -616,6 +630,96 @@ def create_app(
         operation_store = require_operator(token)
         require_operator_mtls(mtls_identity)
         return operation_store
+
+    def recovery_edge_certificate(
+        proxy_auth: str | None,
+        certificate_sha256: str | None,
+    ) -> str:
+        """Trust only certificate evidence overwritten by the authenticated edge."""
+
+        if settings.operator_proxy_secret is None:
+            raise HTTPException(
+                status_code=503,
+                detail="recovery edge authentication is not configured",
+            )
+        if not proxy_auth or not secrets.compare_digest(
+            proxy_auth, settings.operator_proxy_secret
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="recovery edge authentication failed",
+            )
+        certificate = (certificate_sha256 or "").strip().lower()
+        if not _SHA256_DIGEST.fullmatch(certificate):
+            raise HTTPException(
+                status_code=403,
+                detail="verified recovery certificate is invalid",
+            )
+        return certificate
+
+    def require_recovery_operator(
+        token: str | None,
+        proxy_auth: str | None,
+        certificate_sha256: str | None,
+    ) -> str:
+        require_operator(token)
+        certificate = recovery_edge_certificate(proxy_auth, certificate_sha256)
+        allowlist = settings.recovery_operator_certificate_sha256s
+        if not allowlist or any(
+            not _SHA256_DIGEST.fullmatch(item) for item in allowlist
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="recovery operator certificate allowlist is not configured",
+            )
+        if not any(
+            secrets.compare_digest(certificate, allowed) for allowed in allowlist
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="recovery operator certificate is not allowlisted",
+            )
+        return certificate
+
+    def require_recovery_agent(
+        proxy_auth: str | None,
+        certificate_sha256: str | None,
+    ) -> str:
+        certificate = recovery_edge_certificate(proxy_auth, certificate_sha256)
+        try:
+            worker_recovery.target_for_agent_certificate(certificate)
+        except WorkerRecoveryConfigurationError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="worker recovery is not configured",
+            ) from error
+        except WorkerRecoveryError as error:
+            raise HTTPException(
+                status_code=403,
+                detail="recovery agent certificate is not allowlisted",
+            ) from error
+        return certificate
+
+    def execute_worker_recovery(
+        callback: Callable[[], _RecoveryResult],
+    ) -> _RecoveryResult:
+        try:
+            return callback()
+        except WorkerRecoveryConfigurationError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="worker recovery is not configured",
+            ) from error
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="GitHub recovery observation is unavailable",
+            ) from error
+        except (WorkerRecoveryError, ValueError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail="worker recovery request rejected",
+            ) from error
 
     def release_policy() -> ReleaseLanePolicy:
         try:
@@ -1329,61 +1433,149 @@ def create_app(
         }
         return operation_store.receipt(payload)
 
+    @app.post(
+        "/internal/v1/operations/worker-recovery/bindings",
+        response_model=RecoveryBindingsResponse,
+    )
+    def worker_recovery_bindings(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryBindingsResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.bindings(
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        response_model=RecoveryOperationResponse,
+    )
+    def prepare_worker_recovery(
+        request: RecoveryPrepareRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.prepare(
+                request,
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/status",
+        response_model=RecoveryOperationResponse,
+    )
+    def worker_recovery_status(
+        request: RecoveryStatusRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.status(
+                request,
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/accept",
+        response_model=RecoveryOperationResponse,
+    )
+    def accept_worker_recovery(
+        request: RecoveryAcceptRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.accept(
+                request,
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post("/internal/v1/worker-recovery/claim", response_model=None)
+    def claim_worker_recovery(
+        request: RecoveryAgentClaimRequest,
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> Response | dict[str, Any]:
+        certificate = require_recovery_agent(
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        envelope = execute_worker_recovery(
+            lambda: worker_recovery.claim(
+                request,
+                agent_certificate_sha256=certificate,
+            )
+        )
+        if envelope is None:
+            return Response(status_code=204)
+        return envelope
+
+    @app.post(
+        "/internal/v1/worker-recovery/reconcile",
+        response_model=RecoveryOperationResponse,
+    )
+    def reconcile_worker_recovery(
+        request: RecoveryReconcileRequest,
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+        x_qdev_recovery_agent_signature: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_agent(
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.reconcile(
+                request,
+                agent_certificate_sha256=certificate,
+                supplied_signature=x_qdev_recovery_agent_signature or "",
+            )
+        )
+
     @app.post("/internal/v1/operations/fleet-bootstrap/recover-existing-worker")
     def recover_existing_worker(
-        request: FleetBootstrapRecoveryRequest,
         x_qdev_operator_token: str | None = Header(default=None),
         x_qdev_operator_mtls_identity: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        """Queue one controller-owned recovery for an allowlisted existing worker.
+    ) -> None:
+        """Retire caller-owned recovery behind the existing operator boundary."""
 
-        GitHub validation produces the signed request, but this endpoint is
-        deliberately reachable only through the fleet-operations mTLS session.
-        The rootless broker can publish only the validated typed request.  A
-        root-owned dispatcher reloads policy and derives the fixed adapter and
-        target independently; callers cannot select a host, service,
-        executable, URL, or CA key.
-        """
-
-        operation_store = require_operator_session(
-            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        require_operator_session(
+            x_qdev_operator_token,
+            x_qdev_operator_mtls_identity,
         )
-        try:
-            bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
-            policy_value = fleet_bootstrap_policy()
-            operation_path = (
-                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
-            )
-            execution = FleetHostDispatchSpool(
-                settings.fleet_host_dispatch_request_root,
-                settings.fleet_host_dispatch_result_root,
-            ).submit(
-                policy=policy_value,
-                store=BootstrapOperationStore(operation_path),
-                request=bootstrap_request,
-                idempotency_key=request.idempotency_key,
-                active_jobs=request.active_jobs,
-            )
-        except (FleetBootstrapError, ValidationError, ValueError) as error:
-            raise HTTPException(
-                status_code=422,
-                detail="fleet bootstrap recovery request is invalid",
-            ) from error
-        return operation_store.receipt(
-            {
-                "kind": "fleet-bootstrap-recovery",
-                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "status": execution.status,
-                "operation_status": execution.operation_status,
-                "idempotency_key": execution.idempotency_key,
-                "request_fingerprint": execution.request_fingerprint,
-                "worker_name": execution.worker_name,
-                "target_id": execution.target_id,
-                "service_unit": execution.service_unit,
-                "active_jobs": request.active_jobs,
-                "error_code": execution.error_code,
-                "result": execution.result,
-            }
+
+        raise HTTPException(
+            status_code=410,
+            detail="legacy worker recovery endpoint is retired",
         )
 
     def run_fleet_bootstrap_operation(

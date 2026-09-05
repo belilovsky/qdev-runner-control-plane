@@ -263,7 +263,12 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
+    scripts/qdev_runner_recovery_host_agent.py
+    scripts/install_qdev_runner_recovery_host_agent.sh
+    scripts/issue_scoped_worker_certificate.sh
     scripts/provision_fleet_host_dispatch_state.py
+    deploy/qdev-runner-recovery-platform.service
+    deploy/qdev-runner-recovery-qazstack.service
     deploy/qdev-release-ortcom.service
     deploy/qdev-release-cmnt.service
     deploy/qdev-release-total.service

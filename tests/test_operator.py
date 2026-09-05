@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -166,52 +165,83 @@ def test_queue_audit_uses_signed_durable_queue_endpoint(
     }
 
 
-def test_recover_existing_worker_uses_controller_execution_endpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_recovery_prepare_uses_live_bindings_and_typed_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, Any] = {}
-    request_path = tmp_path / "bootstrap-request.json"
-    request_path.write_text(
-        json.dumps(
-            {
-                "schema": "qdev-fleet-bootstrap-request-v1",
-                "action": "restore-existing-worker",
-                "source_sha": "a" * 40,
-                "run_id": 123,
-                "job_id": 456,
-                "attempt": 1,
-                "claim_ttl_seconds": 300,
-                "controller_revision": "d" * 40,
-                "controller_release_digest": "sha256:" + "e" * 64,
-                "worker_name": "qdev-platform-ci-187",
-                "release_lane": None,
-            }
-        ),
-        encoding="utf-8",
-    )
+    captured: list[dict[str, Any]] = []
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    monkeypatch.setattr(operator.secrets, "token_hex", lambda size: "9" * (size * 2))
 
-    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
-        captured.update(kwargs)
-        return {"schema": "qdev-controller-receipt-v2"}
+    def fake_request(
+        settings: operator.OperatorSettings, **kwargs: Any
+    ) -> operator.RecoveryBindingsResponse | operator.RecoveryOperationResponse:
+        captured.append(kwargs)
+        if kwargs["path"].endswith("/bindings"):
+            return operator.RecoveryBindingsResponse.model_validate(
+                {
+                    "schema": "qdev-runner-recovery-bindings-v1",
+                    "controller_revision": "1" * 40,
+                    "controller_release_digest": "2" * 64,
+                    "policy_digest": "sha256:" + "3" * 64,
+                    "agent_release_digest": "sha256:" + "4" * 64,
+                    "interface_version": operator.INTERFACE_VERSION,
+                    "interface_digest": operator.INTERFACE_DIGEST,
+                    "observed_at": datetime(2026, 9, 5, 10, 0, tzinfo=UTC),
+                    "proof_max_age_seconds": 120,
+                }
+            )
+        body = kwargs["body"]
+        return operator.RecoveryOperationResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-operation-v1",
+                "operation_id": "5" * 64,
+                "request_fingerprint": "6" * 64,
+                "target_id": body["target_id"],
+                "worker_name": body["target_id"],
+                "repository": "belilovsky/platform-portal",
+                "provider_runner_id": 187,
+                "state": "prepared",
+                "native_outcome": None,
+                "controller_revision": "1" * 40,
+                "controller_release_digest": "2" * 64,
+                "policy_digest": "sha256:" + "3" * 64,
+                "agent_release_digest": "sha256:" + "4" * 64,
+                "idempotent_replay": False,
+            }
+        )
 
-    monkeypatch.setattr(operator, "controller_request", fake_request)
+    monkeypatch.setattr(operator, "recovery_request", fake_request)
     result = operator.run(
         [
-            "recover-existing-worker",
-            "--request",
-            str(request_path),
+            "recovery-prepare",
+            "qdev-platform-ci-187",
             "--idempotency-key",
             "worker-recovery-001",
-            "--active-jobs",
-            "0",
+            "--reason",
+            "Restore the fixed Platform CI runner after provider outage.",
         ]
     )
-    assert result == {"schema": "qdev-controller-receipt-v2"}
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/internal/v1/operations/fleet-bootstrap/recover-existing-worker"
-    assert captured["body"]["idempotency_key"] == "worker-recovery-001"
-    assert captured["body"]["active_jobs"] == 0
+    assert result["state"] == "prepared"
+    assert captured[0]["path"] == "/internal/v1/operations/worker-recovery/bindings"
+    assert captured[1]["path"] == "/internal/v1/operations/worker-recovery/prepare"
+    body = captured[1]["body"]
+    assert body["target_id"] == "qdev-platform-ci-187"
+    assert body["idempotency_key"] == "worker-recovery-001"
+    assert body["provenance"] == {
+        "schema": "qdev-runner-recovery-provenance-v1",
+        "nonce": "recovery-" + "9" * 32,
+        "issued_at": "2026-09-05T10:00:00Z",
+        "expires_at": "2026-09-05T10:01:00Z",
+        "controller_revision": "1" * 40,
+        "controller_release_digest": "2" * 64,
+        "policy_digest": "sha256:" + "3" * 64,
+        "agent_release_digest": "sha256:" + "4" * 64,
+    }
+
+
+def test_retired_recovery_command_is_not_exposed() -> None:
+    with pytest.raises(SystemExit):
+        operator.build_parser().parse_args(["recover-existing-worker"])
 
 
 @pytest.mark.parametrize(
@@ -339,3 +369,68 @@ def test_controller_request_binds_the_fixed_fleet_mtls_identity(
         "X-QDev-Operator-Token": "inert-operator-token",
         "X-QDev-Operator-mTLS-Identity": operator.OPERATOR_MTLS_IDENTITY,
     }
+
+
+def test_recovery_request_never_self_asserts_edge_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class StubResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "schema": "qdev-runner-recovery-bindings-v1",
+                "controller_revision": "1" * 40,
+                "controller_release_digest": "2" * 64,
+                "policy_digest": "sha256:" + "3" * 64,
+                "agent_release_digest": "sha256:" + "4" * 64,
+                "interface_version": operator.INTERFACE_VERSION,
+                "interface_digest": operator.INTERFACE_DIGEST,
+                "observed_at": "2026-09-05T10:00:00Z",
+                "proof_max_age_seconds": 120,
+            }
+
+    class StubClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self) -> StubClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            json: dict[str, Any] | None,
+        ) -> StubResponse:
+            captured["method"] = method
+            captured["path"] = path
+            captured["body"] = json
+            return StubResponse()
+
+    monkeypatch.setattr(operator, "_tls_context", lambda settings: object())
+    monkeypatch.setattr(operator.httpx, "Client", StubClient)
+
+    response = operator.recovery_request(
+        _settings(),
+        method="POST",
+        path="/internal/v1/operations/worker-recovery/bindings",
+        response_model=operator.RecoveryBindingsResponse,
+    )
+
+    assert response.interface_version == operator.INTERFACE_VERSION
+    assert captured["client_kwargs"]["headers"] == {
+        "X-QDev-Operator-Token": "inert-operator-token"
+    }
+    assert "X-QDev-Operator-Proxy-Auth" not in captured["client_kwargs"]["headers"]
+    assert (
+        "X-QDev-Verified-Client-Certificate-SHA256"
+        not in captured["client_kwargs"]["headers"]
+    )

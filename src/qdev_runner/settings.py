@@ -110,6 +110,18 @@ class BrokerSettings:
     fleet_host_dispatch_result_root: Path = Path(
         "/var/lib/qdev-runner/fleet-host-dispatch/results"
     )
+    # Recovery crosses the authenticated controller edge.  The shared secret
+    # proves the edge hop while the edge-overwritten certificate fingerprint
+    # selects one fixed operator or host-agent identity.
+    operator_proxy_secret: str | None = None
+    recovery_operator_certificate_sha256s: tuple[str, ...] = ()
+    recovery_platform_agent_certificate_sha256: str | None = None
+    recovery_qazstack_agent_certificate_sha256: str | None = None
+    recovery_policy_digest: str | None = None
+    recovery_agent_release_digest: str | None = None
+    recovery_agent_signing_key: str | None = None
+    recovery_proof_max_age_seconds: float = 120.0
+    recovery_command_ttl_seconds: int = 120
 
     @classmethod
     def from_env(cls) -> BrokerSettings:
@@ -262,6 +274,68 @@ class BrokerSettings:
                     "QDEV_FLEET_HOST_DISPATCH_RESULT_ROOT",
                     "/var/lib/qdev-runner/fleet-host-dispatch/results",
                 )
+            ),
+            operator_proxy_secret=(
+                os.environ.get("QDEV_OPERATOR_PROXY_SECRET", "").strip() or None
+            ),
+            recovery_operator_certificate_sha256s=tuple(
+                item.strip().lower()
+                for item in os.environ.get(
+                    "QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S", ""
+                ).split(",")
+                if item.strip()
+            ),
+            recovery_platform_agent_certificate_sha256=(
+                os.environ.get(
+                    "QDEV_RECOVERY_PLATFORM_AGENT_CERTIFICATE_SHA256", ""
+                )
+                .strip()
+                .lower()
+                or None
+            ),
+            recovery_qazstack_agent_certificate_sha256=(
+                os.environ.get(
+                    "QDEV_RECOVERY_QAZSTACK_AGENT_CERTIFICATE_SHA256", ""
+                )
+                .strip()
+                .lower()
+                or None
+            ),
+            recovery_policy_digest=(
+                os.environ.get("QDEV_RECOVERY_POLICY_DIGEST", "").strip().lower()
+                or None
+            ),
+            recovery_agent_release_digest=(
+                os.environ.get("QDEV_RECOVERY_AGENT_RELEASE_DIGEST", "")
+                .strip()
+                .lower()
+                or None
+            ),
+            recovery_agent_signing_key=(
+                os.environ.get("QDEV_RECOVERY_AGENT_SIGNING_KEY", "").strip()
+                or None
+            ),
+            recovery_proof_max_age_seconds=max(
+                1.0,
+                min(
+                    300.0,
+                    float(
+                        os.environ.get(
+                            "QDEV_RECOVERY_PROOF_MAX_AGE_SECONDS", "120"
+                        )
+                    ),
+                ),
+            ),
+            recovery_command_ttl_seconds=max(
+                30,
+                min(
+                    300,
+                    int(
+                        os.environ.get(
+                            "QDEV_RECOVERY_COMMAND_TTL_SECONDS", "120"
+                        )
+                    ),
+                ),
             ),
         )
 
