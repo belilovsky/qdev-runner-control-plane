@@ -159,6 +159,109 @@ def test_prepare_controller_candidate_is_transactional_and_idempotent(
     assert len(list(receipts.rglob("*.json"))) == receipt_count
 
 
+def test_prepare_controller_candidate_retries_a_consumed_source_idempotently(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    retry_id = f"controller-v3-{NEXT_SHA}:retry-1"
+    assert result["status"] == "completed"
+    assert result["candidate"]["release_id"] == retry_id
+    digest, snapshot = state.current()
+    assert snapshot["active_candidate"]["release_id"] == retry_id
+    receipt_count = len(list(receipts.rglob("*.json")))
+
+    replay = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert replay["status"] == "already_completed"
+    assert replay["candidate"]["release_id"] == retry_id
+    assert replay["ledger_sha256"] == digest
+    assert len(list(receipts.rglob("*.json"))) == receipt_count
+
+
+def test_prepare_controller_candidate_advances_retry_sequence(tmp_path: Path) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    for source_sha in (NEXT_SHA, INTERMEDIATE_SHA, NEXT_SHA, LATER_SHA):
+        prepare_controller_candidate(
+            source_sha=source_sha,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert result["candidate"]["release_id"] == (
+        f"controller-v3-{NEXT_SHA}:retry-2"
+    )
+    _, snapshot = state.current()
+    assert snapshot["active_candidate"] == result["candidate"]
+
+
+def test_prepare_controller_candidate_rejects_matching_source_on_wrong_ref(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    before, _ = state.current()
+
+    with pytest.raises(
+        ControllerCandidateError,
+        match="matching controller source has invalid repository or reference",
+    ):
+        prepare_controller_candidate(
+            source_sha=CURRENT_SHA,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    after, _ = state.current()
+    assert after == before
+
+
 def test_prepare_controller_candidate_resumes_after_terminal_transition(
     tmp_path: Path,
 ) -> None:
