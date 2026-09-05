@@ -3,6 +3,12 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
+  # The controller's qdev-ci workflow installs its small Python verification
+  # environment and runs the hosted policy/test suite without building OCI
+  # images. The measured checkout plus environment is below 1 GiB; reserve
+  # 4 GiB while retaining the worker's independent running free-space floor.
+  belilovsky/qdev-runner-control-plane:
+    qdev-ci: 4096
   # QDEV's qdev-ci lane only checks its runner contract and environment.
   # The ~20.4 MiB checkout has no build or package-install workload here.
   # 4 GiB conservatively covers checkout and the pinned Actions/Python setup
