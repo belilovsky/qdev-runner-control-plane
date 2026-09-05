@@ -1,0 +1,67 @@
+# Exact-source controller admission receipts
+
+The controller signs `qdev-ci-controller-admission/v1` receipts with an
+Ed25519 key held only on the controller host. A receipt binds the repository
+numeric ID and full name, protected branch, functional source SHA, workflow
+run and attempt, successful required jobs and their controller profiles, the
+controller revision, and the admission and claim IDs. Receipts are valid for
+at most 24 hours.
+
+Create the key pair once in a root-controlled directory:
+
+```console
+qdev-controller-admission generate-keypair \
+  --private-key /etc/qdev-runner/admission/private.pem \
+  --public-key /etc/qdev-runner/admission/public.pem
+```
+
+Controller provisioning installs this root-only host command as a constrained
+one-shot invocation of the exact image used by the active internal broker. It
+has no network, capabilities, or writable root filesystem and mounts only
+`/etc/qdev-runner/admission` and `/run/qdev-controller`. The signing command is
+therefore available to the host operator without exposing the private key to
+the rootless long-running broker.
+
+The private key must be owner-only and never leaves the controller. Distribute
+the public key to the root-owned product release verifier through the immutable
+controller bundle.
+
+Sign a controller-generated payload only after every required job has reached
+the successful terminal state:
+
+```console
+qdev-controller-admission sign \
+  --payload /run/qdev-controller/qazcoop-admission.payload.json \
+  --private-key /etc/qdev-runner/admission/private.pem \
+  --output /run/qdev-controller/qazcoop-admission.receipt.json
+```
+
+Read-only verification can omit the replay ledger. Every command that changes
+release state must verify exact expected values and atomically consume the
+receipt:
+
+```console
+qdev-controller-admission verify \
+  --receipt /run/qdev-controller/qazcoop-admission.receipt.json \
+  --public-key /etc/qazcoop/release-controller/public.pem \
+  --repository-id 1357887516 \
+  --repository belilovsky/qazcoop \
+  --protected-ref refs/heads/codex/qazcoop-mvp \
+  --functional-source-sha "$FUNCTIONAL_SOURCE_SHA" \
+  --controller-revision "$CONTROLLER_REVISION" \
+  --workflow-run-id "$WORKFLOW_RUN_ID" \
+  --workflow-run-attempt "$WORKFLOW_RUN_ATTEMPT" \
+  --require-job reuse-first=qdev-ci:"$REUSE_JOB_ID" \
+  --require-job postgres-migrations=qdev-ci-docker:"$MIGRATIONS_JOB_ID" \
+  --consume-ledger /var/lib/qazcoop/release/consumed-admissions.sqlite3 \
+  --consumer "$RELEASE_ID"
+```
+
+Verification fails on malformed or duplicate JSON fields, an unknown key,
+tampering, a source, workflow, profile or job-ID mismatch, future or expired
+timestamps, and replay of a receipt, admission ID, or claim ID. Consumption
+keeps admission and claim IDs unique across signing-key rotation. Consumption
+requires all exact repository, ref, source, controller, workflow and job
+expectations. The trust key, consuming verifier directory and ledger must be
+trusted regular files and must not be writable by group or other users; an
+unexpected ledger schema also fails closed.

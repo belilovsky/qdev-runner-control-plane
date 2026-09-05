@@ -1,9 +1,9 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-09-04T18:27:49.740573+00:00",
+  "generated_at": "2026-09-05T08:44:38.721092+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
-  "runner_repository_count": 96,
+  "runner_repository_count": 97,
   "repositories": [
     {
       "id": 1309880938,
@@ -2525,6 +2525,28 @@
           "path": ".github/workflows/runner-smoke.yml",
           "sha": "19b3b956d5e76461bf3b8d57b30f9776d69cfce9",
           "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        }
+      ]
+    },
+    {
+      "id": 1357887516,
+      "full_name": "belilovsky/qazcoop",
+      "private": true,
+      "archived": false,
+      "default_branch": "codex/qazcoop-mvp",
+      "profiles": [
+        "qdev-ci",
+        "qdev-ci-docker"
+      ],
+      "workflow_count": 1,
+      "workflow_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha": "c7fe4b7c07da555c9d755bcac02faed5f36021ba",
+          "hosted_selectors": 4,
           "cache_refs": 0,
           "artifact_refs": 0,
           "ghcr_refs": 0

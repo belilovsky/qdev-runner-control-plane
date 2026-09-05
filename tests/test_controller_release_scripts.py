@@ -152,6 +152,47 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
 
 
+def test_controller_provisions_root_owned_admission_signer() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/etc/qdev-runner/admission" in provisioning
+    assert "/run/qdev-controller" in provisioning
+    assert "/usr/local/sbin/qdev-controller-admission" in provisioning
+    assert "scripts/qdev_controller_admission_host.sh" in activation
+    assert "admission_host_tool_backup" in activation
+    assert "admission_host_tool_was_present" in activation
+    assert "--network none" in wrapper
+    assert "--read-only" in wrapper
+    assert "--user 0:0" in wrapper
+    assert "--cap-drop ALL" in wrapper
+    assert "qdev-runner-broker-internal" in wrapper
+    assert "--entrypoint qdev-controller-admission" in wrapper
+
+
+def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
+    provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    assert "scripts/provision_qazcoop_release_signing_key.py" in provisioning
+    assert "/etc/qdev-runner/qazcoop-release-signing" in provisioning
+    assert "install_qazcoop_release_guard()" in activation
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in activation
+    assert "scripts/install_qazcoop_release_guard.py" in activation
+    assert "-o StrictHostKeyChecking=yes" in activation
+    assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
+        "if ! install_qazcoop_release_guard; then"
+    )
+    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
+    assert "currently deployed product remains available" in guard_function
+
+
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
@@ -267,6 +308,22 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     )[0]
     assert install_call.count('if [[ "$rollback_mode" != true ]]; then') == 1
     assert install_call.count("if ! install_fleet_host_dispatch; then") == 1
+
+
+def test_historical_controller_rollback_does_not_require_or_replace_admission_wrapper() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
+    forward_required = script.split(
+        'if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1
+    )[1].split("\n  )", 1)[0]
+    assert "qdev_controller_admission_host.sh" not in base_required
+    assert "scripts/qdev_controller_admission_host.sh" in forward_required
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
+    assert (
+        'if [[ "$rollback_mode" != true ]]; then\n'
+        '  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller'
+    ) in script
 
 
 def test_controller_compose_project_is_namespaced() -> None:

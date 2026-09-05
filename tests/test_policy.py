@@ -183,3 +183,32 @@ def test_source_config_only_changes_qdevrun_ordinary_admission() -> None:
     assert qdevrun_overrides == {("belilovsky/qdev-run-site", "qdev-ci"): 4096}
     assert policy.profiles["qdev-ci"].disk_mb == 12288
     assert policy.profiles["qdev-ci-browser"].disk_mb == 5120
+
+
+def test_policy_rejects_casefold_repository_collision(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    data = json.loads(inventory.read_text(encoding="utf-8"))
+    data["repositories"][1]["full_name"] = "BELILOVSKY/PRIVATE-REPO"
+    inventory.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PolicyError, match="duplicate repository name"):
+        Policy(inventory, profiles)
+
+
+def test_policy_rejects_repository_id_collision(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    data = json.loads(inventory.read_text(encoding="utf-8"))
+    data["repositories"][1]["id"] = data["repositories"][0]["id"]
+    inventory.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PolicyError, match="duplicate repository id"):
+        Policy(inventory, profiles)
+
+
+def test_policy_binds_repository_name_to_id(policy_files: tuple[Path, Path]) -> None:
+    inventory, profiles = policy_files
+    policy = Policy(inventory, profiles)
+    with pytest.raises(PolicyError, match="repository id does not match"):
+        policy.repository("belilovsky/private-repo", repository_id=2)

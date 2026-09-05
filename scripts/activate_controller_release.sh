@@ -28,6 +28,10 @@ default_release_status_path="/var/lib/qdev-runner/controller-status/controller-r
 release_status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-$default_release_status_path}"
 rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-/etc/qdev-runner/controller-rollback-anchor.json}"
 release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/qdev-controller-release.lock}"
+qazcoop_guard_private_key="${QDEV_QAZCOOP_GUARD_PRIVATE_KEY:-/etc/qdev-runner/qazcoop-release-signing/ed25519-private.pem}"
+qazcoop_guard_public_key="${QDEV_QAZCOOP_GUARD_PUBLIC_KEY:-/etc/qdev-runner/qazcoop-release-signing/ed25519-public.pem}"
+qazcoop_guard_host="${QDEV_QAZCOOP_GUARD_HOST:-root@187.55.228.239}"
+qazcoop_repository="${QDEV_QAZCOOP_REPOSITORY:-/opt/qazcoop.git}"
 runtime_uid="${QDEV_CONTROLLER_RUNTIME_UID:-9020}"
 runtime_gid="${QDEV_CONTROLLER_RUNTIME_GID:-9020}"
 script_root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -259,6 +263,10 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/bootstrap_admin_platform_ledger_v3.py
     scripts/prepare_controller_candidate.py
     scripts/dispatch_fleet_bootstrap.py
+    scripts/build_qazcoop_release_guard_bundle.py
+    scripts/install_qazcoop_release_guard.py
+    scripts/qazcoop_update_hook.py
+    src/qdev_runner/qazcoop_release_guard.py
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
@@ -267,6 +275,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
     scripts/provision_fleet_host_dispatch_state.py
+    scripts/qdev_controller_admission_host.sh
     deploy/qdev-runner-recovery-platform.service
     deploy/qdev-runner-recovery-qazstack.service
     deploy/qdev-release-ortcom.service
@@ -449,10 +458,18 @@ managed_registry_was_present=false
 managed_release_ledger_was_present=false
 release_status_was_present=false
 operator_identity_metadata_backup="$(mktemp /tmp/qdev-runner-operator-mtls-metadata.XXXXXX)"
+admission_host_tool_backup="$(mktemp /tmp/qdev-controller-admission-host.XXXXXX)"
+admission_host_tool_path=/usr/local/sbin/qdev-controller-admission
+admission_host_tool_was_present=false
 operator_identity_was_present=false
+qazcoop_guard_temporary=""
 if [[ -f /etc/qdev-runner/repos.json ]]; then
   install -m 0600 -- /etc/qdev-runner/repos.json "$repos_backup"
   repos_were_present=true
+fi
+if [[ -f "$admission_host_tool_path" && ! -L "$admission_host_tool_path" ]]; then
+  install -m 0700 -- "$admission_host_tool_path" "$admission_host_tool_backup"
+  admission_host_tool_was_present=true
 fi
 if [[ -f /etc/qdev-runner/profiles.yml ]]; then
   install -m 0600 -- /etc/qdev-runner/profiles.yml "$profiles_backup"
@@ -512,7 +529,12 @@ fi
 cleanup_rollback_images() {
   docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
 }
-trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup"; cleanup_rollback_images' EXIT
+cleanup_qazcoop_guard_temporary() {
+  if [[ -n "$qazcoop_guard_temporary" ]]; then
+    rm -rf -- "$qazcoop_guard_temporary"
+  fi
+}
+trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup" "$admission_host_tool_backup"; cleanup_qazcoop_guard_temporary; cleanup_rollback_images' EXIT
 
 activate_link() {
   local target="$1"
@@ -841,6 +863,66 @@ restore_release_status() {
   fi
 }
 
+install_qazcoop_release_guard() {
+  # Controller rollback intentionally retains the newer fail-closed product
+  # guard. The currently deployed product remains available, while new pushes
+  # require a guard-capable controller to issue a matching receipt.
+  [[ "$rollback_mode" != true ]] || return 0
+  if [[ ! "$qazcoop_guard_host" =~ ^root@[A-Za-z0-9.-]+$ ]]; then
+    printf 'QazCoop guard host is invalid\n' >&2
+    return 1
+  fi
+  if [[ "$qazcoop_repository" != /opt/qazcoop.git ]]; then
+    printf 'QazCoop production repository path is invalid\n' >&2
+    return 1
+  fi
+  for key_path in "$qazcoop_guard_private_key" "$qazcoop_guard_public_key"; do
+    if [[ ! -f "$key_path" || -L "$key_path" ]]; then
+      printf 'QazCoop release signing key is unavailable: %s\n' "$key_path" >&2
+      return 1
+    fi
+  done
+  qazcoop_guard_temporary="$(mktemp -d /tmp/qazcoop-release-guard.XXXXXXXX)" || return 1
+  local bundle="$qazcoop_guard_temporary/bundle"
+  if ! python3 "$release/scripts/build_qazcoop_release_guard_bundle.py" \
+    --controller-repository "$release" \
+    --controller-revision "$release_revision" \
+    --private-key "$qazcoop_guard_private_key" \
+    --public-key "$qazcoop_guard_public_key" \
+    --output "$bundle"; then
+    return 1
+  fi
+  local remote_stage
+  remote_stage="$(
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$qazcoop_guard_host" \
+      'mktemp -d /run/qazcoop-release-guard.XXXXXXXX'
+  )" || return 1
+  if [[ ! "$remote_stage" =~ ^/run/qazcoop-release-guard\.[A-Za-z0-9]+$ ]]; then
+    printf 'QazCoop remote staging path is invalid\n' >&2
+    return 1
+  fi
+  local remote_cleanup=true output=""
+  if scp -q -o BatchMode=yes -o StrictHostKeyChecking=yes -r -- \
+      "$bundle" "$release/scripts/install_qazcoop_release_guard.py" \
+      "$qazcoop_guard_host:$remote_stage/"; then
+    output="$(
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$qazcoop_guard_host" \
+        python3 "$remote_stage/install_qazcoop_release_guard.py" \
+        --candidate-repository "$qazcoop_repository" \
+        --controller-bundle "$remote_stage/bundle"
+    )" || output=""
+  fi
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$qazcoop_guard_host" \
+    rm -rf -- "$remote_stage" >/dev/null 2>&1 || remote_cleanup=false
+  if [[ "$remote_cleanup" != true ||
+        "$output" != "qazcoop_release_guard_installed=$release_revision" ]]; then
+    printf 'QazCoop product release guard activation failed\n' >&2
+    return 1
+  fi
+  cleanup_qazcoop_guard_temporary
+  qazcoop_guard_temporary=""
+}
+
 previous_status_validation_program='import datetime
 import json
 import pathlib
@@ -1095,6 +1177,11 @@ install -m 0644 -- "$release/config/managed-registry.yml" /etc/qdev-runner/manag
 # independently validated above and is intentionally neither installed nor
 # restored from this release checkout.
 install -m 0644 -- "$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml
+if [[ "$rollback_mode" != true ]]; then
+  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller
+  install -o root -g root -m 0755 -- \
+    "$release/scripts/qdev_controller_admission_host.sh" "$admission_host_tool_path"
+fi
 activate_link "$release"
 
 compose=(docker compose -p qdev-runner -f "$release/deploy/compose.yml")
@@ -1248,6 +1335,12 @@ rollback() {
   # actually been restored and measured by their immutable image IDs.
   rm -f -- "$release_status_path"
   restore_operator_identity_metadata
+  if [[ "$admission_host_tool_was_present" == true ]]; then
+    install -o root -g root -m 0755 -- \
+      "$admission_host_tool_backup" "$admission_host_tool_path"
+  else
+    rm -f -- "$admission_host_tool_path"
+  fi
   restore_controller_configuration
   if [[ -z "$previous" || ! -d "$previous" ]]; then
     docker compose -p qdev-runner -f "$release/deploy/compose.yml" \
@@ -1352,6 +1445,12 @@ fi
 
 docker inspect qdev-runner-broker-public qdev-runner-broker-internal \
   --format '{{.Name}} {{.Image}}'
+if ! install_qazcoop_release_guard; then
+  printf '%s\n' \
+    'Controller is healthy, but the QazCoop release guard is not active; restoring the prior release.' >&2
+  rollback
+  exit 1
+fi
 printf 'controller_release_active=%s previous=%s\n' "$release" "${previous:-none}"
 printf 'controller_release_receipt=active revision=%s digest=%s public_image=%s internal_image=%s dependencies=%s\n' \
   "$release_revision" "$release_digest" "$runtime_public_image_id" \

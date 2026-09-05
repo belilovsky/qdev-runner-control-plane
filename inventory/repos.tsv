@@ -64,6 +64,7 @@ belilovsky/qaz-support	true	main	qdev-ci,qdev-ci-browser	4	0	0	0	0
 belilovsky/qazagents	true	main	qdev-ci,qdev-ci-docker	6	4	0	0	0
 belilovsky/qazaqstan-space	true	main	qdev-ci	3	0	0	0	0
 belilovsky/qazcompute	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
+belilovsky/qazcoop	true	codex/qazcoop-mvp	qdev-ci,qdev-ci-docker	1	4	0	0	0
 belilovsky/qazfin	true	main	qdev-ci,qdev-ci-browser,qdev-ci-docker	1	0	0	0	0
 belilovsky/qazgeo	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
 belilovsky/qazinvestigate	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0

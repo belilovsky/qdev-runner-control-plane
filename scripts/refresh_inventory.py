@@ -3,16 +3,36 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+EXACT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def acquire_inventory_lock() -> BinaryIO:
+    """Serialize every inventory read/modify/write across Git worktrees."""
+
+    lock_path_text = command(
+        "git", "-C", str(ROOT), "rev-parse", "--git-path", "qdev-runner-inventory.lock"
+    ).strip()
+    if not lock_path_text:
+        raise RuntimeError("cannot resolve the shared inventory lock path")
+    lock_path = Path(lock_path_text)
+    if not lock_path.is_absolute():
+        lock_path = ROOT / lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
 
 
 def command(*args: str) -> str:
@@ -140,6 +160,62 @@ def normalise_repository_name(name: str, owner: str) -> str:
     return name if "/" in name else f"{owner}/{name}"
 
 
+def repository_metadata(full_name: str) -> dict[str, Any]:
+    metadata = api(f"/repos/{full_name}")
+    owner = metadata.get("owner")
+    if not isinstance(owner, dict):
+        raise RuntimeError(f"{full_name}: repository metadata has no owner")
+    return {
+        "id": metadata.get("id"),
+        "nameWithOwner": metadata.get("full_name"),
+        "isPrivate": metadata.get("private"),
+        "isArchived": metadata.get("archived"),
+        "defaultBranchRef": {"name": metadata.get("default_branch")},
+        "owner": owner.get("login"),
+    }
+
+
+def validate_exact_commit(full_name: str, ref: str) -> None:
+    if EXACT_SHA.fullmatch(ref) is None:
+        raise RuntimeError(f"{full_name}: --ref must be a full lowercase commit SHA")
+    commit = api(f"/repos/{full_name}/git/commits/{ref}")
+    if not isinstance(commit, dict) or commit.get("sha") != ref:
+        raise RuntimeError(f"{full_name}: --ref did not resolve to the exact commit SHA")
+
+
+def validate_add_candidate(
+    repo: dict[str, Any],
+    *,
+    owner: str,
+    expected_repository_id: int,
+    expected_full_name: str,
+    expected_default_branch: str,
+) -> None:
+    checks = {
+        "repository id": (repo.get("id"), expected_repository_id),
+        "full name": (repo.get("nameWithOwner"), expected_full_name),
+        "owner": (repo.get("owner"), owner),
+        "default branch": (
+            (repo.get("defaultBranchRef") or {}).get("name"),
+            expected_default_branch,
+        ),
+    }
+    mismatches = [
+        f"{label} expected {expected!r}, got {actual!r}"
+        for label, (actual, expected) in checks.items()
+        if actual != expected
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"{expected_full_name}: repository identity mismatch: "
+            + "; ".join(mismatches)
+        )
+    if repo.get("isArchived") is not False:
+        raise RuntimeError(f"{expected_full_name}: repository is archived")
+    if repo.get("isPrivate") is not True:
+        raise RuntimeError(f"{expected_full_name}: repository must be private")
+
+
 def inventory_payload(
     *, owner: str, active_count: int, repositories: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -152,6 +228,35 @@ def inventory_payload(
         "runner_repository_count": len(repositories),
         "repositories": repositories,
     }
+
+
+def validate_inventory_uniqueness(repositories: list[dict[str, Any]]) -> None:
+    names: set[str] = set()
+    repository_ids: set[int] = set()
+    for repository in repositories:
+        full_name = str(repository.get("full_name", ""))
+        normalized_name = full_name.casefold()
+        repository_id = repository.get("id")
+        if not full_name or normalized_name in names:
+            raise RuntimeError(f"inventory has duplicate repository name: {full_name}")
+        if isinstance(repository_id, bool) or not isinstance(repository_id, int):
+            raise RuntimeError(f"inventory has invalid repository id: {full_name}")
+        if repository_id in repository_ids:
+            raise RuntimeError(f"inventory has duplicate repository id: {repository_id}")
+        names.add(normalized_name)
+        repository_ids.add(repository_id)
+
+
+def validate_refreshed_identity(
+    expected: dict[str, Any], refreshed: dict[str, Any]
+) -> None:
+    expected_name = expected.get("nameWithOwner")
+    expected_id = expected.get("id")
+    if refreshed.get("full_name") != expected_name or refreshed.get("id") != expected_id:
+        raise RuntimeError(
+            f"repository identity changed for {expected_name}: "
+            f"expected id {expected_id}, got {refreshed.get('id')}"
+        )
 
 
 def write_inventory(payload: dict[str, Any]) -> None:
@@ -201,7 +306,103 @@ def main() -> None:
         "--ref",
         help="inspect workflow files at this exact Git ref (use with --repository)",
     )
+    parser.add_argument(
+        "--add-repository",
+        help="add exactly one missing private repository without refreshing other records",
+    )
+    parser.add_argument("--expected-repository-id", type=int)
+    parser.add_argument("--expected-full-name")
+    parser.add_argument("--expected-default-branch")
     args = parser.parse_args()
+
+    try:
+        inventory_lock = acquire_inventory_lock()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        parser.error(f"cannot acquire inventory lock: {exc}")
+
+    if args.add_repository:
+        if args.repository:
+            parser.error("--add-repository cannot be combined with --repository")
+        required = {
+            "--ref": args.ref,
+            "--expected-repository-id": args.expected_repository_id,
+            "--expected-full-name": args.expected_full_name,
+            "--expected-default-branch": args.expected_default_branch,
+        }
+        missing_arguments = [name for name, value in required.items() if value is None]
+        if missing_arguments:
+            parser.error(
+                "--add-repository requires " + ", ".join(missing_arguments)
+            )
+        full_name = normalise_repository_name(args.add_repository, args.owner)
+        if full_name != args.expected_full_name:
+            parser.error("--add-repository must match --expected-full-name")
+        existing = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
+        existing_repositories = existing.get("repositories")
+        if not isinstance(existing_repositories, list):
+            parser.error("existing inventory has no repositories list")
+        try:
+            validate_inventory_uniqueness(existing_repositories)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        existing_names = {str(item["full_name"]).casefold() for item in existing_repositories}
+        existing_ids = {int(item["id"]) for item in existing_repositories}
+        if full_name.casefold() in existing_names:
+            parser.error(f"repository already exists in inventory: {full_name}")
+        if args.expected_repository_id in existing_ids:
+            parser.error(
+                f"repository id already exists in inventory: {args.expected_repository_id}"
+            )
+        try:
+            repo = repository_metadata(full_name)
+            validate_add_candidate(
+                repo,
+                owner=args.owner,
+                expected_repository_id=args.expected_repository_id,
+                expected_full_name=args.expected_full_name,
+                expected_default_branch=args.expected_default_branch,
+            )
+            validate_exact_commit(full_name, args.ref)
+            item = inspect_repo(repo, ref=args.ref)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if item is None:
+            parser.error(f"repository has no workflows at {args.ref}: {full_name}")
+        inspected_identity = {
+            "repository id": (item.get("id"), args.expected_repository_id),
+            "full name": (item.get("full_name"), args.expected_full_name),
+            "default branch": (
+                item.get("default_branch"),
+                args.expected_default_branch,
+            ),
+        }
+        drift = [
+            f"{label} expected {expected!r}, got {actual!r}"
+            for label, (actual, expected) in inspected_identity.items()
+            if actual != expected
+        ]
+        if drift:
+            parser.error("repository changed during inspection: " + "; ".join(drift))
+        merged = [*existing_repositories, item]
+        try:
+            validate_inventory_uniqueness(merged)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if len(merged) != args.expected:
+            parser.error(
+                f"inventory cardinality changed: expected {args.expected}, found {len(merged)}"
+            )
+        payload = inventory_payload(
+            owner=existing.get("owner", args.owner),
+            active_count=int(existing.get("active_repository_count", len(merged))),
+            repositories=merged,
+        )
+        write_inventory(payload)
+        print(
+            f"inventory_ok added={full_name} ref={args.ref} "
+            f"repositories={len(merged)} active={payload['active_repository_count']}"
+        )
+        return
 
     if args.repository:
         existing = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
@@ -211,6 +412,10 @@ def main() -> None:
         existing_repositories = existing.get("repositories")
         if not isinstance(existing_repositories, list):
             parser.error("existing inventory has no repositories list")
+        try:
+            validate_inventory_uniqueness(existing_repositories)
+        except RuntimeError as exc:
+            parser.error(str(exc))
         existing_by_name = {item["full_name"]: item for item in existing_repositories}
         missing = selected_names - existing_by_name.keys()
         if missing:
@@ -219,6 +424,7 @@ def main() -> None:
             )
         repo_metadata = [
             {
+                "id": int(existing_by_name[name]["id"]),
                 "nameWithOwner": name,
                 "isArchived": bool(existing_by_name[name].get("archived", False)),
                 "isPrivate": bool(existing_by_name[name].get("private", False)),
@@ -235,10 +441,18 @@ def main() -> None:
             item = inspect_repo(repo, ref=args.ref)
             if item is None:
                 parser.error(f"repository has no workflows: {repo['nameWithOwner']}")
+            try:
+                validate_refreshed_identity(repo, item)
+            except RuntimeError as exc:
+                parser.error(str(exc))
             refreshed[item["full_name"]] = item
         merged = [
             refreshed.get(item["full_name"], item) for item in existing_repositories
         ]
+        try:
+            validate_inventory_uniqueness(merged)
+        except RuntimeError as exc:
+            parser.error(str(exc))
         payload = inventory_payload(
             owner=existing.get("owner", args.owner),
             active_count=int(existing.get("active_repository_count", len(merged))),
@@ -286,6 +500,7 @@ def main() -> None:
         )
     )
     print(f"inventory_ok repositories={len(inspected)} active={len(active)}")
+    inventory_lock.close()
 
 
 if __name__ == "__main__":
