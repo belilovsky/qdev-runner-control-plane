@@ -63,6 +63,24 @@ def _provider_observation(
     return observation
 
 
+def _provider_absence_observation(
+    *,
+    worker_name: str,
+    repository: str,
+    active_jobs: int = 0,
+) -> dict[str, Any]:
+    return {
+        "schema": "qdev-worker-provider-absence-observation-v1",
+        "repository": repository,
+        "worker_name": worker_name,
+        "runners": {"total_count": 0, "items": []},
+        "active_target_jobs": {
+            "total_count": active_jobs,
+            "items": [{"id": index + 1} for index in range(active_jobs)],
+        },
+    }
+
+
 def _provider_proof(*, observed_at: float | None = None, active_jobs: int = 0) -> dict[str, Any]:
     return Store.issue_worker_provider_idle_proof(
         key=PROOF_KEY,
@@ -91,7 +109,7 @@ def _begin_arguments(**overrides: Any) -> dict[str, Any]:
         "recovery_action": "restore_saved_configuration",
         "operator_certificate_sha256": "b" * 64,
         "expected_agent_certificate_sha256": "c" * 64,
-        "interface_version": "qdev-worker-recovery-v1",
+        "interface_version": "qdev-worker-recovery-v2",
         "interface_digest": "d" * 64,
         "controller_revision": "e" * 40,
         "controller_release_digest": "f" * 64,
@@ -145,8 +163,12 @@ def _acceptance_proof(
     worker_name = str(recovery["worker_name"])
     repository = str(recovery["repository"])
     permanent_labels = tuple(json.loads(str(recovery["labels_json"]))) if labels is None else labels
-    prior_runner_id = int(recovery["provider_runner_id"])
+    raw_prior_runner_id = recovery["provider_runner_id"]
+    prior_runner_id = None if raw_prior_runner_id is None else int(raw_prior_runner_id)
+    if provider_runner_id is None and prior_runner_id is None:
+        raise ValueError("provider_runner_id is required when the prior runner is absent")
     resulting_runner_id = prior_runner_id if provider_runner_id is None else provider_runner_id
+    assert resulting_runner_id is not None
     now = time.time()
     completed_at = (
         max(float(recovery["native_finalized_at"]), now - 0.001)
@@ -235,9 +257,11 @@ def _complete_canary(
 ) -> dict[str, Any]:
     worker_name = str(recovery["worker_name"])
     repository = str(recovery["repository"])
-    runner_id = (
-        int(recovery["provider_runner_id"]) if provider_runner_id is None else provider_runner_id
-    )
+    raw_runner_id = recovery["provider_runner_id"]
+    if provider_runner_id is None and raw_runner_id is None:
+        raise ValueError("provider_runner_id is required when the prior runner is absent")
+    runner_id = int(raw_runner_id) if provider_runner_id is None else provider_runner_id
+    assert runner_id is not None
     workflow = (
         ".github/workflows/runner-smoke.yml"
         if worker_name == WORKER
@@ -1016,6 +1040,77 @@ def test_qazstack_same_name_replace_accepts_unique_new_provider_id(
     )
     assert released["state"] == "released"
     assert released["provider_runner_id"] == 21
+    assert released["accepted_provider_runner_id"] == 22
+
+
+def test_qazstack_absent_provider_registration_accepts_fresh_runner(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    now = time.time()
+    labels = ("self-hosted", "Linux", "X64", "qdev-ci")
+    arguments = _begin_arguments(
+        worker_name="qdev-qazstack-01",
+        idempotency_key="recovery-qazstack-absent-0001",
+        fingerprint="3" * 64,
+        repository="belilovsky/qazstack",
+        labels=labels,
+        recovery_action="replace_existing_registration",
+        request_nonce="nonce-qazstack-absent-0001",
+        controller_observed_at=now,
+        requested_at=now,
+    )
+    arguments["provider_idle_proof"] = Store.issue_worker_provider_idle_proof(
+        key=PROOF_KEY,
+        worker_name="qdev-qazstack-01",
+        repository="belilovsky/qazstack",
+        labels=labels,
+        provider_runner_id=None,
+        provider_status=None,
+        provider_busy=None,
+        active_jobs=0,
+        provider_observation=_provider_absence_observation(
+            worker_name="qdev-qazstack-01",
+            repository="belilovsky/qazstack",
+        ),
+        observed_at=now,
+    )
+    admitted = store.begin_worker_recovery(**arguments)
+    assert admitted["provider_runner_id"] is None
+
+    store.advance_worker_recovery(
+        admitted["idempotency_key"], expected="prepared", state="invoking"
+    )
+    completed = store.reconcile_worker_recovery(
+        operation_id=admitted["operation_id"],
+        worker_name="qdev-qazstack-01",
+        request_fingerprint="3" * 64,
+        recovery_action=str(admitted["recovery_action"]),
+        request_nonce=str(admitted["request_nonce"]),
+        provider_reconciliation_digest=str(admitted["provider_reconciliation_digest"]),
+        agent_certificate_sha256="c" * 64,
+        outcome="completed",
+        outcome_digest="sha256:" + "d" * 64,
+        agent_release_digest=str(admitted["agent_release_digest"]),
+        reconciliation_key=RECONCILIATION_KEY,
+    )
+    acceptance = _acceptance_proof(
+        completed,
+        provider_runner_id=22,
+        prior_provider_runner_disposition="absent",
+        canary_completed_at=float(
+            _complete_canary(store, completed, provider_runner_id=22)["completed_at"]
+        ),
+    )
+    released = store.advance_worker_recovery(
+        admitted["idempotency_key"],
+        expected="completed",
+        state="released",
+        acceptance_proof=acceptance,
+        acceptance_proof_key=ACCEPTANCE_KEY,
+    )
+    assert released["state"] == "released"
+    assert released["provider_runner_id"] is None
     assert released["accepted_provider_runner_id"] == 22
 
 

@@ -202,7 +202,7 @@ class RecoveryAgentCommand(BaseModel):
     target_id: RecoveryTargetId
     worker_name: RecoveryIdentifier
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-    provider_runner_id: int = Field(gt=0)
+    provider_runner_id: int | None = Field(default=None, gt=0)
     labels: tuple[str, ...] = Field(min_length=1, max_length=16)
     recovery_action: RecoveryAction
     operator_certificate_sha256: Sha256Hex
@@ -298,7 +298,7 @@ class RecoveryOperationResponse(BaseModel):
     target_id: RecoveryTargetId
     worker_name: RecoveryIdentifier
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-    provider_runner_id: int = Field(gt=0)
+    provider_runner_id: int | None = Field(default=None, gt=0)
     state: str = Field(
         pattern=(
             r"^(prepared|invoking|awaiting_acceptance|pending_canary|completed|"
