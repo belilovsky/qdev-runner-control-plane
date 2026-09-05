@@ -10,6 +10,13 @@ repository_admission_disk_mb:
   # independent 4.5 GiB running floor remain unchanged.
   belilovsky/qdev-run-site:
     qdev-ci: 4096
+  # QazPoster uses qdev-ci only for its dependency-free runner contract check.
+  # The exact queued workflow checks out source, provisions pinned Python 3.12,
+  # and runs one local policy script; it does not install project dependencies
+  # or build artifacts. Reserve 4 GiB for that bounded lane while retaining the
+  # worker's independent 4.5 GiB running floor and all controller checks.
+  belilovsky/qazposter:
+    qdev-ci: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
