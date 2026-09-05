@@ -68,6 +68,9 @@ RecoveryIdentifier = Annotated[
     str,
     Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"),
 ]
+RecoveryTargetId = Literal["qdev-platform-ci-187", "qdev-qazstack-01"]
+RecoveryAction = Literal["restore_saved_configuration", "replace_existing_registration"]
+RecoveryNativeOutcome = Literal["completed", "not_applied", "failed", "ambiguous"]
 
 
 class RecoveryRequestProvenance(BaseModel):
@@ -107,7 +110,7 @@ class RecoveryPrepareRequest(BaseModel):
         alias="schema",
         pattern=r"^qdev-runner-recovery-prepare-v1$",
     )
-    target_id: RecoveryIdentifier
+    target_id: RecoveryTargetId
     idempotency_key: RecoveryIdentifier
     reason: str = Field(min_length=8, max_length=500)
     provenance: RecoveryRequestProvenance
@@ -140,8 +143,10 @@ class RecoveryReconcileRequest(BaseModel):
     )
     operation_id: Sha256Hex
     request_fingerprint: Sha256Hex
-    target_id: RecoveryIdentifier
-    worker_name: RecoveryIdentifier
+    target_id: RecoveryTargetId
+    recovery_action: RecoveryAction
+    request_nonce: RecoveryIdentifier
+    provider_reconciliation_digest: Sha256Digest
     outcome: Literal["completed", "not_applied", "failed", "ambiguous"]
     outcome_digest: Sha256Digest
     agent_release_digest: Sha256Digest
@@ -169,8 +174,17 @@ class RecoveryAcceptRequest(BaseModel):
     provenance: RecoveryRequestProvenance
 
 
-RecoveryAction = Literal["restore_saved_configuration", "replace_existing_registration"]
-RecoveryNativeOutcome = Literal["completed", "not_applied", "failed", "ambiguous"]
+class RecoveryAgentClaimRequest(BaseModel):
+    """Secret-free pull request; the verified certificate selects the target."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-agent-claim-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-agent-claim-v1$",
+    )
+    operation_id: Sha256Hex | None = None
 
 
 class RecoveryAgentCommand(BaseModel):
@@ -185,7 +199,7 @@ class RecoveryAgentCommand(BaseModel):
     )
     operation_id: Sha256Hex
     request_fingerprint: Sha256Hex
-    target_id: RecoveryIdentifier
+    target_id: RecoveryTargetId
     worker_name: RecoveryIdentifier
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     provider_runner_id: int = Field(gt=0)
@@ -232,6 +246,21 @@ class RecoveryAgentCommand(BaseModel):
         return self
 
 
+class RecoveryAgentCommandEnvelope(BaseModel):
+    """Signed, non-executable instruction returned only to the outbound agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-agent-envelope-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-agent-envelope-v1$",
+    )
+    command: RecoveryAgentCommand
+    command_digest: Sha256Digest
+    signature: Sha256Hex
+
+
 class RecoveryOperationResponse(BaseModel):
     """Topology-free recovery projection safe for the private operator API."""
 
@@ -240,7 +269,7 @@ class RecoveryOperationResponse(BaseModel):
     schema_name: str = Field(default="qdev-runner-recovery-operation-v1", alias="schema")
     operation_id: Sha256Hex
     request_fingerprint: Sha256Hex
-    target_id: RecoveryIdentifier
+    target_id: RecoveryTargetId
     worker_name: RecoveryIdentifier
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     provider_runner_id: int = Field(gt=0)
@@ -258,3 +287,4 @@ class RecoveryOperationResponse(BaseModel):
     controller_release_digest: Sha256Hex
     policy_digest: Sha256Digest
     agent_release_digest: Sha256Digest
+    idempotent_replay: bool = False
