@@ -146,7 +146,7 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
 
     assert "controller-release.json" in script
     assert "QDEV_CONTROLLER_RELEASE_REVISION" in script
-    assert "forward activation requires a source-bound git release checkout" in script
+    assert "controller activation requires a source-bound git release checkout" in script
     assert 'git -C "$release" diff --quiet "$release_revision" -- .' in script
     assert "controller release contains untracked files" in script
     assert "write_release_status()" in script
@@ -228,6 +228,34 @@ def test_controller_rollback_reuses_existing_images() -> None:
     assert (
         'docker image tag "$anchor_internal_saved_ref" "$anchor_internal_image_ref"' in activation
     )
+
+
+def test_controller_rollback_accepts_clean_historical_anchor_without_modern_dispatcher() -> None:
+    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    base_required = activation.split("required=(", 1)[1].split(")\nif [[", 1)[0]
+    forward_marker = 'if [[ "$rollback_mode" != true ]]; then\n  required+=('
+    forward_required = activation.split(forward_marker, 1)[1].split("\n  )", 1)[0]
+    for modern_path in (
+        "config/controller-capacity.json",
+        "scripts/bootstrap_admin_platform_ledger_v3.py",
+        "scripts/prepare_controller_candidate.py",
+        "scripts/dispatch_fleet_bootstrap.py",
+        "deploy/qdev-fleet-host-dispatch.service",
+        "deploy/qdev-fleet-host-dispatch.path",
+    ):
+        assert modern_path not in base_required
+        assert modern_path in forward_required
+
+    assert 'if [[ -z "$detected_release_root" ||' in activation
+    assert 'git -C "$release" diff --quiet "$release_revision" -- .' in activation
+    assert 'git -C "$release" ls-files --others --exclude-standard -- .' in activation
+
+    install_call = activation.split("if ! prepare_broker_state; then", 1)[1].split(
+        'if ! "${compose[@]}"', 1
+    )[0]
+    assert install_call.count('if [[ "$rollback_mode" != true ]]; then') == 1
+    assert install_call.count("if ! install_fleet_host_dispatch; then") == 1
 
 
 def test_controller_compose_project_is_namespaced() -> None:
