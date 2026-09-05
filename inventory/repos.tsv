@@ -29,7 +29,7 @@ belilovsky/how-kazakhstan-works	true	main	qdev-ci,qdev-ci-browser	3	0	0	0	0
 belilovsky/id-qdev-run	true	main	qdev-ci,qdev-ci-docker	3	0	0	0	0
 belilovsky/ideo-calendar	true	master	qdev-ci,qdev-ci-browser	4	0	0	0	0
 belilovsky/ipos	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	0
-belilovsky/kazakh-translate	true	main	qdev-ci	4	3	0	0	0
+belilovsky/kazakh-translate	true	main	qdev-ci,qdev-ci-docker	6	4	0	0	0
 belilovsky/knife-collection	true	master	qdev-ci,qdev-ci-browser	4	1	0	0	0
 belilovsky/koz-news	true	main	qdev-ci	3	0	0	0	0
 belilovsky/kz-report	true	main	qdev-ci	5	0	0	0	0

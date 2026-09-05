@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-09-04T18:27:49.740573+00:00",
+  "generated_at": "2026-09-05T06:29:56.292233+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
   "runner_repository_count": 96,
@@ -1141,10 +1141,19 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 4,
+      "workflow_count": 6,
       "workflow_files": [
+        {
+          "path": ".github/workflows/catalog-owner-receipt.yml",
+          "sha": "2959089fa7daf1837700a707e7d5184e52bd0f3e",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
           "sha": "a601b0d1afaf829fddedeeb80807cd98f56f0c10",
@@ -1154,8 +1163,16 @@
           "ghcr_refs": 0
         },
         {
+          "path": ".github/workflows/qmt-4-4-1-image-candidate.yml",
+          "sha": "7d6197aa1191d5701160cf8ba0f0ee6cca74ddca",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
           "path": ".github/workflows/quality.yml",
-          "sha": "3edb91113674959429f2f954fc13be3df191a500",
+          "sha": "7cf0985ea8a17a9a8abc3c3d4ff2f9a3e6a341e4",
           "hosted_selectors": 2,
           "cache_refs": 0,
           "artifact_refs": 0,
