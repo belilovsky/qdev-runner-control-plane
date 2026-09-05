@@ -14,8 +14,8 @@ fi
 worker_uid=9021
 worker_user=qdev-runner
 install_root=/opt/qdev-runner-worker
-buildkit_version=0.32.2
-buildkit_sha256=2975d0f651ad96ba8b80b9992ae1f9a964f4408569af5b6dc36544165c3926af
+buildkit_version=0.33.0
+buildkit_sha256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead
 buildkit_root="/opt/qdev-buildkit/${buildkit_version}"
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"

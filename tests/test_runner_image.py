@@ -132,6 +132,21 @@ def test_docker_profile_has_compose_plugin() -> None:
     assert "docker.io docker-buildx docker-compose-v2" in dockerfile
 
 
+def test_buildkit_release_is_current_pinned_and_consistent() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    provisioner = (ROOT / "scripts/provision_worker.sh").read_text(encoding="utf-8")
+    settings = (ROOT / "src/qdev_runner/settings.py").read_text(encoding="utf-8")
+    version = "0.33.0"
+    sha256 = "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+
+    assert f"ARG BUILDKIT_VERSION={version}" in dockerfile
+    assert f"ARG BUILDKIT_SHA256={sha256}" in dockerfile
+    assert f"buildkit_version={version}" in provisioner
+    assert f"buildkit_sha256={sha256}" in provisioner
+    assert f"/opt/qdev-buildkit/{version}/bin/buildkitd" in settings
+    assert f"/opt/qdev-buildkit/{version}/bin/buildctl" in settings
+
+
 def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:
     entrypoint = (ROOT / "images/runner/entrypoint.sh").read_text(encoding="utf-8")
 

@@ -421,9 +421,9 @@ class WorkerSettings:
             docker_sidecar_image=_required_immutable_image("QDEV_DOCKER_SIDECAR_IMAGE"),
             rootlesskit_path=os.environ.get("QDEV_ROOTLESSKIT", "/usr/bin/rootlesskit"),
             buildkitd_path=os.environ.get(
-                "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.32.2/bin/buildkitd"
+                "QDEV_BUILDKITD", "/opt/qdev-buildkit/0.33.0/bin/buildkitd"
             ),
-            buildctl_path=os.environ.get("QDEV_BUILDCTL", "/opt/qdev-buildkit/0.32.2/bin/buildctl"),
+            buildctl_path=os.environ.get("QDEV_BUILDCTL", "/opt/qdev-buildkit/0.33.0/bin/buildctl"),
             buildkit_root=Path(
                 os.environ.get("QDEV_BUILDKIT_ROOT", "/var/lib/qdev-runner-worker/jobs")
             ),
