@@ -36,8 +36,16 @@ ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS general
 USER root
+# PostgreSQL's ssl-cert dependency creates a host-local snakeoil identity during
+# package installation. Disposable CI clusters do not use it, so never publish
+# that generated private key in the immutable runner image.
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-16 \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -f \
+         /etc/ssl/private/ssl-cert-snakeoil.key \
+         /etc/ssl/certs/ssl-cert-snakeoil.pem \
+    && test ! -e /etc/ssl/private/ssl-cert-snakeoil.key \
+    && test ! -e /etc/ssl/certs/ssl-cert-snakeoil.pem \
     && for binary in initdb pg_ctl createdb dropdb psql pg_dump pg_restore; do \
          test -x "/usr/lib/postgresql/16/bin/${binary}"; \
        done \

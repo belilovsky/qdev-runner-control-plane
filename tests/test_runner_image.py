@@ -31,6 +31,18 @@ def test_general_image_supplies_native_postgresql_16_toolchain() -> None:
     assert "grep -Eq ' 16\\.'" in general
 
 
+def test_general_image_removes_package_generated_snakeoil_tls_material() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+
+    _, after_general = dockerfile.split("FROM base AS general", maxsplit=1)
+    general, _ = after_general.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    assert "rm -f" in general
+    assert "/etc/ssl/private/ssl-cert-snakeoil.key" in general
+    assert "/etc/ssl/certs/ssl-cert-snakeoil.pem" in general
+    assert "test ! -e /etc/ssl/private/ssl-cert-snakeoil.key" in general
+    assert "test ! -e /etc/ssl/certs/ssl-cert-snakeoil.pem" in general
+
+
 def test_browser_image_pins_the_playwright_1_62_1_chromium_bundle() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
