@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 RELEASES_ROOT = Path("/opt/qdev-runner-control-plane/releases")
-STATUS_PATH = Path("/etc/qdev-runner/controller-release.json")
+STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
 SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")

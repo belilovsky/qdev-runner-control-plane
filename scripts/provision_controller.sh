@@ -26,11 +26,14 @@ install -d -o root -g root -m 0755 /etc/qdev-runner
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator
-install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner
+install -d -o root -g 9020 -m 0750 /var/lib/qdev-runner
 install -d -o 9020 -g 9020 -m 0750 /var/lib/qdev-runner/artifacts
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/broker-state
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/control-state
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/admin-platform-receipts
+install -d -o root -g root -m 0755 /var/lib/qdev-runner/controller-status
+install -d -o root -g root -m 0755 /var/lib/qdev-runner/admin-platform-state
+install -d -o root -g root -m 0700 /var/lib/qdev-runner/controller-status-migrations
 install -d -o root -g root -m 0700 /var/lib/qdev-runner/admin-platform-bootstrap
 install -d -o root -g root -m 0700 /var/lib/qdev-runner/admin-platform-ledger-migrations
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/release-jobs

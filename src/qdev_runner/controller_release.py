@@ -29,6 +29,7 @@ _REQUIRED_FILES = frozenset(
         "pyproject.toml",
         "requirements.runtime.txt",
         "src/qdev_runner/controller_release.py",
+        "src/qdev_runner/durable_state.py",
         "scripts/activate_controller_release.sh",
         "scripts/rollback_controller_release.sh",
         "scripts/qdev_controller_activation_adapter.py",

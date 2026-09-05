@@ -74,10 +74,14 @@ class BrokerSettings:
     # key never travels in a request or appears in a receipt.
     controller_claim_key: str | None = None
     operations_root: Path = Path("/var/lib/qdev-runner/operations")
-    controller_release_status_path: Path = Path("/etc/qdev-runner/controller-release.json")
+    controller_release_status_path: Path = Path(
+        "/var/lib/qdev-runner/controller-status/controller-release.json"
+    )
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
-    admin_platform_ledger_path: Path = Path("/etc/qdev-runner/admin-platform-ledger.yml")
+    admin_platform_ledger_path: Path = Path(
+        "/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml"
+    )
     admin_platform_receipt_root: Path = Path(
         "/var/lib/qdev-runner/admin-platform-receipts"
     )
@@ -178,7 +182,7 @@ class BrokerSettings:
             controller_release_status_path=Path(
                 os.environ.get(
                     "QDEV_CONTROLLER_RELEASE_STATUS",
-                    "/etc/qdev-runner/controller-release.json",
+                    "/var/lib/qdev-runner/controller-status/controller-release.json",
                 )
             ),
             release_lanes_path=Path(
@@ -190,7 +194,7 @@ class BrokerSettings:
             admin_platform_ledger_path=Path(
                 os.environ.get(
                     "QDEV_ADMIN_PLATFORM_LEDGER",
-                    "/etc/qdev-runner/admin-platform-ledger.yml",
+                    "/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml",
                 )
             ),
             admin_platform_receipt_root=Path(

@@ -8,7 +8,7 @@ fi
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 target="/opt/qdev-runner-control-plane/releases/$1"
-status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/etc/qdev-runner/controller-release.json}"
+status_path="${QDEV_CONTROLLER_RELEASE_STATUS:-/var/lib/qdev-runner/controller-status/controller-release.json}"
 current_revision="$(python3 - "$status_path" <<'PY'
 import json
 import pathlib
