@@ -34,7 +34,9 @@ def _copy_release(tmp_path: Path) -> Path:
         shutil.copy2(source, target)
     for new_runtime_module in (
         Path("src/qdev_runner/controller_release.py"),
+        Path("src/qdev_runner/controller_candidate.py"),
         Path("src/qdev_runner/durable_state.py"),
+        Path("scripts/prepare_controller_candidate.py"),
     ):
         if not (release / new_runtime_module).exists():
             (release / new_runtime_module).parent.mkdir(parents=True, exist_ok=True)

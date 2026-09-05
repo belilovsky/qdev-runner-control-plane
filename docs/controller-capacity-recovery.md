@@ -13,12 +13,27 @@ cannot choose a host, service, executable, certificate or CA key.
 
 ## Procedure
 
-1. Activate an exact controller release containing the typed recovery API and
+1. Stage the clean, root-owned exact release directly below
+   `/opt/qdev-runner-control-plane/releases/` with the directory name equal to
+   its 40-character source SHA. Before activation, advance the durable
+   controller candidate with the release-owned, lock-serialized operation:
+
+   ```bash
+   /opt/qdev-runner-control-plane/releases/SHA/scripts/prepare_controller_candidate.py \
+     /opt/qdev-runner-control-plane/releases/SHA
+   ```
+
+   The operation measures the active runtime receipt and the target Git tree,
+   signs the blocked supersession and new source admission locally, and never
+   accepts either SHA from the caller. It is crash-resumable and a replay after
+   completion returns `already_completed` without a new receipt. Preserve the
+   returned private receipt URIs and ledger digest.
+2. Activate that same exact controller release containing the typed recovery API and
    the two fixed host-agent profiles. Enrol each already assigned host with its
    own root-owned configuration and certificate. Activation and enrolment use
    the existing managed fleet adapters; GitHub workflows never receive SSH,
    the QDev CA, agent keys or a general command primitive.
-2. From the certificate-authenticated operator session, prepare exactly one
+3. From the certificate-authenticated operator session, prepare exactly one
    target. The client first reads the live `/bindings` projection and binds a
    fresh request to the active controller revision, release, policy, agent and
    interface digests:
@@ -32,7 +47,7 @@ cannot choose a host, service, executable, certificate or CA key.
    Save the returned `operation_id` and `request_fingerprint`. The controller
    observes the unique same-name provider runner and refuses preparation when
    it is busy, has active jobs, has a conflicting identity or no exact target.
-3. Start the already installed one-shot service on the fixed target host:
+4. Start the already installed one-shot service on the fixed target host:
 
    ```bash
    systemctl start qdev-runner-recovery-platform.service
@@ -46,7 +61,7 @@ cannot choose a host, service, executable, certificate or CA key.
    Each agent persists private native proof before reconciling it to the
    controller. A retry resumes pending reconciliation or returns idle; it does
    not repeat a completed mutation.
-4. Run controller acceptance and then read the exact transaction:
+5. Run controller acceptance and then read the exact transaction:
 
    ```bash
    qdev-runner-operator recovery-accept \

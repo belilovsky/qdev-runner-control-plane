@@ -57,6 +57,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qazposter.service" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
+    assert "scripts/prepare_controller_candidate.py" in script
+    assert "src/qdev_runner/controller_candidate.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
