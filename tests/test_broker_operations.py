@@ -1479,6 +1479,95 @@ def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(
     assert client.app.state.store.job_status(41) == "pending"
 
 
+def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
+    tmp_path: Path,
+) -> None:
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    client = _app(
+        tmp_path,
+        FakeGitHub(head_sha=controller_sha, job_run_id=84000000042),
+    )
+    scope_id = "admin-platform-controller-candidate"
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id=scope_id,
+        profiles=["qdev-ci-docker"],
+    )
+    _seed_pending_job(client, 41, "stale-capacity-candidate")
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+    operation = client.app.state.operations.create_capacity_override(
+        worker_name=WORKER_NAME,
+        repository="belilovsky/example",
+        head_sha="a" * 40,
+        profiles=("qdev-ci-docker",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=94.0,
+        owner="admin-platform",
+        reason="retain measured capacity while advancing exact signed scope",
+        duration_seconds=300,
+        registered_profiles=("qdev-ci-docker",),
+    )
+    store: Store = client.app.state.store
+    worker = store.health()["workers"][0]
+    detail = json.loads(worker["detail_json"])
+    detail["capacity_directive_id"] = operation.operation_id
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
+        )
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": scope_id,
+            "host": WORKER_NAME,
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "active-controller-prerequisite",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    claim = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "claim_scope_id": scope_id,
+            "profiles": ["qdev-ci-docker"],
+            "disk_free_gib": 20.0,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": operation.operation_id,
+            "capacity_repository": "belilovsky/example",
+            "capacity_head_sha": "a" * 40,
+        },
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == 42
+    assert claim.json()["repository"] == "belilovsky/qdev-runner-control-plane"
+    assert store.job_status(41) == "pending"
+
+
 def test_non_active_controller_sha_cannot_bypass_profile_fifo(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")

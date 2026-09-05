@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform import (
     CONTROLLER_RELEASE_SCHEMA_V1,
+    AdminPlatformCandidate,
     AdminPlatformLedger,
     AdminPlatformLedgerError,
     ControllerRuntimeHealth,
@@ -2426,7 +2427,47 @@ def create_app(
             or tuple(request.profiles) != active_directive.profiles
         ):
             raise HTTPException(status_code=403, detail="capacity override binding rejected")
-        repository = active_directive.repository if active_directive is not None else None
+        # A capacity directive normally keeps the durable claim bound to its
+        # repository/SHA.  The sole bootstrap exception is an exact active
+        # controller tuple already admitted by the admin-platform ledger and a
+        # certificate-bound v2 scope.  This lets the controller restore its own
+        # admission path without weakening FIFO for any other scoped job.
+        controller_scoped_admission: AdminPlatformCandidate | None = None
+        if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            try:
+                ledger = admin_platform_ledger()
+                active_candidate = ledger.active_candidate
+                if (
+                    ledger.active_stage == "controller"
+                    and active_candidate is not None
+                    and active_candidate.repository == _CONTROLLER_REPOSITORY
+                    and any(
+                        item.repository == active_candidate.repository
+                        and item.exact_sha == active_candidate.source_sha
+                        for item in claim_scope.jobs
+                    )
+                ):
+                    ledger.validate_admission("controller", active_candidate.source_sha)
+                    controller_scoped_admission = active_candidate
+            except AdminPlatformLedgerError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"admin platform ledger unavailable: {error}",
+                ) from error
+        repository = (
+            controller_scoped_admission.repository
+            if controller_scoped_admission is not None
+            else active_directive.repository
+            if active_directive is not None
+            else None
+        )
+        head_sha = (
+            controller_scoped_admission.source_sha
+            if controller_scoped_admission is not None
+            else active_directive.head_sha
+            if active_directive is not None
+            else None
+        )
         claimed = store.claim(
             request.worker_name,
             tuple(request.profiles),
@@ -2437,7 +2478,7 @@ def create_app(
             repository_profile_disk_mb=policy.repository_profile_disk_mb,
             claim_scope=claim_scope,
             repository=repository,
-            head_sha=active_directive.head_sha if active_directive is not None else None,
+            head_sha=head_sha,
         )
         if claimed is None:
             return Response(status_code=204)
