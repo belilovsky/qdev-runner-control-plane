@@ -692,6 +692,16 @@ def _seed_stale_running_job(client: TestClient) -> float:
     return created_at
 
 
+def _seed_failed_worker_job(client: TestClient) -> float:
+    created_at = _seed_stale_running_job(client)
+    store: Store = client.app.state.store
+    assert store.fail_if_active(
+        42,
+        f"worker={WORKER_NAME} exit=143 capacity override expired",
+    ) is True
+    return created_at
+
+
 def _heartbeat(
     client: TestClient,
     *,
@@ -2228,3 +2238,86 @@ def test_stale_provider_completed_job_is_closed_not_requeued(tmp_path: Path) -> 
     assert job is not None
     assert job["status"] == "completed"
     assert job["result"] == "success"
+
+
+def test_failed_worker_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    _seed_failed_worker_job(client)
+
+    response = client.get(
+        "/internal/v1/operations/jobs/failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    candidate = receipt["payload"]["candidates"][0]
+    assert candidate["job_id"] == 42
+    assert candidate["run_id"] == 84
+    assert candidate["exact_sha"] == "a" * 40
+    assert candidate["state"] == "failed"
+    assert client.app.state.store.job_status(42) == "failed"
+
+
+def test_failed_worker_job_is_released_only_when_provider_is_queued(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    created_at = _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "provider remains queued after local worker exit",
+        },
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    assert receipt["payload"]["action"] == "released-preserving-fifo"
+    assert receipt["payload"]["fifo_preserved"] is True
+    job = client.app.state.store.job(42)
+    assert job is not None
+    assert job["status"] == "pending"
+    assert job["completed_at"] is None
+    assert float(job["created_at"]) == created_at
+
+
+def test_failed_worker_job_is_not_released_while_provider_is_active(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub(job_status="in_progress"))
+    _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "provider state must win",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "provider reports the job is still in progress"
+    assert client.app.state.store.job_status(42) == "failed"
+
+
+def test_failed_worker_job_with_provider_tuple_mismatch_is_not_released(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub(head_sha="b" * 40))
+    _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "immutable provider tuple must match",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "provider immutable tuple does not match the failed job"
+    )
+    assert client.app.state.store.job_status(42) == "failed"

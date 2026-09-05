@@ -7,7 +7,7 @@ import shutil
 import signal
 import ssl
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -489,14 +489,6 @@ class Worker:
         communicate = asyncio.create_task(process.communicate())
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            if (
-                admission is not None
-                and admission.directive_expires_at is not None
-                and datetime.now(UTC) >= admission.directive_expires_at
-            ):
-                await self.terminate_process(process)
-                output, _ = await communicate
-                return output, "capacity override expired during running job"
             capacity_detail = self.disk_hard_floor_violation(
                 self.capacity(),
                 min_disk_free_gib=(
