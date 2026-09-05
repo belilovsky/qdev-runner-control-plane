@@ -3,7 +3,7 @@ set -euo pipefail
 
 engine="${QDEV_CONTAINER_ENGINE:-docker}"
 registry="${QDEV_REGISTRY:-registry.ci.qdev.run/qdev}"
-version="${QDEV_RUNNER_VERSION:-2.337.0-r7}"
+version="${QDEV_RUNNER_VERSION:-2.337.0-r8}"
 browser_image="${registry}/actions-runner-browser:${version}"
 browser_staging_image="${browser_image}-rootfs"
 browser_export_root=""

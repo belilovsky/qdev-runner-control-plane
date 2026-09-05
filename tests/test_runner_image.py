@@ -61,7 +61,7 @@ def test_worker_defaults_match_the_immutable_runner_image_release() -> None:
     assert "_required_immutable_image" in settings
     assert "@sha256 content-addressed reference" in settings
     assert "image_not_immutable" in worker_audit
-    assert 'QDEV_RUNNER_VERSION:-2.337.0-r7' in builder
+    assert 'QDEV_RUNNER_VERSION:-2.337.0-r8' in builder
 
 
 def test_browser_release_is_flattened_before_publication() -> None:
@@ -130,6 +130,22 @@ def test_docker_profile_has_compose_plugin() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
     assert "docker.io docker-buildx docker-compose-v2" in dockerfile
+
+
+def test_docker_profile_uses_verified_buildkit_release_without_critical_findings() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    provisioner = (ROOT / "scripts/provision_worker.sh").read_text(encoding="utf-8")
+
+    assert "ARG BUILDKIT_VERSION=0.33.0" in dockerfile
+    assert (
+        "ARG BUILDKIT_SHA256="
+        "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+    ) in dockerfile
+    assert "buildkit_version=0.33.0" in provisioner
+    assert (
+        "buildkit_sha256="
+        "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+    ) in provisioner
 
 
 def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:
