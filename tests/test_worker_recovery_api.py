@@ -355,6 +355,39 @@ def test_prepare_is_provider_observed_and_exactly_idempotent(
     assert harness.github.observation_calls == 1
 
 
+def test_bindings_are_live_source_bound_and_non_secret(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/bindings",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["controller_revision"] == CONTROLLER_REVISION
+    assert body["controller_release_digest"] == CONTROLLER_RELEASE_DIGEST
+    assert body["policy_digest"] == POLICY_DIGEST
+    assert body["agent_release_digest"] == AGENT_RELEASE_DIGEST
+    assert body["interface_version"] == INTERFACE_VERSION
+    assert body["interface_digest"] == INTERFACE_DIGEST
+    assert body["proof_max_age_seconds"] == 120
+    assert set(body) == {
+        "schema",
+        "controller_revision",
+        "controller_release_digest",
+        "policy_digest",
+        "agent_release_digest",
+        "interface_version",
+        "interface_digest",
+        "observed_at",
+        "proof_max_age_seconds",
+    }
+    assert "token" not in json.dumps(body).lower()
+    assert OPERATOR_CERTIFICATE not in json.dumps(body)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

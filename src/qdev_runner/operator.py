@@ -5,15 +5,20 @@ import hmac
 import json
 import os
 import re
+import secrets
 import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
+from .models import RecoveryBindingsResponse, RecoveryOperationResponse
 from .operations import payload_digest, sign_payload, validate_controller_receipt_payload
+from .worker_recovery import INTERFACE_DIGEST, INTERFACE_VERSION
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
@@ -51,6 +56,13 @@ def _certificate_sha256(value: str) -> str:
     normalized = value.lower()
     if not _SHA256.fullmatch(normalized):
         raise ValueError("invalid worker certificate SHA-256")
+    return normalized
+
+
+def _sha256_hex(value: str, *, field: str) -> str:
+    normalized = value.lower()
+    if not _SHA256.fullmatch(normalized):
+        raise ValueError(f"invalid {field}")
     return normalized
 
 
@@ -166,6 +178,58 @@ def controller_request(
     return verify_controller_receipt(document, receipt_key=settings.receipt_key)
 
 
+def recovery_request[RecoveryResponse: BaseModel](
+    settings: OperatorSettings,
+    *,
+    method: str,
+    path: str,
+    response_model: type[RecoveryResponse],
+    body: Mapping[str, Any] | None = None,
+) -> RecoveryResponse:
+    """Call the certificate-authenticated recovery edge without forged identity headers."""
+
+    with httpx.Client(
+        base_url=settings.controller_url,
+        headers={"X-QDev-Operator-Token": settings.operator_token},
+        verify=_tls_context(settings),
+        timeout=45,
+    ) as client:
+        response = client.request(method, path, json=body)
+        response.raise_for_status()
+        document = response.json()
+    if not isinstance(document, dict):
+        raise ValueError("controller returned a non-object recovery response")
+    return response_model.model_validate(document)
+
+
+def _fresh_recovery_provenance(settings: OperatorSettings) -> dict[str, Any]:
+    bindings = recovery_request(
+        settings,
+        method="POST",
+        path="/internal/v1/operations/worker-recovery/bindings",
+        response_model=RecoveryBindingsResponse,
+    )
+    if (
+        bindings.interface_version != INTERFACE_VERSION
+        or bindings.interface_digest != INTERFACE_DIGEST
+    ):
+        raise ValueError("active recovery interface does not match this operator client")
+    issued_at = bindings.observed_at.astimezone(UTC)
+    lifetime = min(60.0, bindings.proof_max_age_seconds)
+    return {
+        "schema": "qdev-runner-recovery-provenance-v1",
+        "nonce": f"recovery-{secrets.token_hex(16)}",
+        "issued_at": issued_at.isoformat().replace("+00:00", "Z"),
+        "expires_at": (issued_at + timedelta(seconds=lifetime))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "controller_revision": bindings.controller_revision,
+        "controller_release_digest": bindings.controller_release_digest,
+        "policy_digest": bindings.policy_digest,
+        "agent_release_digest": bindings.agent_release_digest,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qdev-runner-operator",
@@ -225,14 +289,25 @@ def build_parser() -> argparse.ArgumentParser:
     claim_scope.add_argument("--correlation-id", required=True)
     claim_scope.add_argument("--duration-seconds", type=int, default=900)
 
-    recover_worker = commands.add_parser(
-        "recover-existing-worker",
-        help="Run one controller-owned recovery for an existing enrolled worker",
+    recovery_prepare = commands.add_parser(
+        "recovery-prepare",
+        help="Prepare one fixed-target controller-owned recovery transaction",
     )
-    recover_worker.add_argument("--request", required=True, type=Path)
-    recover_worker.add_argument("--idempotency-key", required=True)
-    recover_worker.add_argument("--active-jobs", required=True, type=int)
-    recover_worker.add_argument("--timeout-seconds", type=float, default=120.0)
+    recovery_prepare.add_argument(
+        "target",
+        choices=("qdev-platform-ci-187", "qdev-qazstack-01"),
+    )
+    recovery_prepare.add_argument("--idempotency-key", required=True)
+    recovery_prepare.add_argument("--reason", required=True)
+
+    for command_name, command_help in (
+        ("recovery-status", "Read one exact controller-owned recovery transaction"),
+        ("recovery-accept", "Run provider and canary acceptance for one transaction"),
+    ):
+        recovery_command = commands.add_parser(command_name, help=command_help)
+        recovery_command.add_argument("--operation-id", required=True)
+        recovery_command.add_argument("--request-fingerprint", required=True)
+
     activate_controller = commands.add_parser(
         "activate-controller",
         help="Run one allowlisted controller activation through the managed adapter",
@@ -344,35 +419,61 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "duration_seconds": arguments.duration_seconds,
             },
         )
-    if arguments.command in {
-        "recover-existing-worker",
-        "activate-controller",
-        "enrol-host-agent",
-    }:
+    if arguments.command == "recovery-prepare":
+        prepare_body = {
+            "schema": "qdev-runner-recovery-prepare-v1",
+            "target_id": arguments.target,
+            "idempotency_key": _idempotency_key(arguments.idempotency_key),
+            "reason": arguments.reason,
+            "provenance": _fresh_recovery_provenance(settings),
+        }
+        response = recovery_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/worker-recovery/prepare",
+            body=prepare_body,
+            response_model=RecoveryOperationResponse,
+        )
+        return response.model_dump(mode="json", by_alias=True)
+    if arguments.command in {"recovery-status", "recovery-accept"}:
+        operation_id = _sha256_hex(arguments.operation_id, field="operation ID")
+        request_fingerprint = _sha256_hex(
+            arguments.request_fingerprint,
+            field="request fingerprint",
+        )
+        action = arguments.command.removeprefix("recovery-")
+        action_body = {
+            "schema": f"qdev-runner-recovery-{action}-v1",
+            "operation_id": operation_id,
+            "request_fingerprint": request_fingerprint,
+            "provenance": _fresh_recovery_provenance(settings),
+        }
+        response = recovery_request(
+            settings,
+            method="POST",
+            path=f"/internal/v1/operations/worker-recovery/{action}",
+            body=action_body,
+            response_model=RecoveryOperationResponse,
+        )
+        return response.model_dump(mode="json", by_alias=True)
+    if arguments.command in {"activate-controller", "enrol-host-agent"}:
         key = _idempotency_key(arguments.idempotency_key)
-        if (
-            arguments.command == "recover-existing-worker"
-            and arguments.active_jobs < 0
-        ):
-            raise ValueError("active jobs cannot be negative")
         try:
             raw = json.loads(arguments.request.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError("bootstrap request file is invalid") from error
         if not isinstance(raw, dict):
             raise ValueError("bootstrap request file must contain an object")
-        body: dict[str, Any] = {
+        bootstrap_body: dict[str, Any] = {
             "request": raw,
             "idempotency_key": key,
             "timeout_seconds": arguments.timeout_seconds,
         }
-        if arguments.command == "recover-existing-worker":
-            body["active_jobs"] = arguments.active_jobs
         return controller_request(
             settings,
             method="POST",
             path=f"/internal/v1/operations/fleet-bootstrap/{arguments.command}",
-            body=body,
+            body=bootstrap_body,
         )
     raise AssertionError("unreachable command")
 

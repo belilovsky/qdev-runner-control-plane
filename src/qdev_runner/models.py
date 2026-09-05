@@ -261,6 +261,32 @@ class RecoveryAgentCommandEnvelope(BaseModel):
     signature: Sha256Hex
 
 
+class RecoveryBindingsResponse(BaseModel):
+    """Current non-secret bindings for a fresh operator recovery request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-bindings-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-bindings-v1$",
+    )
+    controller_revision: GitRevision
+    controller_release_digest: Sha256Hex
+    policy_digest: Sha256Digest
+    agent_release_digest: Sha256Digest
+    interface_version: RecoveryIdentifier
+    interface_digest: Sha256Hex
+    observed_at: datetime
+    proof_max_age_seconds: float = Field(gt=0, le=300)
+
+    @model_validator(mode="after")
+    def validate_observed_at(self) -> RecoveryBindingsResponse:
+        if self.observed_at.tzinfo is None:
+            raise ValueError("recovery binding timestamp must include a timezone")
+        return self
+
+
 class RecoveryOperationResponse(BaseModel):
     """Topology-free recovery projection safe for the private operator API."""
 

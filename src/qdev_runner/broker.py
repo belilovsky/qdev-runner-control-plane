@@ -51,6 +51,7 @@ from .models import (
     QueuedJob,
     RecoveryAcceptRequest,
     RecoveryAgentClaimRequest,
+    RecoveryBindingsResponse,
     RecoveryOperationResponse,
     RecoveryPrepareRequest,
     RecoveryReconcileRequest,
@@ -1431,6 +1432,26 @@ def create_app(
             "pending": int(snapshot["jobs"].get("pending", 0)),
         }
         return operation_store.receipt(payload)
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/bindings",
+        response_model=RecoveryBindingsResponse,
+    )
+    def worker_recovery_bindings(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryBindingsResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.bindings(
+                operator_certificate_sha256=certificate,
+            )
+        )
 
     @app.post(
         "/internal/v1/operations/worker-recovery/prepare",

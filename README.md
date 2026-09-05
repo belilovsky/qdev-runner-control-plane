@@ -352,6 +352,10 @@ returns `410`. It is not a fallback to the typed recovery API. Controller
 activation packages the fixed host agents and one-shot units, but an operator
 must install their private certificate/release bindings on the already
 assigned hosts; no workflow receives SSH, CA material or a general command.
+Use `qdev-runner-operator recovery-prepare`, start the corresponding fixed
+one-shot host service, then use `recovery-accept` and `recovery-status`. The
+operator reads live source bindings before every typed request and never
+self-asserts the edge-owned proxy or verified-certificate headers.
 
 The capacity endpoint never changes a job, FIFO order, lease, label, profile or
 `runs-on`. It can issue one signed override for a fresh, idle worker only when

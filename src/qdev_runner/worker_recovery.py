@@ -15,6 +15,7 @@ from .models import (
     RecoveryAcceptRequest,
     RecoveryAgentClaimRequest,
     RecoveryAgentCommand,
+    RecoveryBindingsResponse,
     RecoveryOperationResponse,
     RecoveryPrepareRequest,
     RecoveryReconcileRequest,
@@ -82,6 +83,7 @@ INTERFACE_MANIFEST: dict[str, Any] = {
         "allow_nan": False,
     },
     "endpoints": {
+        "bindings": "/internal/v1/operations/worker-recovery/bindings",
         "prepare": "/internal/v1/operations/worker-recovery/prepare",
         "status": "/internal/v1/operations/worker-recovery/status",
         "accept": "/internal/v1/operations/worker-recovery/accept",
@@ -89,6 +91,7 @@ INTERFACE_MANIFEST: dict[str, Any] = {
         "reconcile": "/internal/v1/worker-recovery/reconcile",
     },
     "schemas": {
+        "bindings": "qdev-runner-recovery-bindings-v1",
         "claim": "qdev-runner-recovery-agent-claim-v1",
         "command": "qdev-runner-recovery-agent-command-v1",
         "envelope": "qdev-runner-recovery-agent-envelope-v1",
@@ -233,6 +236,29 @@ class WorkerRecoveryController:
         if len(matches) != 1:
             raise WorkerRecoveryError("verified agent certificate is not allowlisted")
         return matches[0]
+
+    def bindings(
+        self,
+        *,
+        operator_certificate_sha256: str,
+    ) -> RecoveryBindingsResponse:
+        """Return only active, source-bound values needed for fresh provenance."""
+
+        release = self._configuration()
+        self._operator_certificate(operator_certificate_sha256)
+        return RecoveryBindingsResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-bindings-v1",
+                "controller_revision": release["revision"],
+                "controller_release_digest": release["release_digest"],
+                "policy_digest": self._policy_digest(),
+                "agent_release_digest": self._agent_release_digest(),
+                "interface_version": INTERFACE_VERSION,
+                "interface_digest": INTERFACE_DIGEST,
+                "observed_at": datetime.now(UTC),
+                "proof_max_age_seconds": self.settings.recovery_proof_max_age_seconds,
+            }
+        )
 
     def prepare(
         self,

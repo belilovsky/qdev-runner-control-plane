@@ -13,22 +13,55 @@ cannot choose a host, service, executable, certificate or CA key.
 
 ## Procedure
 
-1. Run the signed `.github/workflows/fleet-bootstrap.yml` validation request
-   for one existing worker. Save its exact request JSON, source SHA, run id,
-   job id, attempt and idempotency key. Validation is evidence only; it does
-   not claim that a worker was restored.
-2. From the controller operator session, invoke
-   `qdev-runner-operator recover-existing-worker --request REQUEST.json
-   --idempotency-key KEY --active-jobs 0`. The operator client uses the
-   mTLS-protected `/internal/v1/operations/fleet-bootstrap/recover-existing-worker`
-   endpoint. The controller supplies the policy, durable state paths and the
-   controller-installed `/usr/local/sbin/qdev-fleet-worker-recovery` adapter.
-3. Verify the signed receipt and the private append-only receipt. Only an
-   adapter result of `completed` or `already_completed` changes durable
-   operation state to `completed`. Retries with the same idempotency key are
-   safe; a different request under that key is rejected.
-4. Recheck GitHub runner `online` and `busy=false`, the expected permanent
-   labels, a fresh `qdev-ci` admission and a native canary on that runner.
+1. Activate an exact controller release containing the typed recovery API and
+   the two fixed host-agent profiles. Enrol each already assigned host with its
+   own root-owned configuration and certificate. Activation and enrolment use
+   the existing managed fleet adapters; GitHub workflows never receive SSH,
+   the QDev CA, agent keys or a general command primitive.
+2. From the certificate-authenticated operator session, prepare exactly one
+   target. The client first reads the live `/bindings` projection and binds a
+   fresh request to the active controller revision, release, policy, agent and
+   interface digests:
+
+   ```bash
+   qdev-runner-operator recovery-prepare qdev-platform-ci-187 \
+     --idempotency-key recovery-platform-20260905-01 \
+     --reason 'restore existing dedicated Platform CI runner'
+   ```
+
+   Save the returned `operation_id` and `request_fingerprint`. The controller
+   observes the unique same-name provider runner and refuses preparation when
+   it is busy, has active jobs, has a conflicting identity or no exact target.
+3. Start the already installed one-shot service on the fixed target host:
+
+   ```bash
+   systemctl start qdev-runner-recovery-platform.service
+   # or, for the other fixed host:
+   systemctl start qdev-runner-recovery-qazstack.service
+   ```
+
+   The platform profile verifies and restores its saved runner configuration.
+   The QazStack profile obtains a short-lived registration token only inside
+   the controller transaction and uses `--replace` for the same runner name.
+   Each agent persists private native proof before reconciling it to the
+   controller. A retry resumes pending reconciliation or returns idle; it does
+   not repeat a completed mutation.
+4. Run controller acceptance and then read the exact transaction:
+
+   ```bash
+   qdev-runner-operator recovery-accept \
+     --operation-id OPERATION_ID \
+     --request-fingerprint REQUEST_FINGERPRINT
+   qdev-runner-operator recovery-status \
+     --operation-id OPERATION_ID \
+     --request-fingerprint REQUEST_FINGERPRINT
+   ```
+
+   Acceptance requires the expected permanent labels, GitHub `online` and
+   `busy=false`, zero active jobs, a controller-dispatched exact-default-SHA
+   canary on the same runner, and a successful provider-visible terminal job.
+   Only `completed` or `already_completed` closes recovery. Replay the same
+   prepare request and confirm `idempotent_replay=true` without a new mutation.
 
 The controller refuses recovery when active work is reported, when the target
 is not registered, when identity returned by the adapter does not exactly
@@ -38,11 +71,39 @@ recorded as `active_work`, `target_unregistered`, `failed` or
 There is no direct SSH/systemd fallback and no manual mutation of FIFO jobs or
 leases. The production runner remains reserved for production operations.
 
-The adapter is an existing, reviewed controller primitive and must be
-installed by the control-plane provisioning/release process with root-owned
-permissions. This repository deliberately does not ship a substitute adapter:
-absence is a visible `access_blocked` condition rather than permission to run
+The external recovery edge must authenticate client mTLS, remove any incoming
+identity/proxy headers, and inject both
+`X-QDev-Operator-Proxy-Auth` and
+`X-QDev-Verified-Client-Certificate-SHA256` from verified connection state.
+The operator client deliberately does not set those headers. The controller
+matches the operator or fixed host-agent certificate against its private
+allowlist and fails closed on missing or mismatched release bindings.
+
+The fixed adapter, host agent, installer and service units are shipped by this
+repository and installed by the controller release. Their actions, paths,
+services, repositories, runner names and labels are compiled into the release;
+HTTP callers cannot alter them. Missing host enrolment or an unavailable
+external edge is a visible `access_blocked` condition, not permission to run
 arbitrary shell from a workflow.
+
+Set recovery values only in root-owned private controller/agent environment
+files. In addition to the existing operator settings, the controller requires:
+
+```text
+QDEV_OPERATOR_PROXY_SECRET=<edge-to-controller secret>
+QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S=<allowlisted operator fingerprints>
+QDEV_RECOVERY_PLATFORM_AGENT_CERTIFICATE_SHA256=<fixed host fingerprint>
+QDEV_RECOVERY_QAZSTACK_AGENT_CERTIFICATE_SHA256=<fixed host fingerprint>
+QDEV_RECOVERY_POLICY_DIGEST=<checked-in policy digest>
+QDEV_RECOVERY_AGENT_RELEASE_DIGEST=<activated immutable agent release digest>
+QDEV_RECOVERY_AGENT_SIGNING_KEY=<controller/agent reconciliation key>
+```
+
+The release status file supplies the active controller revision and release
+digest. Host configuration pins the same values plus the recovery interface
+version/digest and keeps state, lock and receipt paths under private `/var` and
+`/run` locations. Never copy these secrets or private receipt payloads into a
+workflow artifact.
 
 ## Existing capacity controls
 
