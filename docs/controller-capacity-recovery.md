@@ -114,6 +114,24 @@ QDEV_RECOVERY_AGENT_RELEASE_DIGEST=<activated immutable agent release digest>
 QDEV_RECOVERY_AGENT_SIGNING_KEY=<controller/agent reconciliation key>
 ```
 
+Provision these values after issuing the two fixed agent certificates. The
+source-owned helper preserves existing secrets on replay and emits only public
+binding metadata; use `--rotate-secrets` only as an explicit coordinated
+rotation because both agents and the edge must be updated in the same
+transaction:
+
+```bash
+qdev-worker-recovery-bindings-provision \
+  --operator-cert /etc/qdev-runner/mtls/operator/operator-cert.pem \
+  --platform-agent-cert /etc/qdev-runner/mtls/controller/scoped/qdev-platform-ci-187-cert.pem \
+  --qazstack-agent-cert /etc/qdev-runner/mtls/controller/scoped/qdev-qazstack-01-cert.pem
+```
+
+`recovery-controller.env` is loaded only by the internal broker;
+`recovery-edge.env` contains only the edge-to-controller proxy secret. The
+public broker explicitly blanks every recovery authority even if an operator
+accidentally adds one to the shared broker environment.
+
 The release status file supplies the active controller revision and release
 digest. Host configuration pins the same values plus the recovery interface
 version/digest and keeps state, lock and receipt paths under private `/var` and

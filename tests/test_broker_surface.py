@@ -97,5 +97,9 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
     assert "QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /nonexistent/" in public
     assert "QDEV_CLAIM_SCOPES: /nonexistent/" in public
     assert "control-state/claim-scopes.json" not in public
+    assert 'QDEV_OPERATOR_PROXY_SECRET: ""' in public
+    assert 'QDEV_RECOVERY_AGENT_SIGNING_KEY: ""' in public
     assert 'QDEV_GITHUB_WEBHOOK_SECRET: ""' in internal
+    assert "/etc/qdev-runner/recovery-controller.env" in internal
+    assert "/etc/qdev-runner/recovery-controller.env" not in public
     assert "QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json" in internal

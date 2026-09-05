@@ -63,6 +63,8 @@ install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
   /usr/local/sbin/qdev-fleet-worker-recovery
 install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
+install -o root -g root -m 0755 scripts/provision_worker_recovery_bindings.py \
+  /usr/local/sbin/qdev-worker-recovery-bindings-provision
 /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
 install -m 0644 deploy/qdev-runner-broker.service /etc/systemd/system/qdev-runner-broker.service
 install -m 0644 deploy/qdev-artifact-retention.service /etc/systemd/system/qdev-artifact-retention.service
@@ -76,4 +78,4 @@ systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path
 # Reconcile any processing record that survived a dispatcher or host crash.
 systemctl start qdev-fleet-host-dispatch.service
-printf 'controller provisioning complete; install broker.env, GitHub App key and mTLS files before start\n'
+printf 'controller provisioning complete; install broker.env, GitHub App key, mTLS files and recovery bindings before start\n'

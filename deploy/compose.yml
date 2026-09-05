@@ -24,6 +24,13 @@ services:
       QDEV_GITHUB_APP_PRIVATE_KEY: /nonexistent/qdev-github-app.pem
       QDEV_REGISTRY_PASSWORD: ""
       QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /nonexistent/qdev-release-host-dispatch-keys.json
+      QDEV_OPERATOR_PROXY_SECRET: ""
+      QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S: ""
+      QDEV_RECOVERY_PLATFORM_AGENT_CERTIFICATE_SHA256: ""
+      QDEV_RECOVERY_QAZSTACK_AGENT_CERTIFICATE_SHA256: ""
+      QDEV_RECOVERY_POLICY_DIGEST: ""
+      QDEV_RECOVERY_AGENT_RELEASE_DIGEST: ""
+      QDEV_RECOVERY_AGENT_SIGNING_KEY: ""
       # Only the queue database and artifact upload tree are shared with the
       # internal broker.  Controller journals, release jobs and signing
       # receipts are deliberately outside the public mount namespace.
@@ -50,7 +57,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.broker
     restart: unless-stopped
-    env_file: /etc/qdev-runner/broker.env
+    env_file:
+      - /etc/qdev-runner/broker.env
+      - /etc/qdev-runner/recovery-controller.env
     environment:
       PORT: "9443"
       QDEV_LISTEN_HOST: "0.0.0.0"
