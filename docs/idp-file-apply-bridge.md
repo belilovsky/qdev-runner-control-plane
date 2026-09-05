@@ -38,6 +38,10 @@ IdP. No JSON boolean, CLI flag or SSH invocation substitutes for this envelope.
 The fixed installed controller host adapter constructs `FileApplyBridge` with:
 
 - its allowlisted `ReleaseLane`, signed dispatch and signed authorization;
+- the full immutable native candidate receipt: its existing signed
+  `candidate_evidence` digest is recomputed, not trusted or synthesized from
+  a seven-field CI subset; quality.yml/static-contracts, both archive digests
+  and exact provider tuple must also match the independently observed binding;
 - its protected signing key, never passed by the IdP caller;
 - `dispatch_transaction(claim) -> ContextManager[NativeDispatchGuard]`.
 

@@ -11,7 +11,12 @@ from qdev_runner.file_apply_authorization import (
     authorization_payload,
     canonical_bytes,
 )
-from qdev_runner.release_lane import ReleaseLane, ReleaseLaneError, sign_host_dispatch_claim
+from qdev_runner.release_lane import (
+    ReleaseLane,
+    ReleaseLaneError,
+    candidate_evidence,
+    sign_host_dispatch_claim,
+)
 
 KEY = b"file-apply-fixture-key-not-a-real-secret"
 NOW = 1_788_600_000
@@ -80,8 +85,8 @@ def fixture():
     claim = {
         "schema": "qdev-controller-host-dispatch-claim-v2",
         "repository": binding["repository"],
-        "workflow": "ci.yml",
-        "job": "quality",
+        "workflow": "quality.yml",
+        "job": "static-contracts",
         "exact_sha": SHA,
         "run_id": 1,
         "job_id": 2,
@@ -106,7 +111,21 @@ def fixture():
         "expires_at": NOW + 120,
         "nonce": "n" * 32,
     }
-    return binding, claim, lane
+    candidate = {
+        "schema": "qdev-release-candidate-receipt-v1",
+        "status": "passed",
+        "source_sha": SHA,
+        **{key: claim[key] for key in (
+            "repository", "workflow", "job", "run_id", "job_id", "attempt",
+            "runner_profile", "artifact_ref", "artifact_digest",
+        )},
+        "artifact_type": "http-archive",
+        "artifact_uri": "https://artifacts.example.test/idp-release.tar.gz",
+        "archive_sha256": "d" * 64,
+        "payload_sha256": "b" * 64,
+    }
+    claim["candidate_evidence"] = candidate_evidence({"candidate_receipt": candidate}, lane)
+    return binding, claim, lane, candidate
 
 
 class FakeNativeTransaction:
@@ -135,13 +154,14 @@ class FakeNativeTransaction:
 
 
 def bridge(fixture, transaction=None, clock=lambda: NOW):
-    binding, claim, lane = fixture
+    binding, claim, lane, candidate = fixture
     raw = canonical_bytes(binding)
     envelope = authorization_payload(raw, claim)
     native = transaction if transaction is not None else FakeNativeTransaction()
     result = FileApplyBridge(
         lane=lane,
         dispatch_claim=claim,
+        candidate_receipt=candidate,
         dispatch_signature=sign_host_dispatch_claim(claim, signing_key=KEY),
         authorization=envelope,
         authorization_signature=sign_host_dispatch_claim(envelope, signing_key=KEY),
@@ -275,3 +295,39 @@ def test_broken_native_context_cannot_suppress_apply_error(fixture):
     authorize, raw, _ = bridge(fixture, transaction=suppressing)
     with pytest.raises(RuntimeError, match="apply failed"), authorize(raw):
         raise RuntimeError("apply failed")
+
+
+@pytest.mark.parametrize("resign", [False, True])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_sha", "b" * 40), ("status", "queued"),
+        ("workflow", "runner-smoke.yml"), ("job", "smoke"), ("attempt", 2),
+        ("archive_sha256", "a" * 64), ("payload_sha256", "c" * 64),
+        ("artifact_type", "oci"),
+    ],
+)
+def test_full_candidate_drift_rejected_even_when_resigned(fixture, field, value, resign):
+    binding, claim, lane, candidate = fixture
+    candidate[field] = value
+    if resign:
+        claim["candidate_evidence"] = candidate_evidence({"candidate_receipt": candidate}, lane)
+    authorize, raw, native = bridge(fixture)
+    with pytest.raises(ReleaseLaneError), authorize(raw):
+        pytest.fail("candidate drift reached apply")
+    assert not native.consumed
+
+
+def test_candidate_metadata_is_bound_not_only_ci_tuple(fixture):
+    fixture[3]["artifact_uri"] = "https://other.example.test/idp-release.tar.gz"
+    authorize, raw, native = bridge(fixture)
+    with pytest.raises(ReleaseLaneError), authorize(raw):
+        pytest.fail("changed full candidate reached apply")
+    assert not native.consumed
+
+
+def test_candidate_is_immutable_after_bridge_construction(fixture):
+    authorize, raw, _ = bridge(fixture)
+    fixture[3]["status"] = "queued"
+    with authorize(raw) as guard:
+        guard.assert_current()

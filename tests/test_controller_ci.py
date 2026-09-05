@@ -65,6 +65,23 @@ def test_local_is_never_provider_evidence() -> None:
         CI.validate_context("hosted", {}, SHA)
 
 
+def test_regular_self_hosted_ci_is_not_owner_recovery() -> None:
+    environment = {
+        "GITHUB_ACTIONS": "true", "GITHUB_SHA": SHA,
+        "RUNNER_ENVIRONMENT": "self-hosted", "GITHUB_EVENT_NAME": "pull_request",
+    }
+    CI.validate_context("self-hosted", environment, SHA)
+    for lane in ("hosted", "controller-recovery", "local", "unknown"):
+        with pytest.raises(ValueError):
+            CI.validate_context(lane, environment, SHA)
+    for field, value in (
+        ("RUNNER_ENVIRONMENT", "github-hosted"), ("GITHUB_SHA", "2" * 40),
+        ("GITHUB_ACTIONS", "false"),
+    ):
+        with pytest.raises(ValueError):
+            CI.validate_context("self-hosted", {**environment, field: value}, SHA)
+
+
 def test_every_lane_uses_full_shared_suite() -> None:
     commands = CI.commands("python")
     assert commands == [
@@ -78,6 +95,12 @@ def test_every_lane_uses_full_shared_suite() -> None:
     manual = yaml.safe_load((ROOT / ".github/workflows/runner-smoke.yml").read_text())
     assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "hosted"
     assert manual["concurrency"]["cancel-in-progress"] is False
+    assert normal["concurrency"]["cancel-in-progress"] is False
+    assert "self-hosted" in normal["jobs"]["verify"]["runs-on"]
+    assert any(
+        s.get("run") == "python scripts/verify_controller_ci.py --lane self-hosted"
+        for s in normal["jobs"]["verify"]["steps"]
+    )
     for job in [normal["jobs"]["verify"], *manual["jobs"].values()]:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
 

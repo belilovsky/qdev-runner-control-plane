@@ -19,10 +19,13 @@ from typing import Annotated, Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from qdev_runner.release_lane import (
+    REQUEST_SCHEMA,
+    ReleaseAdmissionRequest,
     ReleaseLane,
     ReleaseLaneError,
     host_dispatch_claim_payload,
     sign_host_dispatch_claim,
+    validate_candidate,
 )
 
 SHA = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
@@ -172,6 +175,7 @@ class FileApplyBridge:
         *,
         lane: ReleaseLane,
         dispatch_claim: dict[str, Any],
+        candidate_receipt: dict[str, Any],
         dispatch_signature: str,
         authorization: dict[str, Any],
         authorization_signature: str,
@@ -186,6 +190,7 @@ class FileApplyBridge:
         self._lane = lane
         # Immutable snapshots: caller mutations cannot change what was authorized.
         self._dispatch = canonical_bytes(dispatch_claim)
+        self._candidate = canonical_bytes(candidate_receipt)
         self._authorization = canonical_bytes(authorization)
         self._dispatch_signature = dispatch_signature
         self._authorization_signature = authorization_signature
@@ -211,19 +216,43 @@ class FileApplyBridge:
             raise ReleaseLaneError("file apply authorization binding mismatch")
         quality = binding.ci_observation.quality
         artifact = binding.ci_observation.artifact
+        candidate = json.loads(self._candidate)
+        artifact_ref = claim.get("artifact_ref")
+        if not isinstance(artifact_ref, str):
+            raise ReleaseLaneError("file apply dispatch artifact reference missing")
+        try:
+            request = ReleaseAdmissionRequest(
+                schema=REQUEST_SCHEMA,
+                release_lane=self._lane.name,
+                project_id=self._lane.project_id,
+                placement=self._lane.placement,
+                source_sha=binding.source_sha,
+                artifact_digest=f"sha256:{artifact.artifact_sha256}",
+                artifact_ref=artifact_ref,
+                candidate_receipt=candidate,
+            )
+            validate_candidate(request, self._lane)
+        except (ValidationError, TypeError) as exc:
+            raise ReleaseLaneError("invalid file apply candidate receipt") from exc
+        expected_candidate = {
+            "repository": binding.repository,
+            "workflow": "quality.yml",
+            "job": "static-contracts",
+            "run_id": quality.run_id,
+            "job_id": quality.job_id,
+            "attempt": quality.attempt,
+            "runner_profile": quality.profile,
+            "artifact_type": "http-archive",
+            "archive_sha256": artifact.artifact_sha256,
+            "payload_sha256": binding.bundle_sha256,
+        }
+        if any(candidate.get(key) != value for key, value in expected_candidate.items()):
+            raise ReleaseLaneError("file apply candidate does not bind observed CI and archives")
         job = {
             **claim,
             "source_sha": binding.source_sha,
             "artifact_digest": f"sha256:{artifact.artifact_sha256}",
-            "candidate_receipt": {
-                "repository": binding.repository,
-                "workflow": claim.get("workflow"),
-                "job": claim.get("job"),
-                "run_id": quality.run_id,
-                "job_id": quality.job_id,
-                "attempt": quality.attempt,
-                "runner_profile": quality.profile,
-            },
+            "candidate_receipt": candidate,
         }
         issued_at, expires_at, nonce = (
             claim.get("issued_at"),

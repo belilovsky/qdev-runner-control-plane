@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
+    if lane not in {"local", "hosted", "self-hosted", "controller-recovery"}:
+        raise ValueError("unknown execution lane")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("exact checkout SHA is required")
     expected = environment.get("QDEV_EXPECTED_SHA", "")
@@ -54,7 +56,9 @@ def commands(python: str) -> list[list[str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lane", choices=("local", "hosted", "controller-recovery"), required=True)
+    parser.add_argument(
+        "--lane", choices=("local", "hosted", "self-hosted", "controller-recovery"), required=True
+    )
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):
         parser.error("complete controller CI requires Python 3.12")
