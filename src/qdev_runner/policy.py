@@ -180,15 +180,21 @@ class Policy:
             for raw_suite in raw_suites:
                 if isinstance(raw_suite, str):
                     suite_id = raw_suite.strip()
+                    suite_required = True
                 elif isinstance(raw_suite, dict):
                     suite_id = str(raw_suite.get("id") or raw_suite.get("name") or "").strip()
+                    suite_required = bool(raw_suite.get("required", True))
                 else:
                     suite_id = ""
-                if suite_id:
+                    suite_required = False
+                if suite_id and suite_required:
                     suites.append(suite_id)
         registrations = [registration for registration in policy.test_workflows]
         registered_suites = [
-            suite for registration in registrations for suite in registration.suites
+            suite
+            for registration in registrations
+            if registration.required
+            for suite in registration.suites
         ]
         required_suites = suites or sorted(set(registered_suites))
         commands_value = quality.get("commands")
@@ -199,6 +205,33 @@ class Policy:
         configured = bool(required_suites or legacy_command or registrations)
         if not required_suites and legacy_command:
             required_suites = ["legacy"]
+        # A suite may declare the critical scenarios it is responsible for.
+        # Only required suites contribute to the release gate; optional suites
+        # remain visible evidence but cannot silently make an otherwise
+        # unconfigured project green.
+        suite_critical: list[str] = []
+        required_suite_ids = set(required_suites)
+        if isinstance(raw_suites, (list, tuple)):
+            for raw_suite in raw_suites:
+                if not isinstance(raw_suite, dict):
+                    continue
+                suite_id = str(raw_suite.get("id") or raw_suite.get("name") or "").strip()
+                if not suite_id or suite_id not in required_suite_ids:
+                    continue
+                if raw_suite.get("required", True) is False:
+                    continue
+                values = raw_suite.get(
+                    "critical_scenarios",
+                    raw_suite.get("critical_scenarios_required", ()),
+                )
+                if isinstance(values, dict):
+                    values = list(values)
+                if isinstance(values, str):
+                    values = [values]
+                if isinstance(values, (list, tuple)):
+                    suite_critical.extend(
+                        str(value).strip() for value in values if str(value).strip()
+                    )
         coverage_value = quality.get("coverage")
         coverage: dict[str, Any] = (
             coverage_value if isinstance(coverage_value, dict) else {}
@@ -223,6 +256,7 @@ class Policy:
             if isinstance(critical, (list, tuple))
             else []
         )
+        critical_values.extend(suite_critical)
         current_sha = (
             item.get("current_sha")
             or item.get("head_sha")
