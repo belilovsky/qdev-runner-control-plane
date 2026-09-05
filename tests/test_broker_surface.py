@@ -95,6 +95,14 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
     assert 'QDEV_OPERATOR_TOKEN: ""' in public
     assert 'QDEV_WORKER_TOKEN: ""' in public
     assert "QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /nonexistent/" in public
+    assert (
+        "QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/"
+        "controller-release.json" in public
+    )
+    assert (
+        "/var/lib/qdev-runner/controller-status:"
+        "/var/lib/qdev-runner/controller-status:ro" in public
+    )
     assert "QDEV_CLAIM_SCOPES: /nonexistent/" in public
     assert "control-state/claim-scopes.json" not in public
     assert (

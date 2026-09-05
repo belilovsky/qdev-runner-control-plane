@@ -571,6 +571,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
         "fence",
         "lease_expires_at",
         "rollback_anchor",
+        "candidate_evidence",
         "issued_at",
         "expires_at",
         "nonce",
@@ -583,6 +584,11 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
     assert claim["job"] == "release-qaz-tours"
     assert claim["lease_expires_at"] == job["lease_expires_at"]
     assert claim["rollback_anchor"] == job["rollback_anchor"]
+    assert claim["candidate_evidence"] == job["candidate_evidence"]
+    assert claim["candidate_evidence"]["schema"] == (
+        "qdev-release-candidate-evidence-v1"
+    )
+    assert len(claim["candidate_evidence"]["candidate_receipt_sha256"]) == 64
     assert claim["expires_at"] - claim["issued_at"] == 120
     canonical = json.dumps(
         claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")

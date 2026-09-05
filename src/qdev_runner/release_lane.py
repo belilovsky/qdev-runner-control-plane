@@ -65,6 +65,7 @@ LEGACY_COMPATIBILITY_LANES = frozenset(
     }
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
 
 
 class ReleaseLaneError(RuntimeError):
@@ -357,6 +358,9 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         "job_id",
         "attempt",
         "runner_profile",
+        "release_version",
+        "migration_receipt_digest",
+        "contract_digest",
     }
     if (
         not isinstance(receipt, dict)
@@ -414,6 +418,40 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
                 raise ReleaseLaneError("candidate CI scope value is invalid")
         if receipt.get("runner_profile") not in _RUNNER_PROFILES:
             raise ReleaseLaneError("candidate runner profile is not allowlisted")
+    qmt_fields = {"release_version", "migration_receipt_digest", "contract_digest"}
+    if lane.project_id == "kaztilshi":
+        if not qmt_fields.issubset(receipt):
+            raise ReleaseLaneError("QMT candidate receipt is missing release evidence")
+        if receipt.get("release_version") != "4.4.2":
+            raise ReleaseLaneError("QMT candidate release version is not allowlisted")
+        if not _is_digest(receipt.get("migration_receipt_digest")):
+            raise ReleaseLaneError("QMT migration receipt digest is invalid")
+        if not isinstance(receipt.get("contract_digest"), str) or not _HEX64.fullmatch(
+            receipt["contract_digest"]
+        ):
+            raise ReleaseLaneError("QMT contract digest is invalid")
+    elif qmt_fields.intersection(receipt):
+        raise ReleaseLaneError("QMT release evidence is not valid for this lane")
+
+
+def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]:
+    """Return metadata-only candidate evidence covered by the host dispatch claim."""
+    receipt = job.get("candidate_receipt")
+    if not isinstance(receipt, dict):
+        raise ReleaseLaneError("release job has no candidate receipt")
+    evidence: dict[str, Any] = {
+        "schema": "qdev-release-candidate-evidence-v1",
+        "candidate_receipt_sha256": hashlib.sha256(_canonical_bytes(receipt)).hexdigest(),
+    }
+    if lane.project_id == "kaztilshi":
+        evidence = {
+            "schema": QMT_CANDIDATE_EVIDENCE_SCHEMA,
+            "candidate_receipt_sha256": evidence["candidate_receipt_sha256"],
+            "release_version": receipt.get("release_version"),
+            "migration_receipt_digest": receipt.get("migration_receipt_digest"),
+            "contract_digest": receipt.get("contract_digest"),
+        }
+    return evidence
 
 
 def controller_claim_payload(
@@ -611,6 +649,7 @@ def host_dispatch_claim_payload(
         "fence": job.get("fence"),
         "lease_expires_at": job.get("lease_expires_at"),
         "rollback_anchor": job.get("rollback_anchor"),
+        "candidate_evidence": candidate_evidence(job, lane),
         "issued_at": issued_at,
         "expires_at": expires_at,
         "nonce": nonce,
@@ -647,6 +686,7 @@ def host_dispatch_claim_payload(
             claim["rollback_anchor"]["artifact_digest"],
             lane,
         )
+        or not isinstance(claim["candidate_evidence"], dict)
     ):
         raise ReleaseLaneError("host dispatch claim cannot bind the managed job")
     return claim
@@ -766,22 +806,7 @@ def validate_runtime_receipt(
             for value in dependency_identity.values()
         ):
             raise ReleaseLaneError("runtime dependency identity is invalid")
-        provenance = receipt["artifact_provenance"]
-        if not isinstance(provenance, dict) or set(provenance) != {
-            "qak_wheel_sha256",
-            "avds_artifact_sha256",
-            "avds_source_sha",
-        }:
-            raise ReleaseLaneError("runtime artifact provenance is invalid")
-        for field in ("qak_wheel_sha256", "avds_artifact_sha256"):
-            if not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(
-                provenance[field]
-            ):
-                raise ReleaseLaneError("runtime artifact provenance checksum is invalid")
-        if not isinstance(provenance.get("avds_source_sha"), str) or not _SHA.fullmatch(
-            provenance["avds_source_sha"]
-        ):
-            raise ReleaseLaneError("runtime AVDS source binding is invalid")
+        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     rollback_tuple = (
@@ -869,19 +894,33 @@ def validate_native_runtime_receipt(
             not isinstance(value, str) or not value.strip() for value in dependencies.values()
         ):
             raise ReleaseLaneError("native dependency identity is incomplete")
-        provenance = receipt["artifact_provenance"]
-        if not isinstance(provenance, dict) or set(provenance) != {
-            "qak_wheel_sha256",
-            "avds_artifact_sha256",
-            "avds_source_sha",
-        }:
-            raise ReleaseLaneError("native artifact provenance is incomplete")
-        if any(
-            not isinstance(provenance.get(field), str)
-            or not _HEX64.fullmatch(provenance[field])
-            for field in ("qak_wheel_sha256", "avds_artifact_sha256")
-        ) or not _is_sha(provenance.get("avds_source_sha")):
-            raise ReleaseLaneError("native artifact provenance is invalid")
+        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+
+
+def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None:
+    if lane.project_id == "kaztilshi":
+        expected = {
+            "candidate_receipt_sha256",
+            "migration_receipt_digest",
+            "contract_digest",
+        }
+        if not isinstance(provenance, dict) or set(provenance) != expected:
+            raise ReleaseLaneError("QMT artifact provenance is incomplete")
+        if not _HEX64.fullmatch(str(provenance.get("candidate_receipt_sha256", ""))):
+            raise ReleaseLaneError("QMT candidate receipt binding is invalid")
+        if not _is_digest(provenance.get("migration_receipt_digest")):
+            raise ReleaseLaneError("QMT migration receipt binding is invalid")
+        if not _HEX64.fullmatch(str(provenance.get("contract_digest", ""))):
+            raise ReleaseLaneError("QMT contract binding is invalid")
+        return
+    expected = {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}
+    if not isinstance(provenance, dict) or set(provenance) != expected:
+        raise ReleaseLaneError("runtime artifact provenance is invalid")
+    if any(
+        not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(provenance[field])
+        for field in ("qak_wheel_sha256", "avds_artifact_sha256")
+    ) or not _is_sha(provenance.get("avds_source_sha")):
+        raise ReleaseLaneError("runtime artifact provenance is invalid")
 
 
 class ReleaseStore:

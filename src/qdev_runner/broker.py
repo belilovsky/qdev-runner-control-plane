@@ -1118,6 +1118,7 @@ def create_app(
                 )
             response["lease_expires_at"] = lease_expires_at
             response["rollback_anchor"] = rollback_anchor
+            response["candidate_evidence"] = claim.get("candidate_evidence")
             response["dispatch_claim"] = claim
             response["dispatch_claim_signature"] = signature
         return response
