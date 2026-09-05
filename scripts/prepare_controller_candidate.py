@@ -23,6 +23,10 @@ from qdev_runner.controller_candidate import (  # noqa: E402
     ControllerCandidateError,
     prepare_controller_candidate,
 )
+from qdev_runner.fleet_host_dispatch import (  # noqa: E402
+    FleetHostDispatchError,
+    verified_controller_runtime_anchor,
+)
 
 RELEASES_ROOT = Path("/opt/qdev-runner-control-plane/releases")
 LEDGER_PATH = Path("/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml")
@@ -99,26 +103,12 @@ def _receipt_key() -> str:
 
 def _active_runtime_source_sha() -> str:
     try:
-        metadata = RELEASE_STATUS_PATH.lstat()
-        document = json.loads(RELEASE_STATUS_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ControllerCandidateError("active controller status is unavailable") from exc
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or stat.S_IMODE(metadata.st_mode) & 0o022
-        or not isinstance(document, dict)
-        or document.get("schema")
-        not in {
-            "qdev-controller-release-status-v1",
-            "qdev-controller-release-status-v2",
-        }
-        or document.get("state") != "active"
-    ):
-        raise ControllerCandidateError("active controller status is unsafe")
-    revision = document.get("revision")
-    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-        raise ControllerCandidateError("active controller revision is invalid")
+        revision, _ = verified_controller_runtime_anchor(
+            RELEASE_STATUS_PATH,
+            expected_uid=os.geteuid(),
+        )
+    except FleetHostDispatchError as exc:
+        raise ControllerCandidateError("active controller status is unsafe") from exc
     return revision
 
 

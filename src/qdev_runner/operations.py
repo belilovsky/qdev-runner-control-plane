@@ -169,6 +169,20 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "lane",
         "outcome",
     },
+    "admin-platform-state-transaction": {
+        "kind",
+        "observed_at",
+        "transaction_id",
+        "previous_ledger_sha256",
+        "target_ledger_sha256",
+        "receipts",
+    },
+    "admin-platform-ledger-link": {
+        "kind",
+        "observed_at",
+        "previous_ledger_sha256",
+        "target_ledger_sha256",
+    },
 }
 
 
@@ -515,6 +529,44 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             lane is not None or outcome not in _ADMIN_PLATFORM_TERMINAL_STATES
         ):
             raise ValueError("admin platform terminal evidence is invalid")
+    if kind == "admin-platform-state-transaction":
+        receipts = value["receipts"]
+        if (
+            not isinstance(value["transaction_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["transaction_id"])
+            or not isinstance(value["previous_ledger_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["previous_ledger_sha256"])
+            or not isinstance(value["target_ledger_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["target_ledger_sha256"])
+            or not isinstance(receipts, list)
+            or not 1 <= len(receipts) <= 16
+        ):
+            raise ValueError("admin platform state transaction is invalid")
+        expected_uris: set[str] = set()
+        for receipt in receipts:
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != {"receipt_uri", "receipt_sha256"}
+                or not isinstance(receipt["receipt_uri"], str)
+                or not re.fullmatch(
+                    r"receipts/transactions/[0-9a-f]{64}/[0-9a-f]{64}\.json",
+                    receipt["receipt_uri"],
+                )
+                or receipt["receipt_uri"].split("/")[2] != value["transaction_id"]
+                or not isinstance(receipt["receipt_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", receipt["receipt_sha256"])
+                or receipt["receipt_uri"] in expected_uris
+            ):
+                raise ValueError("admin platform state transaction receipts are invalid")
+            expected_uris.add(receipt["receipt_uri"])
+    if kind == "admin-platform-ledger-link" and (
+        not isinstance(value["previous_ledger_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["previous_ledger_sha256"])
+        or not isinstance(value["target_ledger_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["target_ledger_sha256"])
+        or value["previous_ledger_sha256"] == value["target_ledger_sha256"]
+    ):
+        raise ValueError("admin platform ledger link is invalid")
     return value
 
 

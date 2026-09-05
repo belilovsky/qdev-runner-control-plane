@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from .admin_platform import AdminPlatformCandidate
 from .admin_platform_state import AdminPlatformStateStore
-from .operations import OperationStore, format_utc, parse_utc, utc_now
+from .operations import OperationStore, format_utc, parse_utc
 
 PROGRAM_ID = "qdev-admin-platform-wave-1"
 REPOSITORY = "belilovsky/qdev-runner-control-plane"
@@ -71,6 +71,8 @@ def _candidate(value: object) -> AdminPlatformCandidate:
 
 
 def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
+    """Derive a replay-stable timestamp from the committed ledger."""
+
     program = snapshot.get("program")
     updated_at = program.get("updated_at") if isinstance(program, dict) else None
     if not isinstance(updated_at, str):
@@ -79,7 +81,7 @@ def _next_observed_at(snapshot: dict[str, Any]) -> datetime:
         latest = parse_utc(updated_at)
     except ValueError as error:
         raise ControllerCandidateError("controller program timestamp is invalid") from error
-    return max(utc_now(), latest + timedelta(microseconds=1))
+    return latest + timedelta(microseconds=1)
 
 
 def _blocking_lane(entry: dict[str, Any], *, release_id: str) -> str:
@@ -245,13 +247,13 @@ def prepare_controller_candidate(
         active_runtime_source_sha=expected_current_source_sha,
     )
 
-    receipts: list[str] = []
     if program_status == "active":
-        if entry.get("status") not in {"candidate", "ci_queued", "ci_passed", "deploying"}:
+        if entry.get("status") not in {"candidate", "ci_queued", "ci_passed"}:
             raise ControllerCandidateError("active controller attempt cannot be superseded")
         terminal_time = _next_observed_at(snapshot)
         blocking_lane = _blocking_lane(entry, release_id=previous.release_id)
-        terminal = state.finish_attempt(
+        source_time = terminal_time + timedelta(microseconds=1)
+        superseded = state.supersede_attempt(
             expected_sha256=digest,
             result_receipt=_evidence(
                 signer,
@@ -269,10 +271,24 @@ def prepare_controller_candidate(
                 lane=None,
                 outcome="blocked",
             ),
+            candidate=candidate,
+            source_receipt=_evidence(
+                signer,
+                candidate=candidate,
+                observed_at=format_utc(source_time),
+                evidence_type="lane_result",
+                lane="source",
+                outcome="passed",
+            ),
         )
-        digest = terminal.ledger_sha256
-        receipts.extend(terminal.receipt_uris)
-        source_time = terminal_time + timedelta(microseconds=1)
+        return {
+            "schema": "qdev-controller-candidate-preparation-v1",
+            "status": "completed",
+            "candidate": asdict(candidate),
+            "previous_candidate": asdict(previous),
+            "ledger_sha256": superseded.ledger_sha256,
+            "receipt_uris": list(superseded.receipt_uris),
+        }
     elif program_status == "blocked" and entry.get("status") in {"blocked", "rolled_back"}:
         source_time = _next_observed_at(snapshot)
     else:
@@ -290,12 +306,11 @@ def prepare_controller_candidate(
             outcome="passed",
         ),
     )
-    receipts.extend(restarted.receipt_uris)
     return {
         "schema": "qdev-controller-candidate-preparation-v1",
         "status": "completed",
         "candidate": asdict(candidate),
         "previous_candidate": asdict(previous),
         "ledger_sha256": restarted.ledger_sha256,
-        "receipt_uris": receipts,
+        "receipt_uris": list(restarted.receipt_uris),
     }
