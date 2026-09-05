@@ -33,6 +33,10 @@ def fixture():
         "run_id": 1,
         "job_id": 2,
         "attempt": 1,
+        "workflow": "quality.yml",
+        "url": "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/2",
+        "started_at": datetime.fromtimestamp(NOW - 120, UTC).isoformat(),
+        "completed_at": datetime.fromtimestamp(NOW - 60, UTC).isoformat(),
     }
     artifact = {
         "schema_version": "qdev-idp-ci-bundle-v1",
@@ -62,7 +66,11 @@ def fixture():
             "sha256": "1" * 64,
             "observed_at": datetime.fromtimestamp(NOW, UTC).isoformat(),
             "quality": ci,
-            "runner_contract": {**ci, "profile": "qdev-ci", "run_id": 3, "job_id": 4},
+            "runner_contract": {
+                **ci, "profile": "qdev-ci", "run_id": 3, "job_id": 4,
+                "workflow": "qdev-runner-contract.yml",
+                "url": "https://github.com/belilovsky/id-qdev-run/actions/runs/3/job/4",
+            },
             "artifact": artifact,
         },
     }
@@ -209,6 +217,20 @@ def test_binding_tamper_before_consume(fixture, field):
         ("quality", "attempt", True),
         ("quality", "conclusion", "skipped"),
         ("quality", "profile", "qdev-ci"),
+        ("quality", "workflow", "qdev-runner-contract.yml"),
+        ("quality", "workflow", "runner-smoke.yml"),
+        ("quality", "url", "https://github.com/other/repo/actions/runs/1/job/2"),
+        ("quality", "url", "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/4"),
+        ("quality", "url", "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/2?x=1"),
+        ("quality", "completed_at", datetime.fromtimestamp(NOW + 1, UTC).isoformat()),
+        ("quality", "completed_at", datetime.fromtimestamp(NOW - 121, UTC).isoformat()),
+        ("quality", "started_at", "2026-09-01"),
+        ("quality", "started_at", "2026-09-01T00:00:00"),
+        ("quality", "started_at", "2026-09-01T00:00:00+05:00"),
+        ("quality", "started_at", "2026-02-30T00:00:00Z"),
+        ("quality", "unknown", True),
+        ("runner_contract", "workflow", "quality.yml"),
+        ("runner_contract", "url", "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/2"),
         ("runner_contract", "source_sha", "b" * 40),
         ("runner_contract", "conclusion", "failure"),
         ("runner_contract", "profile", "unknown"),
@@ -222,6 +244,26 @@ def test_invalid_even_when_resigned(fixture, target, field, value):
     with pytest.raises(ReleaseLaneError), authorize(raw):
         pytest.fail("invalid CI reached apply")
     assert not native.consumed
+
+
+@pytest.mark.parametrize("target", ["quality", "runner_contract"])
+@pytest.mark.parametrize("field", ["workflow", "url", "started_at", "completed_at"])
+def test_native_observation_fields_cannot_be_dropped(fixture, target, field):
+    del fixture[0]["ci_observation"][target][field]
+    authorize, raw, native = bridge(fixture)
+    with pytest.raises(ReleaseLaneError), authorize(raw):
+        pytest.fail("incomplete native observation reached apply")
+    assert not native.consumed
+
+
+@pytest.mark.parametrize("target", ["quality", "runner_contract"])
+def test_provider_utc_z_timestamps(fixture, target):
+    for field in ("started_at", "completed_at"):
+        value = fixture[0]["ci_observation"][target][field]
+        fixture[0]["ci_observation"][target][field] = value.replace("+00:00", "Z")
+    authorize, raw, _ = bridge(fixture)
+    with authorize(raw) as guard:
+        guard.assert_current()
 
 
 @pytest.mark.parametrize(

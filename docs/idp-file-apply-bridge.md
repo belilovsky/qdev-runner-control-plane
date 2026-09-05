@@ -12,6 +12,12 @@ source SHA, native transaction, previous SHA, bundle/manifest/snapshot digests a
 the full CI observation (quality, runner_contract and outer artifact provenance).
 All input/nested fields are strict; both successful CI tuples bind the source SHA.
 CI observation is at most 300 seconds old, with at most 30 seconds clock skew.
+Each native CI tuple retains the producer's `workflow`, exact GitHub run/job
+`url`, `started_at` and `completed_at`. These fields are validated, not stripped:
+quality and contract have their own exact workflow, the locator must match the
+repository/run/job, and UTC start <= completion <= observation. The former
+seven-field synthetic CI fixture did not model the IdP producer's actual output;
+that incomplete shape is rejected. Additional unknown fields remain forbidden.
 
 ## New authorization, not an upgraded dispatch v2
 

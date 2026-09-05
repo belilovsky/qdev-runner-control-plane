@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -46,6 +46,10 @@ class CITuple(StrictModel):
     run_id: PositiveInt
     job_id: PositiveInt
     attempt: PositiveInt
+    workflow: Literal["quality.yml", "qdev-runner-contract.yml"]
+    url: str
+    started_at: str
+    completed_at: str
 
 
 class Artifact(StrictModel):
@@ -89,6 +93,14 @@ def canonical_bytes(document: dict[str, Any]) -> bytes:
     return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
+def utc_timestamp(value: str) -> float:
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)", value
+    ):
+        raise ValueError("CI timestamps must be UTC RFC3339")
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
 def parse_binding(raw: bytes, *, now: float) -> FileApplyBinding:
     if not isinstance(raw, bytes) or len(raw) > 32768:
         raise ReleaseLaneError("file apply binding must be bounded canonical bytes")
@@ -98,16 +110,26 @@ def parse_binding(raw: bytes, *, now: float) -> FileApplyBinding:
         if canonical_bytes(document) != raw:
             raise ValueError("noncanonical binding")
         observation = binding.ci_observation
-        observed = datetime.fromisoformat(observation.observed_at.replace("Z", "+00:00"))
-        if observed.tzinfo is None or observed.utcoffset() != UTC.utcoffset(observed):
-            raise ValueError("CI observation must use UTC")
-        if not now - 300 <= observed.timestamp() <= now + 30:
+        observed = utc_timestamp(observation.observed_at)
+        if not now - 300 <= observed <= now + 30:
             raise ValueError("CI observation is stale or future dated")
         quality, contract, artifact = (
             observation.quality,
             observation.runner_contract,
             observation.artifact,
         )
+        for ci, workflow in (
+            (quality, "quality.yml"), (contract, "qdev-runner-contract.yml")
+        ):
+            if (
+                ci.workflow != workflow
+                or ci.url != (
+                    f"https://github.com/{binding.repository}/actions/runs/"
+                    f"{ci.run_id}/job/{ci.job_id}"
+                )
+                or not utc_timestamp(ci.started_at) <= utc_timestamp(ci.completed_at) <= observed
+            ):
+                raise ValueError("CI workflow, locator or timing mismatch")
         if (
             quality.profile != "qdev-ci-docker"
             or contract.profile != "qdev-ci"
