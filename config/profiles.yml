@@ -3,6 +3,13 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
+  # QDEV's static-contracts lane validates shell, Python/JSON and Compose
+  # configuration without building or publishing an OCI image.  Its pinned
+  # workflow has a ten-minute bound and installs only small contract tools, so
+  # reserve 4 GiB for this repository while retaining the worker's independent
+  # 4.5 GiB hard free-space floor.  The default Docker profile remains 20 GiB.
+  belilovsky/id-qdev-run:
+    qdev-ci-docker: 4096
   # QDEV's qdev-ci lane only checks its runner contract and environment.
   # The ~20.4 MiB checkout has no build or package-install workload here.
   # 4 GiB conservatively covers checkout and the pinned Actions/Python setup
