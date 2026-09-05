@@ -135,3 +135,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker.io docke
     && tar -xzf /tmp/buildkit.tar.gz -C /usr/local \
     && rm /tmp/buildkit.tar.gz
 USER runner
+
+# The Docker daemon used by qdev-ci-docker jobs is built from the same pinned
+# Ubuntu root as the executor images.  Upstream docker:dind images are not an
+# admissible fallback: the worker release gate scans the sidecar independently
+# and rejects every Critical finding.
+FROM ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 AS sidecar
+ENV DEBIAN_FRONTEND=noninteractive \
+    DOCKER_TLS_CERTDIR=
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates docker.io iptables \
+    && rm -rf /var/lib/apt/lists/*
+VOLUME ["/var/lib/docker"]
+ENTRYPOINT ["dockerd"]
