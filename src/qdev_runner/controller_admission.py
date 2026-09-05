@@ -613,42 +613,53 @@ def _consume_verified_receipt(
                 raise ControllerAdmissionError(
                     "receipt replay store is not an owner-controlled file"
                 )
+            with sqlite3.connect(replay_store_path, timeout=5) as connection:
+                path_status = replay_store_path.lstat()
+                if (
+                    not stat.S_ISREG(path_status.st_mode)
+                    or (path_status.st_dev, path_status.st_ino)
+                    != (file_status.st_dev, file_status.st_ino)
+                ):
+                    raise ControllerAdmissionError(
+                        "receipt replay store changed while it was opened"
+                    )
+                connection.execute("PRAGMA trusted_schema=OFF")
+                connection.execute("PRAGMA synchronous=FULL")
+                connection.execute("BEGIN IMMEDIATE")
+                table_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'consumed_receipts'"
+                ).fetchone()
+                if table_exists is None:
+                    connection.execute(_REPLAY_TABLE_SQL)
+                _validate_replay_store_schema(connection)
+                inserted = connection.execute(
+                    """
+                    INSERT INTO consumed_receipts (
+                        fingerprint,
+                        key_id,
+                        admission_id,
+                        claim_id,
+                        functional_source_sha,
+                        consumer,
+                        consumed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fingerprint,
+                        key_id,
+                        admission_id,
+                        claim_id,
+                        functional_source_sha,
+                        consumer_value,
+                        observed,
+                    ),
+                )
+                if inserted.rowcount != 1 or connection.execute(
+                    "SELECT changes()"
+                ).fetchone() != (1,):
+                    raise ControllerAdmissionError("receipt has already been consumed")
         finally:
             os.close(descriptor)
-        with sqlite3.connect(replay_store_path, timeout=5) as connection:
-            connection.execute("PRAGMA trusted_schema=OFF")
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.execute("BEGIN IMMEDIATE")
-            table_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name = 'consumed_receipts'"
-            ).fetchone()
-            if table_exists is None:
-                connection.execute(_REPLAY_TABLE_SQL)
-            _validate_replay_store_schema(connection)
-            inserted = connection.execute(
-                """
-                INSERT INTO consumed_receipts (
-                    fingerprint,
-                    key_id,
-                    admission_id,
-                    claim_id,
-                    functional_source_sha,
-                    consumer,
-                    consumed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    fingerprint,
-                    key_id,
-                    admission_id,
-                    claim_id,
-                    functional_source_sha,
-                    consumer_value,
-                    observed,
-                ),
-            )
-            if inserted.rowcount != 1 or connection.execute("SELECT changes()").fetchone() != (1,):
-                raise ControllerAdmissionError("receipt has already been consumed")
     except ControllerAdmissionError:
         raise
     except sqlite3.IntegrityError as error:

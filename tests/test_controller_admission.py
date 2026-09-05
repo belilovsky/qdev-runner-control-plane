@@ -359,8 +359,35 @@ def test_consume_rejects_conflict_ignore_replay_schema(tmp_path: Path) -> None:
             """
         )
     replay_store.chmod(0o600)
-
     with pytest.raises(ControllerAdmissionError, match="schema is invalid"):
+        verify_and_consume_receipt(
+            receipt,
+            public,
+            replay_store,
+            consumer="qazcoop-release-1",
+            now=NOW,
+            **cast(Any, _exact_expectations()),
+        )
+
+
+def test_consume_rejects_replay_store_substitution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    private, public = _keys(tmp_path)
+    receipt = sign_payload(_payload(), private)
+    replay_store = tmp_path / "state" / "consumed.sqlite3"
+    replacement = tmp_path / "replacement.sqlite3"
+    replay_store.parent.mkdir()
+    replay_store.touch(mode=0o600)
+    replacement.touch(mode=0o600)
+    original_connect = sqlite3.connect
+
+    def swapped_connect(database: str | Path, timeout: float = 5) -> sqlite3.Connection:
+        replacement.replace(replay_store)
+        return original_connect(database, timeout=timeout)
+
+    monkeypatch.setattr(sqlite3, "connect", swapped_connect)
+    with pytest.raises(ControllerAdmissionError, match="changed while it was opened"):
         verify_and_consume_receipt(
             receipt,
             public,

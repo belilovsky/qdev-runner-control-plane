@@ -18,6 +18,7 @@ class Policy:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         profiles_data = yaml.safe_load(profiles_path.read_text(encoding="utf-8"))
         self.repositories: dict[str, RepositoryPolicy] = {}
+        repository_ids: set[int] = set()
         for item in inventory["repositories"]:
             policy = RepositoryPolicy(
                 full_name=item["full_name"],
@@ -27,7 +28,13 @@ class Policy:
                 default_branch=item["default_branch"],
                 profiles=tuple(item.get("profiles", ["qdev-ci"])),
             )
-            self.repositories[policy.full_name.lower()] = policy
+            repository_key = policy.full_name.casefold()
+            if repository_key in self.repositories:
+                raise PolicyError(f"duplicate repository name in inventory: {policy.full_name}")
+            if policy.repository_id in repository_ids:
+                raise PolicyError(f"duplicate repository id in inventory: {policy.repository_id}")
+            self.repositories[repository_key] = policy
+            repository_ids.add(policy.repository_id)
 
         self.profiles: dict[str, Profile] = {}
         for name, data in profiles_data["profiles"].items():
@@ -84,10 +91,12 @@ class Policy:
                     raw_disk_mb
                 )
 
-    def repository(self, full_name: str) -> RepositoryPolicy:
-        repo = self.repositories.get(full_name.lower())
+    def repository(self, full_name: str, repository_id: int | None = None) -> RepositoryPolicy:
+        repo = self.repositories.get(full_name.casefold())
         if repo is None or repo.archived:
             raise PolicyError(f"repository is not in the active runner allowlist: {full_name}")
+        if repository_id is not None and repo.repository_id != repository_id:
+            raise PolicyError(f"repository id does not match the active allowlist: {full_name}")
         return repo
 
     def profile_for_labels(self, full_name: str, labels: list[str] | tuple[str, ...]) -> Profile:

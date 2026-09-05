@@ -119,6 +119,33 @@ def test_validate_exact_commit_rejects_resolution_drift(
         module.validate_exact_commit("belilovsky/qazcoop", requested)
 
 
+@pytest.mark.parametrize(
+    "repositories, message",
+    [
+        (
+            [
+                {"id": 1, "full_name": "belilovsky/QazCoop"},
+                {"id": 2, "full_name": "belilovsky/qazcoop"},
+            ],
+            "duplicate repository name",
+        ),
+        (
+            [
+                {"id": 1, "full_name": "belilovsky/qazcoop"},
+                {"id": 1, "full_name": "belilovsky/renamed"},
+            ],
+            "duplicate repository id",
+        ),
+    ],
+)
+def test_inventory_uniqueness_is_identity_bound(
+    repositories: list[dict[str, object]], message: str
+) -> None:
+    module = load_refresh_inventory()
+    with pytest.raises(RuntimeError, match=message):
+        module.validate_inventory_uniqueness(repositories)
+
+
 def test_add_repository_preserves_existing_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

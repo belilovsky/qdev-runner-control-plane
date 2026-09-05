@@ -2286,8 +2286,10 @@ def create_app(
         raw_job = payload.get("workflow_job") or {}
         repository = payload.get("repository") or {}
         try:
-            policy.repository(str(repository["full_name"]))
-        except (KeyError, PolicyError) as error:
+            policy.repository(
+                str(repository["full_name"]), repository_id=int(repository["id"])
+            )
+        except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected webhook: %s", error)
             return Response(status_code=202)
         job_id = int(raw_job["id"])

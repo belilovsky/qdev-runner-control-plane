@@ -212,6 +212,23 @@ def inventory_payload(
     }
 
 
+def validate_inventory_uniqueness(repositories: list[dict[str, Any]]) -> None:
+    names: set[str] = set()
+    repository_ids: set[int] = set()
+    for repository in repositories:
+        full_name = str(repository.get("full_name", ""))
+        normalized_name = full_name.casefold()
+        repository_id = repository.get("id")
+        if not full_name or normalized_name in names:
+            raise RuntimeError(f"inventory has duplicate repository name: {full_name}")
+        if isinstance(repository_id, bool) or not isinstance(repository_id, int):
+            raise RuntimeError(f"inventory has invalid repository id: {full_name}")
+        if repository_id in repository_ids:
+            raise RuntimeError(f"inventory has duplicate repository id: {repository_id}")
+        names.add(normalized_name)
+        repository_ids.add(repository_id)
+
+
 def write_inventory(payload: dict[str, Any]) -> None:
     repositories = payload["repositories"]
     write_atomic(
@@ -289,9 +306,18 @@ def main() -> None:
         existing_repositories = existing.get("repositories")
         if not isinstance(existing_repositories, list):
             parser.error("existing inventory has no repositories list")
-        existing_names = {item["full_name"] for item in existing_repositories}
-        if full_name in existing_names:
+        try:
+            validate_inventory_uniqueness(existing_repositories)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        existing_names = {str(item["full_name"]).casefold() for item in existing_repositories}
+        existing_ids = {int(item["id"]) for item in existing_repositories}
+        if full_name.casefold() in existing_names:
             parser.error(f"repository already exists in inventory: {full_name}")
+        if args.expected_repository_id in existing_ids:
+            parser.error(
+                f"repository id already exists in inventory: {args.expected_repository_id}"
+            )
         try:
             repo = repository_metadata(full_name)
             validate_add_candidate(
@@ -323,6 +349,10 @@ def main() -> None:
         if drift:
             parser.error("repository changed during inspection: " + "; ".join(drift))
         merged = [*existing_repositories, item]
+        try:
+            validate_inventory_uniqueness(merged)
+        except RuntimeError as exc:
+            parser.error(str(exc))
         if len(merged) != args.expected:
             parser.error(
                 f"inventory cardinality changed: expected {args.expected}, found {len(merged)}"
