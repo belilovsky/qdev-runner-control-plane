@@ -24,6 +24,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -2170,11 +2172,136 @@ def rollback_remote(
     return receipt
 
 
+def _lock_directory(path: Path) -> None:
+    if not path.is_absolute() or ".." in path.parts:
+        raise AgentError("release lock directory must be absolute")
+    for directory in reversed((path, *path.parents)):
+        meta = directory.lstat()
+        # /run/lock may legitimately be root-owned 01777. Sticky protection
+        # applies only to this final directory; all ancestors remain immutable
+        # to non-root users. Leaf ownership is separately checked before use.
+        sticky_leaf = directory == path and bool(meta.st_mode & stat.S_ISVTX)
+        if (
+            not stat.S_ISDIR(meta.st_mode)
+            or meta.st_uid != 0
+            or (stat.S_IMODE(meta.st_mode) & 0o022 and not sticky_leaf)
+        ):
+            raise AgentError("release lock directory has unsafe ancestry")
+
+
 def _acquire_lock(path: Path) -> TextIO:
-    _root_directory(path.parent)
-    if path.exists():
+    _lock_directory(path.parent)
+    _private(path, required=False)
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        opened, named = os.fstat(descriptor), path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise AgentError("release lock must be one unchanged regular file")
         _private(path)
-    return path.open("a+", encoding="utf-8")
+        stream = os.fdopen(descriptor, "r+", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return stream
+
+
+class JournaledFileApplyGuard:
+    """Live host guard; usable only while the native operation lock is held."""
+
+    def __init__(self, check: Callable[[], None]) -> None:
+        self._check = check
+        self._active = True
+
+    def assert_current(self) -> None:
+        if not self._active:
+            raise AgentError("file apply guard is outside its native transaction")
+        self._check()
+
+    def close(self) -> None:
+        self._active = False
+
+
+class JournaledFileApplyTransaction:
+    """In-process bridge factory using the existing host operation journal.
+
+    Not a CLI, issuer or enrollment. The installed adapter supplies the compiled
+    profile/config and signed job; FileApplyBridge separately verifies the full
+    candidate and file binding. The IdP global lock is acquired BEFORE this host
+    lock. No native release/rollback dispatcher is invoked from this context.
+    Unknown outcomes remain pending for explicit native reconciliation.
+    """
+
+    def __init__(self, config: Config, profile: Profile, job: dict[str, Any]) -> None:
+        self._config, self._profile = config, profile
+        self._job = _canonical_bytes(job)
+
+    @contextmanager
+    def __call__(self, claim: dict[str, Any]) -> Iterator[JournaledFileApplyGuard]:
+        config, profile = self._config, self._profile
+        job = json.loads(self._job)
+        if claim != job.get("dispatch_claim"):
+            raise AgentError("file apply claim differs from the native signed job")
+        with _acquire_lock(profile.lock_path) as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise AgentError("release lock is already held") from error
+            if _pending_operation(profile) is not None:
+                raise ControllerOutcomeUnresolved(
+                    "pending native operation requires reconciliation"
+                )
+            (
+                release_id, candidate, lease_id, fence, nonce, lease_expires_at,
+                rollback_anchor, _,
+            ) = _validated_job(job, profile, config)
+            if _dispatch_nonce_seen(profile, nonce):
+                raise AgentError("controller host dispatch claim was already consumed")
+            active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
+            context = _operation_context(
+                profile, candidate, active, rollback, nonce, lease_expires_at, rollback_anchor
+            )
+            _validate_native_runtime(native_receipt(profile, current=True), profile, active)
+
+            def check() -> None:
+                # The signed lifetime is never renewed locally. The authenticated
+                # status read rejects changed fencing and terminal controller work.
+                _validated_job(job, profile, config)
+                state = _controller_status(
+                    config, profile, release_id, candidate, lease_id, fence, restored=active
+                )
+                if state["status"] != "dispatched":
+                    raise AgentError("file apply requires the current dispatched controller job")
+
+            guard = JournaledFileApplyGuard(check)
+            try:
+                guard.assert_current()
+                _write_operation(
+                    profile, "dispatch_accepted", release_id, lease_id, fence, context
+                )
+                _write_operation(
+                    profile, "release_started", release_id, lease_id, fence, context
+                )
+                guard.assert_current()
+                yield guard
+                guard.assert_current()
+                _validate_native_runtime(native_receipt(profile, current=True), profile, candidate)
+                # Reuse durable completion and restart handling, including lost
+                # controller responses and state-file writes, without a second DB.
+                pending = _pending_operation(profile)
+                if pending is None:
+                    raise AgentError("file apply lost its durable native operation")
+                result = _recover_pending(config, profile, active, rollback, pending)
+                if result["status"] != "verified":
+                    raise AgentError("file apply native completion was not verified")
+            finally:
+                # A failure, process death or lost response never resets a nonce or
+                # labels an unknown operation successful; persisted phases survive.
+                guard.close()
 
 
 def run_once(config: Config, profile: Profile) -> dict[str, Any]:

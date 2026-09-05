@@ -2,7 +2,8 @@
 
 This module does not enroll IdP, issue a live authorization, install a host agent,
 or dispatch a release. Existing release/claim APIs and their schemas are unchanged.
-It adds no AVDS profiles or changes to existing host-agent execution.
+It adds no AVDS or IdP profiles. Existing host-agent lock opening now rejects
+link substitution and unsafe ancestry, retaining the native sticky `/run/lock`.
 
 `qdev_runner.file_apply_authorization.FileApplyBridge` implements the native IdP
 `authorize_apply(binding_bytes)` callback. Serialization is sorted compact JSON
@@ -50,8 +51,19 @@ controller code, not an entrypoint accepted over the network. It must validate
 the live lease/fence and current rollback state, reject replay and interrupted
 operations, durably write `dispatch_accepted` and `release_started` before yield,
 and retain the host operation/journal lock through apply and its outcome.
-`validate_job` by itself does not meet this contract. Existing admin-platform
-profiles are not an IdP enrollment adapter and are not changed by this patch.
+`validate_job` by itself does not meet this contract. The existing host-agent
+module now provides `JournaledFileApplyTransaction(config, profile, signed_job)`
+for this boundary. It snapshots the job, holds the native `flock`, validates the
+signed job and current rollback/runtime, rejects consumed nonces and pending
+operations, and writes into the existing fsynced hash-chain journal. Every guard
+check rereads the current job through the authenticated controller status path
+with the exact lease and fence. After apply it independently invokes the native
+receipt dispatcher and reuses `_recover_pending` to finish completion/state
+recording, including reconciliation after an uncertain controller response.
+It never invokes the native release or rollback dispatcher itself.
+
+This is still a generic source adapter, not a compiled IdP profile or installed
+integration. Existing admin-platform profiles are not an IdP enrollment adapter.
 
 The yielded native guard implements `assert_current()` to recheck live lease/fence
 without consuming again. The public callback yields a `FileApplyGuard` that checks
@@ -63,21 +75,27 @@ native context manager, do not become successful apply results.
 Lock ordering: IdP native global lock first, controller dispatch/journal lock
 second. The controller transaction must not re-enter IdP dispatch or acquire its
 native global lock again. Native bundle/helper integrity and storage/current SHA
-checks remain with the IdP wrapper. Controller locks serialize lease mutation;
-there must be no uncontrolled lease revocation between the guard and write.
+checks remain with the IdP wrapper. A local host lock does not freeze remote
+revocation. The existing controller cannot replace an active job implicitly;
+explicit revocation is observed on the next guard check. Each individual atomic
+file replacement is bounded by that check, not presented as a distributed lock.
 
 ## Still required before enrollment or production use
 
 1. An approved controller issuer must bind freshly verified provider CI and native
    snapshot/transaction evidence into this envelope. This source helper is not
    an HTTP issuer endpoint and does not establish provider provenance itself.
-2. A fixed IdP host adapter must implement the durable transaction and guard above,
-   using the existing host-agent journal lifecycle (not a second replay database),
-   plus inspect/reconciliation for unknown outcomes. Native journal concurrency,
-   crash/restart, lease renewal/revocation and fsync tests are required there.
+2. A fixed IdP host adapter must connect the journal-backed factory above to the
+   IdP global lock and its verified in-process helper, typed native runtime/rollback
+   receipts and explicit inspect/reconciliation. No source from the IdP caller
+   may supply or replace the controller transaction, profile or protected key.
 3. Normal source-bound release and exact-target enrollment must install the adapter
    and select its protected key/material references. None are installed here.
 
-Unit tests here use an explicitly fake in-memory native transaction to test the
-adapter boundary; they do not prove real durable replay, current worker admission,
-production deployment or live acceptance. No workflow dispatch is added.
+Bridge unit tests use an explicitly fake in-memory native transaction. Separate
+host-agent tests use the real on-disk journal and file locks, faults before and
+after each durable phase, file/directory fsync failures and actual child-process
+death without exception unwinding. They verify replay denial and native recovery
+without a second apply. Native runtime inspection and controller HTTP responses
+are controlled test sources; these tests do not establish live admission,
+production deployment or acceptance. No workflow dispatch is added.

@@ -3,6 +3,7 @@ import hmac
 import importlib.util
 import json
 import os
+import stat
 import sys
 import time
 from dataclasses import replace
@@ -351,6 +352,7 @@ def _controller_rollback_receipt(
 
 def _patch_local_security(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(AGENT, "_root_directory", lambda _: None)
+    monkeypatch.setattr(AGENT, "_lock_directory", lambda _: None)
     monkeypatch.setattr(AGENT, "_private", lambda *_, **__: None)
 
 
@@ -1170,6 +1172,303 @@ def test_agent_rollback_reconciles_controller_before_native_action(
             lease_expires_at=int(time.time()) + 3600,
             rollback_anchor=restored,
         )
+
+
+@pytest.fixture
+def file_apply_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Real native journal/locks; test-only controller and measured-runtime sources."""
+    profile = _test_profile(tmp_path)
+    config = _config(profile)
+    candidate, active, rollback = (_variant(profile, key) for key in ("a", "b", "c"))
+    job = _signed_job(profile, config, candidate, rollback_anchor=active)
+    _patch_local_security(monkeypatch)
+    _provision_agent_state(profile, active, rollback)
+    state: dict[str, Any] = {
+        "profile": profile, "config": config, "job": job, "candidate": candidate,
+        "active": active, "rollback": rollback, "runtime": active,
+        "controller": "dispatched", "completion": None, "reads": 0,
+    }
+
+    def measured_receipt(_profile: object, *, current: bool = False) -> dict[str, Any]:
+        assert current
+        return _native_receipt(profile, state["runtime"])
+
+    def request(
+        _config: object, method: str, path: str, payload: dict[str, Any] | None = None,
+        *, headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
+        assert headers == AGENT._controller_headers(LEASE_ID, FENCE)
+        if method == "GET" and path.endswith(f"/jobs/{RELEASE_ID}"):
+            state["reads"] += 1
+            return 200, AGENT._canonical_bytes(_controller_status(
+                profile, candidate, state["controller"], runtime_receipt=state["completion"]
+            ))
+        if method == "POST" and path.endswith(f"/jobs/{RELEASE_ID}/complete"):
+            assert payload is not None
+            state["completion"], state["controller"] = payload, "verified"
+            return 200, AGENT._canonical_bytes(payload)
+        raise AssertionError("file apply must not poll, admit or dispatch other native work")
+
+    def no_native_mutation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("transaction callback must not invoke a release or rollback")
+
+    monkeypatch.setattr(AGENT, "native_receipt", measured_receipt)
+    monkeypatch.setattr(AGENT, "request", request)
+    monkeypatch.setattr(AGENT, "invoke_native", no_native_mutation)
+    state["factory"] = AGENT.JournaledFileApplyTransaction(config, profile, job)
+    return state
+
+
+def test_file_apply_native_journal_completes_and_rejects_replay(file_apply_host) -> None:
+    host = file_apply_host
+    with host["factory"](host["job"]["dispatch_claim"]) as guard:
+        assert [item["phase"] for item in AGENT._journal_events(host["profile"])][-2:] == [
+            "dispatch_accepted", "release_started"
+        ]
+        before = host["reads"]
+        guard.assert_current()
+        assert host["reads"] == before + 1
+        host["runtime"] = host["candidate"]
+    assert host["controller"] == "verified"
+    assert AGENT._pending_operation(host["profile"]) is None
+    assert AGENT.read_state(host["profile"].state_path, host["profile"]) == (
+        host["candidate"], host["active"]
+    )
+    with pytest.raises(AGENT.AgentError, match="outside"):
+        guard.assert_current()
+    with (
+        pytest.raises(AGENT.AgentError, match="consumed"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("replay yielded")
+
+
+def test_file_apply_holds_real_lock_and_immutable_job(file_apply_host) -> None:
+    host = file_apply_host
+    claim = json.loads(AGENT._canonical_bytes(host["job"]["dispatch_claim"]))
+    host["job"]["dispatch_claim"]["attempt"] = 999
+    with host["factory"](claim) as guard:
+        with (
+            pytest.raises(AGENT.AgentError, match="lock is already held"),
+            host["factory"](claim),
+        ):
+            pytest.fail("concurrent transaction entered")
+        guard.assert_current()
+        host["runtime"] = host["candidate"]
+
+
+@pytest.mark.parametrize("change", ["expiry", "fence", "terminal", "transport"])
+def test_file_apply_guard_rechecks_controller_and_lifetime(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    host = file_apply_host
+    with (
+        pytest.raises(AGENT.AgentError),
+        host["factory"](host["job"]["dispatch_claim"]) as guard,
+    ):
+        if change == "expiry":
+            expiry = host["job"]["dispatch_claim"]["expires_at"]
+            monkeypatch.setattr(AGENT.time, "time", lambda: expiry)
+        elif change == "terminal":
+            host["controller"] = "accepted"
+        elif change == "fence":
+            monkeypatch.setattr(AGENT, "request", lambda *_a, **_k: (409, b"{}"))
+        else:
+            def lost(*_args, **_kwargs):
+                raise AGENT.ControllerTransportError("test transport unavailable")
+            monkeypatch.setattr(AGENT, "request", lost)
+        guard.assert_current()
+        pytest.fail("stale guard permitted a write")
+    assert AGENT._pending_operation(host["profile"])["phases"] == (
+        "dispatch_accepted", "release_started"
+    )
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("interrupted operation repeated")
+
+
+@pytest.mark.parametrize("phase", [
+    "dispatch_accepted", "release_started", "recovery_release_ready", "verified", "completed"
+])
+@pytest.mark.parametrize("after_write", [False, True])
+def test_file_apply_recovers_each_durable_boundary(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, phase: str, after_write: bool
+) -> None:
+    host = file_apply_host
+    original = AGENT._write_operation
+    writes = []
+
+    def interrupted(profile, current, *args, **kwargs):
+        if current == phase:
+            if after_write:
+                original(profile, current, *args, **kwargs)
+            raise OSError("injected phase boundary failure")
+        return original(profile, current, *args, **kwargs)
+
+    monkeypatch.setattr(AGENT, "_write_operation", interrupted)
+    with (
+        pytest.raises(OSError, match="boundary"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        writes.append("apply")
+        host["runtime"] = host["candidate"]
+    monkeypatch.setattr(AGENT, "_write_operation", original)
+    pending = AGENT._pending_operation(host["profile"])
+    if phase == "dispatch_accepted" and not after_write:
+        # No consume persisted, so a first real attempt remains possible.
+        assert pending is None and not writes
+        with host["factory"](host["job"]["dispatch_claim"]):
+            host["runtime"] = host["candidate"]
+    else:
+        with (
+            pytest.raises(AGENT.AgentError, match="reconciliation|consumed"),
+            host["factory"](host["job"]["dispatch_claim"]),
+        ):
+            pytest.fail("durable operation was applied twice")
+        if pending is not None and writes:
+            active, rollback = AGENT.read_state(host["profile"].state_path, host["profile"])
+            result = AGENT._recover_pending(
+                host["config"], host["profile"], active, rollback, pending
+            )
+            assert result["status"] == "verified"
+            assert AGENT._pending_operation(host["profile"]) is None
+
+
+def test_file_apply_failure_never_suppressed_or_automatically_rolled_back(file_apply_host) -> None:
+    host = file_apply_host
+    with (
+        pytest.raises(RuntimeError, match="injected apply failure"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        raise RuntimeError("injected apply failure")
+    assert host["runtime"] == host["active"]
+    assert AGENT._pending_operation(host["profile"]) is not None
+    assert host["completion"] is None
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_native_lock_rejects_link_substitution(
+    file_apply_host, tmp_path: Path, kind: str
+) -> None:
+    host = file_apply_host
+    target = tmp_path / "untouched"
+    target.write_bytes(b"unchanged")
+    if kind == "symlink":
+        host["profile"].lock_path.symlink_to(target)
+    else:
+        os.link(target, host["profile"].lock_path)
+    with (
+        pytest.raises((AGENT.AgentError, OSError)),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("linked lock accepted")
+    assert target.read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize("mode,uid,position,accepted", [
+    (stat.S_IFDIR | 0o755, 0, "leaf", True),
+    (stat.S_IFDIR | 0o1777, 0, "leaf", True),
+    (stat.S_IFDIR | 0o777, 0, "leaf", False),
+    (stat.S_IFDIR | 0o1777, 0, "ancestor", False),
+    (stat.S_IFDIR | 0o755, 501, "leaf", False),
+    (stat.S_IFLNK | 0o755, 0, "ancestor", False),
+])
+def test_lock_directory_validates_ancestry_without_breaking_sticky_run_lock(
+    monkeypatch: pytest.MonkeyPatch, mode: int, uid: int, position: str, accepted: bool
+) -> None:
+    target = Path("/run/lock")
+
+    def metadata(path: Path):
+        selected = path == (target if position == "leaf" else target.parent)
+        return os.stat_result((
+            mode if selected else stat.S_IFDIR | 0o755,
+            1, 1, 1, uid if selected else 0, 0, 0, 0, 0, 0,
+        ))
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    if accepted:
+        AGENT._lock_directory(target)
+    else:
+        with pytest.raises(AGENT.AgentError, match="ancestry"):
+            AGENT._lock_directory(target)
+
+
+@pytest.mark.parametrize("boundary", [1, 2, 3, 4])
+def test_file_apply_fsync_error_never_yields_permission(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, boundary: int
+) -> None:
+    host = file_apply_host
+    original = os.fsync
+    calls = 0
+
+    def fail_sync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == boundary:
+            raise OSError("injected fsync failure")
+        original(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    with (
+        pytest.raises(AGENT.AgentError, match="journal"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("permission yielded before durable consumption")
+    monkeypatch.setattr(os, "fsync", original)
+    assert host["runtime"] == host["active"]
+    assert AGENT._pending_operation(host["profile"]) is not None
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("uncertain fsync consumption replayed")
+
+
+@pytest.mark.parametrize("phase", ["dispatch_accepted", "release_started", "apply", "completed"])
+def test_file_apply_real_process_death_preserves_nonce_and_releases_lock(
+    file_apply_host, phase: str
+) -> None:
+    host = file_apply_host
+    pid = os.fork()
+    if pid == 0:
+        original = AGENT._write_operation
+
+        def crash_after_write(profile, current, *args, **kwargs):
+            result = original(profile, current, *args, **kwargs)
+            if current == phase:
+                os._exit(91)
+            return result
+
+        AGENT._write_operation = crash_after_write
+        try:
+            with host["factory"](host["job"]["dispatch_claim"]):
+                host["runtime"] = host["candidate"]
+                if phase == "apply":
+                    os._exit(91)
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    # The dead process releases its flock, but not its persisted nonce. No
+    # Python finally/exception unwinding ran in the child.
+    with (
+        pytest.raises(AGENT.AgentError, match="reconciliation|consumed"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("process death permitted blind apply")
+    if phase == "apply":
+        # Independent native inspection observes that the files switched.
+        host["runtime"] = host["candidate"]
+        pending = AGENT._pending_operation(host["profile"])
+        assert pending is not None
+        result = AGENT._recover_pending(
+            host["config"], host["profile"], host["active"], host["rollback"], pending
+        )
+        assert result["status"] == "verified"
+        assert AGENT._pending_operation(host["profile"]) is None
 
 
 def test_agent_cannot_be_reconfigured_with_host_paths() -> None:
