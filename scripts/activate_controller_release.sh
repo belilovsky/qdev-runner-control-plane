@@ -239,12 +239,8 @@ required=(
   config/profiles.yml \
   config/release-lanes.yml \
   config/fleet-bootstrap.yml \
-  config/controller-capacity.json \
   config/managed-registry.yml \
   config/managed-release-ledger.yml \
-  scripts/bootstrap_admin_platform_ledger_v3.py \
-  scripts/prepare_controller_candidate.py \
-  scripts/dispatch_fleet_bootstrap.py \
   scripts/provision_operator_identity.sh \
   scripts/qaz_tours_release_host_agent.py \
   scripts/qdev_product_release_host_agent.py \
@@ -253,14 +249,16 @@ required=(
   deploy/qdev-release-qaz-events.service \
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qmt.compose.yml \
-  deploy/qdev-fleet-host-dispatch.service \
-  deploy/qdev-fleet-host-dispatch.path \
   deploy/Dockerfile.broker
 )
 if [[ "$rollback_mode" != true ]]; then
   required+=(
+    config/controller-capacity.json
     src/qdev_runner/durable_state.py
     src/qdev_runner/controller_candidate.py
+    scripts/bootstrap_admin_platform_ledger_v3.py
+    scripts/prepare_controller_candidate.py
+    scripts/dispatch_fleet_bootstrap.py
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
@@ -275,6 +273,8 @@ if [[ "$rollback_mode" != true ]]; then
     deploy/qdev-release-cmnt.service
     deploy/qdev-release-total.service
     deploy/qdev-release-qazposter.service
+    deploy/qdev-fleet-host-dispatch.service
+    deploy/qdev-fleet-host-dispatch.path
   )
 fi
 for required_file in "${required[@]}"; do
@@ -539,23 +539,21 @@ if [[ "$rollback_mode" == true && "$release_revision" != "$anchor_revision" ]]; 
   printf 'rollback checkout does not match the saved controller anchor revision\n' >&2
   exit 66
 fi
-if [[ "$rollback_mode" != true ]]; then
-  if [[ -z "$detected_release_root" ||
-        "$(realpath -e -- "$detected_release_root")" != "$release" ]]; then
-    printf 'forward activation requires a source-bound git release checkout\n' >&2
-    exit 66
-  fi
-  if ! git -C "$release" diff --quiet "$release_revision" -- .; then
-    printf 'controller release differs from the declared exact revision\n' >&2
-    exit 66
-  fi
-  untracked_release_source="$(
-    git -C "$release" ls-files --others --exclude-standard -- .
-  )"
-  if [[ -n "$untracked_release_source" ]]; then
-    printf 'controller release contains untracked files\n' >&2
-    exit 66
-  fi
+if [[ -z "$detected_release_root" ||
+      "$(realpath -e -- "$detected_release_root")" != "$release" ]]; then
+  printf 'controller activation requires a source-bound git release checkout\n' >&2
+  exit 66
+fi
+if ! git -C "$release" diff --quiet "$release_revision" -- .; then
+  printf 'controller release differs from the declared exact revision\n' >&2
+  exit 66
+fi
+untracked_release_source="$(
+  git -C "$release" ls-files --others --exclude-standard -- .
+)"
+if [[ -n "$untracked_release_source" ]]; then
+  printf 'controller release contains untracked files\n' >&2
+  exit 66
 fi
 
 validate_durable_admin_platform_ledger() {
@@ -1297,10 +1295,15 @@ if ! prepare_broker_state; then
   exit 1
 fi
 
-if ! install_fleet_host_dispatch; then
-  printf 'fleet host dispatcher installation failed; restoring previous release\n' >&2
-  rollback
-  exit 1
+if [[ "$rollback_mode" != true ]]; then
+  # A rollback target can predate the managed dispatcher. Keep the already
+  # installed, controller-owned recovery path intact instead of sourcing
+  # modern host binaries from an immutable historical release.
+  if ! install_fleet_host_dispatch; then
+    printf 'fleet host dispatcher installation failed; restoring previous release\n' >&2
+    rollback
+    exit 1
+  fi
 fi
 
 if ! "${compose[@]}" "${compose_action[@]}"; then
