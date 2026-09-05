@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -228,11 +229,38 @@ def _managed_file(path: Path, marker: bytes, *, allow_legacy_hook: bool = False)
     raise ValueError(f"refusing to replace unmanaged file: {path}")
 
 
-def _copy_fixed(source: Path, destination: Path, *, mode: int, gid: int) -> None:
+def _copy_fixed(
+    source: Path, destination: Path, *, mode: int, gid: int, uid: int = 0
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination, follow_symlinks=False)
-    os.chown(destination, 0, gid)
-    destination.chmod(mode)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        with source.open("rb") as source_handle, os.fdopen(
+            descriptor, "wb", closefd=False
+        ) as destination_handle:
+            shutil.copyfileobj(source_handle, destination_handle)
+            destination_handle.flush()
+            os.fsync(destination_handle.fileno())
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, mode)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _staged_path(destination: Path, operation: str) -> Path:
+    return destination.with_name(
+        f".{destination.name}.{secrets.token_hex(16)}.{operation}"
+    )
 
 
 def _safe_root_directory(path: Path, *, mode: int, gid: int = 0) -> None:
@@ -352,12 +380,16 @@ def _restore_file(destination: Path, backup: Path | None) -> None:
     if backup is None:
         destination.unlink(missing_ok=True)
         return
-    staged = destination.with_name(f".{destination.name}.{os.getpid()}.restore")
+    staged = _staged_path(destination, "restore")
     try:
-        shutil.copyfile(backup, staged, follow_symlinks=False)
         status = backup.stat()
-        os.chown(staged, status.st_uid, status.st_gid)
-        staged.chmod(stat.S_IMODE(status.st_mode))
+        _copy_fixed(
+            backup,
+            staged,
+            mode=stat.S_IMODE(status.st_mode),
+            gid=status.st_gid,
+            uid=status.st_uid,
+        )
         os.replace(staged, destination)
     finally:
         staged.unlink(missing_ok=True)
@@ -407,6 +439,8 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
     trust_root = trust_parent / "release-controller"
     launcher = Path("/usr/local/sbin/qdev-controller-verify-admission")
     hook = candidate / "hooks/update"
+    _validate_root_directory(hook.parent)
+    _validate_root_directory(launcher.parent)
     _managed_file(hook, HOOK_MARKER, allow_legacy_hook=True)
     _managed_file(launcher, LAUNCHER_MARKER)
     version_preexisting = version_root.exists() or version_root.is_symlink()
@@ -536,7 +570,7 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
             (bundle / EXPECTED_FILES["qazcoop-update"], hook),
             (bundle / EXPECTED_FILES["qdev-controller-verify-admission"], launcher),
         ):
-            staged = destination.with_name(f".{destination.name}.{os.getpid()}.new")
+            staged = _staged_path(destination, "new")
             _copy_fixed(source, staged, mode=0o750, gid=receive_gid)
             os.replace(staged, destination)
             if destination == launcher:

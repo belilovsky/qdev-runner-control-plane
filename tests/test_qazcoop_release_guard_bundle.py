@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -222,10 +223,40 @@ def test_restore_replaces_managed_file_atomically(
         replace(source, target)
 
     monkeypatch.setattr(installer.os, "replace", checked_replace)
+    monkeypatch.setattr(installer.os, "fchown", lambda *_args: None)
     installer._restore_file(destination, backup)
 
     assert observed_existing_destination is True
     assert destination.read_text(encoding="utf-8") == "old\n"
+
+
+def test_copy_fixed_rejects_precreated_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    destination = tmp_path / "staged"
+    source.write_text("guard\n", encoding="utf-8")
+    target.write_text("protected\n", encoding="utf-8")
+    destination.symlink_to(target)
+    monkeypatch.setattr(installer.os, "fchown", lambda *_args: None)
+
+    with pytest.raises(FileExistsError):
+        installer._copy_fixed(source, destination, mode=0o750, gid=os.getgid())
+
+    assert target.read_text(encoding="utf-8") == "protected\n"
+
+
+def test_staged_paths_are_not_pid_predictable(tmp_path: Path) -> None:
+    _bundle_path, installer = _bundle(tmp_path)
+    destination = tmp_path / "update"
+
+    first = installer._staged_path(destination, "new")
+    second = installer._staged_path(destination, "new")
+
+    assert first != second
+    assert f".{os.getpid()}." not in first.name
 
 
 def test_safe_root_directory_rejects_existing_symlink(tmp_path: Path) -> None:
