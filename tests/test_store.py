@@ -5,6 +5,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from worker_evidence import seed_worker, worker_detail
 
 from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
@@ -392,6 +393,101 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
         )
         is None
     )
+    assert store.job_status(101) == "pending"
+
+
+def test_unscoped_claim_cannot_skip_disk_blocked_profile_head(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser")
+    seed_worker(store, "primary-1", profiles, disk_free_gib=45)
+    assert store.enqueue(job("large-head", 100, repository="belilovsky/qazstack"))
+    assert store.enqueue(job("small-later", 101, repository="belilovsky/qazlake"))
+    costs = {("belilovsky/qazlake", "qdev-ci"): 5120}
+    profile_costs = {"qdev-ci": 20480, "qdev-ci-browser": 10240}
+
+    assert store.claim(
+        "primary-1", profiles, profile_disk_mb=profile_costs,
+        repository_profile_disk_mb=costs,
+    ) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+    # A blocked profile does not block a different profile's available head.
+    assert store.enqueue(job("browser-head", 102, "qdev-ci-browser"))
+    claimed = store.claim(
+        "primary-1", profiles, profile_disk_mb=profile_costs,
+        repository_profile_disk_mb=costs,
+    )
+    assert claimed is not None and claimed["job_id"] == 102
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_reserve_claims_other_profile_head_when_primary_can_take_first(
+    tmp_path: Path, scoped: bool,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser", "qdev-ci-docker")
+    seed_worker(store, "primary-1", ("qdev-ci",))
+    seed_worker(store, "reserve-1", profiles, tier="reserve")
+    for job_id, profile in zip((100, 101, 102), profiles, strict=True):
+        assert store.enqueue(job(str(job_id), job_id, profile))
+    scope = ClaimScope(
+        scope_id="reserve-profile-heads", worker_name="reserve-1", tier="reserve",
+        repository=None, head_sha=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=tuple(
+            ScopedJob(
+                job_id, profile, repository="belilovsky/private-repo", run_id=200,
+                attempt=1, exact_sha="a" * 40,
+            )
+            for job_id, profile in zip((100, 101, 102), profiles, strict=True)
+        ),
+        schema=SCHEMA_V2,
+    ) if scoped else None
+
+    # Profile argument order must not override the global age of available heads.
+    claimed = store.claim("reserve-1", tuple(reversed(profiles)), tier="reserve", claim_scope=scope)
+    assert claimed is not None and claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+    assert store.job_status(102) == "pending"
+
+
+def test_reserve_cannot_skip_primary_eligible_head_within_profile(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    seed_worker(store, "primary-1", disk_free_gib=45)
+    seed_worker(store, "reserve-1", tier="reserve", disk_free_gib=100)
+    assert store.enqueue(job("small-head", 100, repository="belilovsky/qazlake"))
+    assert store.enqueue(job("large-later", 101, repository="belilovsky/qazstack"))
+
+    assert store.claim(
+        "reserve-1", ("qdev-ci",), tier="reserve",
+        profile_disk_mb={"qdev-ci": 20480},
+        repository_profile_disk_mb={("belilovsky/qazlake", "qdev-ci"): 5120},
+    ) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
+
+
+def test_legacy_reserve_scope_keeps_signed_sequence_when_primary_can_take_first(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    profiles = ("qdev-ci", "qdev-ci-browser")
+    seed_worker(store, "primary-1", ("qdev-ci",))
+    seed_worker(store, "reserve-1", profiles, tier="reserve")
+    assert store.enqueue(job("browser-first-in-queue", 100, "qdev-ci-browser"))
+    assert store.enqueue(job("ci-first-in-scope", 101, "qdev-ci"))
+    scope = ClaimScope(
+        scope_id="legacy-ordered", worker_name="reserve-1", tier="reserve",
+        repository="belilovsky/private-repo", head_sha="a" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(ScopedJob(101, "qdev-ci"), ScopedJob(100, "qdev-ci-browser")),
+    )
+
+    assert store.claim("reserve-1", profiles, tier="reserve", claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
     assert store.job_status(101) == "pending"
 
 

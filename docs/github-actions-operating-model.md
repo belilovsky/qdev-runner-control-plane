@@ -91,6 +91,10 @@ Rollback is to restore the `refs/heads/main` selector and preflight in
   free for the exact pending profile. Claim admission preserves the configured
   free-space floor plus that profile's declared disk budget; a merely present,
   busy, or undersized primary does not block reserve.
+- Ordinary and v2 claims consider only the oldest pending job of each profile.
+  Disk pressure cannot promote a cheaper later job within that profile. A
+  primary-eligible head does not block reserve from the oldest eligible head
+  of another profile. Existing v1 scopes retain their signed sequence.
 - Preserve the previous controller release and host configuration before a
   bounded activation. Do not broad-prune shared Docker data.
 - A runner-image cleanup allowlist is configuration-bound. Inspect every image

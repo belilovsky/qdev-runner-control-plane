@@ -873,13 +873,13 @@ class Store:
                 )
             profile_heads: dict[str, int] = {}
             enforce_profile_fifo = bool(
-                (claim_scope is not None and claim_scope.schema == SCHEMA_V2)
+                claim_scope is None or claim_scope.schema == SCHEMA_V2
                 or repository is not None
                 or head_sha is not None
             )
             if enforce_profile_fifo:
-                # v2 scopes may authorize independent profiles concurrently, but
-                # may never skip the oldest pending job within any one profile.
+                # Ordinary claims and v2 scopes may use independent profiles,
+                # but never skip the oldest pending job within any one profile.
                 # Keep this guard in the durable claim path as well as the
                 # controller endpoint: a worker must not be able to bypass FIFO
                 # by invoking the store directly.
@@ -943,8 +943,14 @@ class Store:
                     profile=matching_profile,
                     profile_disk_mb=required_disk_mb,
                 ):
-                    connection.execute("COMMIT")
-                    return None
+                    if claim_scope is not None and claim_scope.schema != SCHEMA_V2:
+                        # Preserve the legacy signed execution sequence.
+                        connection.execute("COMMIT")
+                        return None
+                    # This head belongs on primary. Another profile head can
+                    # still need reserve; the FIFO guard excludes later jobs
+                    # within this same profile.
+                    continue
                 selected = row
                 selected_profile = matching_profile
                 break
