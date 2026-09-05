@@ -41,12 +41,13 @@ _SAFE_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:/()\-]{0,127}$")
 _GITHUB_OIDC_HOSTS = frozenset(
     {
         "token.actions.githubusercontent.com",
-        # GitHub Actions currently uses this host for the OIDC request URL on
-        # some runner pools.  Keep the allowlist exact; do not accept an
-        # arbitrary subdomain of githubusercontent.com.
         "pipelines.actions.githubusercontent.com",
     }
 )
+# GitHub documents a wildcard under this exact suffix for OIDC traffic.  The
+# suffix is deliberately scoped to GitHub's actions domain; no broader
+# githubusercontent.com suffix is accepted.
+_GITHUB_OIDC_HOST_SUFFIXES = frozenset({".actions.githubusercontent.com"})
 
 
 class BootstrapValidationError(RuntimeError):
@@ -85,17 +86,32 @@ def _https_url(
     *,
     allowed_host: str | None = None,
     allowed_hosts: frozenset[str] | None = None,
+    allowed_host_suffixes: frozenset[str] | None = None,
 ) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise BootstrapValidationError(f"{name} must be an HTTPS URL")
-    if allowed_host is not None and allowed_hosts is not None:
+    if allowed_host is not None and (
+        allowed_hosts is not None or allowed_host_suffixes is not None
+    ):
         raise BootstrapValidationError(f"{name} has conflicting host allowlists")
     if allowed_host is not None and parsed.hostname != allowed_host:
         raise BootstrapValidationError(
             f"{name} host {parsed.hostname!r} is not allowlisted"
         )
+    suffix_allowed = bool(
+        allowed_host_suffixes
+        and any(
+            parsed.hostname.endswith(suffix) and parsed.hostname != suffix.removeprefix(".")
+            for suffix in allowed_host_suffixes
+        )
+    )
     if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
+        if not suffix_allowed:
+            raise BootstrapValidationError(
+                f"{name} host {parsed.hostname!r} is not allowlisted"
+            )
+    elif allowed_host_suffixes is not None and not suffix_allowed:
         raise BootstrapValidationError(
             f"{name} host {parsed.hostname!r} is not allowlisted"
         )
@@ -132,6 +148,7 @@ def _oidc_token(audience: str) -> str:
         "ACTIONS_ID_TOKEN_REQUEST_URL",
         _required("ACTIONS_ID_TOKEN_REQUEST_URL"),
         allowed_hosts=_GITHUB_OIDC_HOSTS,
+        allowed_host_suffixes=_GITHUB_OIDC_HOST_SUFFIXES,
     )
     token = _required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     if not audience or len(audience) > 256:

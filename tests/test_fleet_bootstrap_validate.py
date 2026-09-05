@@ -41,20 +41,37 @@ def test_resolve_job_id_binds_numeric_job_to_current_attempt(
     assert validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap") == 9001
 
 
-def test_oidc_url_accepts_only_known_github_hosts() -> None:
+def test_oidc_url_accepts_only_github_oidc_hosts() -> None:
     for host in validator._GITHUB_OIDC_HOSTS:
         value = validator._https_url(
             "oidc",
             f"https://{host}/token?x=1",
             allowed_hosts=validator._GITHUB_OIDC_HOSTS,
+            allowed_host_suffixes=validator._GITHUB_OIDC_HOST_SUFFIXES,
         )
         assert value.startswith(f"https://{host}/")
+
+    wildcard = validator._https_url(
+        "oidc",
+        "https://run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+        allowed_hosts=validator._GITHUB_OIDC_HOSTS,
+        allowed_host_suffixes=validator._GITHUB_OIDC_HOST_SUFFIXES,
+    )
+    assert wildcard.startswith("https://run-actions-3-azure-eastus.")
 
     with pytest.raises(validator.BootstrapValidationError, match="not allowlisted"):
         validator._https_url(
             "oidc",
-            "https://evil.actions.githubusercontent.com/token",
+            "https://actions.githubusercontent.com/token",
             allowed_hosts=validator._GITHUB_OIDC_HOSTS,
+            allowed_host_suffixes=validator._GITHUB_OIDC_HOST_SUFFIXES,
+        )
+    with pytest.raises(validator.BootstrapValidationError, match="not allowlisted"):
+        validator._https_url(
+            "oidc",
+            "https://evil.githubusercontent.com/token",
+            allowed_hosts=validator._GITHUB_OIDC_HOSTS,
+            allowed_host_suffixes=validator._GITHUB_OIDC_HOST_SUFFIXES,
         )
 
 
