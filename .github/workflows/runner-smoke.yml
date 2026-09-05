@@ -44,7 +44,7 @@ jobs:
           QDEV_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: python scripts/verify_controller_ci.py --lane hosted
   runner-smoke:
-    if: github.event_name == 'workflow_dispatch' && inputs.execution_lane == 'recovery' && inputs.owner_recovery && github.repository_owner != '' && github.actor == github.repository_owner
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.execution_lane == 'recovery' && inputs.owner_recovery && github.repository_owner != '' && github.actor == github.repository_owner
     name: runner-smoke
     runs-on:
       - self-hosted
@@ -61,6 +61,7 @@ jobs:
           test "${RUNNER_ENVIRONMENT}" = "self-hosted"
           test -n "${RUNNER_NAME}"
           test -n "${GITHUB_SHA}"
+          test "${GITHUB_REF}" = "refs/heads/main"
           test ! -S /var/run/docker.sock
           printf 'runner_smoke_ok repo=%s sha=%s runner=%s\n' \
             "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RUNNER_NAME}"

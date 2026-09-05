@@ -1,8 +1,92 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from qdev_runner.settings import WorkerSettings
+from qdev_runner.settings import BrokerSettings, WorkerSettings
+
+
+def set_broker_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    surface: str,
+) -> None:
+    for name in (
+        "QDEV_GITHUB_APP_ID",
+        "QDEV_GITHUB_APP_PRIVATE_KEY",
+        "QDEV_GITHUB_WEBHOOK_SECRET",
+        "QDEV_WORKER_TOKEN",
+        "QDEV_ARTIFACT_TOKEN_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("QDEV_BROKER_SURFACE", surface)
+    monkeypatch.setenv("QDEV_ARTIFACT_TOKEN_KEY", "artifact-key")
+
+
+def test_public_broker_requires_only_public_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_broker_environment(monkeypatch, surface="public")
+    monkeypatch.setenv("QDEV_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+
+    settings = BrokerSettings.from_env()
+
+    assert settings.surface == "public"
+    assert settings.webhook_secret == "webhook-secret"  # noqa: S105
+    assert settings.worker_token is None
+    assert settings.app_id is None
+    assert settings.app_private_key_path is None
+    assert settings.artifact_token_key == "artifact-key"  # noqa: S105
+
+
+def test_internal_broker_requires_only_internal_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_broker_environment(monkeypatch, surface="internal")
+    monkeypatch.setenv("QDEV_GITHUB_APP_ID", "123")
+    monkeypatch.setenv("QDEV_GITHUB_APP_PRIVATE_KEY", "/run/secrets/app.pem")
+    monkeypatch.setenv("QDEV_WORKER_TOKEN", "worker-secret")
+
+    settings = BrokerSettings.from_env()
+
+    assert settings.surface == "internal"
+    assert settings.webhook_secret == ""
+    assert settings.worker_token == "worker-secret"  # noqa: S105
+    assert settings.app_id == "123"
+    assert settings.app_private_key_path == Path("/run/secrets/app.pem")
+    assert settings.release_job_lease_ttl_seconds == 3600
+
+
+@pytest.mark.parametrize("value", ["59", "86401"])
+def test_release_job_lease_ttl_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    set_broker_environment(monkeypatch, surface="public")
+    monkeypatch.setenv("QDEV_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    monkeypatch.setenv("QDEV_RELEASE_JOB_LEASE_TTL_SECONDS", value)
+
+    with pytest.raises(RuntimeError, match="must be between 60 and 86400"):
+        BrokerSettings.from_env()
+
+
+@pytest.mark.parametrize("surface", ["public", "internal"])
+def test_production_broker_requires_separate_artifact_key(
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+) -> None:
+    set_broker_environment(monkeypatch, surface=surface)
+    if surface == "public":
+        monkeypatch.setenv("QDEV_GITHUB_WEBHOOK_SECRET", "webhook-secret")
+    else:
+        monkeypatch.setenv("QDEV_GITHUB_APP_ID", "123")
+        monkeypatch.setenv("QDEV_GITHUB_APP_PRIVATE_KEY", "/run/secrets/app.pem")
+        monkeypatch.setenv("QDEV_WORKER_TOKEN", "worker-secret")
+    monkeypatch.delenv("QDEV_ARTIFACT_TOKEN_KEY")
+
+    with pytest.raises(RuntimeError, match="QDEV_ARTIFACT_TOKEN_KEY"):
+        BrokerSettings.from_env()
 
 
 def set_required_runner_images(monkeypatch: pytest.MonkeyPatch) -> None:

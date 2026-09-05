@@ -11,20 +11,30 @@ services:
     environment:
       PORT: "9020"
       QDEV_LISTEN_HOST: "0.0.0.0"
-      # Controller configuration is read-only; mutable signed scopes belong on
-      # the durable writable state volume.
-      QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
-      # Existing-worker recovery is controller-bound. The executable is
-      # installed by the host provisioning/control-plane release; it is never
-      # supplied by a workflow request.
-      QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
-      QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
-      QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
-      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
+      QDEV_BROKER_SURFACE: public
+      # The public process never receives operator/release authority from the
+      # shared env file.  Application routing also rejects every /internal/*
+      # path, so a forged edge identity header cannot cross this boundary.
+      QDEV_OPERATOR_TOKEN: ""
+      QDEV_OPERATOR_RECEIPT_KEY: ""
+      QDEV_OPERATOR_DIRECTIVE_KEY: ""
+      QDEV_RELEASE_CLAIM_KEY: ""
+      QDEV_WORKER_TOKEN: ""
+      QDEV_GITHUB_APP_ID: ""
+      QDEV_GITHUB_APP_PRIVATE_KEY: /nonexistent/qdev-github-app.pem
+      QDEV_REGISTRY_PASSWORD: ""
+      QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /nonexistent/qdev-release-host-dispatch-keys.json
+      # Only the queue database and artifact upload tree are shared with the
+      # internal broker.  Controller journals, release jobs and signing
+      # receipts are deliberately outside the public mount namespace.
+      QDEV_DATABASE: /var/lib/qdev-runner/broker-state/broker.db
+      QDEV_CLAIM_SCOPES: /nonexistent/claim-scopes.json
+      QDEV_ARTIFACT_ROOT: /var/lib/qdev-runner/artifacts
     volumes:
-      - /etc/qdev-runner:/etc/qdev-runner:ro
-      - /var/lib/qdev-runner:/var/lib/qdev-runner
-      - /var/log/qdev-runner:/var/log/qdev-runner
+      - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
+      - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro
+      - /var/lib/qdev-runner/broker-state:/var/lib/qdev-runner/broker-state
+      - /var/lib/qdev-runner/artifacts:/var/lib/qdev-runner/artifacts
     networks:
       - qdev_edge
     read_only: true
@@ -44,11 +54,15 @@ services:
     environment:
       PORT: "9443"
       QDEV_LISTEN_HOST: "0.0.0.0"
+      QDEV_BROKER_SURFACE: internal
+      QDEV_GITHUB_WEBHOOK_SECRET: ""
       # Public and edge-mediated controller endpoints share one durable scope
       # store.  Client mTLS terminates at the source-owned edge; this broker is
       # never published on a host port and is reachable only on the internal
       # Docker network.
-      QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/claim-scopes.json
+      QDEV_DATABASE: /var/lib/qdev-runner/broker-state/broker.db
+      QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json
+      QDEV_ADMIN_PLATFORM_RECEIPT_ROOT: /var/lib/qdev-runner/admin-platform-receipts
       # The operator uses the externally authenticated edge.  It must not
       # acquire a direct path around worker certificate verification.
       QDEV_CONTROLLER_URL: https://worker.ci.qdev.run
@@ -58,11 +72,35 @@ services:
       QDEV_FLEET_BOOTSTRAP_POLICY: /etc/qdev-runner/fleet-bootstrap.yml
       QDEV_FLEET_BOOTSTRAP_OPERATION_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap
       QDEV_FLEET_BOOTSTRAP_RECEIPT_ROOT: /var/lib/qdev-runner/operations/fleet-bootstrap-receipts
-      QDEV_FLEET_RECOVERY_EXECUTABLE: /usr/local/sbin/qdev-fleet-worker-recovery
+      # This is the broker's entire host-mutation boundary: an unprivileged
+      # immutable request spool and a read-only durable result spool.  Host
+      # adapters and the Docker socket are never mounted into the container.
+      QDEV_FLEET_HOST_DISPATCH_REQUEST_ROOT: /var/lib/qdev-runner/fleet-host-dispatch/incoming
+      QDEV_FLEET_HOST_DISPATCH_RESULT_ROOT: /var/lib/qdev-runner/fleet-host-dispatch/results
+      QDEV_RELEASE_HOST_DISPATCH_KEYS_FILE: /etc/qdev-runner/release-host-dispatch-keys.json
+      QDEV_RELEASE_HOST_DISPATCH_CLAIM_TTL_SECONDS: "120"
+      QDEV_RELEASE_JOB_LEASE_TTL_SECONDS: "3600"
+      QDEV_GITHUB_APP_PRIVATE_KEY: /etc/qdev-runner/github-app.pem
     volumes:
-      - /etc/qdev-runner:/etc/qdev-runner:ro
-      - /var/lib/qdev-runner:/var/lib/qdev-runner
-      - /var/log/qdev-runner:/var/log/qdev-runner
+      - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
+      - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro
+      - /etc/qdev-runner/controller-release.json:/etc/qdev-runner/controller-release.json:ro
+      - /etc/qdev-runner/release-lanes.yml:/etc/qdev-runner/release-lanes.yml:ro
+      - /etc/qdev-runner/managed-registry.yml:/etc/qdev-runner/managed-registry.yml:ro
+      - /etc/qdev-runner/admin-platform-ledger.yml:/etc/qdev-runner/admin-platform-ledger.yml:ro
+      - /etc/qdev-runner/managed-release-ledger.yml:/etc/qdev-runner/managed-release-ledger.yml:ro
+      - /etc/qdev-runner/fleet-bootstrap.yml:/etc/qdev-runner/fleet-bootstrap.yml:ro
+      - /etc/qdev-runner/release-host-dispatch-keys.json:/etc/qdev-runner/release-host-dispatch-keys.json:ro
+      - /etc/qdev-runner/github-app.pem:/etc/qdev-runner/github-app.pem:ro
+      - /etc/qdev-runner/mtls/operator:/etc/qdev-runner/mtls/operator:ro
+      - /var/lib/qdev-runner/broker-state:/var/lib/qdev-runner/broker-state
+      - /var/lib/qdev-runner/control-state:/var/lib/qdev-runner/control-state
+      - /var/lib/qdev-runner/artifacts:/var/lib/qdev-runner/artifacts
+      - /var/lib/qdev-runner/operations:/var/lib/qdev-runner/operations
+      - /var/lib/qdev-runner/admin-platform-receipts:/var/lib/qdev-runner/admin-platform-receipts
+      - /var/lib/qdev-runner/release-jobs:/var/lib/qdev-runner/release-jobs
+      - /var/lib/qdev-runner/fleet-host-dispatch/incoming:/var/lib/qdev-runner/fleet-host-dispatch/incoming
+      - /var/lib/qdev-runner/fleet-host-dispatch/results:/var/lib/qdev-runner/fleet-host-dispatch/results:ro
     networks:
       - qdev_runner_internal
       # The broker accepts no host-published traffic, but it must reach the

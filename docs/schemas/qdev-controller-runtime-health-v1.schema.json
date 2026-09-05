@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-controller-runtime-health-v1.schema.json",
+  "title": "QDev controller runtime health v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "state",
+    "revision",
+    "digest",
+    "activated",
+    "runtime_identity",
+    "dependency_identity",
+    "receipt"
+  ],
+  "properties": {
+    "schema": {"const": "qdev-controller-runtime-health-v1"},
+    "state": {"enum": ["active", "legacy", "unavailable"]},
+    "revision": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "digest": {
+      "oneOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "activated": {"type": ["string", "null"], "format": "date-time"},
+    "runtime_identity": {
+      "oneOf": [
+        {"$ref": "#/$defs/runtimeIdentity"},
+        {"type": "null"}
+      ]
+    },
+    "dependency_identity": {
+      "oneOf": [
+        {"$ref": "#/$defs/dependencyIdentity"},
+        {"type": "null"}
+      ]
+    },
+    "receipt": {
+      "oneOf": [
+        {"$ref": "#/$defs/measuredReceipt"},
+        {"$ref": "#/$defs/legacyReceipt"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtimeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_revision",
+        "source_digest",
+        "public_image_id",
+        "internal_image_id"
+      ],
+      "properties": {
+        "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "public_image_id": {"$ref": "#/$defs/sha256"},
+        "internal_image_id": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dependencyIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirements_digest",
+        "public_installed_digest",
+        "internal_installed_digest"
+      ],
+      "properties": {
+        "requirements_digest": {"$ref": "#/$defs/sha256"},
+        "public_installed_digest": {"$ref": "#/$defs/sha256"},
+        "internal_installed_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "legacyReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "state", "revision", "release_digest", "activated_at"],
+      "properties": {
+        "schema": {"const": "qdev-controller-release-status-v1"},
+        "state": {"const": "active"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "release_digest": {
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-f]{64}$"
+        },
+        "activated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "measuredReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "state",
+        "revision",
+        "release_digest",
+        "activated_at",
+        "runtime_identity",
+        "dependency_identity"
+      ],
+      "properties": {
+        "schema": {"const": "qdev-controller-release-status-v2"},
+        "state": {"const": "active"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "release_digest": {"$ref": "#/$defs/sha256"},
+        "activated_at": {"type": "string", "format": "date-time"},
+        "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
+        "dependency_identity": {"$ref": "#/$defs/dependencyIdentity"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["state"],
+        "properties": {"state": {"const": "active"}}
+      },
+      "then": {
+        "properties": {
+          "revision": {"type": "string"},
+          "digest": {"$ref": "#/$defs/sha256"},
+          "activated": {"type": "string"},
+          "runtime_identity": {"$ref": "#/$defs/runtimeIdentity"},
+          "dependency_identity": {"$ref": "#/$defs/dependencyIdentity"},
+          "receipt": {"$ref": "#/$defs/measuredReceipt"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["state"],
+        "properties": {"state": {"const": "legacy"}}
+      },
+      "then": {
+        "properties": {
+          "revision": {"type": "string"},
+          "digest": {"$ref": "#/$defs/sha256"},
+          "activated": {"type": "string"},
+          "runtime_identity": {"type": "null"},
+          "dependency_identity": {"type": "null"},
+          "receipt": {"$ref": "#/$defs/legacyReceipt"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["state"],
+        "properties": {"state": {"const": "unavailable"}}
+      },
+      "then": {
+        "properties": {
+          "revision": {"type": "null"},
+          "digest": {"type": "null"},
+          "activated": {"type": "null"},
+          "runtime_identity": {"type": "null"},
+          "dependency_identity": {"type": "null"},
+          "receipt": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

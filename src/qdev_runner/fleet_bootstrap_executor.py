@@ -1,4 +1,4 @@
-"""Controller-side execution for an allowlisted existing-worker recovery.
+"""Controller-side execution for allowlisted fleet bootstrap operations.
 
 The GitHub workflow only validates and records a signed request.  This module
 is intentionally a separate, privileged boundary: it accepts a request that
@@ -17,7 +17,7 @@ import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .fleet_bootstrap import (
     BootstrapOperationStore,
@@ -27,6 +27,7 @@ from .fleet_bootstrap import (
     WorkerRecoveryTarget,
     bootstrap_request_fingerprint,
 )
+from .release_lane import ReleaseLane
 
 RECOVERY_RESULT_SCHEMA = "qdev-fleet-worker-recovery-result-v1"
 RECOVERY_RECEIPT_SCHEMA = "qdev-fleet-worker-recovery-receipt-v1"
@@ -37,6 +38,13 @@ _ADAPTER_STATUSES = frozenset(
     {"completed", "already_completed", "access_blocked", "target_unregistered", "failed"}
 )
 _DEFAULT_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
+_DEFAULT_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
+_DEFAULT_ENROLMENT_ADAPTER = Path("/usr/local/sbin/qdev-release-host-agent-enrol")
+BOOTSTRAP_ADAPTER_RESULT_SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
+BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA = "qdev-fleet-bootstrap-execution-receipt-v1"
+_BOOTSTRAP_ADAPTER_STATUSES = frozenset(
+    {"completed", "already_completed", "access_blocked", "failed"}
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,40 @@ class RecoveryExecution:
         return value
 
 
+@dataclass(frozen=True)
+class BootstrapExecution:
+    """Non-secret evidence for controller activation or host enrolment."""
+
+    status: Literal["completed", "access_blocked", "failed"]
+    operation_status: Literal["pending", "completed"]
+    action: Literal["activate-controller", "enrol-host-agent"]
+    idempotency_key: str
+    request_fingerprint: str
+    controller_revision: str
+    controller_release_digest: str
+    release_lane: str | None = None
+    host_agent_mtls_identity: str | None = None
+    error_code: str | None = None
+    result: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "schema": BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA,
+            "status": self.status,
+            "operation_status": self.operation_status,
+            "action": self.action,
+            "idempotency_key": self.idempotency_key,
+            "request_fingerprint": self.request_fingerprint,
+            "controller_revision": self.controller_revision,
+            "controller_release_digest": self.controller_release_digest,
+            "release_lane": self.release_lane,
+            "host_agent_mtls_identity": self.host_agent_mtls_identity,
+            "error_code": self.error_code,
+            "result": self.result,
+        }
+        return value
+
+
 def _safe_adapter_result(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -93,6 +135,142 @@ def _adapter_path(value: Path | None) -> Path | None:
     if not candidate.is_absolute() or not candidate.is_file() or not os.access(candidate, os.X_OK):
         return None
     return candidate
+
+
+def _bootstrap_adapter_path(
+    value: Path | None,
+    *,
+    action: Literal["activate-controller", "enrol-host-agent"],
+) -> Path | None:
+    candidate = value
+    if candidate is None:
+        if action == "activate-controller":
+            configured = os.environ.get("QDEV_FLEET_ACTIVATION_EXECUTABLE", "").strip()
+            candidate = Path(configured) if configured else _DEFAULT_ACTIVATION_ADAPTER
+        else:
+            configured = os.environ.get("QDEV_FLEET_ENROLMENT_EXECUTABLE", "").strip()
+            candidate = Path(configured) if configured else _DEFAULT_ENROLMENT_ADAPTER
+    if not candidate.is_absolute() or not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return None
+    return candidate
+
+
+def _bootstrap_target(
+    *,
+    policy: FleetBootstrapPolicy,
+    request: FleetBootstrapRequest,
+) -> tuple[dict[str, Any], ReleaseLane | None]:
+    if request.action == "activate-controller":
+        return (
+            {
+                "controller_revision": request.controller_revision,
+                "controller_release_digest": request.controller_release_digest,
+                "rollback_revision": policy.activation.rollback_revision,
+                "rollback_release_digest": policy.activation.rollback_release_digest,
+            },
+            None,
+        )
+    if request.action != "enrol-host-agent" or request.release_lane is None:
+        raise FleetBootstrapError("executor accepts only activation or host-agent enrolment")
+    lane = policy.release_lane(request.release_lane)
+    return (
+        {
+            "release_lane": lane.name,
+            "project_id": lane.project_id,
+            "placement": lane.placement,
+            "host_agent_mtls_identity": lane.host_agent_mtls_identity,
+            "native_host_adapter": lane.native_host_adapter,
+            "rollback_reference": lane.rollback_reference,
+        },
+        lane,
+    )
+
+
+def _invoke_bootstrap_adapter(
+    adapter: Path,
+    *,
+    request: FleetBootstrapRequest,
+    target: dict[str, Any],
+    lane: ReleaseLane | None,
+    timeout_seconds: float,
+) -> tuple[str, dict[str, Any] | None]:
+    envelope = {
+        "schema": "qdev-fleet-bootstrap-adapter-request-v1",
+        "request": request.model_dump(mode="json", by_alias=True),
+        "target": target,
+    }
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [str(adapter)],
+            input=json.dumps(envelope, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "failed", {"error_code": "adapter_unavailable"}
+    if completed.returncode != 0:
+        return "failed", {"error_code": "adapter_exit"}
+    try:
+        raw = json.loads(completed.stdout)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return "failed", {"error_code": "adapter_response_invalid"}
+    expected_fields = {
+        "schema",
+        "status",
+        "action",
+        "controller_revision",
+        "controller_release_digest",
+        "release_lane",
+        "host_agent_mtls_identity",
+        "rollback_source_sha",
+        "rollback_artifact_digest",
+        "result",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected_fields:
+        return "failed", {"error_code": "adapter_response_invalid"}
+    if (
+        raw.get("schema") != BOOTSTRAP_ADAPTER_RESULT_SCHEMA
+        or raw.get("status") not in _BOOTSTRAP_ADAPTER_STATUSES
+        or raw.get("action") != request.action
+        or raw.get("controller_revision") != request.controller_revision
+        or raw.get("controller_release_digest") != request.controller_release_digest
+    ):
+        return "failed", {"error_code": "adapter_identity_mismatch"}
+    if lane is None:
+        if (
+            raw.get("release_lane") is not None
+            or raw.get("host_agent_mtls_identity") is not None
+            or raw.get("rollback_source_sha") != target["rollback_revision"]
+            or raw.get("rollback_artifact_digest") != target["rollback_release_digest"]
+        ):
+            return "failed", {"error_code": "adapter_identity_mismatch"}
+    else:
+        rollback_sha = raw.get("rollback_source_sha")
+        rollback_digest = raw.get("rollback_artifact_digest")
+        if (
+            raw.get("release_lane") != lane.name
+            or raw.get("host_agent_mtls_identity") != lane.host_agent_mtls_identity
+            or not isinstance(rollback_sha, str)
+            or len(rollback_sha) != 40
+            or any(character not in "0123456789abcdef" for character in rollback_sha)
+            or not isinstance(rollback_digest, str)
+            or len(rollback_digest) != 71
+            or not rollback_digest.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in rollback_digest[7:])
+        ):
+            return "failed", {"error_code": "adapter_identity_mismatch"}
+    result = _safe_adapter_result(raw.get("result"))
+    if result is None:
+        return "failed", {"error_code": "adapter_result_invalid"}
+    result.update(
+        {
+            "rollback_source_sha": raw["rollback_source_sha"],
+            "rollback_artifact_digest": raw["rollback_artifact_digest"],
+        }
+    )
+    return str(raw["status"]), result
 
 
 def _invoke_adapter(
@@ -190,6 +368,108 @@ def _persist_receipt(path: Path, receipt: dict[str, Any]) -> None:
         with suppress(OSError):
             os.unlink(temporary)
         raise FleetBootstrapError("recovery receipt cannot be written") from error
+
+
+def execute_bootstrap_operation(
+    *,
+    policy: FleetBootstrapPolicy,
+    store: BootstrapOperationStore,
+    request: FleetBootstrapRequest,
+    idempotency_key: str,
+    adapter: Path | None = None,
+    timeout_seconds: float = 120,
+    receipt_path: Path | None = None,
+) -> BootstrapExecution:
+    """Activate the controller or enrol one allowlisted product host agent.
+
+    The caller cannot supply an executable, host, URL, service name or native
+    product command through the request.  The parsed bootstrap and release-lane
+    policies resolve the complete target, and the controller selects one fixed
+    installed adapter for the action.
+    """
+
+    policy.validate(request)
+    if request.action not in {"activate-controller", "enrol-host-agent"}:
+        raise FleetBootstrapError("executor accepts only activation or host-agent enrolment")
+    action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
+    target, lane = _bootstrap_target(policy=policy, request=request)
+    record = store.begin(idempotency_key, request)
+    fingerprint = bootstrap_request_fingerprint(request)
+
+    def execution(
+        status: Literal["completed", "access_blocked", "failed"],
+        operation_status: Literal["pending", "completed"],
+        *,
+        error_code: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> BootstrapExecution:
+        value = BootstrapExecution(
+            status=status,
+            operation_status=operation_status,
+            action=action,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            controller_revision=request.controller_revision,
+            controller_release_digest=request.controller_release_digest,
+            release_lane=lane.name if lane else None,
+            host_agent_mtls_identity=lane.host_agent_mtls_identity if lane else None,
+            error_code=error_code,
+            result=result,
+        )
+        # Only terminal evidence receives the canonical immutable receipt URI.
+        # Pending/failed attempts remain visible in the signed controller
+        # response and durable operation state without blocking a later safe
+        # retry from creating the final receipt.
+        if receipt_path is not None and operation_status == "completed":
+            _persist_receipt(receipt_path, value.as_dict())
+        return value
+
+    if record.status == "completed":
+        return execution("completed", "completed", result=record.result)
+    adapter_path = _bootstrap_adapter_path(adapter, action=action)
+    if adapter_path is None:
+        return execution(
+            "access_blocked",
+            "pending",
+            error_code=(
+                "activation_adapter_unavailable"
+                if action == "activate-controller"
+                else "enrolment_adapter_unavailable"
+            ),
+        )
+    adapter_status, adapter_result = _invoke_bootstrap_adapter(
+        adapter_path,
+        request=request,
+        target=target,
+        lane=lane,
+        timeout_seconds=timeout_seconds,
+    )
+    if adapter_status not in {"completed", "already_completed"}:
+        return execution(
+            "access_blocked" if adapter_status == "access_blocked" else "failed",
+            "pending",
+            error_code=(adapter_result or {}).get("error_code", "adapter_rejected"),
+        )
+    completion_result: dict[str, Any] = {
+        "action": action,
+        "controller_revision": request.controller_revision,
+        "controller_release_digest": request.controller_release_digest,
+        "adapter_status": adapter_status,
+    }
+    if lane is not None:
+        completion_result.update(
+            {
+                "release_lane": lane.name,
+                "project_id": lane.project_id,
+                "placement": lane.placement,
+                "host_agent_mtls_identity": lane.host_agent_mtls_identity,
+                "native_host_adapter": lane.native_host_adapter,
+            }
+        )
+    if adapter_result:
+        completion_result.update(adapter_result)
+    completed = store.complete(idempotency_key, request, completion_result)
+    return execution("completed", completed.status, result=completed.result)
 
 
 def execute_existing_worker_recovery(

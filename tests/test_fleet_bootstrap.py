@@ -28,10 +28,8 @@ def _request(**overrides: object) -> FleetBootstrapRequest:
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": "f5fe4c2673a81fcb25d1d501314ec0ed2e6fdd4a",
-        "controller_release_digest": (
-            "sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3"
-        ),
+        "controller_revision": SOURCE_SHA,
+        "controller_release_digest": "sha256:" + "b" * 64,
         "release_lane": None,
         "worker_name": None,
     }
@@ -92,7 +90,7 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"controller_revision": "b" * 40}, "tuple"),
+        ({"controller_revision": "b" * 40}, "source-bound"),
         ({"claim_ttl_seconds": 901}, "TTL"),
         (
             {

@@ -29,6 +29,17 @@ DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _REPOSITORY = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
+_PROGRAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_ADMIN_PLATFORM_STAGE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_ADMIN_PLATFORM_LANES = frozenset(
+    {"source", "ci", "publication", "deploy", "browser", "rollback", "observation"}
+)
+_ADMIN_PLATFORM_RESULT_OUTCOMES = frozenset(
+    {"queued", "passed", "failed", "blocked", "auth_blocked", "not_applicable"}
+)
+_ADMIN_PLATFORM_TERMINAL_STATES = frozenset(
+    {"live_accepted", "rolled_back", "blocked"}
+)
 _FIFO_SKIP_REASONS = frozenset(
     {
         "admin-platform-candidate-not-active",
@@ -141,6 +152,22 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "active_jobs",
         "error_code",
         "result",
+    },
+    "fleet-bootstrap-operation": {
+        "kind",
+        "observed_at",
+        "execution",
+    },
+    "admin-platform-evidence": {
+        "kind",
+        "observed_at",
+        "program_id",
+        "stage",
+        "release_id",
+        "source_sha",
+        "evidence_type",
+        "lane",
+        "outcome",
     },
 }
 
@@ -362,8 +389,15 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         raise ValueError("stale-job recovery payload is invalid")
     if kind == "fleet-bootstrap-recovery" and (
         value["status"]
-        not in {"completed", "access_blocked", "active_work", "target_unregistered", "failed"}
-        or value["operation_status"] not in {"pending", "completed"}
+        not in {
+            "completed",
+            "access_blocked",
+            "active_work",
+            "target_unregistered",
+            "failed",
+            "unknown",
+        }
+        or value["operation_status"] not in {"pending", "completed", "unknown"}
         or not isinstance(value["idempotency_key"], str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", value["idempotency_key"])
         or not isinstance(value["request_fingerprint"], str)
@@ -379,6 +413,108 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or (value["result"] is not None and not isinstance(value["result"], dict))
     ):
         raise ValueError("fleet bootstrap recovery payload is invalid")
+    if kind == "fleet-bootstrap-recovery":
+        unknown = value["status"] == "unknown" or value["operation_status"] == "unknown"
+        if unknown and (
+            value["status"] != "unknown"
+            or value["operation_status"] != "unknown"
+            or value["error_code"]
+            != "operation_outcome_unknown_reconciliation_required"
+            or value["result"] is not None
+        ):
+            raise ValueError("fleet bootstrap unknown outcome payload is invalid")
+    if kind == "fleet-bootstrap-operation":
+        execution = value["execution"]
+        expected_execution_fields = {
+            "schema",
+            "status",
+            "operation_status",
+            "action",
+            "idempotency_key",
+            "request_fingerprint",
+            "controller_revision",
+            "controller_release_digest",
+            "release_lane",
+            "host_agent_mtls_identity",
+            "error_code",
+            "result",
+        }
+        if not isinstance(execution, dict) or set(execution) != expected_execution_fields:
+            raise ValueError("fleet bootstrap operation payload is invalid")
+        status = execution.get("status")
+        operation_status = execution.get("operation_status")
+        action = execution.get("action")
+        release_lane = execution.get("release_lane")
+        host_identity = execution.get("host_agent_mtls_identity")
+        error_code = execution.get("error_code")
+        result = execution.get("result")
+        if (
+            execution.get("schema") != "qdev-fleet-bootstrap-execution-receipt-v1"
+            or status not in {"completed", "access_blocked", "failed"}
+            or operation_status not in {"pending", "completed"}
+            or (status == "completed") != (operation_status == "completed")
+            or action not in {"activate-controller", "enrol-host-agent"}
+            or not isinstance(execution.get("idempotency_key"), str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
+                execution["idempotency_key"],
+            )
+            or not isinstance(execution.get("request_fingerprint"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", execution["request_fingerprint"])
+            or not isinstance(execution.get("controller_revision"), str)
+            or not _SOURCE_SHA.fullmatch(execution["controller_revision"])
+            or not isinstance(execution.get("controller_release_digest"), str)
+            or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", execution["controller_release_digest"]
+            )
+            or (error_code is not None and not isinstance(error_code, str))
+            or (result is not None and not isinstance(result, dict))
+            or (status == "completed" and (error_code is not None or result is None))
+            or (status != "completed" and (not isinstance(error_code, str) or result is not None))
+            or (
+                action == "activate-controller"
+                and (release_lane is not None or host_identity is not None)
+            )
+            or (
+                action == "enrol-host-agent"
+                and (
+                    not isinstance(release_lane, str)
+                    or not _WORKER_NAME.fullmatch(release_lane)
+                    or not isinstance(host_identity, str)
+                    or not host_identity
+                )
+            )
+        ):
+            raise ValueError("fleet bootstrap operation payload is invalid")
+    if kind == "admin-platform-evidence":
+        evidence_type = value["evidence_type"]
+        lane = value["lane"]
+        outcome = value["outcome"]
+        try:
+            parse_utc(value["observed_at"])
+        except (TypeError, ValueError) as error:
+            raise ValueError("admin platform evidence observed_at is invalid") from error
+        if (
+            not isinstance(value["program_id"], str)
+            or not _PROGRAM_ID.fullmatch(value["program_id"])
+            or not isinstance(value["stage"], str)
+            or not _ADMIN_PLATFORM_STAGE.fullmatch(value["stage"])
+            or not isinstance(value["release_id"], str)
+            or not _PROGRAM_ID.fullmatch(value["release_id"])
+            or not isinstance(value["source_sha"], str)
+            or not _SOURCE_SHA.fullmatch(value["source_sha"])
+            or evidence_type not in {"lane_result", "attempt_terminal"}
+        ):
+            raise ValueError("admin platform evidence identity is invalid")
+        if evidence_type == "lane_result" and (
+            lane not in _ADMIN_PLATFORM_LANES
+            or outcome not in _ADMIN_PLATFORM_RESULT_OUTCOMES
+        ):
+            raise ValueError("admin platform lane evidence is invalid")
+        if evidence_type == "attempt_terminal" and (
+            lane is not None or outcome not in _ADMIN_PLATFORM_TERMINAL_STATES
+        ):
+            raise ValueError("admin platform terminal evidence is invalid")
     return value
 
 

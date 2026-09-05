@@ -233,6 +233,20 @@ def build_parser() -> argparse.ArgumentParser:
     recover_worker.add_argument("--idempotency-key", required=True)
     recover_worker.add_argument("--active-jobs", required=True, type=int)
     recover_worker.add_argument("--timeout-seconds", type=float, default=120.0)
+    activate_controller = commands.add_parser(
+        "activate-controller",
+        help="Run one allowlisted controller activation through the managed adapter",
+    )
+    activate_controller.add_argument("--request", required=True, type=Path)
+    activate_controller.add_argument("--idempotency-key", required=True)
+    activate_controller.add_argument("--timeout-seconds", type=float, default=120.0)
+    enrol_host_agent = commands.add_parser(
+        "enrol-host-agent",
+        help="Enrol one allowlisted product host agent through the managed adapter",
+    )
+    enrol_host_agent.add_argument("--request", required=True, type=Path)
+    enrol_host_agent.add_argument("--idempotency-key", required=True)
+    enrol_host_agent.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
 
@@ -330,9 +344,16 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "duration_seconds": arguments.duration_seconds,
             },
         )
-    if arguments.command == "recover-existing-worker":
+    if arguments.command in {
+        "recover-existing-worker",
+        "activate-controller",
+        "enrol-host-agent",
+    }:
         key = _idempotency_key(arguments.idempotency_key)
-        if arguments.active_jobs < 0:
+        if (
+            arguments.command == "recover-existing-worker"
+            and arguments.active_jobs < 0
+        ):
             raise ValueError("active jobs cannot be negative")
         try:
             raw = json.loads(arguments.request.read_text(encoding="utf-8"))
@@ -340,16 +361,18 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             raise ValueError("bootstrap request file is invalid") from error
         if not isinstance(raw, dict):
             raise ValueError("bootstrap request file must contain an object")
+        body: dict[str, Any] = {
+            "request": raw,
+            "idempotency_key": key,
+            "timeout_seconds": arguments.timeout_seconds,
+        }
+        if arguments.command == "recover-existing-worker":
+            body["active_jobs"] = arguments.active_jobs
         return controller_request(
             settings,
             method="POST",
-            path="/internal/v1/operations/fleet-bootstrap/recover-existing-worker",
-            body={
-                "request": raw,
-                "idempotency_key": key,
-                "active_jobs": arguments.active_jobs,
-                "timeout_seconds": arguments.timeout_seconds,
-            },
+            path=f"/internal/v1/operations/fleet-bootstrap/{arguments.command}",
+            body=body,
         )
     raise AssertionError("unreachable command")
 

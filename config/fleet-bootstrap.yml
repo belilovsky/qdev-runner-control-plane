@@ -1,4 +1,4 @@
-schema_version: qdev-fleet-bootstrap-policy-v1
+schema_version: qdev-fleet-bootstrap-policy-v2
 bootstrap:
   repository: belilovsky/qdev-runner-control-plane
   branch: main
@@ -6,12 +6,14 @@ bootstrap:
   audience: qdev-fleet-bootstrap-v1
   max_claim_ttl_seconds: 900
 activation:
-  controller_revision: f5fe4c2673a81fcb25d1d501314ec0ed2e6fdd4a
-  controller_release_digest: sha256:93d3c8208ed40ed7702ac79a69dbf4e712192f3a929b0c632ea1a13263c61cf3
-  rollback_revision: 13a165e43b6dd61a3cbbb60ca487bb7edab10f37
-  rollback_release_digest: sha256:2d3ded47b00a5d5e01d94f6df40b4744482c51c2bc2ed6fe264b2d50914f9981
+  rollback_revision: 0a3f418bc45375f431481b60470cdf8bee218eae
+  rollback_release_digest: sha256:570e44d17fb99c927fffef2cc429fd411c2a3240ab9d7e15bc7c9065f8c2834e
 enrolment:
   lanes:
+    - qdev-release-ortcom
+    - qdev-release-cmnt
+    - qdev-release-total
+    - qdev-release-qazposter
     - qdev-release-qmt
 workers:
   - qdev-ci
