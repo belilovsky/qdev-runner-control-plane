@@ -1991,6 +1991,100 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
     ]
 
 
+def test_capacity_override_prioritizes_exact_active_controller_candidate(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qdev-runner-control-plane",
+            "head_sha": controller_sha,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "admin-platform",
+            "reason": "restore exact controller prerequisite admission",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/example",
+            "run_id": 84000000041,
+            "head_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": None,
+            "reason": "active-admin-platform-controller-priority",
+        }
+    ]
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_capacity_override_does_not_prioritize_non_active_controller_sha(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    _seed_pending_job(
+        client,
+        42,
+        "non-active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha="f" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qdev-runner-control-plane",
+            "head_sha": "f" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "admin-platform",
+            "reason": "must remain ledger bound",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "capacity override target is not the durable FIFO head"
+    )
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
+
+
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
     _seed_stale_running_job(client)

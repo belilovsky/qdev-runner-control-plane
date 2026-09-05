@@ -2042,6 +2042,21 @@ def create_app(
         fifo_skipped: list[dict[str, Any]] = []
         queued_admin_platform_ledger: AdminPlatformLedger | None = None
         requested_profile = requested_profiles[0]
+        controller_candidate_priority = False
+        if repository_name == _CONTROLLER_REPOSITORY:
+            try:
+                ledger = admin_platform_ledger()
+                active = ledger.active_candidate
+                if (
+                    ledger.active_stage == "controller"
+                    and active is not None
+                    and active.repository == _CONTROLLER_REPOSITORY
+                    and active.source_sha == request.head_sha
+                ):
+                    ledger.validate_admission("controller", request.head_sha)
+                    controller_candidate_priority = True
+            except AdminPlatformLedgerError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         for queued in store.pending_jobs():
             try:
                 queued_profile = policy.profile_for_labels(
@@ -2058,6 +2073,31 @@ def create_app(
             except ManagedRegistryError:
                 # Malformed managed rows remain strict FIFO blockers.
                 pending_for_override.append(queued)
+                continue
+            if (
+                controller_candidate_priority
+                and (
+                    str(queued["repository"]).strip().lower() != repository_name
+                    or str(queued["head_sha"]) != request.head_sha
+                )
+                and not pending_for_override
+            ):
+                # Capacity and claim-scope issuance must agree on the same
+                # narrowly ledger-bound controller prerequisite.  The skipped
+                # row remains pending and is recorded in the signed receipt.
+                fifo_skipped.append(
+                    {
+                        "job_id": int(queued["job_id"]),
+                        "repository": str(queued["repository"]),
+                        "run_id": int(queued["run_id"]),
+                        "head_sha": str(queued["head_sha"]),
+                        "profile": queued_profile.name,
+                        "managed_registry_entry": (
+                            queued_managed.entry_id if queued_managed else None
+                        ),
+                        "reason": "active-admin-platform-controller-priority",
+                    }
+                )
                 continue
             if queued_managed is not None and queued_managed.admission_ledger == "admin-platform":
                 if queued_admin_platform_ledger is None:
