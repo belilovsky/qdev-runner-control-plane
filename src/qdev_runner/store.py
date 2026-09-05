@@ -49,6 +49,21 @@ CREATE TABLE IF NOT EXISTS workers (
     last_seen REAL NOT NULL,
     detail_json TEXT NOT NULL
 );
+
+-- A recovery fence is durable and never expires into admission after a crash.
+-- Old runtimes ignore this additive table: rollback must be performed only
+-- after native reconciliation of all unreleased fences.
+CREATE TABLE IF NOT EXISTS worker_recoveries (
+    idempotency_key TEXT PRIMARY KEY,
+    worker_name TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('prepared','invoking','completed','released')),
+    created_at REAL NOT NULL,
+    invoked_at REAL,
+    updated_at REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_active_idx
+    ON worker_recoveries(worker_name) WHERE state!='released';
 """
 
 
@@ -198,12 +213,14 @@ class Store:
     ) -> bool:
         rows = connection.execute(
             """
-            SELECT profiles_json, active_jobs, last_seen, detail_json
+            SELECT name, profiles_json, active_jobs, last_seen, detail_json
             FROM workers WHERE last_seen>=?
             """,
             (cutoff,),
         ).fetchall()
         for row in rows:
+            if self._worker_fenced(connection, str(row["name"])):
+                continue
             detail = json.loads(row["detail_json"])
             worker_profiles = {str(item).lower() for item in json.loads(row["profiles_json"])}
             if profile is not None and profile.lower() not in worker_profiles:
@@ -235,6 +252,9 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if self._worker_fenced(connection, worker_name):
+                connection.execute("COMMIT")
+                return None
             self._repair_invalid_queue_timestamps(connection)
             selected = None
             selected_profile = None
@@ -462,6 +482,128 @@ class Store:
                 )
             connection.execute("COMMIT")
 
+    @staticmethod
+    def _worker_fenced(connection: sqlite3.Connection, worker_name: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM worker_recoveries WHERE worker_name=? AND state!='released'",
+                (worker_name,),
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _require_worker_idle(
+        connection: sqlite3.Connection, worker_name: str, *, after: float = 0
+    ) -> None:
+        worker = connection.execute("SELECT * FROM workers WHERE name=?", (worker_name,)).fetchone()
+        if worker is None or not 0 <= time.time() - float(worker["last_seen"]) < 90:
+            raise ValueError("worker heartbeat is missing or stale")
+        if float(worker["last_seen"]) <= after:
+            raise ValueError("post-recovery heartbeat has not arrived")
+        detail = json.loads(worker["detail_json"])
+        if (
+            int(worker["active_jobs"]) != 0
+            or detail.get("active_job_ids") != []
+            or connection.execute(
+                "SELECT 1 FROM jobs WHERE worker_name=? AND status IN ('claimed','running')",
+                (worker_name,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("worker has active or unverified work")
+
+    @contextmanager
+    def worker_admission_guard(self, worker_name: str) -> Iterator[None]:
+        """Serialize scope publication against durable claims and recovery fencing."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self._worker_fenced(connection, worker_name):
+                    raise ValueError("worker recovery fence is active")
+                self._require_worker_idle(connection, worker_name)
+                yield
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def begin_worker_recovery(
+        self, worker_name: str, idempotency_key: str, fingerprint: str
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    if (existing["worker_name"], existing["request_fingerprint"]) != (
+                        worker_name,
+                        fingerprint,
+                    ):
+                        raise ValueError("recovery idempotency key is bound to another request")
+                    connection.execute("COMMIT")
+                    return dict(existing)
+                if self._worker_fenced(connection, worker_name):
+                    raise ValueError("worker has another recovery transaction")
+                self._require_worker_idle(connection, worker_name)
+                now = time.time()
+                connection.execute(
+                    "INSERT INTO worker_recoveries VALUES(?,?,?,'prepared',?,NULL,?)",
+                    (idempotency_key, worker_name, fingerprint, now, now),
+                )
+                row = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert row is not None
+                return dict(row)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def advance_worker_recovery(
+        self, idempotency_key: str, *, expected: str, state: str
+    ) -> dict[str, Any]:
+        if (expected, state) not in {
+            ("prepared", "invoking"),
+            ("prepared", "released"),
+            ("invoking", "completed"),
+            ("completed", "released"),
+        }:
+            raise ValueError("invalid worker recovery transition")
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if row is None or row["state"] != expected:
+                    raise ValueError("worker recovery transaction changed")
+                if state == "invoking" or (expected, state) == ("completed", "released"):
+                    self._require_worker_idle(
+                        connection,
+                        str(row["worker_name"]),
+                        # A heartbeat DURING recovery is not post-recovery proof.
+                        after=float(row["updated_at"]) if state == "released" else 0,
+                    )
+                now = time.time()
+                invoked_at = now if state == "invoking" else row["invoked_at"]
+                connection.execute(
+                    "UPDATE worker_recoveries SET state=?, invoked_at=?, updated_at=? "
+                    "WHERE idempotency_key=?",
+                    (state, invoked_at, now, idempotency_key),
+                )
+                connection.execute("COMMIT")
+                return dict(row) | {"state": state, "invoked_at": invoked_at, "updated_at": now}
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
     def has_available_tier_slot(self, tier: str, max_age_seconds: int) -> bool:
         cutoff = time.time() - max_age_seconds
         with self.connect() as connection:
@@ -517,7 +659,10 @@ class Store:
                 concurrency = _worker_concurrency(detail)
                 active_jobs = int(row["active_jobs"])
                 slots_available = max(0, concurrency - active_jobs)
-                capacity_allowed = detail.get("allowed", True) is True
+                recovery_fenced = self._worker_fenced(connection, str(row["name"]))
+                capacity_allowed = detail.get("allowed", True) is True and not recovery_fenced
+                if recovery_fenced:
+                    slots_available = 0
                 workers.append(
                     dict(row)
                     | {
@@ -526,6 +671,7 @@ class Store:
                         "concurrency": concurrency,
                         "slots_available": slots_available,
                         "available": capacity_allowed and slots_available > 0,
+                        "recovery_fenced": recovery_fenced,
                     }
                 )
         return {"jobs": counts, "workers": workers, "now": time.time()}
