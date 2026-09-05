@@ -290,6 +290,22 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     assert install_call.count("if ! install_fleet_host_dispatch; then") == 1
 
 
+def test_historical_controller_rollback_does_not_require_or_replace_admission_wrapper() -> None:
+    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+
+    base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
+    forward_required = script.split(
+        'if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1
+    )[1].split("\n  )", 1)[0]
+    assert "qdev_controller_admission_host.sh" not in base_required
+    assert "scripts/qdev_controller_admission_host.sh" in forward_required
+    assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
+    assert (
+        'if [[ "$rollback_mode" != true ]]; then\n'
+        '  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller'
+    ) in script
+
+
 def test_controller_compose_project_is_namespaced() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     service = (ROOT / "deploy/qdev-runner-broker.service").read_text(encoding="utf-8")

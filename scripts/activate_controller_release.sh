@@ -259,6 +259,10 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/bootstrap_admin_platform_ledger_v3.py
     scripts/prepare_controller_candidate.py
     scripts/dispatch_fleet_bootstrap.py
+    scripts/build_qazcoop_release_guard_bundle.py
+    scripts/install_qazcoop_release_guard.py
+    scripts/qazcoop_update_hook.py
+    src/qdev_runner/qazcoop_release_guard.py
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
