@@ -321,11 +321,84 @@ def test_v2_scope_can_skip_only_an_exact_signed_stale_fifo_tuple(tmp_path: Path)
         ),
     )
 
-    claimed = store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope)
+    claimed = store.claim(
+        "qdev-portfolio-primary",
+        ("qdev-ci",),
+        claim_scope=scope,
+        fifo_skip_job_ids=frozenset({100}),
+    )
 
     assert claimed is not None
     assert claimed["job_id"] == 101
     assert store.job_status(100) == "pending"
+
+
+def test_v2_scope_cannot_reuse_a_skip_after_the_fifo_row_reactivates(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "reactivated-admin-row",
+            100,
+            repository="belilovsky/qazposter",
+            head_sha="a" * 40,
+            run_id=200,
+        )
+    )
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazstack",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        tier="primary",
+        repository="belilovsky/qazstack",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazstack",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_skipped=(
+            ScopedFifoSkip(
+                job_id=100,
+                profile="qdev-ci",
+                repository="belilovsky/qazposter",
+                run_id=200,
+                attempt=1,
+                exact_sha="a" * 40,
+                managed_registry_entry="qazposter",
+                reason="admin-platform-candidate-not-active",
+            ),
+        ),
+    )
+
+    # The controller's fresh classification no longer includes job 100, so
+    # the older row must block FIFO even though a still-valid scope signed the
+    # same tuple while it was inactive.
+    assert (
+        store.claim(
+            "qdev-portfolio-primary",
+            ("qdev-ci",),
+            claim_scope=scope,
+            fifo_skip_job_ids=frozenset(),
+        )
+        is None
+    )
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
 
 
 def test_v2_scope_tampered_fifo_skip_tuple_does_not_bypass_head(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "mv -Tf" in script
     assert "rollback" in script
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
-    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96" in script
     assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
     assert (
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
@@ -34,6 +34,15 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     )
     assert "min_free_gib * 1048576" in script
     assert "used > max_used && free <" in script
+    capacity = json.loads(
+        (ROOT / "config/controller-capacity.json").read_text(encoding="utf-8")
+    )
+    assert capacity["max_disk_used_pct"] == 96
+    assert capacity["min_free_gib"] == 8
+    assert capacity["root_available_bytes"] >= (
+        capacity["minimum_operational_reserve_bytes"]
+        + capacity["estimated_peak_incremental_bytes"]
+    )
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script

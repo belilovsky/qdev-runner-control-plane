@@ -1,16 +1,16 @@
 {
   "schema": "qdev-controller-capacity-evidence-v1",
-  "measured_at": "2026-09-05T05:18:33Z",
+  "measured_at": "2026-09-06T12:43:03Z",
   "host": "qdev-runner-controller",
   "root_filesystem_bytes": 206900281344,
-  "root_available_bytes": 26935312384,
-  "active_release_bytes": 1149358,
-  "candidate_tracked_bytes": 1062430,
-  "active_public_image_bytes": 64871548,
-  "active_internal_image_bytes": 64871550,
-  "estimated_peak_incremental_bytes": 4294967296,
+  "root_available_bytes": 9788649472,
+  "active_release_bytes": 4364125,
+  "candidate_tracked_bytes": 2557812,
+  "active_public_image_bytes": 65710781,
+  "active_internal_image_bytes": 65710783,
+  "estimated_peak_incremental_bytes": 1073741824,
   "minimum_operational_reserve_bytes": 8589934592,
-  "max_disk_used_pct": 94,
+  "max_disk_used_pct": 96,
   "min_free_gib": 8,
-  "notes": "Rollback image tags reuse existing layers; the reserve exceeds the measured candidate, both broker images, and a four-GiB build peak."
+  "notes": "The measured candidate plus both broker images is below 136 MiB. A 1 GiB peak allowance exceeds that footprint sevenfold and leaves more than the 8 GiB rollback reserve. The percentage threshold is aligned with the measured 96% filesystem state; the independent absolute-free-space gate remains fail-closed."
 }

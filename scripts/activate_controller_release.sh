@@ -399,7 +399,7 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94}"
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
@@ -427,7 +427,7 @@ if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
-  [[ "$max_disk_used_pct" != 94 ]] || [[ "$min_free_gib" != 8 ]] ||
+  [[ "$max_disk_used_pct" != 96 ]] || [[ "$min_free_gib" != 8 ]] ||
     [[ "$min_memory_gib" != 4 ]] || [[ "$max_load_per_cpu" != 2 ]]
 }; then
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
