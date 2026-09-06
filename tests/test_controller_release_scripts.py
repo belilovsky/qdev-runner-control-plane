@@ -204,6 +204,9 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "write_release_status()" in script
     assert "restore_release_status()" in script
     assert "validate_previous_release_status()" in script
+    assert "validate_controller_image_binding()" in script
+    assert "scripts/validate_controller_image_binding.py" in script
+    assert 'com.docker.compose.image' in script
     assert "controller_release_receipt=active" in script
     assert "qdev-controller-release-status-v2" in script
     assert "runtime_identity" in script
