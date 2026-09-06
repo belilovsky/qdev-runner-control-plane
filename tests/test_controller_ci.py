@@ -117,7 +117,7 @@ def test_every_lane_uses_full_shared_suite() -> None:
     ]
     normal = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     manual = yaml.safe_load((ROOT / ".github/workflows/runner-smoke.yml").read_text())
-    assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "hosted"
+    assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "recovery"
     assert manual["concurrency"]["cancel-in-progress"] is False
     for job in [normal["jobs"]["verify"], *manual["jobs"].values()]:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
