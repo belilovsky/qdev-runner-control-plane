@@ -100,6 +100,7 @@ services:
       # Directory mounts preserve visibility when these files are replaced
       # atomically; a single-file bind would pin the old inode.
       QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
+      QDEV_CONTROLLER_RELEASE_LOCK: /run/lock/qdev-controller-release.lock
       QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
@@ -117,6 +118,7 @@ services:
       - /var/lib/qdev-runner/operations:/var/lib/qdev-runner/operations
       - /var/lib/qdev-runner/admin-platform-receipts:/var/lib/qdev-runner/admin-platform-receipts
       - /var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro
+      - /run/lock/qdev-controller-release.lock:/run/lock/qdev-controller-release.lock:ro
       - /var/lib/qdev-runner/admin-platform-state:/var/lib/qdev-runner/admin-platform-state:ro
       - /var/lib/qdev-runner/release-jobs:/var/lib/qdev-runner/release-jobs
       - /var/lib/qdev-runner/fleet-host-dispatch/incoming:/var/lib/qdev-runner/fleet-host-dispatch/incoming

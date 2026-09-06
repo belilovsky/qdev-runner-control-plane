@@ -55,6 +55,14 @@ cannot choose a host, service, executable, certificate or CA key.
    provider jobs. It refuses preparation when the runner is busy, has active
    jobs or has a conflicting identity.
 
+   A controller release rollover does not reuse this idempotency key. When an
+   older operation is still exactly `prepared` and has no host, native,
+   acceptance, or canary evidence, submit a fresh prepare bound to the new
+   release and a new idempotency key. The controller atomically records the old
+   operation as `superseded` and admits the successor. If any execution marker
+   exists, or the release changes during provider observation, the request
+   fails closed and the earlier operation remains authoritative.
+
    A saved-configuration target that already has the exact unique provider
    identity `online` and idle is admitted through the same signed transaction.
    The fixed host agent then records `already_applied` without restarting the

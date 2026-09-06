@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, cast
@@ -321,6 +324,16 @@ class WorkerRecoveryController:
             )
             return self._project(existing, idempotent_replay=True)
 
+        superseded_operation_id: str | None = None
+        prepared = self.store.prepared_worker_recovery(target.worker_name)
+        if prepared is not None:
+            self._require_supersedable_prepared_row(
+                prepared,
+                target=target,
+                release=release,
+            )
+            superseded_operation_id = str(prepared["operation_id"])
+
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
         try:
@@ -394,29 +407,40 @@ class WorkerRecoveryController:
                 "provider_idle_proof_digest": proof["digest"],
             }
         )
-        row = self.store.begin_worker_recovery(
-            target.worker_name,
-            request.idempotency_key,
-            fingerprint,
-            repository=target.repository,
-            labels=target.labels,
-            provider_idle_proof=proof,
-            provider_proof_key=proof_key,
-            recovery_action=target.action,
-            operator_certificate_sha256=certificate,
-            expected_agent_certificate_sha256=self._agent_certificate(target),
-            interface_version=INTERFACE_VERSION,
-            interface_digest=INTERFACE_DIGEST,
-            controller_revision=cast(str, release["revision"]),
-            controller_release_digest=cast(str, release["release_digest"]),
-            policy_digest=self._policy_digest(),
-            agent_release_digest=self._agent_release_digest(),
-            controller_receipt_id=controller_receipt_id,
-            controller_observed_at=provider_observed_at,
-            request_nonce=request.provenance.nonce,
-            requested_at=provider_observed_at,
-            proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
-        )
+        # Activation takes the same file lock exclusively.  Re-read the
+        # release after provider I/O while holding a shared lock, then keep it
+        # held through the durable CAS so an operation cannot be admitted for
+        # a release which ceased to be active during preparation.
+        with self._controller_release_read_lock():
+            locked_release = self._configuration()
+            if self._release_tuple(locked_release) != self._release_tuple(release):
+                raise WorkerRecoveryError(
+                    "controller release changed during recovery preparation"
+                )
+            row = self.store.begin_worker_recovery(
+                target.worker_name,
+                request.idempotency_key,
+                fingerprint,
+                repository=target.repository,
+                labels=target.labels,
+                provider_idle_proof=proof,
+                provider_proof_key=proof_key,
+                recovery_action=target.action,
+                operator_certificate_sha256=certificate,
+                expected_agent_certificate_sha256=self._agent_certificate(target),
+                interface_version=INTERFACE_VERSION,
+                interface_digest=INTERFACE_DIGEST,
+                controller_revision=cast(str, locked_release["revision"]),
+                controller_release_digest=cast(str, locked_release["release_digest"]),
+                policy_digest=self._policy_digest(),
+                agent_release_digest=self._agent_release_digest(),
+                controller_receipt_id=controller_receipt_id,
+                controller_observed_at=provider_observed_at,
+                request_nonce=request.provenance.nonce,
+                requested_at=provider_observed_at,
+                supersede_prepared_operation_id=superseded_operation_id,
+                proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
+            )
         return self._project(row, idempotent_replay=False)
 
     def status(
@@ -428,8 +452,11 @@ class WorkerRecoveryController:
         release = self._configuration()
         self._validate_provenance(request.provenance, release=release)
         row = self._operation(request.operation_id, request.request_fingerprint)
-        self._require_current_row(row, release=release)
         self._require_operation_operator(row, operator_certificate_sha256)
+        if row.get("superseded_by_operation_id") is not None:
+            self._require_superseded_row(row)
+        else:
+            self._require_current_row(row, release=release)
         return self._project(row, idempotent_replay=False)
 
     def claim(
@@ -1109,7 +1136,9 @@ class WorkerRecoveryController:
             else:
                 projected = "pending_canary"
         elif state == "released":
-            if native_outcome == "not_applied":
+            if row.get("superseded_by_operation_id") is not None:
+                projected = "superseded"
+            elif native_outcome == "not_applied":
                 projected = "not_applied"
             else:
                 projected = "already_completed" if idempotent_replay else "completed"
@@ -1198,6 +1227,105 @@ class WorkerRecoveryController:
             release=release,
         )
 
+    def _require_supersedable_prepared_row(
+        self,
+        row: dict[str, Any],
+        *,
+        target: RecoveryTarget,
+        release: dict[str, Any],
+    ) -> None:
+        """Admit rollover only before any host command could have been issued."""
+
+        try:
+            labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("recovery operation binding is invalid") from error
+        immutable_binding = (
+            row.get("worker_name"),
+            row.get("repository"),
+            labels,
+            row.get("recovery_action"),
+        )
+        expected_binding = (
+            target.worker_name,
+            target.repository,
+            target.labels,
+            target.action,
+        )
+        release_changed = (
+            row.get("controller_revision") != release["revision"]
+            or row.get("controller_release_digest") != release["release_digest"]
+        )
+        if (
+            row.get("state") != "prepared"
+            or row.get("invoked_at") is not None
+            or row.get("native_outcome") is not None
+            or row.get("native_finalized_at") is not None
+            or row.get("released_at") is not None
+            or immutable_binding != expected_binding
+            or not release_changed
+        ):
+            raise WorkerRecoveryError("prepared recovery cannot cross controller release")
+
+    def _require_superseded_row(self, row: dict[str, Any]) -> None:
+        """Validate an auditable controller cancellation without native evidence."""
+
+        target = self._target_from_row(row)
+        try:
+            labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("recovery operation binding is invalid") from error
+        successor_id = row.get("superseded_by_operation_id")
+        successor = (
+            self.store.worker_recovery(str(successor_id))
+            if isinstance(successor_id, str)
+            else None
+        )
+        try:
+            successor_labels = (
+                tuple(json.loads(str(successor["labels_json"])))
+                if successor is not None
+                else ()
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("superseded recovery binding changed") from error
+        old_release = (
+            row.get("controller_revision"),
+            row.get("controller_release_digest"),
+        )
+        successor_release = (
+            None if successor is None else successor.get("controller_revision"),
+            None if successor is None else successor.get("controller_release_digest"),
+        )
+        if (
+            row.get("state") != "released"
+            or row.get("invoked_at") is not None
+            or row.get("native_outcome") is not None
+            or row.get("native_outcome_digest") is not None
+            or row.get("native_outcome_signature") is not None
+            or row.get("agent_identity") is not None
+            or row.get("agent_certificate_sha256") is not None
+            or row.get("reconciled_at") is not None
+            or row.get("native_outcome_observed_at") is not None
+            or row.get("native_finalized_at") is not None
+            or row.get("released_at") is None
+            or row.get("superseded_at") is None
+            or row.get("supersede_reason")
+            != "controller_release_changed_before_invocation"
+            or row.get("worker_name") != target.worker_name
+            or row.get("repository") != target.repository
+            or labels != target.labels
+            or row.get("recovery_action") != target.action
+            or successor is None
+            or successor.get("operation_id") != successor_id
+            or successor.get("worker_name") != target.worker_name
+            or successor.get("repository") != target.repository
+            or successor_labels != target.labels
+            or successor.get("recovery_action") != target.action
+            or old_release == successor_release
+        ):
+            raise WorkerRecoveryError("superseded recovery binding changed")
+
     def _require_acceptance_row(
         self, row: dict[str, Any], *, release: dict[str, Any]
     ) -> None:
@@ -1266,6 +1394,34 @@ class WorkerRecoveryController:
                 "active controller release binding is unavailable"
             )
         return {**release, "release_digest": release_digest.removeprefix("sha256:")}
+
+    @staticmethod
+    def _release_tuple(release: Mapping[str, Any]) -> tuple[Any, Any]:
+        return release.get("revision"), release.get("release_digest")
+
+    @contextmanager
+    def _controller_release_read_lock(self) -> Iterator[None]:
+        try:
+            descriptor = os.open(
+                self.settings.controller_release_lock_path,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+            )
+        except OSError as error:
+            raise WorkerRecoveryConfigurationError(
+                "controller release lock is unavailable"
+            ) from error
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            yield
+        except OSError as error:
+            raise WorkerRecoveryConfigurationError(
+                "controller release lock is unavailable"
+            ) from error
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
     def _validate_provenance(
         self,

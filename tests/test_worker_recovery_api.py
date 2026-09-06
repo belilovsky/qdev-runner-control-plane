@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -197,6 +198,8 @@ def _settings(
         ),
         encoding="utf-8",
     )
+    release_lock = tmp_path / "controller-release.lock"
+    release_lock.touch()
     return BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "github-app.pem",
@@ -212,6 +215,7 @@ def _settings(
         operator_directive_key=DIRECTIVE_KEY,
         operations_root=tmp_path / "operations",
         controller_release_status_path=release_status,
+        controller_release_lock_path=release_lock,
         operator_proxy_secret=PROXY_SECRET,
         recovery_operator_certificate_sha256s=(
             OPERATOR_CERTIFICATE,
@@ -378,6 +382,266 @@ def test_prepare_is_provider_observed_and_exactly_idempotent(
     assert harness.github.observation_calls == 1
 
 
+def test_new_controller_release_supersedes_only_uninvoked_prepare(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    first_response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-before-controller-rollover"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert first_response.status_code == 200
+    first = first_response.json()
+
+    next_revision = "6" * 40
+    next_release_digest = "7" * 64
+    harness.settings.controller_release_status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": next_revision,
+                "release_digest": "sha256:" + next_release_digest,
+                "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_body = _prepare_body(idempotency_key="recovery-after-controller-rollover")
+    second_body["provenance"]["nonce"] = "nonce-after-controller-rollover"
+    second_body["provenance"]["controller_revision"] = next_revision
+    second_body["provenance"]["controller_release_digest"] = next_release_digest
+
+    second_response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=second_body,
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert second_response.status_code == 200
+    second = second_response.json()
+    assert second["state"] == "prepared"
+    assert second["controller_revision"] == next_revision
+    replay = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=second_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == second | {"idempotent_replay": True}
+    assert harness.github.observation_calls == 2
+    superseded = harness.client.app.state.store.worker_recovery(first["operation_id"])
+    assert superseded is not None
+    assert superseded["state"] == "released"
+    assert superseded["native_outcome"] is None
+    assert superseded["superseded_by_operation_id"] == second["operation_id"]
+    projected = harness.client.app.state.worker_recovery._project(
+        superseded, idempotent_replay=True
+    )
+    assert projected.state == "superseded"
+    status_body = _status_body(first, nonce="nonce-superseded-status")
+    status_body["provenance"]["controller_revision"] = next_revision
+    status_body["provenance"]["controller_release_digest"] = next_release_digest
+    status = harness.client.post(
+        "/internal/v1/operations/worker-recovery/status",
+        json=status_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert status.status_code == 200
+    assert status.json()["state"] == "superseded"
+    assert status.json()["native_outcome"] is None
+
+
+@pytest.mark.parametrize("state", ["invoking", "completed"])
+def test_api_cannot_supersede_recovery_after_execution_started(
+    tmp_path: Path, policy_files: tuple[Path, Path], state: str
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    first_response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key=f"recovery-{state}-before-rollover"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert first_response.status_code == 200
+    first = first_response.json()
+    with sqlite3.connect(harness.settings.database_path) as connection:
+        connection.execute(
+            "UPDATE worker_recoveries SET state=?, invoked_at=? WHERE operation_id=?",
+            (state, 1.0, first["operation_id"]),
+        )
+    next_revision = "6" * 40
+    next_digest = "7" * 64
+    harness.settings.controller_release_status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": next_revision,
+                "release_digest": "sha256:" + next_digest,
+                "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    body = _prepare_body(idempotency_key=f"recovery-{state}-after-rollover")
+    body["provenance"]["nonce"] = f"nonce-{state}-after-rollover"
+    body["provenance"]["controller_revision"] = next_revision
+    body["provenance"]["controller_release_digest"] = next_digest
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 409
+    unchanged = harness.client.app.state.store.worker_recovery(first["operation_id"])
+    assert unchanged is not None
+    assert unchanged["state"] == state
+    assert unchanged["superseded_by_operation_id"] is None
+
+
+def test_same_controller_release_cannot_replace_an_existing_prepare(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    first = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-existing-current-prepare"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert first.status_code == 200
+
+    second = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-second-current-prepare"),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert second.status_code == 409
+    stored = harness.client.app.state.store.worker_recovery(first.json()["operation_id"])
+    assert stored is not None
+    assert stored["state"] == "prepared"
+
+
+def test_release_flip_during_provider_observation_preserves_existing_prepare(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    first = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-before-release-flip"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert first.status_code == 200
+
+    next_revision = "6" * 40
+    next_digest = "7" * 64
+    final_revision = "8" * 40
+    final_digest = "9" * 64
+    harness.settings.controller_release_status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": next_revision,
+                "release_digest": "sha256:" + next_digest,
+                "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_observe = harness.github.observe_repository_runner
+
+    def observe_and_flip(repository: str, runner_id: int) -> GitHubRunnerObservation:
+        observation = original_observe(repository, runner_id)
+        harness.settings.controller_release_status_path.write_text(
+            json.dumps(
+                {
+                    "schema": "qdev-controller-release-status-v1",
+                    "state": "active",
+                    "revision": final_revision,
+                    "release_digest": "sha256:" + final_digest,
+                    "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return observation
+
+    harness.github.observe_repository_runner = observe_and_flip  # type: ignore[method-assign]
+    body = _prepare_body(idempotency_key="recovery-during-release-flip")
+    body["provenance"]["nonce"] = "nonce-during-release-flip"
+    body["provenance"]["controller_revision"] = next_revision
+    body["provenance"]["controller_release_digest"] = next_digest
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 409
+    existing = harness.client.app.state.store.worker_recovery(first.json()["operation_id"])
+    assert existing is not None
+    assert existing["state"] == "prepared"
+    assert existing["superseded_by_operation_id"] is None
+
+
+def test_superseded_status_rejects_tampered_successor_binding(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    first_response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-before-successor-tamper"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert first_response.status_code == 200
+    first = first_response.json()
+    next_revision = "6" * 40
+    next_digest = "7" * 64
+    harness.settings.controller_release_status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": next_revision,
+                "release_digest": "sha256:" + next_digest,
+                "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    body = _prepare_body(idempotency_key="recovery-after-successor-tamper")
+    body["provenance"]["nonce"] = "nonce-successor-tamper"
+    body["provenance"]["controller_revision"] = next_revision
+    body["provenance"]["controller_release_digest"] = next_digest
+    second_response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert second_response.status_code == 200
+    with sqlite3.connect(harness.settings.database_path) as connection:
+        connection.execute(
+            "UPDATE worker_recoveries SET repository=? WHERE operation_id=?",
+            ("belilovsky/qazstack", second_response.json()["operation_id"]),
+        )
+    status_body = _status_body(first, nonce="nonce-tampered-successor-status")
+    status_body["provenance"]["controller_revision"] = next_revision
+    status_body["provenance"]["controller_release_digest"] = next_digest
+
+    status = harness.client.post(
+        "/internal/v1/operations/worker-recovery/status",
+        json=status_body,
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert status.status_code == 409
+
+
 def test_exact_online_idle_saved_platform_runner_prepares_without_restart(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
@@ -436,9 +700,7 @@ def test_online_replacement_runner_is_not_admitted_as_absent(
 
     response = harness.client.post(
         "/internal/v1/operations/worker-recovery/prepare",
-        json=_prepare_body(
-            "qdev-qazstack-01", idempotency_key="recovery-qazstack-online"
-        ),
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-online"),
         headers=OPERATOR_HEADERS,
     )
 
@@ -844,9 +1106,7 @@ def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     assert failed.status_code == 409
     assert failed.json()["detail"] == "worker recovery request rejected"
     assert harness.github.dispatch_calls == 0
-    assert harness.client.app.state.store.worker_recovery_canary(
-        prepared["operation_id"]
-    ) is None
+    assert harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"]) is None
 
     accept_body["canary_head_sha"] = "5" * 40
     pending = harness.client.post(

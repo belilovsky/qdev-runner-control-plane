@@ -387,7 +387,10 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
     canary_status TEXT,
     canary_conclusion TEXT,
     canary_completed_at REAL,
-    released_at REAL
+    released_at REAL,
+    superseded_by_operation_id TEXT,
+    superseded_at REAL,
+    supersede_reason TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_active_idx
     ON worker_recoveries(worker_name) WHERE state!='released';
@@ -696,6 +699,9 @@ class Store:
             "canary_conclusion": "TEXT",
             "canary_completed_at": "REAL",
             "released_at": "REAL",
+            "superseded_by_operation_id": "TEXT",
+            "superseded_at": "REAL",
+            "supersede_reason": "TEXT",
         }
         for name, sql_type in recovery_additions.items():
             if name not in recovery_columns:
@@ -1303,6 +1309,7 @@ class Store:
         controller_observed_at: float,
         request_nonce: str,
         requested_at: float,
+        supersede_prepared_operation_id: str | None = None,
         proof_max_age_seconds: float = 120.0,
     ) -> dict[str, Any]:
         controller_observed_at = _finite_recovery_number(
@@ -1344,6 +1351,13 @@ class Store:
             or not _SHA256_HEX.fullmatch(controller_receipt_id)
             or not isinstance(request_nonce, str)
             or not _RECOVERY_KEY.fullmatch(request_nonce)
+            or (
+                supersede_prepared_operation_id is not None
+                and (
+                    not isinstance(supersede_prepared_operation_id, str)
+                    or not _SHA256_HEX.fullmatch(supersede_prepared_operation_id)
+                )
+            )
         ):
             raise ValueError("worker recovery binding is invalid")
         target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
@@ -1456,8 +1470,89 @@ class Store:
                         raise ValueError("recovery idempotency key is bound to another request")
                     connection.execute("COMMIT")
                     return dict(existing)
-                if self._worker_fenced(connection, worker_name):
-                    raise ValueError("worker has another recovery transaction")
+                active = connection.execute(
+                    "SELECT * FROM worker_recoveries "
+                    "WHERE worker_name=? AND state!='released'",
+                    (worker_name,),
+                ).fetchone()
+                if supersede_prepared_operation_id is not None and active is None:
+                    raise ValueError("worker recovery transaction cannot be superseded")
+                if active is not None:
+                    if supersede_prepared_operation_id is None:
+                        raise ValueError("worker has another recovery transaction")
+                    outcome_count = connection.execute(
+                        "SELECT COUNT(*) FROM worker_recovery_outcomes WHERE operation_id=?",
+                        (active["operation_id"],),
+                    ).fetchone()[0]
+                    acceptance_count = connection.execute(
+                        "SELECT COUNT(*) FROM worker_recovery_acceptances WHERE operation_id=?",
+                        (active["operation_id"],),
+                    ).fetchone()[0]
+                    canary_count = connection.execute(
+                        "SELECT COUNT(*) FROM worker_recovery_canaries WHERE operation_id=?",
+                        (active["operation_id"],),
+                    ).fetchone()[0]
+                    terminal_markers = (
+                        "invoked_at",
+                        "native_outcome",
+                        "native_outcome_digest",
+                        "native_outcome_signature",
+                        "agent_identity",
+                        "agent_certificate_sha256",
+                        "reconciled_at",
+                        "native_outcome_observed_at",
+                        "native_finalized_at",
+                        "accepted_provider_runner_id",
+                        "acceptance_proof_digest",
+                        "acceptance_proof_signature",
+                        "acceptance_reconciliation_digest",
+                        "acceptance_observed_at",
+                        "canary_repository",
+                        "canary_workflow",
+                        "canary_ref",
+                        "canary_run_id",
+                        "canary_job_id",
+                        "canary_attempt",
+                        "canary_head_sha",
+                        "canary_runner_id",
+                        "canary_status",
+                        "canary_conclusion",
+                        "canary_completed_at",
+                        "released_at",
+                        "superseded_by_operation_id",
+                        "superseded_at",
+                        "supersede_reason",
+                    )
+                    if (
+                        active["operation_id"] != supersede_prepared_operation_id
+                        or active["state"] != "prepared"
+                        or any(active[field] is not None for field in terminal_markers)
+                        or outcome_count != 0
+                        or acceptance_count != 0
+                        or canary_count != 0
+                        or (
+                            active["controller_revision"] == controller_revision
+                            and active["controller_release_digest"]
+                            == controller_release_digest
+                        )
+                    ):
+                        raise ValueError("worker recovery transaction cannot be superseded")
+                    superseded = connection.execute(
+                        "UPDATE worker_recoveries SET state='released',"
+                        "updated_at=?,released_at=?,"
+                        "superseded_by_operation_id=?,superseded_at=?,supersede_reason=? "
+                        "WHERE operation_id=? AND state='prepared'",
+                        (
+                            now,
+                            now,
+                            operation_id,
+                            now,
+                            "controller_release_changed_before_invocation",
+                            supersede_prepared_operation_id,
+                        ),
+                    )
+                    if superseded.rowcount != 1:
+                        raise ValueError("worker recovery transaction cannot be superseded")
                 if (
                     not 0 <= now - controller_observed_at <= proof_max_age_seconds
                     or not 0 <= now - requested_at <= proof_max_age_seconds

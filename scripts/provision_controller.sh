@@ -26,6 +26,10 @@ install -d -o root -g root -m 0755 /etc/qdev-runner
 install -d -o root -g root -m 0700 /etc/qdev-runner/admission
 install -d -o root -g root -m 0700 /etc/qdev-runner/qazcoop-release-signing
 install -d -o root -g root -m 0700 /run/qdev-controller
+install -d -o root -g root -m 0755 /run/lock
+touch /run/lock/qdev-controller-release.lock
+chown root:root /run/lock/qdev-controller-release.lock
+chmod 0644 /run/lock/qdev-controller-release.lock
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator

@@ -77,6 +77,7 @@ class BrokerSettings:
     controller_release_status_path: Path = Path(
         "/var/lib/qdev-runner/controller-status/controller-release.json"
     )
+    controller_release_lock_path: Path = Path("/run/lock/qdev-controller-release.lock")
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
     admin_platform_ledger_path: Path = Path(
@@ -195,6 +196,12 @@ class BrokerSettings:
                 os.environ.get(
                     "QDEV_CONTROLLER_RELEASE_STATUS",
                     "/var/lib/qdev-runner/controller-status/controller-release.json",
+                )
+            ),
+            controller_release_lock_path=Path(
+                os.environ.get(
+                    "QDEV_CONTROLLER_RELEASE_LOCK",
+                    "/run/lock/qdev-controller-release.lock",
                 )
             ),
             release_lanes_path=Path(

@@ -330,7 +330,7 @@ class RecoveryOperationResponse(BaseModel):
     state: str = Field(
         pattern=(
             r"^(prepared|invoking|awaiting_acceptance|pending_canary|completed|"
-            r"already_completed|not_applied|failed|ambiguous)$"
+            r"already_completed|not_applied|superseded|failed|ambiguous)$"
         )
     )
     native_outcome: str | None = Field(

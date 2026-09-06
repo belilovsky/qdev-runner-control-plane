@@ -365,6 +365,13 @@ reconciliation. A locally persisted claim without an outcome remains fenced as
 `manual_reconciliation_required`; it cannot reclaim the command or mint a
 second credential from stale provider evidence.
 
+If the active controller release changes before any host claim or native,
+acceptance, or canary evidence exists, a fresh prepare with a new idempotency
+key atomically marks the old authority `superseded` and creates its exact
+successor. The old operation remains queryable for audit but can never be
+claimed. A release change during provider observation rejects the prepare and
+leaves the original authority untouched.
+
 The retired
 `/internal/v1/operations/fleet-bootstrap/recover-existing-worker` route always
 returns `410`. It is not a fallback to the typed recovery API. Controller

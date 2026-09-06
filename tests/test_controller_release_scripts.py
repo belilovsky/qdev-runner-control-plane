@@ -42,14 +42,11 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
         in script
     )
     assert 'python3 "$script_root/scripts/controller_capacity_gate.py"' in script
-    capacity = json.loads(
-        (ROOT / "config/controller-capacity.json").read_text(encoding="utf-8")
-    )
+    capacity = json.loads((ROOT / "config/controller-capacity.json").read_text(encoding="utf-8"))
     assert capacity["max_disk_used_pct"] == 96
     assert capacity["min_free_gib"] == 8
     assert capacity["root_available_bytes"] >= (
-        capacity["minimum_operational_reserve_bytes"]
-        + capacity["estimated_peak_incremental_bytes"]
+        capacity["minimum_operational_reserve_bytes"] + capacity["estimated_peak_incremental_bytes"]
     )
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
@@ -216,6 +213,9 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/controller-status" in provisioning
     assert "/var/lib/qdev-runner/admin-platform-state" in provisioning
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
+    assert "touch /run/lock/qdev-controller-release.lock" in provisioning
+    assert "chown root:root /run/lock/qdev-controller-release.lock" in provisioning
+    assert "chmod 0644 /run/lock/qdev-controller-release.lock" in provisioning
 
 
 def test_controller_provisions_root_owned_admission_signer() -> None:
@@ -493,6 +493,7 @@ def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
     public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
+    internal = compose.split("  broker-internal:", 1)[1].split("  registry:", 1)[0]
 
     assert "/etc/qdev-runner/controller-release.json:" not in compose
     assert "/etc/qdev-runner/admin-platform-ledger.yml:" not in compose
@@ -501,6 +502,12 @@ def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     assert "/var/lib/qdev-runner/admin-platform-state:" in compose
     assert "QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/" in compose
     assert "QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/" in compose
+    assert "QDEV_CONTROLLER_RELEASE_LOCK" not in public
+    assert "QDEV_CONTROLLER_RELEASE_LOCK: /run/lock/qdev-controller-release.lock" in internal
+    assert (
+        "/run/lock/qdev-controller-release.lock:"
+        "/run/lock/qdev-controller-release.lock:ro" in internal
+    )
     assert 'python3 -I "$durable_state_helper"' in activation
     assert "controller durable-state parent ownership or permissions are unsafe" in activation
 

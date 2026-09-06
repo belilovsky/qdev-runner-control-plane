@@ -121,3 +121,9 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
     assert "required: false" in internal
     assert "/etc/qdev-runner/recovery-controller.env" not in public
     assert "QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json" in internal
+    assert "QDEV_CONTROLLER_RELEASE_LOCK" not in public
+    assert "QDEV_CONTROLLER_RELEASE_LOCK: /run/lock/qdev-controller-release.lock" in internal
+    assert (
+        "/run/lock/qdev-controller-release.lock:"
+        "/run/lock/qdev-controller-release.lock:ro" in internal
+    )

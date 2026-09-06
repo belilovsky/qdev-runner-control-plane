@@ -4,7 +4,9 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -438,6 +440,9 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
         "provider_reconciliation_digest",
         "policy_digest",
         "agent_release_digest",
+        "superseded_by_operation_id",
+        "superseded_at",
+        "supersede_reason",
     } <= recovery_columns
     assert {
         "provider_reconciliation_digest",
@@ -580,6 +585,491 @@ def test_recovery_authority_and_live_controller_tuple_are_single_use(tmp_path: P
     )
     with pytest.raises(ValueError, match="authority was already consumed"):
         store.begin_worker_recovery(**second)
+
+
+def test_stale_prepared_recovery_is_atomically_superseded_before_invocation(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    second_arguments = _begin_arguments(
+        idempotency_key="recovery-platform-0002",
+        fingerprint="2" * 64,
+        controller_revision="3" * 40,
+        controller_release_digest="4" * 64,
+        controller_receipt_id="5" * 64,
+        request_nonce="nonce-platform-0002",
+        supersede_prepared_operation_id=first["operation_id"],
+    )
+
+    second = store.begin_worker_recovery(**second_arguments)
+
+    superseded = store.worker_recovery(first["operation_id"])
+    assert superseded is not None
+    assert superseded["state"] == "released"
+    assert superseded["native_outcome"] is None
+    assert superseded["superseded_by_operation_id"] == second["operation_id"]
+    assert superseded["superseded_at"] is not None
+    assert superseded["supersede_reason"] == "controller_release_changed_before_invocation"
+    assert second["state"] == "prepared"
+    active = store.prepared_worker_recovery(WORKER)
+    assert active is not None
+    assert active["operation_id"] == second["operation_id"]
+
+
+def test_prepared_supersede_rolls_back_if_new_authority_cannot_be_admitted(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first_arguments = _begin_arguments()
+    first = store.begin_worker_recovery(**first_arguments)
+    second_arguments = _begin_arguments(
+        idempotency_key="recovery-platform-0002",
+        fingerprint="2" * 64,
+        controller_revision="3" * 40,
+        controller_release_digest="4" * 64,
+        controller_receipt_id="5" * 64,
+        request_nonce=first_arguments["request_nonce"],
+        supersede_prepared_operation_id=first["operation_id"],
+    )
+
+    with pytest.raises(ValueError, match="authority was already consumed"):
+        store.begin_worker_recovery(**second_arguments)
+
+    unchanged = store.worker_recovery(first["operation_id"])
+    assert unchanged is not None
+    assert unchanged["state"] == "prepared"
+    assert unchanged["native_outcome"] is None
+    assert unchanged["superseded_by_operation_id"] is None
+
+
+def test_invoked_recovery_cannot_be_superseded(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    store.advance_worker_recovery(first["idempotency_key"], expected="prepared", state="invoking")
+
+    with pytest.raises(ValueError, match="cannot be superseded"):
+        store.begin_worker_recovery(
+            **_begin_arguments(
+                idempotency_key="recovery-platform-0002",
+                fingerprint="2" * 64,
+                controller_revision="3" * 40,
+                controller_release_digest="4" * 64,
+                controller_receipt_id="5" * 64,
+                request_nonce="nonce-platform-0002",
+                supersede_prepared_operation_id=first["operation_id"],
+            )
+        )
+
+
+def test_completed_recovery_cannot_be_superseded(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    with sqlite3.connect(tmp_path / "broker.db") as connection:
+        connection.execute(
+            "UPDATE worker_recoveries SET state='completed' WHERE operation_id=?",
+            (first["operation_id"],),
+        )
+
+    with pytest.raises(ValueError, match="cannot be superseded"):
+        store.begin_worker_recovery(
+            **_begin_arguments(
+                idempotency_key="recovery-platform-0002",
+                fingerprint="2" * 64,
+                controller_revision="3" * 40,
+                controller_release_digest="4" * 64,
+                controller_receipt_id="5" * 64,
+                request_nonce="nonce-platform-0002",
+                supersede_prepared_operation_id=first["operation_id"],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("statement", "value"),
+    [
+        ("UPDATE worker_recoveries SET invoked_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET native_outcome=? WHERE operation_id=?", "completed"),
+        (
+            "UPDATE worker_recoveries SET native_outcome_digest=? WHERE operation_id=?",
+            "sha256:" + "1" * 64,
+        ),
+        ("UPDATE worker_recoveries SET native_outcome_signature=? WHERE operation_id=?", "1" * 64),
+        ("UPDATE worker_recoveries SET agent_identity=? WHERE operation_id=?", "agent"),
+        ("UPDATE worker_recoveries SET agent_certificate_sha256=? WHERE operation_id=?", "2" * 64),
+        ("UPDATE worker_recoveries SET reconciled_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET native_outcome_observed_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET native_finalized_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET accepted_provider_runner_id=? WHERE operation_id=?", 187),
+        (
+            "UPDATE worker_recoveries SET acceptance_proof_digest=? WHERE operation_id=?",
+            "sha256:" + "3" * 64,
+        ),
+        (
+            "UPDATE worker_recoveries SET acceptance_proof_signature=? WHERE operation_id=?",
+            "3" * 64,
+        ),
+        (
+            "UPDATE worker_recoveries SET acceptance_reconciliation_digest=? WHERE operation_id=?",
+            "sha256:" + "4" * 64,
+        ),
+        ("UPDATE worker_recoveries SET acceptance_observed_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET canary_repository=? WHERE operation_id=?", REPOSITORY),
+        ("UPDATE worker_recoveries SET canary_workflow=? WHERE operation_id=?", "ci.yml"),
+        ("UPDATE worker_recoveries SET canary_ref=? WHERE operation_id=?", "main"),
+        ("UPDATE worker_recoveries SET canary_run_id=? WHERE operation_id=?", 1),
+        ("UPDATE worker_recoveries SET canary_job_id=? WHERE operation_id=?", 1),
+        ("UPDATE worker_recoveries SET canary_attempt=? WHERE operation_id=?", 1),
+        ("UPDATE worker_recoveries SET canary_head_sha=? WHERE operation_id=?", "5" * 40),
+        ("UPDATE worker_recoveries SET canary_runner_id=? WHERE operation_id=?", 187),
+        ("UPDATE worker_recoveries SET canary_status=? WHERE operation_id=?", "completed"),
+        ("UPDATE worker_recoveries SET canary_conclusion=? WHERE operation_id=?", "success"),
+        ("UPDATE worker_recoveries SET canary_completed_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET released_at=? WHERE operation_id=?", 1.0),
+        (
+            "UPDATE worker_recoveries SET superseded_by_operation_id=? WHERE operation_id=?",
+            "6" * 64,
+        ),
+        ("UPDATE worker_recoveries SET superseded_at=? WHERE operation_id=?", 1.0),
+        ("UPDATE worker_recoveries SET supersede_reason=? WHERE operation_id=?", "unexpected"),
+    ],
+)
+def test_any_execution_or_terminal_marker_blocks_prepared_supersede(
+    tmp_path: Path, statement: str, value: object
+) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    first = store.begin_worker_recovery(**_begin_arguments())
+    with sqlite3.connect(database) as connection:
+        connection.execute(statement, (value, first["operation_id"]))
+
+    with pytest.raises(ValueError, match="cannot be superseded"):
+        store.begin_worker_recovery(
+            **_begin_arguments(
+                idempotency_key="recovery-platform-0002",
+                fingerprint="2" * 64,
+                controller_revision="3" * 40,
+                controller_release_digest="4" * 64,
+                controller_receipt_id="5" * 64,
+                request_nonce="nonce-platform-0002",
+                supersede_prepared_operation_id=first["operation_id"],
+            )
+        )
+    unchanged = store.worker_recovery(first["operation_id"])
+    assert unchanged is not None
+    assert unchanged["state"] == "prepared"
+
+
+@pytest.mark.parametrize("ledger", ["outcome", "acceptance", "canary"])
+def test_any_append_only_ledger_blocks_prepared_supersede(
+    tmp_path: Path, ledger: str
+) -> None:
+    database = tmp_path / "broker.db"
+    store = Store(database)
+    first = store.begin_worker_recovery(**_begin_arguments())
+    operation_id = first["operation_id"]
+    with sqlite3.connect(database) as connection:
+        if ledger == "outcome":
+            connection.execute(
+                "INSERT INTO worker_recovery_outcomes VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "sha256:" + "1" * 64,
+                    operation_id,
+                    WORKER,
+                    first["request_fingerprint"],
+                    "2" * 64,
+                    "sha256:" + "3" * 64,
+                    "recover_existing_worker",
+                    first["request_nonce"],
+                    first["policy_digest"],
+                    first["agent_release_digest"],
+                    "ambiguous",
+                    "sha256:" + "4" * 64,
+                    "5" * 64,
+                    1.0,
+                    1.0,
+                ),
+            )
+        elif ledger == "acceptance":
+            connection.execute(
+                "INSERT INTO worker_recovery_acceptances VALUES("
+                + ",".join("?" for _ in range(25))
+                + ")",
+                (
+                    "sha256:" + "1" * 64,
+                    operation_id,
+                    WORKER,
+                    REPOSITORY,
+                    json.dumps(list(LABELS), separators=(",", ":")),
+                    None,
+                    "absent",
+                    187,
+                    1,
+                    "sha256:" + "2" * 64,
+                    "{}",
+                    1.0,
+                    REPOSITORY,
+                    "ci.yml",
+                    "main",
+                    "3" * 40,
+                    1,
+                    1,
+                    1,
+                    187,
+                    "completed",
+                    "success",
+                    1.0,
+                    "4" * 64,
+                    1.0,
+                ),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO worker_recovery_canaries("
+                "operation_id,worker_name,repository,workflow,ref,head_sha,"
+                "baseline_run_id,provider_runner_id,provider_runner_name,"
+                "dispatch_correlation,temporary_label,temporary_labels_json,"
+                "intent_digest,phase,revision,last_event_digest,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    operation_id,
+                    WORKER,
+                    REPOSITORY,
+                    "ci.yml",
+                    "main",
+                    "3" * 40,
+                    0,
+                    187,
+                    WORKER,
+                    "correlation-ledger",
+                    "temporary-label",
+                    "[]",
+                    "sha256:" + "4" * 64,
+                    "dispatch_intent",
+                    1,
+                    "sha256:" + "5" * 64,
+                    1.0,
+                    1.0,
+                ),
+            )
+
+    with pytest.raises(ValueError, match="cannot be superseded"):
+        store.begin_worker_recovery(
+            **_begin_arguments(
+                idempotency_key="recovery-platform-0002",
+                fingerprint="2" * 64,
+                controller_revision="3" * 40,
+                controller_release_digest="4" * 64,
+                controller_receipt_id="5" * 64,
+                request_nonce="nonce-platform-0002",
+                supersede_prepared_operation_id=operation_id,
+            )
+        )
+    unchanged = store.worker_recovery(operation_id)
+    assert unchanged is not None
+    assert unchanged["state"] == "prepared"
+
+
+def test_released_recovery_cannot_be_superseded_by_stale_compare_and_swap(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    store.advance_worker_recovery(first["idempotency_key"], expected="prepared", state="released")
+
+    with pytest.raises(ValueError, match="cannot be superseded"):
+        store.begin_worker_recovery(
+            **_begin_arguments(
+                idempotency_key="recovery-platform-0002",
+                fingerprint="2" * 64,
+                controller_revision="3" * 40,
+                controller_release_digest="4" * 64,
+                controller_receipt_id="5" * 64,
+                request_nonce="nonce-platform-0002",
+                supersede_prepared_operation_id=first["operation_id"],
+            )
+        )
+
+    released = store.worker_recovery(first["operation_id"])
+    assert released is not None
+    assert released["state"] == "released"
+    assert store.prepared_worker_recovery(WORKER) is None
+
+
+def test_supersede_then_claim_old_operation_fails_and_new_operation_can_claim(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    second = store.begin_worker_recovery(
+        **_begin_arguments(
+            idempotency_key="recovery-platform-0002",
+            fingerprint="2" * 64,
+            controller_revision="3" * 40,
+            controller_release_digest="4" * 64,
+            controller_receipt_id="5" * 64,
+            request_nonce="nonce-platform-0002",
+            supersede_prepared_operation_id=first["operation_id"],
+        )
+    )
+
+    with pytest.raises(ValueError, match="transaction changed"):
+        store.advance_worker_recovery(
+            first["idempotency_key"], expected="prepared", state="invoking"
+        )
+    claimed = store.advance_worker_recovery(
+        second["idempotency_key"], expected="prepared", state="invoking"
+    )
+    assert claimed["operation_id"] == second["operation_id"]
+    assert claimed["state"] == "invoking"
+
+
+def test_only_one_parallel_prepare_can_supersede_the_same_predecessor(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    candidates = [
+        _begin_arguments(
+            idempotency_key=f"recovery-platform-000{index}",
+            fingerprint=str(index) * 64,
+            controller_revision=str(index + 1) * 40,
+            controller_release_digest=str(index + 2) * 64,
+            controller_receipt_id=str(index + 3) * 64,
+            request_nonce=f"nonce-platform-000{index}",
+            supersede_prepared_operation_id=first["operation_id"],
+        )
+        for index in (2, 3)
+    ]
+
+    def attempt(arguments: dict[str, Any]) -> tuple[str, str]:
+        try:
+            row = store.begin_worker_recovery(**arguments)
+        except ValueError as error:
+            return ("rejected", str(error))
+        return ("prepared", str(row["operation_id"]))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, candidates))
+
+    assert sorted(result[0] for result in results) == ["prepared", "rejected"]
+    rejected = next(result for result in results if result[0] == "rejected")
+    assert rejected[1] == "worker recovery transaction cannot be superseded"
+    active = store.prepared_worker_recovery(WORKER)
+    assert active is not None
+    winner = next(result[1] for result in results if result[0] == "prepared")
+    assert active["operation_id"] == winner
+    old = store.worker_recovery(first["operation_id"])
+    assert old is not None
+    assert old["superseded_by_operation_id"] == winner
+
+
+def test_claim_and_supersede_race_has_exactly_one_winner(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    barrier = threading.Barrier(2)
+
+    def claim() -> tuple[str, str]:
+        barrier.wait()
+        try:
+            row = store.advance_worker_recovery(
+                first["idempotency_key"], expected="prepared", state="invoking"
+            )
+        except ValueError as error:
+            return "claim-rejected", str(error)
+        return "claimed", str(row["operation_id"])
+
+    def supersede() -> tuple[str, str]:
+        barrier.wait()
+        try:
+            row = store.begin_worker_recovery(
+                **_begin_arguments(
+                    idempotency_key="recovery-platform-0002",
+                    fingerprint="2" * 64,
+                    controller_revision="3" * 40,
+                    controller_release_digest="4" * 64,
+                    controller_receipt_id="5" * 64,
+                    request_nonce="nonce-platform-0002",
+                    supersede_prepared_operation_id=first["operation_id"],
+                )
+            )
+        except ValueError as error:
+            return "supersede-rejected", str(error)
+        return "superseded", str(row["operation_id"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (executor.submit(claim), executor.submit(supersede))
+        results = [future.result() for future in futures]
+
+    outcomes = {result[0] for result in results}
+    assert outcomes in (
+        {"claimed", "supersede-rejected"},
+        {"claim-rejected", "superseded"},
+    )
+    old = store.worker_recovery(first["operation_id"])
+    assert old is not None
+    if "claimed" in outcomes:
+        assert old["state"] == "invoking"
+        assert old["superseded_by_operation_id"] is None
+    else:
+        assert old["state"] == "released"
+        assert old["superseded_by_operation_id"] is not None
+
+
+@pytest.mark.parametrize(
+    ("revision", "release_digest"),
+    [("1" * 40, "4" * 64), ("3" * 40, "2" * 64)],
+)
+def test_revision_or_digest_change_independently_allows_prepared_supersede(
+    tmp_path: Path, revision: str, release_digest: str
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    second = store.begin_worker_recovery(
+        **_begin_arguments(
+            idempotency_key="recovery-platform-0002",
+            fingerprint="2" * 64,
+            controller_revision=revision,
+            controller_release_digest=release_digest,
+            controller_receipt_id="5" * 64,
+            request_nonce="nonce-platform-0002",
+            supersede_prepared_operation_id=first["operation_id"],
+        )
+    )
+    assert second["state"] == "prepared"
+
+
+def test_controller_release_can_return_to_an_older_tuple_through_supersede_chain(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    first = store.begin_worker_recovery(**_begin_arguments())
+    second = store.begin_worker_recovery(
+        **_begin_arguments(
+            idempotency_key="recovery-platform-0002",
+            fingerprint="2" * 64,
+            controller_revision="3" * 40,
+            controller_release_digest="4" * 64,
+            controller_receipt_id="5" * 64,
+            request_nonce="nonce-platform-0002",
+            supersede_prepared_operation_id=first["operation_id"],
+        )
+    )
+    third = store.begin_worker_recovery(
+        **_begin_arguments(
+            idempotency_key="recovery-platform-0003",
+            fingerprint="3" * 64,
+            controller_receipt_id="6" * 64,
+            request_nonce="nonce-platform-0003",
+            supersede_prepared_operation_id=second["operation_id"],
+        )
+    )
+
+    assert third["controller_revision"] == "e" * 40
+    assert third["controller_release_digest"] == "f" * 64
+    active = store.prepared_worker_recovery(WORKER)
+    assert active is not None
+    assert active["operation_id"] == third["operation_id"]
 
 
 def test_exact_terminal_request_replay_does_not_reopen_freshness_window(
