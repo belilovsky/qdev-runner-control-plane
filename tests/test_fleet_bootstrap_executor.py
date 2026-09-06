@@ -19,6 +19,7 @@ POLICY = ROOT / "config" / "fleet-bootstrap.yml"
 RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
 _CONTROLLER_DIGEST = "sha256:" + "b" * 64
 _CONTROLLER_IMAGE_DIGEST = "sha256:" + "c" * 64
+_CONTROLLER_INTERNAL_IMAGE_DIGEST = "sha256:" + "e" * 64
 _ACTIVATION_ENVELOPE_DIGEST = "sha256:" + "d" * 64
 
 
@@ -59,6 +60,7 @@ def _bootstrap_request(
             "controller_revision": "a" * 40,
             "controller_release_digest": _CONTROLLER_DIGEST,
             "controller_image_digest": _CONTROLLER_IMAGE_DIGEST,
+            "controller_internal_image_digest": _CONTROLLER_INTERNAL_IMAGE_DIGEST,
             "activation_envelope_digest": _ACTIVATION_ENVELOPE_DIGEST,
             "release_lane": release_lane,
             "worker_name": None,
@@ -95,6 +97,7 @@ def _bootstrap_adapter(
         "host = t.get('host_agent_mtls_identity')\n"
         "rollback_sha = 'c' * 40\n"
         "rollback_digest = 'sha256:' + 'e' * 64\n"
+        "rollback_internal_digest = 'sha256:' + 'd' * 64\n"
         f"revision = {revision_expression}\n"
         "print(json.dumps({\n"
         "  'schema': 'qdev-fleet-bootstrap-adapter-result-v2',\n"
@@ -109,7 +112,7 @@ def _bootstrap_adapter(
         "  'host_agent_mtls_identity': host,\n"
         "  'rollback_source_sha': rollback_sha,\n"
         "  'rollback_artifact_digest': rollback_digest,\n"
-        "  'rollback_internal_artifact_digest': rollback_digest,\n"
+        "  'rollback_internal_artifact_digest': rollback_internal_digest,\n"
         "  'rollback_policy_digest': 'sha256:' + 'f' * 64,\n"
         "  'rollback_generation': 7,\n"
         "  'result': {'native_status': 'verified'}\n"
@@ -245,6 +248,8 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
     assert first.operation_status == second.operation_status == "completed"
     assert first.result is not None
     assert first.result["rollback_source_sha"] == "c" * 40
+    assert first.result["rollback_artifact_digest"] == "sha256:" + "e" * 64
+    assert first.result["rollback_internal_artifact_digest"] == "sha256:" + "d" * 64
     assert first.result["rollback_policy_digest"] == "sha256:" + "f" * 64
     assert first.result["rollback_generation"] == 7
     assert json.loads((tmp_path / "receipt.json").read_text())["status"] == "completed"
@@ -278,3 +283,4 @@ def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Pat
     assert result.result is not None
     assert result.result["rollback_source_sha"] == "c" * 40
     assert result.result["rollback_artifact_digest"] == "sha256:" + "e" * 64
+    assert result.result["rollback_internal_artifact_digest"] == "sha256:" + "d" * 64

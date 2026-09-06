@@ -302,6 +302,7 @@ def _invoke_bootstrap_adapter(
         {
             "rollback_source_sha": raw["rollback_source_sha"],
             "rollback_artifact_digest": raw["rollback_artifact_digest"],
+            "rollback_internal_artifact_digest": raw["rollback_internal_artifact_digest"],
             "rollback_policy_digest": raw["rollback_policy_digest"],
             "rollback_generation": raw["rollback_generation"],
         }

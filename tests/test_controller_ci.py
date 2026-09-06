@@ -139,6 +139,31 @@ def test_every_lane_uses_full_shared_suite() -> None:
     ]
 
 
+def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/runner-smoke.yml").read_text())
+    triggers = workflow.get("on", workflow.get(True))
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert inputs["execution_lane"] == {
+        "type": "choice",
+        "options": ["recovery"],
+        "default": "recovery",
+        "required": True,
+        "description": "Explicit execution lane; no automatic fallback",
+    }
+    assert inputs["expected_sha"]["required"] is True
+    assert inputs["owner_recovery"]["type"] == "boolean"
+    verify = next(
+        step
+        for step in workflow["jobs"]["runner-smoke"]["steps"]
+        if "scripts/verify_controller_ci.py" in step.get("run", "")
+    )
+    assert verify["run"].endswith("--lane controller-recovery")
+    assert verify["env"] == {
+        "QDEV_EXPECTED_SHA": "${{ inputs.expected_sha }}",
+        "QDEV_OWNER_RECOVERY": "${{ inputs.owner_recovery }}",
+    }
+
+
 def test_runner_contract_push_is_limited_to_default_branch() -> None:
     workflow = (ROOT / ".github/workflows/qdev-runner-contract.yml").read_text()
     assert "push:\n    branches:\n      - main" in workflow
