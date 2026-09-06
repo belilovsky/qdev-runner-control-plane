@@ -854,8 +854,6 @@ class Store:
                 # controller endpoint: a worker must not be able to bypass FIFO
                 # by invoking the store directly.
                 for row in pending_rows:
-                    if int(row["job_id"]) in fifo_skip_job_ids:
-                        continue
                     # A capacity directive is already bound by the controller to
                     # one validated repository/SHA tuple.  Compute FIFO within
                     # that bounded candidate set; otherwise an older row that the
@@ -880,6 +878,15 @@ class Store:
                         (profile for profile in profiles if profile.lower() in labels), None
                     )
                     if matching_profile is not None:
+                        if claim_scope is not None and claim_scope.skips(
+                            int(row["job_id"]),
+                            str(row["repository"]),
+                            str(row["head_sha"]),
+                            matching_profile,
+                            run_id=int(row["run_id"]),
+                            attempt=_workflow_job_attempt(str(row["payload_json"])),
+                        ):
+                            continue
                         profile_heads.setdefault(matching_profile.lower(), int(row["job_id"]))
             for row in pending_rows:
                 if repository is not None and str(row["repository"]).lower() != repository.lower():
@@ -3685,6 +3692,44 @@ class Store:
                   ))
                 """,
                 (now, reason[:4000], job_id, cutoff, cutoff),
+            )
+        return updated.rowcount == 1
+
+    def failed_worker_jobs(self) -> list[dict[str, Any]]:
+        """Return terminal local worker failures still queued by the provider."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.*, workers.last_seen AS worker_last_seen
+                FROM jobs LEFT JOIN workers ON workers.name=jobs.worker_name
+                WHERE jobs.status='failed' AND jobs.worker_name IS NOT NULL
+                  AND jobs.claimed_at IS NOT NULL
+                  AND jobs.result LIKE 'worker=% exit=%'
+                ORDER BY jobs.created_at ASC, jobs.job_id ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def release_failed_job(
+        self,
+        job_id: int,
+        reason: str,
+        *,
+        expected_updated_at: float,
+    ) -> bool:
+        """Atomically release one provider-confirmed queued worker failure."""
+        now = time.time()
+        with self.connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET status='pending', worker_name=NULL,
+                    claim_scope_id=NULL, profile=NULL, claimed_at=NULL,
+                    completed_at=NULL, updated_at=?, result=?
+                WHERE job_id=? AND status='failed' AND updated_at=?
+                  AND worker_name IS NOT NULL AND claimed_at IS NOT NULL
+                  AND result LIKE 'worker=% exit=%'
+                """,
+                (now, reason[:4000], job_id, expected_updated_at),
             )
         return updated.rowcount == 1
 

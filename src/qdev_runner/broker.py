@@ -30,6 +30,7 @@ from .claim_scope import (
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
+    ScopedFifoSkip,
     ScopedJob,
     claim_scope_mapping,
     load_claim_scopes,
@@ -211,6 +212,11 @@ class ControllerClaimRequest(BaseModel):
 
 class StaleJobRecoveryRequest(BaseModel):
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
+    owner: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class FailedJobRecoveryRequest(BaseModel):
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
 
@@ -795,11 +801,16 @@ def create_app(
                 )
                 if not admitted:
                     assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": queued_managed.entry_id,
@@ -1836,11 +1847,16 @@ def create_app(
                     # prerequisite for restoring normal signed admission.  It
                     # may bypass earlier rows without cancelling or mutating
                     # them; the signed receipt preserves every skipped tuple.
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": (
@@ -1871,11 +1887,18 @@ def create_app(
                         # Direct requests for the same managed row still use
                         # validate_admission above and remain fail-closed.
                         assert reason is not None
+                        queued_attempt = _job_attempt(queued)
+                        if queued_attempt is None:
+                            # An incomplete provider tuple cannot become a
+                            # signed exception to durable FIFO.
+                            profile_queue.append(queued)
+                            continue
                         fifo_skipped.append(
                             {
                                 "job_id": int(queued["job_id"]),
                                 "repository": str(queued["repository"]),
                                 "run_id": int(queued["run_id"]),
+                                "attempt": queued_attempt,
                                 "head_sha": str(queued["head_sha"]),
                                 "profile": queued_profile.name,
                                 "managed_registry_entry": queued_managed.entry_id,
@@ -1890,6 +1913,23 @@ def create_app(
         attempt = _job_attempt(candidate)
         if attempt is None:
             raise HTTPException(status_code=409, detail="provider attempt is unavailable")
+        scoped_fifo_skipped = tuple(
+            ScopedFifoSkip(
+                job_id=int(item["job_id"]),
+                repository=str(item["repository"]),
+                run_id=int(item["run_id"]),
+                attempt=int(item["attempt"]),
+                exact_sha=str(item["head_sha"]),
+                profile=str(item["profile"]),
+                managed_registry_entry=(
+                    str(item["managed_registry_entry"])
+                    if item["managed_registry_entry"] is not None
+                    else None
+                ),
+                reason=str(item["reason"]),
+            )
+            for item in fifo_skipped
+        )
 
         try:
             scopes = load_claim_scopes(settings.claim_scopes_path)
@@ -1903,6 +1943,7 @@ def create_app(
         rolled_over_terminal_scope = False
         rebound_legacy_scope = False
         retained_jobs: tuple[ScopedJob, ...] = ()
+        reuse_existing_jobs = False
         if existing is not None:
             same_scope = (
                 existing.schema == SCHEMA_V2
@@ -1912,6 +1953,7 @@ def create_app(
                 and existing.runner == request.runner
                 and existing.correlation_id == request.correlation_id
                 and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.fifo_skipped == scoped_fifo_skipped
                 and existing.permits(
                     job_id=job_id,
                     repository=str(candidate["repository"]),
@@ -1950,6 +1992,28 @@ def create_app(
                     }
                     return operation_store.receipt(payload)
                 replaced_expired_scope = True
+            elif (
+                existing.schema == SCHEMA_V2
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.correlation_id == request.correlation_id
+                and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.expires_at > datetime.now(UTC)
+                and existing.permits(
+                    job_id=job_id,
+                    repository=str(candidate["repository"]),
+                    head_sha=str(candidate["head_sha"]),
+                    profile=profile.name,
+                    run_id=int(candidate["run_id"]),
+                    attempt=attempt,
+                )
+            ):
+                # Refresh only controller-derived skip evidence for the same
+                # already-bound immutable target.
+                retained_jobs = existing.jobs
+                reuse_existing_jobs = True
             elif (
                 # A legacy v2 document issued before certificate binding was
                 # enforced cannot be claimed: the worker-side claim endpoint
@@ -2034,7 +2098,8 @@ def create_app(
             correlation_id=request.correlation_id,
             worker_certificate_sha256=certificate_sha256,
             expires_at=datetime.now(UTC) + timedelta(seconds=request.duration_seconds),
-            jobs=retained_jobs + (scoped_job,),
+            jobs=retained_jobs if reuse_existing_jobs else retained_jobs + (scoped_job,),
+            fifo_skipped=scoped_fifo_skipped,
         )
         try:
             upsert_claim_scope(settings.claim_scopes_path, scope)
@@ -2150,11 +2215,16 @@ def create_app(
                 # Capacity and claim-scope issuance must agree on the same
                 # narrowly ledger-bound controller prerequisite.  The skipped
                 # row remains pending and is recorded in the signed receipt.
+                queued_attempt = _job_attempt(queued)
+                if queued_attempt is None:
+                    pending_for_override.append(queued)
+                    continue
                 fifo_skipped.append(
                     {
                         "job_id": int(queued["job_id"]),
                         "repository": str(queued["repository"]),
                         "run_id": int(queued["run_id"]),
+                        "attempt": queued_attempt,
                         "head_sha": str(queued["head_sha"]),
                         "profile": queued_profile.name,
                         "managed_registry_entry": (
@@ -2178,11 +2248,16 @@ def create_app(
                 )
                 if not admitted:
                     assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        pending_for_override.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": queued_managed.entry_id,
@@ -2423,6 +2498,126 @@ def create_app(
             ) from error
         payload = {
             "kind": "stale-job-recovery",
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "owner": request.owner,
+            "reason": request.reason,
+            "immutable_job": immutable_job,
+            "provider": {
+                **provider_tuple,
+                "status": provider_status,
+                "conclusion": provider_conclusion,
+                "run_status": str(remote_run.get("status") or "unknown"),
+                "run_conclusion": remote_run.get("conclusion"),
+            },
+            "action": action,
+            "fifo_preserved": True,
+        }
+        return operation_store.receipt(payload)
+
+    @app.get("/internal/v1/operations/jobs/failed-worker-exit")
+    def audit_failed_worker_jobs(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        candidates = [_stale_job_tuple(row) for row in store.failed_worker_jobs()]
+        payload = {
+            "kind": "failed-job-audit",
+            "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "provider_reconciliation_required": True,
+            "candidates": candidates,
+        }
+        return operation_store.receipt(payload)
+
+    @app.post("/internal/v1/operations/jobs/{job_id}/recover-failed-worker-exit")
+    def recover_failed_worker_job(
+        job_id: int,
+        request: FailedJobRecoveryRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        row = next(
+            (
+                candidate
+                for candidate in store.failed_worker_jobs()
+                if int(candidate["job_id"]) == job_id
+            ),
+            None,
+        )
+        if row is None:
+            raise HTTPException(status_code=409, detail="job is not a recoverable worker failure")
+        immutable_job = _stale_job_tuple(row)
+        installation_id = int(row["installation_id"])
+        repository = str(row["repository"])
+        try:
+            github_client = require_github()
+            remote_job = github_client.workflow_job(installation_id, repository, job_id)
+            remote_run = github_client.workflow_run(
+                installation_id, repository, int(row["run_id"])
+            )
+            provider_tuple = {
+                "run_id": int(remote_run.get("id") or 0),
+                "job_run_id": int(remote_job.get("run_id") or 0),
+                "job_id": int(remote_job.get("id") or 0),
+                "attempt": int(remote_run.get("run_attempt") or 0),
+                "exact_sha": str(remote_run.get("head_sha") or ""),
+            }
+            expected_tuple = {
+                "run_id": immutable_job["run_id"],
+                "job_run_id": immutable_job["run_id"],
+                "job_id": immutable_job["job_id"],
+                "attempt": immutable_job["attempt"],
+                "exact_sha": immutable_job["exact_sha"],
+            }
+            if provider_tuple != expected_tuple:
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider immutable tuple does not match the failed job",
+                )
+            provider_status = str(remote_job.get("status") or "unknown")
+            provider_conclusion = remote_job.get("conclusion")
+            if provider_status == "completed":
+                conclusion = str(provider_conclusion or "unknown")
+                store.complete_from_webhook(job_id, conclusion)
+                action = "completed-from-provider"
+            elif provider_status == "in_progress":
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider reports the job is still in progress",
+                )
+            elif provider_status == "queued":
+                run_conclusion = completed_run_conclusion(remote_run)
+                if run_conclusion is not None:
+                    store.complete_from_webhook(job_id, run_conclusion)
+                    action = "completed-from-parent-run"
+                elif not store.release_failed_job(
+                    job_id,
+                    f"operator recovery: {request.reason}",
+                    expected_updated_at=float(row["updated_at"]),
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="failed job changed during provider reconciliation",
+                    )
+                else:
+                    action = "released-preserving-fifo"
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"provider job state is not recoverable: {provider_status}",
+                )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="provider reconciliation failed",
+            ) from error
+        payload = {
+            "kind": "failed-job-recovery",
             "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "owner": request.owner,
             "reason": request.reason,

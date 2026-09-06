@@ -196,7 +196,10 @@ qdev-runner-operator cancel srv1879763-light-primary \
 Creation is serialized per worker and must name the signed durable FIFO head.
 Cancellation is compare-and-swap: if another controller transaction has
 replaced the operation ID, it returns a conflict and leaves that operation
-untouched.
+untouched. Expiry closes admission for new jobs; it does not terminate the
+exact job already admitted under the directive. That job retains the validated
+disk hard floor captured at admission and remains bounded by its immutable
+profile timeout. Crossing that hard floor still stops the runner immediately.
 
 ## Stale-job reconciliation
 
@@ -219,3 +222,22 @@ whose parent run is not terminal is released to the ordinary queue, preserving
 its original creation time and FIFO position. Validate saved receipts with
 `scripts/validate_operation_receipt.py`; a healthy heartbeat alone is never
 completion evidence.
+
+A non-zero worker exit can leave the controller terminal while GitHub still
+reports the exact job as queued. Audit and recover that narrower state through
+the dedicated operation:
+
+```bash
+qdev-runner-operator failed-audit \
+  > failed-job-audit-receipt.json
+qdev-runner-operator recover-failed 123456789 \
+  --owner qdev-fleet-operations \
+  --reason 'worker exited while provider retained the exact queued job' \
+  > failed-job-recovery-receipt.json
+```
+
+The same immutable provider tuple and parent-run checks apply. Recovery is an
+atomic compare-and-swap against the observed failed row; policy failures and
+other terminal states are not eligible. A successful release clears the old
+worker binding and terminal timestamp while preserving the original FIFO
+creation time.

@@ -438,6 +438,7 @@ def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
                 "job_id": 41,
                 "repository": "belilovsky/qazposter",
                 "run_id": 84000000041,
+                "attempt": 1,
                 "head_sha": "a" * 40,
                 "profile": "qdev-ci-docker",
                 "managed_registry_entry": "qazposter",
@@ -470,6 +471,7 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
                 "job_id": 41,
                 "repository": "belilovsky/qazposter",
                 "run_id": 84000000041,
+                "attempt": 1,
                 "head_sha": "a" * 40,
                 "profile": "qdev-ci-docker",
                 "managed_registry_entry": "qazposter",
@@ -484,6 +486,17 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
     }
     with pytest.raises(ValueError, match="fifo skip item"):
         validate_controller_receipt_payload(payload)
+
+
+def test_fifo_receipt_schema_binds_provider_attempt() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    fifo_skip = schema["$defs"]["fifo_skipped"]["items"]
+
+    assert "attempt" in fifo_skip["required"]
+    assert fifo_skip["properties"]["attempt"] == {"type": "integer", "minimum": 1}
 
 
 def _unknown_fleet_recovery_payload() -> dict[str, object]:

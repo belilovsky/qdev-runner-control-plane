@@ -139,6 +139,22 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "action",
         "fifo_preserved",
     },
+    "failed-job-audit": {
+        "kind",
+        "observed_at",
+        "provider_reconciliation_required",
+        "candidates",
+    },
+    "failed-job-recovery": {
+        "kind",
+        "observed_at",
+        "owner",
+        "reason",
+        "immutable_job",
+        "provider",
+        "action",
+        "fifo_preserved",
+    },
     "fleet-bootstrap-recovery": {
         "kind",
         "observed_at",
@@ -236,6 +252,7 @@ def _validate_fifo_skipped(value: Any) -> None:
             "job_id",
             "repository",
             "run_id",
+            "attempt",
             "head_sha",
             "profile",
             "managed_registry_entry",
@@ -249,6 +266,9 @@ def _validate_fifo_skipped(value: Any) -> None:
             or not isinstance(item["run_id"], int)
             or isinstance(item["run_id"], bool)
             or item["run_id"] <= 0
+            or not isinstance(item["attempt"], int)
+            or isinstance(item["attempt"], bool)
+            or item["attempt"] <= 0
             or not isinstance(item["repository"], str)
             or not _REPOSITORY.fullmatch(item["repository"])
             or not isinstance(item["head_sha"], str)
@@ -417,6 +437,20 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or value["fifo_preserved"] is not True
     ):
         raise ValueError("stale-job recovery payload is invalid")
+    if kind == "failed-job-audit" and (
+        not isinstance(value["provider_reconciliation_required"], bool)
+        or not isinstance(value["candidates"], list)
+    ):
+        raise ValueError("failed-job audit payload is invalid")
+    if kind == "failed-job-recovery" and (
+        not isinstance(value["immutable_job"], dict)
+        or not isinstance(value["provider"], dict)
+        or not isinstance(value["owner"], str)
+        or not isinstance(value["reason"], str)
+        or not isinstance(value["action"], str)
+        or value["fifo_preserved"] is not True
+    ):
+        raise ValueError("failed-job recovery payload is invalid")
     if kind == "fleet-bootstrap-recovery" and (
         value["status"]
         not in {
