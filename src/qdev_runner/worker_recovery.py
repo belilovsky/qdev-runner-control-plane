@@ -25,9 +25,9 @@ from .models import (
     RecoveryTargetId,
 )
 from .settings import BrokerSettings
-from .store import Store
+from .store import Store, worker_recovery_provider_status
 
-INTERFACE_VERSION = "qdev-worker-recovery-v2"
+INTERFACE_VERSION = "qdev-worker-recovery-v3"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -50,6 +50,7 @@ class RecoveryTarget:
     action: str
     workflow: str
     ref: str = "main"
+    expected_provider_runner_id: int | None = None
 
 
 RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
@@ -61,6 +62,7 @@ RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
         action="restore_saved_configuration",
         workflow=".github/workflows/runner-smoke.yml",
         ref="master",
+        expected_provider_runner_id=278,
     ),
     "qdev-qazstack-01": RecoveryTarget(
         target_id="qdev-qazstack-01",
@@ -76,7 +78,7 @@ RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
 # canonical digest is provisioned to both controller and host agent; neither
 # side derives trust from a mutable source path or an HTTP request field.
 INTERFACE_MANIFEST: dict[str, Any] = {
-    "schema": "qdev-runner-recovery-interface-v2",
+    "schema": "qdev-runner-recovery-interface-v3",
     "interface_version": INTERFACE_VERSION,
     "canonical_json": {
         "sort_keys": True,
@@ -101,7 +103,9 @@ INTERFACE_MANIFEST: dict[str, Any] = {
     },
     "provider_runner_identity": {
         "restore_saved_configuration": "required-positive-integer",
+        "restore_saved_configuration_status": "signed-online-or-offline",
         "replace_existing_registration": "positive-integer-or-observed-absent",
+        "replace_existing_registration_status": "signed-offline-or-absent",
         "absence_observation": "qdev-worker-provider-absence-observation-v1",
         "absence_requires_zero_active_target_jobs": True,
     },
@@ -111,6 +115,17 @@ INTERFACE_MANIFEST: dict[str, Any] = {
             "repository": target.repository,
             "labels": list(target.labels),
             "recovery_action": target.action,
+            "expected_provider_runner_id": target.expected_provider_runner_id,
+            "allowed_initial_provider_statuses": (
+                ["offline", "online"]
+                if target.action == "restore_saved_configuration"
+                else ["absent", "offline"]
+            ),
+            "execution_dispositions": (
+                {"online": "verify_only", "offline": target.action}
+                if target.action == "restore_saved_configuration"
+                else {"absent": target.action, "offline": target.action}
+            ),
         }
         for target_id, target in RECOVERY_TARGETS.items()
     },
@@ -128,6 +143,17 @@ POLICY_MANIFEST: dict[str, Any] = {
             "repository": target.repository,
             "labels": list(target.labels),
             "recovery_action": target.action,
+            "expected_provider_runner_id": target.expected_provider_runner_id,
+            "allowed_initial_provider_statuses": (
+                ["offline", "online"]
+                if target.action == "restore_saved_configuration"
+                else ["absent", "offline"]
+            ),
+            "execution_dispositions": (
+                {"online": "verify_only", "offline": target.action}
+                if target.action == "restore_saved_configuration"
+                else {"absent": target.action, "offline": target.action}
+            ),
             "identity": "unique-same-name",
             "canary": {
                 "workflow": target.workflow,
@@ -298,10 +324,25 @@ class WorkerRecoveryController:
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
         try:
+            allowed_initial_status = (
+                ("offline", "online")
+                if target.action == "restore_saved_configuration"
+                else "offline"
+            )
             runners, observed, provider_observation = self._observe_runner(
-                target, expected_labels=target.labels, status="offline", require_idle=True
+                target,
+                expected_labels=target.labels,
+                status=allowed_initial_status,
+                require_idle=True,
             )
             provider_runner_id: int | None = int(observed["id"])
+            if (
+                target.expected_provider_runner_id is not None
+                and provider_runner_id != target.expected_provider_runner_id
+            ):
+                raise WorkerRecoveryError(
+                    "provider runner id does not match the fixed recovery target"
+                )
             provider_observed_at = float(observed["observed_at"])
         except WorkerRecoveryError as error:
             if target.action != "replace_existing_registration":
@@ -337,7 +378,9 @@ class WorkerRecoveryController:
             repository=target.repository,
             labels=target.labels,
             provider_runner_id=provider_runner_id,
-            provider_status=None if provider_runner_id is None else "offline",
+            provider_status=(
+                None if provider_runner_id is None else cast(str, observed["status"])
+            ),
             provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
@@ -418,7 +461,13 @@ class WorkerRecoveryController:
                 state="invoking",
                 proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
             )
-        elif row["state"] != "invoking":
+        else:
+            # Commands are deliberately one-shot.  In particular, never mint
+            # another registration token from the provider snapshot which was
+            # valid for the first invocation: the runner may have become
+            # online after that command was delivered.  A host interruption
+            # stays fenced in ``invoking`` and must reconcile its already
+            # persisted outcome rather than reclaiming mutation authority.
             return None
         return self._command_envelope(row, target=target)
 
@@ -881,7 +930,7 @@ class WorkerRecoveryController:
         target: RecoveryTarget,
         *,
         expected_labels: tuple[str, ...] | tuple[tuple[str, ...], ...],
-        status: str,
+        status: str | tuple[str, ...],
         require_idle: bool,
         canary: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
@@ -922,7 +971,11 @@ class WorkerRecoveryController:
                 "labels": observed["labels"],
             }
             or observed["name"] != target.worker_name
-            or observed["status"] != status
+            or (
+                observed["status"] not in status
+                if isinstance(status, tuple)
+                else observed["status"] != status
+            )
             or tuple(observed["labels"]) not in allowed_labels
             or (require_idle and (observed["busy"] or observed["active_job_ids"]))
         ):
@@ -973,6 +1026,19 @@ class WorkerRecoveryController:
             registration_token = minted.token
             token_expires_at = minted.expires_at.astimezone(UTC)
             expires_at = min(expires_at, token_expires_at)
+        provider_status: str | None = None
+        if row["provider_runner_id"] is not None:
+            try:
+                provider_status = worker_recovery_provider_status(
+                    json.loads(str(row["provider_observation_json"])),
+                    worker_name=target.worker_name,
+                    provider_runner_id=int(row["provider_runner_id"]),
+                    recovery_action=target.action,
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise WorkerRecoveryError(
+                    "provider observation cannot be bound to the host command"
+                ) from error
         command: dict[str, Any] = {
             "schema": "qdev-runner-recovery-agent-command-v1",
             "operation_id": row["operation_id"],
@@ -981,8 +1047,15 @@ class WorkerRecoveryController:
             "worker_name": target.worker_name,
             "repository": target.repository,
             "provider_runner_id": row["provider_runner_id"],
+            "provider_status": provider_status,
             "labels": list(target.labels),
             "recovery_action": target.action,
+            "execution_disposition": (
+                "verify_only"
+                if target.action == "restore_saved_configuration"
+                and provider_status == "online"
+                else target.action
+            ),
             "operator_certificate_sha256": row["operator_certificate_sha256"],
             "expected_agent_certificate_sha256": row["expected_agent_certificate_sha256"],
             "interface_version": INTERFACE_VERSION,

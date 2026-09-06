@@ -633,7 +633,7 @@ def test_host_apply_manifest_binds_all_and_only_release_payloads() -> None:
         "controller_release_digest": DIGEST,
         "policy_digest": "sha256:" + "c" * 64,
         "agent_release_digest": "sha256:" + "d" * 64,
-        "interface_version": "qdev-worker-recovery-v2",
+        "interface_version": "qdev-worker-recovery-v3",
         "interface_digest": "e" * 64,
         "expected_agent_certificate_sha256": "f" * 64,
         "files": {name: f"sha256:{HOST_APPLY._sha256(payload)}" for name, payload in files.items()},

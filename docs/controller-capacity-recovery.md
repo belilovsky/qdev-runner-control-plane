@@ -50,6 +50,12 @@ cannot choose a host, service, executable, certificate or CA key.
    runner or a signed observation that the name is absent and has no active
    provider jobs. It refuses preparation when the runner is busy, has active
    jobs or has a conflicting identity.
+
+   A saved-configuration target that already has the exact unique provider
+   identity `online` and idle is admitted through the same signed transaction.
+   The fixed host agent then records `already_applied` without restarting the
+   runner; native proof, exact-SHA canary, acceptance and replay are still
+   mandatory. This no-op path is not available to replacement targets.
 4. Start the already installed one-shot service on the fixed target host:
 
    ```bash
@@ -62,8 +68,11 @@ cannot choose a host, service, executable, certificate or CA key.
    The QazStack profile obtains a short-lived registration token only inside
    the controller transaction and uses `--replace` for the same runner name.
    Each agent persists private native proof before reconciling it to the
-   controller. A retry resumes pending reconciliation or returns idle; it does
-   not repeat a completed mutation.
+   controller. The command is delivered only once: a retry resumes a persisted
+   pending reconciliation or returns idle. If the host stops after persisting
+   the claim but before persisting an outcome, it remains fenced with
+   `manual_reconciliation_required`; the controller never reissues the command
+   or mints another registration token from the original provider observation.
 5. Persist controller acceptance intent with the exact current default-branch
    SHA. Then dispatch that exact intent with an authenticated owner identity;
    the controller GitHub App deliberately has read-only Actions access for

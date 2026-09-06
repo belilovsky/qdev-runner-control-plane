@@ -241,6 +241,33 @@ def _validate_provider_observation(
     return observation, canonical, digest
 
 
+def worker_recovery_provider_status(
+    value: object,
+    *,
+    worker_name: str,
+    provider_runner_id: int,
+    recovery_action: str,
+) -> str:
+    """Recover the exact admitted status from the immutable provider snapshot."""
+
+    observation, _, _ = _canonical_provider_observation(value)
+    try:
+        runners = _provider_runner_observations(observation)
+    except ValueError as error:
+        raise ValueError("provider observation is invalid") from error
+    matching = [runner for runner in runners if runner["name"] == worker_name]
+    if (
+        len(matching) != 1
+        or matching[0]["id"] != provider_runner_id
+        or matching[0]["status"] not in {"online", "offline"}
+    ):
+        raise ValueError("provider observation is invalid")
+    status = str(matching[0]["status"])
+    if status == "online" and recovery_action != "restore_saved_configuration":
+        raise ValueError("provider observation is invalid")
+    return status
+
+
 def _validate_provider_absence_observation(
     value: object,
     *,
@@ -1532,11 +1559,16 @@ class Store:
             or active_jobs != 0
         )
         provider_is_absent = provider_runner_id is None
+        provider_status_is_allowed = provider_status == "offline" or (
+            target is not None
+            and target["recovery_action"] == "restore_saved_configuration"
+            and provider_status == "online"
+        )
         present_invalid = not provider_is_absent and (
             isinstance(provider_runner_id, bool)
             or not isinstance(provider_runner_id, int)
             or provider_runner_id <= 0
-            or provider_status != "offline"
+            or not provider_status_is_allowed
             or provider_busy is not False
         )
         absent_invalid = provider_is_absent and (
@@ -1692,7 +1724,14 @@ class Store:
             and not isinstance(proof["provider_runner_id"], bool)
             and isinstance(proof["provider_runner_id"], int)
             and proof["provider_runner_id"] > 0
-            and proof["provider_status"] == "offline"
+            and (
+                proof["provider_status"] == "offline"
+                or (
+                    target is not None
+                    and target["recovery_action"] == "restore_saved_configuration"
+                    and proof["provider_status"] == "online"
+                )
+            )
             and proof["provider_busy"] is False
         )
         if (
@@ -3681,6 +3720,12 @@ class Store:
                             )
                         )
                     else:
+                        provider_status = worker_recovery_provider_status(
+                            stored_observation,
+                            worker_name=worker_name,
+                            provider_runner_id=int(row["provider_runner_id"]),
+                            recovery_action=recovery_action,
+                        )
                         _, canonical_observation, recomputed_provider_digest = (
                             _validate_provider_observation(
                                 stored_observation,
@@ -3688,7 +3733,7 @@ class Store:
                                 repository=str(row["repository"]),
                                 worker_name=worker_name,
                                 provider_runner_id=int(row["provider_runner_id"]),
-                                provider_status="offline",
+                                provider_status=provider_status,
                                 provider_busy=False,
                                 labels=permanent_labels,
                             )
