@@ -293,6 +293,7 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     forward_required = activation.split(forward_marker, 1)[1].split("\n  )", 1)[0]
     for modern_path in (
         "config/controller-capacity.json",
+        "scripts/validate_controller_image_binding.py",
         "scripts/bootstrap_admin_platform_ledger_v3.py",
         "scripts/prepare_controller_candidate.py",
         "scripts/dispatch_fleet_bootstrap.py",
