@@ -17,6 +17,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = "runner-smoke.yml"
+CONTROLLER_REPOSITORY = "belilovsky/qdev-runner-control-plane"
 
 
 def github_token() -> str:
@@ -90,6 +91,17 @@ def workflow_runs(github: GitHub, full_name: str, branch: str) -> list[dict[str,
     return list(data.get("workflow_runs", []))
 
 
+def workflow_dispatch_payload(full_name: str, branch: str, head_sha: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {"ref": branch}
+    if full_name == CONTROLLER_REPOSITORY:
+        payload["inputs"] = {
+            "execution_lane": "recovery",
+            "expected_sha": head_sha,
+            "owner_recovery": True,
+        }
+    return payload
+
+
 def dispatch_batch(
     github: GitHub,
     repositories: list[dict[str, Any]],
@@ -107,7 +119,7 @@ def dispatch_batch(
         github.json(
             "POST",
             f"/repos/{full_name}/actions/workflows/{WORKFLOW}/dispatches",
-            json={"ref": branch},
+            json=workflow_dispatch_payload(full_name, branch, head_sha),
         )
         pending[full_name] = {
             "repository": full_name,
@@ -131,9 +143,7 @@ def dispatch_batch(
                 )
                 item["run"] = run
             elif run.get("status") != "completed":
-                run = github.json(
-                    "GET", f"/repos/{item['repository']}/actions/runs/{run['id']}"
-                )
+                run = github.json("GET", f"/repos/{item['repository']}/actions/runs/{run['id']}")
                 item["run"] = run
             if run is None or run.get("status") != "completed":
                 complete = False
@@ -185,8 +195,7 @@ def main() -> None:
     selected = inventory["repositories"]
     if args.repository:
         requested = {
-            name if "/" in name else f"{inventory['owner']}/{name}"
-            for name in args.repository
+            name if "/" in name else f"{inventory['owner']}/{name}" for name in args.repository
         }
         selected = [repo for repo in selected if repo["full_name"] in requested]
         missing = requested - {repo["full_name"] for repo in selected}

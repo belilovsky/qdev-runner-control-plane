@@ -358,12 +358,13 @@ def check_repository(root: Path) -> list[str]:
         errors.append(".github/qdev-runner.yml:1: missing-contract")
     else:
         text = contract.read_text(encoding="utf-8")
-        version_match = re.search(r"(?m)^schema_version:\s*(qdev-runner-v[12])\s*$", text)
+        version_match = re.search(r"(?m)^schema_version:\s*(qdev-runner-v[123])\s*$", text)
         if not version_match:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
         version = version_match.group(1) if version_match else ""
         allow_hosted = version == "qdev-runner-v2"
-        if version == "qdev-runner-v1" and not re.search(
+        controller_managed = version == "qdev-runner-v3"
+        if version in {"qdev-runner-v1", "qdev-runner-v3"} and not re.search(
             r"(?m)^github_hosted_fallback:\s*false\s*$", text
         ):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
@@ -373,6 +374,10 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: invalid-execution-mode")
         if allow_hosted and not re.search(r"(?m)^self_hosted_recovery:\s*true\s*$", text):
             errors.append(".github/qdev-runner.yml:1: self-hosted-recovery-not-enabled")
+        if controller_managed and not re.search(
+            r"(?m)^execution_mode:\s*controller-managed-self-hosted\s*$", text
+        ):
+            errors.append(".github/qdev-runner.yml:1: invalid-execution-mode")
         allowed_profiles = set(contract_list(text, "profiles"))
         allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
         if not allowed_profiles:

@@ -84,9 +84,7 @@ def test_internal_surface_rejects_public_webhook_route(
 
 
 def test_compose_assigns_disjoint_broker_surfaces() -> None:
-    compose = (Path(__file__).parents[1] / "deploy" / "compose.yml").read_text(
-        encoding="utf-8"
-    )
+    compose = (Path(__file__).parents[1] / "deploy" / "compose.yml").read_text(encoding="utf-8")
     public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
     internal = compose.split("  broker-internal:", 1)[1].split("  registry:", 1)[0]
 
@@ -100,8 +98,7 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
         "controller-release.json" in public
     )
     assert (
-        "/var/lib/qdev-runner/controller-status:"
-        "/var/lib/qdev-runner/controller-status:ro" in public
+        "/var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro" in public
     )
     assert "QDEV_CLAIM_SCOPES: /nonexistent/" in public
     assert "control-state/claim-scopes.json" not in public
@@ -110,8 +107,7 @@ def test_compose_assigns_disjoint_broker_surfaces() -> None:
         "/var/lib/qdev-runner/controller-status/controller-release.json"
     ) in public
     assert (
-        "/var/lib/qdev-runner/controller-status:"
-        "/var/lib/qdev-runner/controller-status:ro"
+        "/var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro"
     ) in public
     assert 'QDEV_OPERATOR_PROXY_SECRET: ""' in public
     assert 'QDEV_RECOVERY_AGENT_SIGNING_KEY: ""' in public

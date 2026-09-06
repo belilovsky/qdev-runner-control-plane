@@ -174,8 +174,8 @@ def build_bundle(
             "export QAZCOOP_GUARD_HOOK=/opt/qazcoop.git/hooks/update\n"
             "exec /usr/bin/python3 -I -B -c 'import runpy,sys; "
             "sys.path.insert(0,sys.argv.pop(1)); "
-            "runpy.run_module(\"qdev_runner.qazcoop_release_guard\",run_name=\"__main__\")' "
-            "\"$guard_root/lib\" \"$@\"\n",
+            'runpy.run_module("qdev_runner.qazcoop_release_guard",run_name="__main__")\' '
+            '"$guard_root/lib" "$@"\n',
             encoding="utf-8",
         )
         launcher.chmod(0o755)

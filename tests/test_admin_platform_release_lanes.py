@@ -309,9 +309,7 @@ def _host_heartbeat(
     )
 
 
-def _native_lane_receipt(
-    lane: object, release: dict[str, str]
-) -> dict[str, Any]:
+def _native_lane_receipt(lane: object, release: dict[str, str]) -> dict[str, Any]:
     return {
         "schema": "qdev-admin-platform-native-receipt-v1",
         "project_id": lane.project_id,
@@ -333,9 +331,7 @@ def _controller_rollback_receipt(
     job: dict[str, Any],
     restored: dict[str, str],
 ) -> dict[str, Any]:
-    failed = {
-        key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")
-    }
+    failed = {key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")}
     return {
         "schema": RELEASE_LANE.ROLLBACK_RECEIPT_SCHEMA,
         "status": "rolled_back",
@@ -394,9 +390,7 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
 def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -408,9 +402,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
 
     changed_receipt = {
         **request.candidate_receipt,
@@ -418,17 +410,11 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
     }
     rebound = request.model_copy(update={"candidate_receipt": changed_receipt})
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="does not bind"):
-        RELEASE_LANE.validate_controller_claim(
-            rebound, lane, signing_key=SECRET, now=now
-        )
+        RELEASE_LANE.validate_controller_claim(rebound, lane, signing_key=SECRET, now=now)
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="expired"):
-        RELEASE_LANE.validate_controller_claim(
-            request, lane, signing_key=SECRET, now=now + 120
-        )
+        RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now + 120)
 
-    job, duplicate = store.admit(
-        request, lane, now=now, lease_ttl_seconds=600
-    )
+    job, duplicate = store.admit(request, lane, now=now, lease_ttl_seconds=600)
     assert duplicate is False
     assert job["lease_expires_at"] == now + 600
     assert job["rollback_anchor"] == anchor
@@ -461,9 +447,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
         now=now + 3,
         nonce=NONCE,
     )
-    RELEASE_LANE.validate_controller_claim(
-        replay, lane, signing_key=SECRET, now=now + 3
-    )
+    RELEASE_LANE.validate_controller_claim(replay, lane, signing_key=SECRET, now=now + 3)
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="already consumed"):
         store.admit(replay, lane, now=now + 3, lease_ttl_seconds=600)
 
@@ -471,9 +455,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
 def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -485,9 +467,7 @@ def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
     job, _ = store.admit(request, lane, now=now, lease_ttl_seconds=60)
     store.next_job(
         lane,
@@ -515,23 +495,25 @@ def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
             fence=job["fence"],
             now=now + 2,
         )
-    with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="expired"):
-        store.rollback(
-            lane,
-            job["release_id"],
-            receipt,
-            lease_id=job["lease_id"],
-            fence=job["fence"],
-            now=now + 60,
-        )
+    # Expiry closes new admission/dispatch, but an exact durably dispatched
+    # operation may still report its single terminal rollback during the
+    # bounded recovery window. This prevents an already-mutated host from
+    # becoming permanently stranded when the lease expires mid-operation.
+    recovered = store.rollback(
+        lane,
+        job["release_id"],
+        receipt,
+        lease_id=job["lease_id"],
+        fence=job["fence"],
+        now=now + 60,
+    )
+    assert recovered["status"] == "rolled_back"
 
 
 def test_controller_journal_is_authoritative_after_snapshot_crash(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -543,9 +525,7 @@ def test_controller_journal_is_authoritative_after_snapshot_crash(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
     accepted, _ = store.admit(request, lane, now=now, lease_ttl_seconds=600)
     accepted_snapshot = json.loads(json.dumps(accepted))
     dispatched = store.next_job(
@@ -574,9 +554,7 @@ def test_controller_journal_is_authoritative_after_snapshot_crash(
 def test_controller_initial_heartbeat_establishes_one_measured_anchor(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -796,12 +774,8 @@ def test_agent_requires_native_runtime_evidence_for_release_and_rollback(
     runtime = AGENT._completion_receipt(profile, release, rollback, document)
     AGENT._validate_completion_receipt(runtime, profile, release, rollback)
     rollback_native = _native_receipt(profile, rollback)
-    rolled_back = AGENT._rollback_receipt(
-        profile, RELEASE_ID, release, rollback, rollback_native
-    )
-    AGENT._validate_rollback_receipt(
-        rolled_back, profile, RELEASE_ID, release, rollback
-    )
+    rolled_back = AGENT._rollback_receipt(profile, RELEASE_ID, release, rollback, rollback_native)
+    AGENT._validate_rollback_receipt(rolled_back, profile, RELEASE_ID, release, rollback)
 
     incomplete = {key: value for key, value in document.items() if key != "artifact_provenance"}
     with pytest.raises(AGENT.AgentError, match="runtime receipt"):
@@ -810,9 +784,7 @@ def test_agent_requires_native_runtime_evidence_for_release_and_rollback(
         key: value for key, value in rollback_native.items() if key != "artifact_provenance"
     }
     with pytest.raises(AGENT.AgentError, match="runtime receipt"):
-        AGENT._rollback_receipt(
-            profile, RELEASE_ID, release, rollback, incomplete_rollback
-        )
+        AGENT._rollback_receipt(profile, RELEASE_ID, release, rollback, incomplete_rollback)
 
 
 def test_agent_journal_is_append_only_durable_and_tamper_evident(
@@ -907,9 +879,7 @@ def test_agent_run_once_completes_signed_managed_release_without_name_or_type_er
         assert release is None
         return _native_receipt(profile, running["release"])
 
-    def invoke(
-        _profile: object, action: str, release: dict[str, str]
-    ) -> None:
+    def invoke(_profile: object, action: str, release: dict[str, str]) -> None:
         native_invocations.append((action, release))
         running["release"] = release
 
@@ -980,9 +950,7 @@ def test_agent_release_failure_passes_full_safe_rollback_context(
         restored: dict[str, str],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        captured.update(
-            release_id=release_id, failed=failed, restored=restored, **kwargs
-        )
+        captured.update(release_id=release_id, failed=failed, restored=restored, **kwargs)
         return {}
 
     monkeypatch.setattr(AGENT, "rollback_remote", fake_rollback)
@@ -1042,9 +1010,7 @@ def test_agent_unknown_completion_is_reconciled_without_blind_rollback(
         assert release is None
         return _native_receipt(profile, running["release"])
 
-    def invoke(
-        _profile: object, action: str, release: dict[str, str]
-    ) -> None:
+    def invoke(_profile: object, action: str, release: dict[str, str]) -> None:
         native_invocations.append((action, release))
         running["release"] = release
 
@@ -1117,9 +1083,11 @@ def test_agent_reconciles_pending_operation_before_heartbeat_or_native_mutation(
     monkeypatch.setattr(
         AGENT,
         "native_receipt",
-        lambda _profile, release=None, *, current=False: _native_receipt(profile, candidate)
-        if current
-        else pytest.fail("unexpected target-specific native receipt"),
+        lambda _profile, release=None, *, current=False: (
+            _native_receipt(profile, candidate)
+            if current
+            else pytest.fail("unexpected target-specific native receipt")
+        ),
     )
 
     def unavailable(*_: object, **__: object) -> dict[str, Any]:

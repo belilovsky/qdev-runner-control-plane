@@ -61,12 +61,7 @@ def rewrite(text: str, resolver: Callable[[str, str], str] = resolve) -> str:
         commit = cache[key]
         suffix = match.group("suffix") or f" # {ref}"
         replacement = (
-            content[: match.start()]
-            + match.group("prefix")
-            + action
-            + "@"
-            + commit
-            + suffix
+            content[: match.start()] + match.group("prefix") + action + "@" + commit + suffix
         )
         output.append(replacement + ending)
     return "".join(output)

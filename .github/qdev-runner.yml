@@ -1,12 +1,11 @@
 schema_version: qdev-runner-v2
 execution_mode: github-hosted-primary
 self_hosted_recovery: true
-# Self-hosted profiles are permitted only in these manual recovery workflows.
+# The recovery job remains manual-only. Existing controller capacity is the
+# bounded primary lane while provider-hosted jobs are unavailable; both normal
+# workflows require exact, controller-issued per-job labels.
 recovery_workflows:
   - runner-smoke.yml
-# Existing QDev capacity is the bounded primary lane for repository verification
-# while provider-hosted jobs are unavailable. Each workflow remains fork-guarded
-# and binds to a unique controller-issued runner label.
 primary_self_hosted_workflows:
   - ci.yml
   - qdev-runner-contract.yml

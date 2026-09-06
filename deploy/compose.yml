@@ -3,9 +3,13 @@ name: qdev-runner
 services:
   broker-public:
     container_name: qdev-runner-broker-public
+    image: ${QDEV_CONTROLLER_IMAGE_REF:-qdev-runner-broker:local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker
+      args:
+        QDEV_SOURCE_REVISION: ${QDEV_CONTROLLER_RELEASE_REVISION:-unknown}
+        QDEV_POLICY_BUNDLE_DIGEST: ${QDEV_CONTROLLER_POLICY_BUNDLE_DIGEST:-unknown}
     restart: unless-stopped
     env_file: /etc/qdev-runner/broker.env
     environment:
@@ -58,9 +62,13 @@ services:
 
   broker-internal:
     container_name: qdev-runner-broker-internal
+    image: ${QDEV_CONTROLLER_IMAGE_REF:-qdev-runner-broker:local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.broker
+      args:
+        QDEV_SOURCE_REVISION: ${QDEV_CONTROLLER_RELEASE_REVISION:-unknown}
+        QDEV_POLICY_BUNDLE_DIGEST: ${QDEV_CONTROLLER_POLICY_BUNDLE_DIGEST:-unknown}
     restart: unless-stopped
     env_file:
       - path: /etc/qdev-runner/broker.env
@@ -79,6 +87,9 @@ services:
       QDEV_DATABASE: /var/lib/qdev-runner/broker-state/broker.db
       QDEV_CLAIM_SCOPES: /var/lib/qdev-runner/control-state/claim-scopes.json
       QDEV_ADMIN_PLATFORM_RECEIPT_ROOT: /var/lib/qdev-runner/admin-platform-receipts
+      # Admission and reconciliation append signed CI receipts here. The
+      # release configuration in /etc remains an immutable seed only.
+      QDEV_MANAGED_RELEASE_LEDGER: /var/lib/qdev-runner/managed-release-state/managed-release-ledger.yml
       # The operator uses the externally authenticated edge.  It must not
       # acquire a direct path around worker certificate verification.
       QDEV_CONTROLLER_URL: https://worker.ci.qdev.run
@@ -116,6 +127,7 @@ services:
       - /var/lib/qdev-runner/artifacts:/var/lib/qdev-runner/artifacts
       - /var/lib/qdev-runner/operations:/var/lib/qdev-runner/operations
       - /var/lib/qdev-runner/admin-platform-receipts:/var/lib/qdev-runner/admin-platform-receipts
+      - /var/lib/qdev-runner/managed-release-state:/var/lib/qdev-runner/managed-release-state
       - /var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro
       - /var/lib/qdev-runner/admin-platform-state:/var/lib/qdev-runner/admin-platform-state:ro
       - /var/lib/qdev-runner/release-jobs:/var/lib/qdev-runner/release-jobs

@@ -15,8 +15,33 @@ worker_uid=9021
 worker_user=qdev-runner
 install_root=/opt/qdev-runner-worker
 buildkit_version=0.33.0
-buildkit_sha256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead
+buildkit_source_sha256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306
+buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173
 buildkit_root="/opt/qdev-buildkit/${buildkit_version}"
+buildkit_artifact_root="${QDEV_BUILDKIT_ARTIFACT_ROOT:-/var/lib/qdev-runner-worker/buildkit-artifacts/${buildkit_version}}"
+buildkit_image_ref="${QDEV_BUILDKIT_IMAGE_REF:-}"
+buildkit_stage=""
+buildkit_container=""
+buildkit_release_stage=""
+
+cleanup_buildkit_materialization() {
+  if [[ -n "$buildkit_container" ]]; then
+    runuser -u "$worker_user" -- env \
+      HOME="/home/${worker_user}" \
+      XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
+      DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
+      docker rm --force "$buildkit_container" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$buildkit_stage" ]]; then
+    rm -rf -- "$buildkit_stage"
+  fi
+  if [[ -n "$buildkit_release_stage" ]]; then
+    rm -rf -- "$buildkit_release_stage"
+  fi
+}
+
+trap cleanup_buildkit_materialization EXIT
 
 disk_used="$(df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')"
 disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
@@ -88,17 +113,129 @@ runuser -u "$worker_user" -- env \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
   systemctl --user enable --now docker.service
 
-if [[ ! -x "${buildkit_root}/bin/buildkitd" ]]; then
-  buildkit_archive="$(mktemp /tmp/qdev-buildkit.XXXXXX.tar.gz)"
-  trap 'rm -f -- "$buildkit_archive"' EXIT
-  curl --fail --location --retry 5 \
-    "https://github.com/moby/buildkit/releases/download/v${buildkit_version}/buildkit-v${buildkit_version}.linux-amd64.tar.gz" \
-    --output "$buildkit_archive"
-  printf '%s  %s\n' "$buildkit_sha256" "$buildkit_archive" | sha256sum --check -
-  install -d -o root -g root -m 0755 "$buildkit_root"
-  tar -xzf "$buildkit_archive" -C "$buildkit_root"
-  rm -f -- "$buildkit_archive"
-  trap - EXIT
+validate_buildkit_materialization() {
+  local root="$1"
+  local marker value mode owner
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  mode="$(stat -c '%a' "$root")"
+  owner="$(stat -c '%u:%g' "$root")"
+  [[ "$mode" == "755" && "$owner" == "0:0" ]] || return 1
+  [[ -d "$root/bin" && ! -L "$root/bin" ]] || return 1
+  mode="$(stat -c '%a' "$root/bin")"
+  owner="$(stat -c '%u:%g' "$root/bin")"
+  [[ "$mode" == "755" && "$owner" == "0:0" ]] || return 1
+  for binary in buildkitd buildctl; do
+    [[ -f "$root/bin/$binary" && ! -L "$root/bin/$binary" && -x "$root/bin/$binary" ]] || return 1
+    mode="$(stat -c '%a' "$root/bin/$binary")"
+    owner="$(stat -c '%u:%g' "$root/bin/$binary")"
+    [[ "$mode" == "555" && "$owner" == "0:0" ]] || return 1
+  done
+  for marker in source-revision source-sha256; do
+    [[ -f "$root/$marker" && ! -L "$root/$marker" ]] || return 1
+    mode="$(stat -c '%a' "$root/$marker")"
+    owner="$(stat -c '%u:%g' "$root/$marker")"
+    [[ "$mode" == "444" && "$owner" == "0:0" ]] || return 1
+  done
+  value="$(tr -d '\r\n' < "$root/source-revision")"
+  [[ "$value" == "$buildkit_source_revision" ]] || return 1
+  value="$(tr -d '\r\n' < "$root/source-sha256")"
+  [[ "$value" == "$buildkit_source_sha256" ]] || return 1
+}
+
+materialize_buildkit_from_image() {
+  local image_ref="$1"
+  local incoming="$2"
+  local path target
+  [[ "$image_ref" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || {
+    printf 'QDEV_BUILDKIT_IMAGE_REF must be an immutable digest reference\n' >&2
+    return 1
+  }
+  install -d -o "$worker_user" -g "$worker_user" -m 0700 "$incoming/bin"
+  buildkit_container="$(runuser -u "$worker_user" -- env \
+    HOME="/home/${worker_user}" \
+    XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
+    DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
+    docker create --entrypoint /bin/true "$image_ref")"
+  [[ -n "$buildkit_container" ]] || return 1
+  for path in /usr/local/bin/buildkitd /usr/local/bin/buildctl \
+    /usr/local/share/qdev-buildkit/source-revision /usr/local/share/qdev-buildkit/source-sha256; do
+    if [[ "$path" == /usr/local/bin/* ]]; then
+      target="$incoming/bin/$(basename "$path")"
+    else
+      target="$incoming/$(basename "$path")"
+    fi
+    runuser -u "$worker_user" -- env \
+      HOME="/home/${worker_user}" \
+      XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
+      DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
+      docker cp "$buildkit_container:$path" "$target"
+  done
+  runuser -u "$worker_user" -- env \
+    HOME="/home/${worker_user}" \
+    XDG_RUNTIME_DIR="/run/user/${worker_uid}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
+    DOCKER_HOST="unix:///run/user/${worker_uid}/docker.sock" \
+    docker rm "$buildkit_container" >/dev/null
+  buildkit_container=""
+  chown root:root "$incoming" "$incoming/bin" \
+    "$incoming/bin/buildkitd" "$incoming/bin/buildctl" \
+    "$incoming/source-revision" "$incoming/source-sha256"
+  chmod 0755 "$incoming" "$incoming/bin"
+  chmod 0555 "$incoming/bin/buildkitd" "$incoming/bin/buildctl"
+  chmod 0444 "$incoming/source-revision" "$incoming/source-sha256"
+}
+
+if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
+  validate_buildkit_materialization "$buildkit_root" || {
+    printf 'existing BuildKit materialization is not source-bound; refusing to replace it\n' >&2
+    exit 1
+  }
+else
+  [[ "$buildkit_artifact_root" = /* ]] || {
+    printf 'QDEV_BUILDKIT_ARTIFACT_ROOT must be an absolute path\n' >&2
+    exit 1
+  }
+  buildkit_stage="$(mktemp -d /tmp/qdev-buildkit-stage.XXXXXX)"
+  buildkit_incoming="$buildkit_stage/incoming"
+  if [[ -n "$buildkit_image_ref" ]]; then
+    materialize_buildkit_from_image "$buildkit_image_ref" "$buildkit_incoming"
+  else
+    [[ -d "$buildkit_artifact_root" && ! -L "$buildkit_artifact_root" ]] || {
+      printf 'source-bound BuildKit artifact is required at %s or set QDEV_BUILDKIT_IMAGE_REF\n' \
+        "$buildkit_artifact_root" >&2
+      exit 1
+    }
+    buildkit_incoming="$buildkit_artifact_root"
+  fi
+  validate_buildkit_materialization "$buildkit_incoming" || {
+    printf 'source-bound BuildKit artifact failed validation\n' >&2
+    exit 1
+  }
+  buildkit_parent="$(dirname "$buildkit_root")"
+  install -d -o root -g root -m 0755 "$buildkit_parent"
+  buildkit_release_stage="$(mktemp -d "${buildkit_parent}/.${buildkit_version}.staging.XXXXXX")"
+  install -d -o root -g root -m 0755 "$buildkit_release_stage/bin"
+  install -o root -g root -m 0555 "$buildkit_incoming/bin/buildkitd" \
+    "$buildkit_release_stage/bin/buildkitd"
+  install -o root -g root -m 0555 "$buildkit_incoming/bin/buildctl" \
+    "$buildkit_release_stage/bin/buildctl"
+  install -o root -g root -m 0444 "$buildkit_incoming/source-revision" \
+    "$buildkit_release_stage/source-revision"
+  install -o root -g root -m 0444 "$buildkit_incoming/source-sha256" \
+    "$buildkit_release_stage/source-sha256"
+  chmod 0755 "$buildkit_release_stage" "$buildkit_release_stage/bin"
+  if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
+    printf 'BuildKit destination appeared during materialization; refusing replacement\n' >&2
+    exit 1
+  fi
+  mv -- "$buildkit_release_stage" "$buildkit_root"
+  buildkit_release_stage=""
+  validate_buildkit_materialization "$buildkit_root" || {
+    printf 'new BuildKit materialization failed post-install validation\n' >&2
+    exit 1
+  }
 fi
 
 install -d -o root -g root -m 0755 "$install_root"

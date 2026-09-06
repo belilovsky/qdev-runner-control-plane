@@ -229,9 +229,7 @@ def _managed_file(path: Path, marker: bytes, *, allow_legacy_hook: bool = False)
     raise ValueError(f"refusing to replace unmanaged file: {path}")
 
 
-def _copy_fixed(
-    source: Path, destination: Path, *, mode: int, gid: int, uid: int = 0
-) -> None:
+def _copy_fixed(source: Path, destination: Path, *, mode: int, gid: int, uid: int = 0) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     flags = (
         os.O_WRONLY
@@ -242,9 +240,10 @@ def _copy_fixed(
     )
     descriptor = os.open(destination, flags, 0o600)
     try:
-        with source.open("rb") as source_handle, os.fdopen(
-            descriptor, "wb", closefd=False
-        ) as destination_handle:
+        with (
+            source.open("rb") as source_handle,
+            os.fdopen(descriptor, "wb", closefd=False) as destination_handle,
+        ):
             shutil.copyfileobj(source_handle, destination_handle)
             destination_handle.flush()
             os.fsync(destination_handle.fileno())
@@ -258,9 +257,7 @@ def _copy_fixed(
 
 
 def _staged_path(destination: Path, operation: str) -> Path:
-    return destination.with_name(
-        f".{destination.name}.{secrets.token_hex(16)}.{operation}"
-    )
+    return destination.with_name(f".{destination.name}.{secrets.token_hex(16)}.{operation}")
 
 
 def _safe_root_directory(path: Path, *, mode: int, gid: int = 0) -> None:
@@ -439,13 +436,16 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
     candidate = candidate.resolve(strict=True)
     if candidate != EXPECTED_REPOSITORY or not (candidate / "HEAD").is_file():
         raise ValueError("candidate repository is not the QazCoop production bare repository")
-    if subprocess.run(
-        ["/usr/bin/git", "rev-parse", "--is-bare-repository"],
-        cwd=candidate,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() != "true":
+    if (
+        subprocess.run(
+            ["/usr/bin/git", "rev-parse", "--is-bare-repository"],
+            cwd=candidate,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        != "true"
+    ):
         raise ValueError("candidate repository must be bare")
 
     manifest = validate_bundle(bundle)

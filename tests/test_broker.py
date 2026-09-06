@@ -99,6 +99,73 @@ def test_github_transport_errors_are_broker_recoverable(tmp_path: Path) -> None:
     client.close()
 
 
+def test_workflow_run_jobs_reads_every_page_for_the_exact_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_pages: list[str] = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/belilovsky/qazgeo/actions/runs/41/attempts/2/jobs"
+        assert request.url.params["filter"] == "all"
+        assert request.url.params["per_page"] == "100"
+        page = request.url.params["page"]
+        observed_pages.append(page)
+        job_id = 501 if page == "1" else 502
+        return httpx.Response(200, json={"total_count": 2, "jobs": [{"id": job_id}]})
+
+    client = GitHubAppClient(
+        "1",
+        tmp_path / "unused-app.pem",
+        transport=httpx.MockTransport(provider),
+    )
+    monkeypatch.setattr(client, "installation_token", lambda _installation_id: "token")
+
+    assert [job["id"] for job in client.workflow_run_jobs(7, "belilovsky/qazgeo", 41, 2)] == [
+        501,
+        502,
+    ]
+    assert observed_pages == ["1", "2"]
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("pages", "message"),
+    [
+        (
+            [
+                {"total_count": 2, "jobs": [{"id": 501}]},
+                {"total_count": 3, "jobs": [{"id": 502}, {"id": 503}]},
+            ],
+            "changed during pagination",
+        ),
+        (
+            [{"total_count": 2, "jobs": [{"id": 501}, {"id": 501}]}],
+            "duplicated",
+        ),
+    ],
+)
+def test_workflow_run_jobs_rejects_unstable_or_duplicated_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pages: list[dict[str, object]],
+    message: str,
+) -> None:
+    def provider(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        return httpx.Response(200, json=pages[page - 1])
+
+    client = GitHubAppClient(
+        "1",
+        tmp_path / "unused-app.pem",
+        transport=httpx.MockTransport(provider),
+    )
+    monkeypatch.setattr(client, "installation_token", lambda _installation_id: "token")
+
+    with pytest.raises(GitHubError, match=message):
+        client.workflow_run_jobs(7, "belilovsky/qazgeo", 41, 2)
+    client.close()
+
+
 def test_certificate_bound_scope_does_not_fall_back_to_static_worker_token() -> None:
     fingerprint = "a" * 64
     scope = ClaimScope(

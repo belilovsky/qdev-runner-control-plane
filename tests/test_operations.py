@@ -347,7 +347,7 @@ def _fleet_bootstrap_operation_payload(
         "kind": "fleet-bootstrap-operation",
         "observed_at": "2026-09-05T08:00:00Z",
         "execution": {
-            "schema": "qdev-fleet-bootstrap-execution-receipt-v1",
+            "schema": "qdev-fleet-bootstrap-execution-receipt-v2",
             "status": status,
             "operation_status": operation_status,
             "action": "activate-controller",
@@ -355,6 +355,9 @@ def _fleet_bootstrap_operation_payload(
             "request_fingerprint": "a" * 64,
             "controller_revision": "b" * 40,
             "controller_release_digest": "sha256:" + "c" * 64,
+            "controller_image_digest": "sha256:" + "d" * 64,
+            "controller_internal_image_digest": "sha256:" + "e" * 64,
+            "activation_envelope_digest": "sha256:" + "f" * 64,
             "release_lane": None,
             "host_agent_mtls_identity": None,
             "error_code": error_code,
@@ -431,6 +434,7 @@ def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
         "replaced_expired_scope": False,
         "rolled_over_terminal_scope": False,
         "rebound_legacy_scope": False,
+        "repaired_managed_scope": False,
         "claim_scope": {},
         "immutable_tuple": {},
         "fifo_skipped": [
@@ -464,6 +468,7 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
         "replaced_expired_scope": False,
         "rolled_over_terminal_scope": False,
         "rebound_legacy_scope": False,
+        "repaired_managed_scope": False,
         "claim_scope": {},
         "immutable_tuple": {},
         "fifo_skipped": [
@@ -490,8 +495,9 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
 
 def test_fifo_receipt_schema_binds_provider_attempt() -> None:
     schema = json.loads(
-        (Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json")
-        .read_text(encoding="utf-8")
+        (
+            Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json"
+        ).read_text(encoding="utf-8")
     )
     fifo_skip = schema["$defs"]["fifo_skipped"]["items"]
 

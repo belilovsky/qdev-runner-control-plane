@@ -1,9 +1,9 @@
-# QDev runner control-plane CI
+# QDev controller-managed GitHub Actions execution
 
-`CI / verify` and `QDev runner contract / qdev-runner-contract` run on the
-existing `qdev-ci` pool while provider-hosted jobs are unavailable. They are
-allowlisted in `.github/qdev-runner.yml`, reject fork pull requests, use unique
-job labels, and must be evaluated on the exact pull-request SHA.
+Required checks run only on the centralized, ephemeral QDev runner pool. There
+is no GitHub-hosted fallback. GitHub remains the workflow orchestrator; the
+controller independently admits the exact repository, run, job, attempt, SHA,
+event, ref, profile, and unique lease label.
 
 The self-hosted pool is an explicit bounded lane. Workflows listed in
 `recovery_workflows` are manual-only; exact workflows listed in
@@ -13,6 +13,7 @@ only after controller, worker, capacity, executor-image and pause-owner gates
 pass. A successful recovery run does not substitute for an unexecuted required
 check.
 
-Each recovery job uses one static QDev profile and a unique lease label. Matrix
-jobs also include `${{ strategy.job-index }}` so a JIT runner cannot bind to a
-sibling matrix job.
+The manual runner smoke is a controller recovery verification lane, not an
+alternate registration path. Dispatch it only through a signed, exact-SHA
+claim after controller, worker, capacity, executor-image, and pause-owner gates
+pass. The provider runner is removed after its terminal receipt.

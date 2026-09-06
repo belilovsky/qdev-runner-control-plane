@@ -28,7 +28,7 @@ from .fleet_bootstrap import (
     FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
-    bootstrap_request_fingerprint,
+    bootstrap_request_fingerprints,
 )
 from .fleet_bootstrap_executor import (
     BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA,
@@ -46,9 +46,7 @@ STARTED_SCHEMA = "qdev-fleet-host-dispatch-started-v1"
 DEFAULT_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
 DEFAULT_ENROLMENT_ADAPTER = Path("/usr/local/sbin/qdev-release-host-agent-enrol")
 DEFAULT_RECOVERY_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
-DEFAULT_CONTROLLER_STATUS = Path(
-    "/var/lib/qdev-runner/controller-status/controller-release.json"
-)
+DEFAULT_CONTROLLER_STATUS = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
 
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
@@ -56,15 +54,11 @@ _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_FILE_BYTES = 64 * 1024
-_ACTIONS = frozenset(
-    {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
-)
+_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
 
 DispatchStatus = Literal["queued", "completed", "failed", "unknown", "access_blocked"]
 OperationStatus = Literal["pending", "completed", "unknown"]
-BootstrapAction = Literal[
-    "activate-controller", "enrol-host-agent", "restore-existing-worker"
-]
+BootstrapAction = Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
 
 
 class FleetHostDispatchError(FleetBootstrapError):
@@ -236,9 +230,7 @@ def verified_controller_runtime_anchor(
             "internal_installed_digest",
         }
     ):
-        raise FleetHostDispatchError(
-            "fleet host dispatch controller runtime identity is invalid"
-        )
+        raise FleetHostDispatchError("fleet host dispatch controller runtime identity is invalid")
     measured_digests = (
         runtime_identity.get("source_digest"),
         runtime_identity.get("public_image_id"),
@@ -248,8 +240,7 @@ def verified_controller_runtime_anchor(
         dependency_identity.get("internal_installed_digest"),
     )
     if any(
-        not isinstance(value, str) or not _DIGEST.fullmatch(value)
-        for value in measured_digests
+        not isinstance(value, str) or not _DIGEST.fullmatch(value) for value in measured_digests
     ):
         raise FleetHostDispatchError(
             "fleet host dispatch controller runtime measurements are invalid"
@@ -369,8 +360,10 @@ class DispatchEnvelope:
         if raw.get("schema") != DISPATCH_REQUEST_SCHEMA or not isinstance(key, str):
             raise FleetHostDispatchError("fleet host dispatch request identity is invalid")
         _validate_key(key)
-        if key != expected_key or not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(
-            fingerprint
+        if (
+            key != expected_key
+            or not isinstance(fingerprint, str)
+            or not _FINGERPRINT.fullmatch(fingerprint)
         ):
             raise FleetHostDispatchError("fleet host dispatch request identity is invalid")
         try:
@@ -379,7 +372,7 @@ class DispatchEnvelope:
             raise FleetHostDispatchError(
                 "fleet host dispatch bootstrap request is invalid"
             ) from exc
-        if bootstrap_request_fingerprint(request) != fingerprint:
+        if fingerprint not in bootstrap_request_fingerprints(request):
             raise FleetHostDispatchError("fleet host dispatch request fingerprint is invalid")
         active_jobs = raw.get("active_jobs")
         if request.action == "restore-existing-worker":
@@ -402,9 +395,7 @@ class DispatchEnvelope:
             "schema": DISPATCH_REQUEST_SCHEMA,
             "idempotency_key": self.idempotency_key,
             "request_fingerprint": self.request_fingerprint,
-            "request": self.request.model_dump(
-                mode="json", by_alias=True, exclude_none=False
-            ),
+            "request": self.request.model_dump(mode="json", by_alias=True, exclude_none=False),
             "active_jobs": self.active_jobs,
         }
 
@@ -487,8 +478,11 @@ class HostDispatchObservation:
     action: BootstrapAction
     idempotency_key: str
     request_fingerprint: str
-    controller_revision: str
-    controller_release_digest: str
+    controller_revision: str | None
+    controller_release_digest: str | None
+    controller_image_digest: str | None
+    controller_internal_image_digest: str | None
+    activation_envelope_digest: str | None
     release_lane: str | None = None
     host_agent_mtls_identity: str | None = None
     worker_name: str | None = None
@@ -507,6 +501,9 @@ class HostDispatchObservation:
             "request_fingerprint": self.request_fingerprint,
             "controller_revision": self.controller_revision,
             "controller_release_digest": self.controller_release_digest,
+            "controller_image_digest": self.controller_image_digest,
+            "controller_internal_image_digest": self.controller_internal_image_digest,
+            "activation_envelope_digest": self.activation_envelope_digest,
             "release_lane": self.release_lane,
             "host_agent_mtls_identity": self.host_agent_mtls_identity,
             "error_code": self.error_code,
@@ -557,6 +554,9 @@ class FleetHostDispatchSpool:
             request_fingerprint=envelope.request_fingerprint,
             controller_revision=request.controller_revision,
             controller_release_digest=request.controller_release_digest,
+            controller_image_digest=request.controller_image_digest,
+            controller_internal_image_digest=request.controller_internal_image_digest,
+            activation_envelope_digest=request.activation_envelope_digest,
             release_lane=lane.name if lane else None,
             host_agent_mtls_identity=lane.host_agent_mtls_identity if lane else None,
             worker_name=request.worker_name,
@@ -580,9 +580,10 @@ class FleetHostDispatchSpool:
         if request.action == "restore-existing-worker" and active_jobs != 0:
             if isinstance(active_jobs, bool) or not isinstance(active_jobs, int) or active_jobs < 0:
                 raise FleetHostDispatchError("active work observation is invalid")
-            fingerprint = bootstrap_request_fingerprint(request)
-            envelope = DispatchEnvelope(idempotency_key, fingerprint, request, active_jobs)
-            store.begin(idempotency_key, request)
+            record = store.begin(idempotency_key, request)
+            envelope = DispatchEnvelope(
+                idempotency_key, record.request_fingerprint, request, active_jobs
+            )
             return self._observation(
                 policy=policy,
                 envelope=envelope,
@@ -594,7 +595,7 @@ class FleetHostDispatchSpool:
             raise FleetHostDispatchError("active work observation does not match action")
 
         record = store.begin(idempotency_key, request)
-        fingerprint = bootstrap_request_fingerprint(request)
+        fingerprint = record.request_fingerprint
         envelope = DispatchEnvelope(idempotency_key, fingerprint, request, active_jobs)
         if record.status == "completed":
             return self._observation(
@@ -637,14 +638,10 @@ class FleetHostDispatchSpool:
                 result_record.request_fingerprint != fingerprint
                 or result_record.action != request.action
             ):
-                raise FleetHostDispatchError(
-                    "fleet host dispatch result does not match request"
-                )
+                raise FleetHostDispatchError("fleet host dispatch result does not match request")
             if result_record.status == "completed":
                 assert result_record.result is not None
-                completed = store.complete(
-                    idempotency_key, request, result_record.result
-                )
+                completed = store.complete(idempotency_key, request, result_record.result)
                 return self._observation(
                     policy=policy,
                     envelope=envelope,
@@ -656,9 +653,7 @@ class FleetHostDispatchSpool:
                 policy=policy,
                 envelope=envelope,
                 status=result_record.status,
-                operation_status=(
-                    "unknown" if result_record.status == "unknown" else "pending"
-                ),
+                operation_status=("unknown" if result_record.status == "unknown" else "pending"),
                 error_code=result_record.error_code,
             )
 
@@ -822,14 +817,10 @@ class FleetHostDispatcher:
         self._publish_result(result)
         return result
 
-    def _execute(
-        self, policy: FleetBootstrapPolicy, envelope: DispatchEnvelope
-    ) -> DispatchResult:
+    def _execute(self, policy: FleetBootstrapPolicy, envelope: DispatchEnvelope) -> DispatchResult:
         request = envelope.request
         if request.action in {"activate-controller", "enrol-host-agent"}:
-            action = cast(
-                Literal["activate-controller", "enrol-host-agent"], request.action
-            )
+            action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
             adapter = (
                 self.activation_adapter
                 if action == "activate-controller"
@@ -880,6 +871,9 @@ class FleetHostDispatcher:
                 "action": action,
                 "controller_revision": request.controller_revision,
                 "controller_release_digest": request.controller_release_digest,
+                "controller_image_digest": request.controller_image_digest,
+                "controller_internal_image_digest": request.controller_internal_image_digest,
+                "activation_envelope_digest": request.activation_envelope_digest,
                 "adapter_status": adapter_status,
             }
             if lane is not None:

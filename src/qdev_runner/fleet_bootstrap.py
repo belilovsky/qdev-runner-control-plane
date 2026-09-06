@@ -26,10 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .release_lane import ReleaseLane, ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v2"
-REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v1"
-ALLOWED_ACTIONS = frozenset(
-    {"activate-controller", "enrol-host-agent", "restore-existing-worker"}
-)
+REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v2"
+ALLOWED_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -59,8 +57,10 @@ class BootstrapIdentity:
 
 @dataclass(frozen=True)
 class ControllerActivation:
-    rollback_revision: str
-    rollback_release_digest: str
+    mode: str
+    envelope_schema: str
+    public_key_binding: str
+    max_envelope_ttl_seconds: int
 
 
 @dataclass(frozen=True)
@@ -85,29 +85,67 @@ class FleetBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_name: str = Field(alias="schema")
-    action: Literal[
-        "activate-controller", "enrol-host-agent", "restore-existing-worker"
-    ]
+    action: Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
     source_sha: str
     run_id: int = Field(ge=1)
     job_id: int = Field(ge=1)
     attempt: int = Field(ge=1)
     claim_ttl_seconds: int = Field(ge=1)
-    controller_revision: str
-    controller_release_digest: str
+    controller_revision: str | None = None
+    controller_release_digest: str | None = None
+    controller_image_digest: str | None = None
+    controller_internal_image_digest: str | None = None
+    activation_envelope_digest: str | None = None
     release_lane: str | None = None
     worker_name: str | None = None
 
     @model_validator(mode="after")
     def validate_action_shape(self) -> FleetBootstrapRequest:
+        # v2 callers may omit the internal image only for the legacy
+        # single-image deployment.  Normalize it before fingerprints, durable
+        # storage and adapter dispatch so new receipts always bind both images.
+        if (
+            self.action in {"activate-controller", "enrol-host-agent"}
+            and self.controller_internal_image_digest is None
+            and self.controller_image_digest is not None
+        ):
+            object.__setattr__(
+                self, "controller_internal_image_digest", self.controller_image_digest
+            )
         if self.action == "activate-controller":
-            if self.release_lane is not None or self.worker_name is not None:
+            if (
+                self.release_lane is not None
+                or self.worker_name is not None
+                or self.controller_revision is None
+                or self.controller_release_digest is None
+                or self.controller_image_digest is None
+                or self.controller_internal_image_digest is None
+                or self.activation_envelope_digest is None
+            ):
                 raise ValueError("controller activation cannot name a lane or worker")
         elif self.action == "enrol-host-agent":
-            if self.release_lane is None or self.worker_name is not None:
+            if (
+                self.release_lane is None
+                or self.worker_name is not None
+                or self.controller_revision is None
+                or self.controller_release_digest is None
+                or self.controller_image_digest is None
+                or self.controller_internal_image_digest is None
+                or self.activation_envelope_digest is None
+            ):
                 raise ValueError("host-agent enrolment must name exactly one release lane")
-        elif self.release_lane is not None or self.worker_name is None:
-            raise ValueError("worker restoration must name exactly one worker")
+        elif (
+            self.release_lane is not None
+            or self.worker_name is None
+            or self.controller_revision is not None
+            or self.controller_release_digest is not None
+            or self.controller_image_digest is not None
+            or self.controller_internal_image_digest is not None
+            or self.activation_envelope_digest is not None
+        ):
+            raise ValueError(
+                "worker restoration must name exactly one worker and no activation tuple"
+            )
         return self
 
 
@@ -133,9 +171,7 @@ class FleetBootstrapPolicy:
         self.identity = self._identity(document["bootstrap"])
         self.activation = self._activation(document["activation"])
         self._release_lanes = ReleaseLanePolicy(release_lanes_path)
-        self._allowed_lanes = self._parse_lanes(
-            document["enrolment"], self._release_lanes
-        )
+        self._allowed_lanes = self._parse_lanes(document["enrolment"], self._release_lanes)
         self._allowed_workers = self._parse_workers(document["workers"])
         self._worker_targets = self._parse_worker_targets(document["worker_targets"])
 
@@ -174,24 +210,29 @@ class FleetBootstrapPolicy:
     @staticmethod
     def _activation(raw: object) -> ControllerActivation:
         expected = {
-            "rollback_revision",
-            "rollback_release_digest",
+            "mode",
+            "envelope_schema",
+            "public_key_binding",
+            "max_envelope_ttl_seconds",
         }
         if not isinstance(raw, dict) or set(raw) != expected:
             raise FleetBootstrapError("bootstrap activation policy is invalid")
-        values = tuple(raw[name] for name in sorted(expected))
-        if not all(isinstance(value, str) for value in values):
-            raise FleetBootstrapError("bootstrap activation values are invalid")
-        activation = ControllerActivation(
-            rollback_revision=str(raw["rollback_revision"]),
-            rollback_release_digest=str(raw["rollback_release_digest"]),
-        )
+        ttl = raw["max_envelope_ttl_seconds"]
         if (
-            not _SHA.fullmatch(activation.rollback_revision)
-            or not _DIGEST.fullmatch(activation.rollback_release_digest)
+            raw["mode"] != "signed-external-envelope"
+            or raw["envelope_schema"] != "qdev-controller-activation-envelope-v1"
+            or raw["public_key_binding"] != "controller-registry"
+            or isinstance(ttl, bool)
+            or not isinstance(ttl, int)
+            or not 60 <= ttl <= 1800
         ):
-            raise FleetBootstrapError("bootstrap rollback controller tuple is invalid")
-        return activation
+            raise FleetBootstrapError("bootstrap activation values are invalid")
+        return ControllerActivation(
+            mode=str(raw["mode"]),
+            envelope_schema=str(raw["envelope_schema"]),
+            public_key_binding=str(raw["public_key_binding"]),
+            max_envelope_ttl_seconds=ttl,
+        )
 
     @staticmethod
     def _parse_lanes(raw: object, policy: ReleaseLanePolicy) -> frozenset[str]:
@@ -296,16 +337,27 @@ class FleetBootstrapPolicy:
     def validate(self, request: FleetBootstrapRequest) -> None:
         if request.schema_name != REQUEST_SCHEMA:
             raise FleetBootstrapError("bootstrap request schema is invalid")
-        if (
-            not _SHA.fullmatch(request.source_sha)
-            or not _SHA.fullmatch(request.controller_revision)
-            or not _DIGEST.fullmatch(request.controller_release_digest)
-        ):
-            raise FleetBootstrapError("bootstrap immutable request values are invalid")
+        if not _SHA.fullmatch(request.source_sha):
+            raise FleetBootstrapError("bootstrap source SHA is invalid")
         if request.claim_ttl_seconds > self.identity.max_claim_ttl_seconds:
             raise FleetBootstrapError("bootstrap claim TTL exceeds policy")
-        if request.controller_revision != request.source_sha:
-            raise FleetBootstrapError("bootstrap controller revision is not source-bound")
+        if request.action in {"activate-controller", "enrol-host-agent"} and (
+            request.controller_revision is None
+            or request.controller_revision != request.source_sha
+            or _SHA.fullmatch(request.controller_revision) is None
+            or request.controller_release_digest is None
+            or _DIGEST.fullmatch(request.controller_release_digest) is None
+            or request.controller_image_digest is None
+            or _DIGEST.fullmatch(request.controller_image_digest) is None
+            or request.controller_internal_image_digest is None
+            or _DIGEST.fullmatch(request.controller_internal_image_digest) is None
+            or request.activation_envelope_digest is None
+            or _DIGEST.fullmatch(request.activation_envelope_digest) is None
+        ):
+            raise FleetBootstrapError(
+                "bootstrap activation must bind the workflow source, release, image, "
+                "and signed envelope"
+            )
         if request.action == "enrol-host-agent" and request.release_lane not in self._allowed_lanes:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
         if (
@@ -314,9 +366,7 @@ class FleetBootstrapPolicy:
         ):
             raise FleetBootstrapError("bootstrap worker is not allowlisted")
 
-    def validate_oidc_claims(
-        self, claims: dict[str, Any], request: FleetBootstrapRequest
-    ) -> None:
+    def validate_oidc_claims(self, claims: dict[str, Any], request: FleetBootstrapRequest) -> None:
         """Bind the OIDC claim to one immutable workflow attempt.
 
         The JWT signature and standard temporal checks are performed by the
@@ -325,8 +375,7 @@ class FleetBootstrapPolicy:
         run, job-attempt and audience binding.
         """
         expected_workflow_ref = (
-            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/"
-            f"{self.identity.branch}"
+            f"{self.identity.repository}/{self.identity.workflow}@refs/heads/{self.identity.branch}"
         )
         attempt = claims.get("run_attempt")
         if isinstance(attempt, bool) or str(attempt) != str(request.attempt):
@@ -356,6 +405,31 @@ def bootstrap_request_fingerprint(request: FleetBootstrapRequest) -> str:
         payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def bootstrap_request_fingerprints(request: FleetBootstrapRequest) -> frozenset[str]:
+    """Return current and wire-compatible legacy fingerprints for one request.
+
+    The dual-image field was added to the v2 request without changing its
+    schema.  Existing durable operation/spool records may therefore bind the
+    exact legacy JSON where that optional field was null.  Accept that digest
+    only when validation proved this is the legacy single-image shape; all new
+    records continue to use the normalized dual-image fingerprint.
+    """
+
+    fingerprints = {bootstrap_request_fingerprint(request)}
+    if (
+        request.action in {"activate-controller", "enrol-host-agent"}
+        and request.controller_image_digest is not None
+        and request.controller_internal_image_digest == request.controller_image_digest
+    ):
+        payload = request.model_dump(mode="json", by_alias=True, exclude_none=False)
+        payload["controller_internal_image_digest"] = None
+        canonical = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        fingerprints.add(hashlib.sha256(canonical).hexdigest())
+    return frozenset(fingerprints)
 
 
 @dataclass(frozen=True)
@@ -401,8 +475,7 @@ class BootstrapOperationStore:
     @staticmethod
     def _validate_result(result: dict[str, Any]) -> None:
         if not isinstance(result, dict) or any(
-            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key)
-            for key in result
+            not isinstance(key, str) or _SENSITIVE_RESULT_KEY.search(key) for key in result
         ):
             raise FleetBootstrapError("bootstrap operation result is not safe to persist")
         for value in result.values():
@@ -473,7 +546,7 @@ class BootstrapOperationStore:
                 if existing is not None:
                     if existing.idempotency_key != idempotency_key:
                         raise FleetBootstrapError("bootstrap operation state key mismatch")
-                    if existing.request_fingerprint != fingerprint:
+                    if existing.request_fingerprint not in bootstrap_request_fingerprints(request):
                         raise FleetBootstrapError(
                             "bootstrap idempotency key was reused with different parameters"
                         )
@@ -492,7 +565,6 @@ class BootstrapOperationStore:
     ) -> BootstrapOperationRecord:
         self._validate_key(idempotency_key)
         self._validate_result(result)
-        fingerprint = bootstrap_request_fingerprint(request)
         with self._locked() as lock:
             try:
                 existing = self._read_unlocked()
@@ -500,7 +572,7 @@ class BootstrapOperationStore:
                     raise FleetBootstrapError("bootstrap operation has not been started")
                 if (
                     existing.idempotency_key != idempotency_key
-                    or existing.request_fingerprint != fingerprint
+                    or existing.request_fingerprint not in bootstrap_request_fingerprints(request)
                 ):
                     raise FleetBootstrapError("bootstrap operation parameters do not match")
                 if existing.status == "completed":
@@ -508,7 +580,7 @@ class BootstrapOperationStore:
                         raise FleetBootstrapError("bootstrap operation result cannot be changed")
                     return existing
                 record = BootstrapOperationRecord(
-                    idempotency_key, fingerprint, "completed", dict(result)
+                    idempotency_key, existing.request_fingerprint, "completed", dict(result)
                 )
                 self._write_unlocked(record)
                 return record
