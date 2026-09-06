@@ -25,9 +25,13 @@ cannot choose a host, service, executable, certificate or CA key.
 
    The operation measures the active runtime receipt and the target Git tree,
    signs the blocked supersession and new source admission locally, and never
-   accepts either SHA from the caller. It is crash-resumable and a replay after
-   completion returns `already_completed` without a new receipt. Preserve the
-   returned private receipt URIs and ledger digest.
+   accepts either SHA from the caller. A controller that is already the measured
+   active runtime may be replaced only after every required lane has a final
+   `passed` or `not_applicable` result. That rollover terminalizes the old
+   attempt without inventing a failing lane, then admits the new exact source.
+   It is crash-resumable and a replay after completion returns
+   `already_completed` without a new receipt. Preserve the returned private
+   receipt URIs and ledger digest.
 2. Activate that same exact controller release containing the typed recovery API and
    the two fixed host-agent profiles. Enrol each already assigned host with its
    own root-owned configuration and certificate. Activation and enrolment use

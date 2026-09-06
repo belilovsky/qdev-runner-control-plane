@@ -642,7 +642,18 @@ class AdminPlatformLedger:
                 outcome in {"failed", "blocked", "auth_blocked"}
                 for outcome in latest_results.values()
             ):
-                raise AdminPlatformLedgerError(f"{entry_id} blocked result is missing")
+                complete_replaced_attempt = (
+                    entry_id == "controller"
+                    and set(latest_results) == set(RESULT_LANES_V3)
+                    and all(
+                        outcome in {"passed", "not_applicable"}
+                        for outcome in latest_results.values()
+                    )
+                )
+                if not complete_replaced_attempt:
+                    raise AdminPlatformLedgerError(
+                        f"{entry_id} blocked result is missing"
+                    )
             if status == "live_accepted":
                 missing_lanes = set(RESULT_LANES_V3) - set(latest_results)
                 invalid_lanes = {

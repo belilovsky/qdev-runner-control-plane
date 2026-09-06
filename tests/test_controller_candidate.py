@@ -122,6 +122,37 @@ def _prepare(tmp_path: Path) -> dict[str, Any]:
     )
 
 
+def _complete_current_runtime(
+    state: AdminPlatformStateStore,
+    signer: OperationStore,
+) -> AdminPlatformCandidate:
+    digest, snapshot = state.current()
+    candidate = AdminPlatformCandidate(**snapshot["active_candidate"])
+    for offset, (lane, outcome) in enumerate(
+        (
+            ("ci", "passed"),
+            ("publication", "passed"),
+            ("deploy", "passed"),
+            ("browser", "not_applicable"),
+            ("rollback", "passed"),
+            ("observation", "not_applicable"),
+        ),
+        start=1,
+    ):
+        update = state.record_result(
+            expected_sha256=digest,
+            receipt=_evidence(
+                signer,
+                candidate=candidate,
+                observed_at=f"2026-09-05T00:00:0{offset}Z",
+                lane=lane,
+                outcome=outcome,
+            ),
+        )
+        digest = update.ledger_sha256
+    return candidate
+
+
 def test_prepare_controller_candidate_is_transactional_and_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -990,6 +1021,128 @@ def test_prepare_controller_candidate_supersedes_non_deployed_durable_candidate(
         "blocked",
         None,
     ]
+
+
+def test_prepare_controller_candidate_replaces_complete_active_runtime(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    previous = _complete_current_runtime(state, signer)
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert result["status"] == "completed"
+    assert len(result["receipt_uris"]) == 2
+    _, current = state.current()
+    entry = current["entries"][0]
+    assert entry["attempts"][0]["terminal_state"] == "blocked"
+    assert entry["attempts"][1]["terminal_state"] is None
+    assert current["active_candidate"]["source_sha"] == NEXT_SHA
+    previous_results = [
+        item for item in entry["results"] if item["release_id"] == previous.release_id
+    ]
+    assert {item["lane"] for item in previous_results} == {
+        "source",
+        "ci",
+        "publication",
+        "deploy",
+        "browser",
+        "rollback",
+        "observation",
+    }
+    assert all(item["outcome"] in {"passed", "not_applicable"} for item in previous_results)
+
+    replay = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    assert replay["status"] == "already_completed"
+    assert replay["receipt_uris"] == []
+
+
+def test_prepare_controller_candidate_rejects_incomplete_active_runtime(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    digest, snapshot = state.current()
+    current = AdminPlatformCandidate(**snapshot["active_candidate"])
+    for offset, lane in enumerate(("ci", "publication", "deploy"), start=1):
+        update = state.record_result(
+            expected_sha256=digest,
+            receipt=_evidence(
+                signer,
+                candidate=current,
+                observed_at=f"2026-09-05T00:00:0{offset}Z",
+                lane=lane,
+                outcome="passed",
+            ),
+        )
+        digest = update.ledger_sha256
+    before = ledger.read_bytes()
+
+    with pytest.raises(
+        ControllerCandidateError,
+        match="active controller attempt cannot be superseded",
+    ):
+        prepare_controller_candidate(
+            source_sha=NEXT_SHA,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+    assert ledger.read_bytes() == before
+
+
+def test_prepare_controller_candidate_resumes_active_runtime_rollover(
+    tmp_path: Path,
+) -> None:
+    state, signer, ledger, receipts, signer_root = _initialize(tmp_path)
+    _complete_current_runtime(state, signer)
+
+    with patch.object(
+        AdminPlatformStateStore,
+        "restart_attempt",
+        side_effect=RuntimeError("simulated restart interruption"),
+    ), pytest.raises(RuntimeError, match="simulated restart interruption"):
+        prepare_controller_candidate(
+            source_sha=NEXT_SHA,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    _, interrupted = state.current()
+    assert interrupted["program"]["status"] == "blocked"
+    assert interrupted["entries"][0]["attempts"][0]["terminal_state"] == "blocked"
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    assert result["status"] == "completed"
+    assert len(result["receipt_uris"]) == 1
+    _, recovered = state.current()
+    assert recovered["program"]["status"] == "active"
+    assert recovered["active_candidate"]["source_sha"] == NEXT_SHA
 
 
 def test_prepare_controller_candidate_ignores_historical_lane_outcomes(

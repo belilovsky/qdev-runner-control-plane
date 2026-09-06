@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from .admin_platform import AdminPlatformCandidate
+from .admin_platform import RESULT_LANES_V3, AdminPlatformCandidate
 from .admin_platform_state import AdminPlatformStateStore
 from .operations import OperationStore, format_utc, parse_utc
 
@@ -131,6 +131,23 @@ def _blocking_lane(entry: dict[str, Any], *, release_id: str) -> str:
         ) in {None, "pending", "queued", "auth_blocked"}:
             return lane
     raise ControllerCandidateError("active controller attempt has no admissible blocking lane")
+
+
+def _has_complete_lane_evidence(entry: dict[str, Any], *, release_id: str) -> bool:
+    """Return whether the exact attempt has a final result for every lane."""
+
+    results = cast(list[dict[str, Any]], entry.get("results", []))
+    latest = {
+        cast(str, result["lane"]): cast(str, result["outcome"])
+        for result in results
+        if isinstance(result, dict)
+        and result.get("release_id") == release_id
+        and isinstance(result.get("lane"), str)
+        and isinstance(result.get("outcome"), str)
+    }
+    return set(latest) == set(RESULT_LANES_V3) and all(
+        outcome in {"passed", "not_applicable"} for outcome in latest.values()
+    )
 
 
 def _require_active_runtime_lineage(
@@ -283,21 +300,54 @@ def prepare_controller_candidate(
     )
 
     if program_status == "active":
-        if entry.get("status") not in {"candidate", "ci_queued", "ci_passed"}:
-            raise ControllerCandidateError("active controller attempt cannot be superseded")
         terminal_time = _next_observed_at(snapshot)
-        blocking_lane = _blocking_lane(entry, release_id=previous.release_id)
-        source_time = terminal_time + timedelta(microseconds=1)
-        superseded = state.supersede_attempt(
+        if entry.get("status") in {"candidate", "ci_queued", "ci_passed"}:
+            blocking_lane = _blocking_lane(entry, release_id=previous.release_id)
+            source_time = terminal_time + timedelta(microseconds=1)
+            superseded = state.supersede_attempt(
+                expected_sha256=digest,
+                result_receipt=_evidence(
+                    signer,
+                    candidate=previous,
+                    observed_at=format_utc(terminal_time),
+                    evidence_type="lane_result",
+                    lane=blocking_lane,
+                    outcome="blocked",
+                ),
+                terminal_receipt=_evidence(
+                    signer,
+                    candidate=previous,
+                    observed_at=format_utc(terminal_time),
+                    evidence_type="attempt_terminal",
+                    lane=None,
+                    outcome="blocked",
+                ),
+                candidate=candidate,
+                source_receipt=_evidence(
+                    signer,
+                    candidate=candidate,
+                    observed_at=format_utc(source_time),
+                    evidence_type="lane_result",
+                    lane="source",
+                    outcome="passed",
+                ),
+            )
+            return {
+                "schema": "qdev-controller-candidate-preparation-v1",
+                "status": "completed",
+                "candidate": asdict(candidate),
+                "previous_candidate": asdict(previous),
+                "ledger_sha256": superseded.ledger_sha256,
+                "receipt_uris": list(superseded.receipt_uris),
+            }
+        if (
+            entry.get("status") != "deploying"
+            or previous.source_sha != expected_current_source_sha
+            or not _has_complete_lane_evidence(entry, release_id=previous.release_id)
+        ):
+            raise ControllerCandidateError("active controller attempt cannot be superseded")
+        finished = state.finish_attempt(
             expected_sha256=digest,
-            result_receipt=_evidence(
-                signer,
-                candidate=previous,
-                observed_at=format_utc(terminal_time),
-                evidence_type="lane_result",
-                lane=blocking_lane,
-                outcome="blocked",
-            ),
             terminal_receipt=_evidence(
                 signer,
                 candidate=previous,
@@ -306,26 +356,13 @@ def prepare_controller_candidate(
                 lane=None,
                 outcome="blocked",
             ),
-            candidate=candidate,
-            source_receipt=_evidence(
-                signer,
-                candidate=candidate,
-                observed_at=format_utc(source_time),
-                evidence_type="lane_result",
-                lane="source",
-                outcome="passed",
-            ),
         )
-        return {
-            "schema": "qdev-controller-candidate-preparation-v1",
-            "status": "completed",
-            "candidate": asdict(candidate),
-            "previous_candidate": asdict(previous),
-            "ledger_sha256": superseded.ledger_sha256,
-            "receipt_uris": list(superseded.receipt_uris),
-        }
+        digest = finished.ledger_sha256
+        source_time = terminal_time + timedelta(microseconds=1)
+        terminal_receipt_uris = list(finished.receipt_uris)
     elif program_status == "blocked" and entry.get("status") in {"blocked", "rolled_back"}:
         source_time = _next_observed_at(snapshot)
+        terminal_receipt_uris = []
     else:
         raise ControllerCandidateError("controller program is not restartable")
 
@@ -347,5 +384,5 @@ def prepare_controller_candidate(
         "candidate": asdict(candidate),
         "previous_candidate": asdict(previous),
         "ledger_sha256": restarted.ledger_sha256,
-        "receipt_uris": list(restarted.receipt_uris),
+        "receipt_uris": terminal_receipt_uris + list(restarted.receipt_uris),
     }
