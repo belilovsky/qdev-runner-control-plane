@@ -33,3 +33,18 @@ def test_qazgeo_ledger_rejects_a_replacement_or_duplicate_ci_run(tmp_path: Path)
 
     with pytest.raises(ManagedReleaseLedgerError, match="CI run"):
         ManagedReleaseLedger(path)
+
+
+def test_qazgeo_ledger_classifies_stale_queue_tuples_without_admitting_them() -> None:
+    ledger = ManagedReleaseLedger(_ledger_path())
+
+    assert ledger.classify_admission(
+        "qazgeo", "932883aeed522500d03b0a56e2d1798a3ea9c910"
+    ) == (True, None)
+    assert ledger.classify_admission(
+        "qazgeo", "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
+    ) == (False, "managed-release-candidate-tuple-not-admitted")
+    assert ledger.classify_admission("missing", "d" * 40) == (
+        False,
+        "managed-release-candidate-not-active",
+    )

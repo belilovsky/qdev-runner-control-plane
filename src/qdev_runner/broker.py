@@ -754,17 +754,18 @@ def create_app(
     def admissible_profile_queue(
         profile_name: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Return one profile FIFO with only inactive admin candidates omitted.
+        """Return one profile FIFO with inactive managed candidates omitted.
 
         The same fail-closed classification is used both when the operator
         signs an exact scope and when the worker consumes it. Malformed managed
-        rows remain in FIFO, while an inactive admin-platform candidate cannot
-        indefinitely hold an unrelated profile queue.
+        rows remain in FIFO, while an inactive admin-platform or stale managed
+        release candidate cannot indefinitely hold an unrelated profile queue.
         """
 
         profile_queue: list[dict[str, Any]] = []
         fifo_skipped: list[dict[str, Any]] = []
         queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        queued_managed_release_ledger: ManagedReleaseLedger | None = None
         registry = managed_registry()
         for queued in store.pending_jobs():
             try:
@@ -797,6 +798,34 @@ def create_app(
                             detail=f"admin platform ledger unavailable: {exc}",
                         ) from exc
                 admitted, reason = queued_admin_platform_ledger.classify_admission(
+                    queued_managed.entry_id, str(queued["head_sha"])
+                )
+                if not admitted:
+                    assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
+                    fifo_skipped.append(
+                        {
+                            "job_id": int(queued["job_id"]),
+                            "repository": str(queued["repository"]),
+                            "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
+                            "head_sha": str(queued["head_sha"]),
+                            "profile": queued_profile.name,
+                            "managed_registry_entry": queued_managed.entry_id,
+                            "reason": reason,
+                        }
+                    )
+                    continue
+            elif (
+                queued_managed is not None
+                and queued_managed.admission_ledger == "managed-production"
+            ):
+                if queued_managed_release_ledger is None:
+                    queued_managed_release_ledger = managed_release_ledger()
+                admitted, reason = queued_managed_release_ledger.classify_admission(
                     queued_managed.entry_id, str(queued["head_sha"])
                 )
                 if not admitted:
@@ -1820,6 +1849,7 @@ def create_app(
         profile_queue: list[dict[str, Any]] = []
         fifo_skipped: list[dict[str, Any]] = []
         queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        queued_managed_release_ledger: ManagedReleaseLedger | None = None
         for queued in store.pending_jobs():
             try:
                 queued_profile = policy.profile_for_labels(
@@ -1891,6 +1921,34 @@ def create_app(
                         if queued_attempt is None:
                             # An incomplete provider tuple cannot become a
                             # signed exception to durable FIFO.
+                            profile_queue.append(queued)
+                            continue
+                        fifo_skipped.append(
+                            {
+                                "job_id": int(queued["job_id"]),
+                                "repository": str(queued["repository"]),
+                                "run_id": int(queued["run_id"]),
+                                "attempt": queued_attempt,
+                                "head_sha": str(queued["head_sha"]),
+                                "profile": queued_profile.name,
+                                "managed_registry_entry": queued_managed.entry_id,
+                                "reason": reason,
+                            }
+                        )
+                        continue
+                elif (
+                    queued_managed is not None
+                    and queued_managed.admission_ledger == "managed-production"
+                ):
+                    if queued_managed_release_ledger is None:
+                        queued_managed_release_ledger = managed_release_ledger()
+                    admitted, reason = queued_managed_release_ledger.classify_admission(
+                        queued_managed.entry_id, str(queued["head_sha"])
+                    )
+                    if not admitted:
+                        assert reason is not None
+                        queued_attempt = _job_attempt(queued)
+                        if queued_attempt is None:
                             profile_queue.append(queued)
                             continue
                         fifo_skipped.append(
@@ -2171,6 +2229,7 @@ def create_app(
         pending_for_override: list[dict[str, Any]] = []
         fifo_skipped: list[dict[str, Any]] = []
         queued_admin_platform_ledger: AdminPlatformLedger | None = None
+        queued_managed_release_ledger: ManagedReleaseLedger | None = None
         requested_profile = requested_profiles[0]
         controller_candidate_priority = False
         if repository_name == _CONTROLLER_REPOSITORY:
@@ -2244,6 +2303,34 @@ def create_app(
                             detail=f"admin platform ledger unavailable: {exc}",
                         ) from exc
                 admitted, reason = queued_admin_platform_ledger.classify_admission(
+                    queued_managed.entry_id, str(queued["head_sha"])
+                )
+                if not admitted:
+                    assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        pending_for_override.append(queued)
+                        continue
+                    fifo_skipped.append(
+                        {
+                            "job_id": int(queued["job_id"]),
+                            "repository": str(queued["repository"]),
+                            "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
+                            "head_sha": str(queued["head_sha"]),
+                            "profile": queued_profile.name,
+                            "managed_registry_entry": queued_managed.entry_id,
+                            "reason": reason,
+                        }
+                    )
+                    continue
+            elif (
+                queued_managed is not None
+                and queued_managed.admission_ledger == "managed-production"
+            ):
+                if queued_managed_release_ledger is None:
+                    queued_managed_release_ledger = managed_release_ledger()
+                admitted, reason = queued_managed_release_ledger.classify_admission(
                     queued_managed.entry_id, str(queued["head_sha"])
                 )
                 if not admitted:

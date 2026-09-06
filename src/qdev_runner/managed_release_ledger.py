@@ -120,6 +120,21 @@ class ManagedReleaseLedger:
             raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
         return entry
 
+    def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
+        """Classify a queued candidate without weakening direct admission.
+
+        Direct claims continue to use :meth:`validate_admission`.  Queue scans
+        use this observational form so a stale managed-production tuple is
+        recorded as skipped instead of indefinitely blocking an unrelated
+        candidate that shares its worker profile.
+        """
+        entry = self._by_entry_id.get(entry_id)
+        if entry is None or entry.status not in ACTIVE_STATUSES:
+            return False, "managed-release-candidate-not-active"
+        if entry.source_sha != exact_sha:
+            return False, "managed-release-candidate-tuple-not-admitted"
+        return True, None
+
     @staticmethod
     def _validate_stage(value: Any) -> None:
         if not isinstance(value, dict) or set(value) != {"state", "receipt_uri"}:
