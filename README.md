@@ -65,7 +65,9 @@ it still depends on GitHub orchestration and the GitHub API.
   scanning the broker records that row, its source tuple, and the explicit
   `admin-platform-candidate-not-active` or
   `admin-platform-candidate-tuple-not-admitted` reason in the signed
-  `fifo_skipped` receipt field, then continues to the next eligible row.
+  `fifo_skipped` receipt field and the controller-written claim scope, then
+  continues to the next eligible row. The worker may ignore only those exact
+  repository, run, job, attempt, SHA and profile tuples while enforcing FIFO.
   A direct claim request for that stale managed row still fails closed; this is
   an observational queue repair, not a priority or requeue mechanism.
 

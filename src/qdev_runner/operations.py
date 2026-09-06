@@ -252,6 +252,7 @@ def _validate_fifo_skipped(value: Any) -> None:
             "job_id",
             "repository",
             "run_id",
+            "attempt",
             "head_sha",
             "profile",
             "managed_registry_entry",
@@ -265,6 +266,9 @@ def _validate_fifo_skipped(value: Any) -> None:
             or not isinstance(item["run_id"], int)
             or isinstance(item["run_id"], bool)
             or item["run_id"] <= 0
+            or not isinstance(item["attempt"], int)
+            or isinstance(item["attempt"], bool)
+            or item["attempt"] <= 0
             or not isinstance(item["repository"], str)
             or not _REPOSITORY.fullmatch(item["repository"])
             or not isinstance(item["head_sha"], str)

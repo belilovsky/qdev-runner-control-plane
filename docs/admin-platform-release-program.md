@@ -38,7 +38,9 @@ The FIFO scan is fail-closed for the active admin-platform candidate itself,
 but a stale or superseded admin-platform row must not indefinitely block an
 unrelated repository in the same profile. Such rows are omitted only from the
 observational queue scan and are retained in the signed `fifo_skipped` receipt
-with their exact tuple and a machine-checked reason. A direct claim for the
+and controller-written claim scope with their exact repository, run, job,
+attempt, SHA, profile and a machine-checked reason. The worker excludes only
+those exact tuples from its local FIFO head calculation. A direct claim for the
 stale row remains rejected until its ledger entry is explicitly active again;
 the broker never mutates or silently requeues that row.
 

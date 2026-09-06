@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedJob
+from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedFifoSkip, ScopedJob
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
 
@@ -267,6 +267,114 @@ def test_fifo_skip_requires_an_exact_v2_scope(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="FIFO skips require an exact v2 claim scope"):
         store.claim("worker-1", ("qdev-ci",), fifo_skip_job_ids=frozenset({100}))
+
+
+def test_v2_scope_can_skip_only_an_exact_signed_stale_fifo_tuple(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "stale-admin-row",
+            100,
+            repository="belilovsky/qazposter",
+            head_sha="a" * 40,
+            run_id=200,
+        )
+    )
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazstack",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        tier="primary",
+        repository="belilovsky/qazstack",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazstack",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_skipped=(
+            ScopedFifoSkip(
+                job_id=100,
+                profile="qdev-ci",
+                repository="belilovsky/qazposter",
+                run_id=200,
+                attempt=1,
+                exact_sha="a" * 40,
+                managed_registry_entry="qazposter",
+                reason="admin-platform-candidate-not-active",
+            ),
+        ),
+    )
+
+    claimed = store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope)
+
+    assert claimed is not None
+    assert claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+
+
+def test_v2_scope_tampered_fifo_skip_tuple_does_not_bypass_head(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("older", 100, repository="belilovsky/qazposter", run_id=200))
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazstack",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="portfolio-20260901",
+        worker_name="qdev-portfolio-primary",
+        tier="primary",
+        repository="belilovsky/qazstack",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazstack",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_skipped=(
+            ScopedFifoSkip(
+                job_id=100,
+                profile="qdev-ci",
+                repository="belilovsky/qazposter",
+                run_id=200,
+                attempt=2,
+                exact_sha="a" * 40,
+                managed_registry_entry="qazposter",
+                reason="admin-platform-candidate-not-active",
+            ),
+        ),
+    )
+
+    assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
+    assert store.job_status(101) == "pending"
 
 
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
