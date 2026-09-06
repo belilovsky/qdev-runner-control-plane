@@ -44,9 +44,12 @@ cannot choose a host, service, executable, certificate or CA key.
      --reason 'restore existing dedicated Platform CI runner'
    ```
 
-   Save the returned `operation_id` and `request_fingerprint`. The controller
-   observes the unique same-name provider runner and refuses preparation when
-   it is busy, has active jobs, has a conflicting identity or no exact target.
+   Save the returned `operation_id` and `request_fingerprint`. For saved-
+   configuration recovery, the controller requires the unique same-name
+   provider runner. For replacement recovery, it accepts either that idle
+   runner or a signed observation that the name is absent and has no active
+   provider jobs. It refuses preparation when the runner is busy, has active
+   jobs or has a conflicting identity.
 4. Start the already installed one-shot service on the fixed target host:
 
    ```bash
@@ -78,11 +81,14 @@ cannot choose a host, service, executable, certificate or CA key.
    Only `completed` or `already_completed` closes recovery. Replay the same
    prepare request and confirm `idempotent_replay=true` without a new mutation.
 
-The controller refuses recovery when active work is reported, when the target
-is not registered, when identity returned by the adapter does not exactly
-match the allowlist, or when the adapter is unavailable. Those outcomes are
-recorded as `active_work`, `target_unregistered`, `failed` or
-`access_blocked`; they must not be converted into a green workflow result.
+The controller refuses recovery when active work is reported, when a saved-
+configuration target is not registered, when identity returned by the adapter
+does not exactly match the allowlist, or when the adapter is unavailable. A
+missing replacement target is admitted only from the signed absence
+observation described above; it is never inferred from a timeout or stale
+heartbeat. Refusals are recorded as `active_work`, `target_unregistered`,
+`failed` or `access_blocked`; they must not be converted into a green workflow
+result.
 There is no direct SSH/systemd fallback and no manual mutation of FIFO jobs or
 leases. The production runner remains reserved for production operations.
 

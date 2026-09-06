@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,7 +27,7 @@ from .models import (
 from .settings import BrokerSettings
 from .store import Store
 
-INTERFACE_VERSION = "qdev-worker-recovery-v1"
+INTERFACE_VERSION = "qdev-worker-recovery-v2"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -74,7 +75,7 @@ RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
 # canonical digest is provisioned to both controller and host agent; neither
 # side derives trust from a mutable source path or an HTTP request field.
 INTERFACE_MANIFEST: dict[str, Any] = {
-    "schema": "qdev-runner-recovery-interface-v1",
+    "schema": "qdev-runner-recovery-interface-v2",
     "interface_version": INTERFACE_VERSION,
     "canonical_json": {
         "sort_keys": True,
@@ -96,6 +97,12 @@ INTERFACE_MANIFEST: dict[str, Any] = {
         "command": "qdev-runner-recovery-agent-command-v1",
         "envelope": "qdev-runner-recovery-agent-envelope-v1",
         "reconcile": "qdev-runner-recovery-reconcile-v1",
+    },
+    "provider_runner_identity": {
+        "restore_saved_configuration": "required-positive-integer",
+        "replace_existing_registration": "positive-integer-or-observed-absent",
+        "absence_observation": "qdev-worker-provider-absence-observation-v1",
+        "absence_requires_zero_active_target_jobs": True,
     },
     "targets": {
         target_id: {
@@ -284,23 +291,51 @@ class WorkerRecoveryController:
 
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
-        runners, observed, provider_observation = self._observe_runner(
-            target, expected_labels=target.labels, status="offline", require_idle=True
-        )
-        if len([runner for runner in runners if runner["name"] == target.worker_name]) != 1:
-            raise WorkerRecoveryError("GitHub runner identity is not unique")
+        try:
+            runners, observed, provider_observation = self._observe_runner(
+                target, expected_labels=target.labels, status="offline", require_idle=True
+            )
+            provider_runner_id: int | None = int(observed["id"])
+            provider_observed_at = float(observed["observed_at"])
+        except WorkerRecoveryError as error:
+            if target.action != "replace_existing_registration":
+                raise
+            installation_id = self.github.repository_installation_id(target.repository)
+            runners = sorted(
+                (
+                    _runner_record(raw)
+                    for raw in self.github.repository_runners(installation_id, target.repository)
+                ),
+                key=lambda runner: int(runner["id"]),
+            )
+            if any(runner["name"] == target.worker_name for runner in runners):
+                raise error
+            active_jobs = self.github.runner_name_active_jobs(
+                installation_id, target.repository, target.worker_name
+            )
+            if active_jobs:
+                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
+            provider_runner_id = None
+            provider_observed_at = time.time()
+            provider_observation = {
+                "schema": "qdev-worker-provider-absence-observation-v1",
+                "repository": target.repository,
+                "worker_name": target.worker_name,
+                "runners": {"total_count": len(runners), "items": runners},
+                "active_target_jobs": {"total_count": 0, "items": []},
+            }
         proof_key = self._receipt_key()
         proof = self.store.issue_worker_provider_idle_proof(
             key=proof_key,
             worker_name=target.worker_name,
             repository=target.repository,
             labels=target.labels,
-            provider_runner_id=observed["id"],
-            provider_status="offline",
-            provider_busy=False,
+            provider_runner_id=provider_runner_id,
+            provider_status=None if provider_runner_id is None else "offline",
+            provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
-            observed_at=observed["observed_at"],
+            observed_at=provider_observed_at,
         )
         controller_receipt_id = _digest(
             {
@@ -328,9 +363,9 @@ class WorkerRecoveryController:
             policy_digest=self._policy_digest(),
             agent_release_digest=self._agent_release_digest(),
             controller_receipt_id=controller_receipt_id,
-            controller_observed_at=observed["observed_at"],
+            controller_observed_at=provider_observed_at,
             request_nonce=request.provenance.nonce,
-            requested_at=observed["observed_at"],
+            requested_at=provider_observed_at,
             proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
         )
         return self._project(row, idempotent_replay=False)
@@ -702,8 +737,12 @@ class WorkerRecoveryController:
             runners, observed, provider_observation = self._observe_recovered(
                 target, row, target.labels, require_idle=True, canary=canary
             )
-            initial_runner_id = int(row["provider_runner_id"])
-            prior_disposition = "same" if observed["id"] == initial_runner_id else "absent"
+            initial_runner_id = row["provider_runner_id"]
+            prior_disposition = (
+                "same"
+                if initial_runner_id is not None and observed["id"] == initial_runner_id
+                else "absent"
+            )
             proof = self.store.issue_worker_recovery_acceptance_proof(
                 key=self._receipt_key(),
                 operation_id=operation_id,
@@ -824,7 +863,7 @@ class WorkerRecoveryController:
             canary=canary,
         )
         matches = [runner for runner in runners if runner["name"] == target.worker_name]
-        prior_id = int(row["provider_runner_id"])
+        prior_id = row["provider_runner_id"]
         if len(matches) != 1:
             raise WorkerRecoveryError("recovered GitHub runner identity is not unique")
         if target.action == "restore_saved_configuration" and observed["id"] != prior_id:
