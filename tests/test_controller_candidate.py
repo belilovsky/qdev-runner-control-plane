@@ -23,6 +23,7 @@ from qdev_runner.controller_candidate import (
     REFERENCE,
     REPOSITORY,
     ControllerCandidateError,
+    _require_active_runtime_lineage,
     prepare_controller_candidate,
 )
 from qdev_runner.operations import OperationStore, parse_utc
@@ -842,6 +843,105 @@ def test_prepare_controller_candidate_fails_closed_without_mutation(
     assert ledger.read_bytes() == before_raw
     assert before_digest == after_digest == hashlib.sha256(before_raw).hexdigest()
     assert sorted(path.name for path in receipts.rglob("*.json")) == before_receipts
+
+
+def test_active_runtime_lineage_accepts_terminal_retries_for_same_source() -> None:
+    active_candidate = AdminPlatformCandidate(
+        release_id=f"controller-v3-{NEXT_SHA}",
+        repository=REPOSITORY,
+        source_sha=NEXT_SHA,
+        reference=REFERENCE,
+    )
+    release_ids = [
+        f"controller-v3-{CURRENT_SHA}",
+        f"controller-v3-{CURRENT_SHA}:retry-1",
+    ]
+    entry = {
+        "status": "candidate",
+        "attempts": [
+            {
+                "release_id": release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": f"2026-09-05T00:00:0{index}Z",
+                "terminal_state": "blocked",
+            }
+            for index, release_id in enumerate(release_ids, start=1)
+        ],
+        "results": [
+            {"release_id": release_id, "lane": "source", "outcome": "passed"}
+            for release_id in release_ids
+        ],
+    }
+
+    _require_active_runtime_lineage(
+        entry,
+        active_candidate=active_candidate,
+        active_runtime_source_sha=CURRENT_SHA,
+    )
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "include_retry_source_evidence", "error"),
+    [
+        (
+            None,
+            True,
+            "active runtime is not an unambiguous terminal controller attempt",
+        ),
+        (
+            "blocked",
+            False,
+            "active runtime controller attempt has no passing source evidence",
+        ),
+    ],
+)
+def test_active_runtime_lineage_rejects_unsafe_retry(
+    terminal_state: str | None,
+    include_retry_source_evidence: bool,
+    error: str,
+) -> None:
+    active_candidate = AdminPlatformCandidate(
+        release_id=f"controller-v3-{NEXT_SHA}",
+        repository=REPOSITORY,
+        source_sha=NEXT_SHA,
+        reference=REFERENCE,
+    )
+    base_release_id = f"controller-v3-{CURRENT_SHA}"
+    retry_release_id = f"{base_release_id}:retry-1"
+    results = [
+        {"release_id": base_release_id, "lane": "source", "outcome": "passed"}
+    ]
+    if include_retry_source_evidence:
+        results.append(
+            {"release_id": retry_release_id, "lane": "source", "outcome": "passed"}
+        )
+    entry = {
+        "status": "candidate",
+        "attempts": [
+            {
+                "release_id": base_release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": "2026-09-05T00:00:01Z",
+                "terminal_state": "blocked",
+            },
+            {
+                "release_id": retry_release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": (
+                    "2026-09-05T00:00:02Z" if terminal_state is not None else None
+                ),
+                "terminal_state": terminal_state,
+            },
+        ],
+        "results": results,
+    }
+
+    with pytest.raises(ControllerCandidateError, match=error):
+        _require_active_runtime_lineage(
+            entry,
+            active_candidate=active_candidate,
+            active_runtime_source_sha=CURRENT_SHA,
+        )
 
 
 def test_prepare_controller_candidate_supersedes_non_deployed_durable_candidate(
