@@ -275,13 +275,9 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         ):
             primary_self_hosted_workflows = set(primary_value)
         else:
-            violations.append(
-                violation(contract_path, 1, "invalid-primary-self-hosted-workflows")
-            )
+            violations.append(violation(contract_path, 1, "invalid-primary-self-hosted-workflows"))
     if primary_self_hosted_workflows and not allow_hosted:
-        violations.append(
-            violation(contract_path, 1, "primary-self-hosted-workflows-requires-v2")
-        )
+        violations.append(violation(contract_path, 1, "primary-self-hosted-workflows-requires-v2"))
     if release_registry_workflows and not allow_hosted:
         violations.append(violation(contract_path, 1, "release-registry-requires-v2"))
     for workflow_name in sorted(release_registry_workflows):
@@ -343,9 +339,7 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             )
         )
     for workflow_name in sorted(recovery_workflows - available_workflows):
-        violations.append(
-            violation(contract_path, 1, "recovery-workflow-missing", workflow_name)
-        )
+        violations.append(violation(contract_path, 1, "recovery-workflow-missing", workflow_name))
     for workflow_name in sorted(primary_self_hosted_workflows - available_workflows):
         violations.append(
             violation(

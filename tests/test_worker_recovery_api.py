@@ -755,9 +755,7 @@ def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     assert failed.status_code == 409
     assert failed.json()["detail"] == "worker recovery request rejected"
     assert harness.github.dispatch_calls == 0
-    assert harness.client.app.state.store.worker_recovery_canary(
-        prepared["operation_id"]
-    ) is None
+    assert harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"]) is None
 
     accept_body["canary_head_sha"] = "5" * 40
     pending = harness.client.post(

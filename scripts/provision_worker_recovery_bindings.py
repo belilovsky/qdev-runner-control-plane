@@ -25,10 +25,9 @@ ACTIVE_CONTROLLER_RELEASE = Path("/opt/qdev-runner-control-plane/current")
 
 
 def _has_binding_sources(root: Path) -> bool:
-    return (
-        (root / "src" / "qdev_runner" / "worker_recovery.py").is_file()
-        and (root / "scripts" / "install_qdev_runner_recovery_host_agent.sh").is_file()
-    )
+    return (root / "src" / "qdev_runner" / "worker_recovery.py").is_file() and (
+        root / "scripts" / "install_qdev_runner_recovery_host_agent.sh"
+    ).is_file()
 
 
 def _resolve_source_root(

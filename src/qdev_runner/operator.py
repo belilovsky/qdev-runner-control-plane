@@ -68,10 +68,9 @@ def _sha256_hex(value: str, *, field: str) -> str:
 
 
 def _git_revision(value: str, *, field: str = "Git source SHA") -> str:
-    normalized = value.lower()
-    if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
+    if _GIT_REVISION.fullmatch(value) is None:
         raise ValueError(f"invalid {field}")
-    return normalized
+    return value
 
 
 def _required(name: str) -> str:

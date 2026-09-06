@@ -254,8 +254,7 @@ def _validate_provider_absence_observation(
     except ValueError as error:
         raise ValueError("provider absence observation is invalid") from error
     if (
-        set(observation)
-        != {"schema", "repository", "worker_name", "runners", "active_target_jobs"}
+        set(observation) != {"schema", "repository", "worker_name", "runners", "active_target_jobs"}
         or observation["schema"] != "qdev-worker-provider-absence-observation-v1"
         or observation["repository"] != repository
         or observation["worker_name"] != worker_name

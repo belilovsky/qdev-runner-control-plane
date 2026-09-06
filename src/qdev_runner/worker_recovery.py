@@ -1125,9 +1125,7 @@ class WorkerRecoveryController:
             release=release,
         )
 
-    def _require_acceptance_row(
-        self, row: dict[str, Any], *, release: dict[str, Any]
-    ) -> None:
+    def _require_acceptance_row(self, row: dict[str, Any], *, release: dict[str, Any]) -> None:
         """Allow a completed native mutation to finish after controller upgrade.
 
         Native execution remains bound to its original immutable release.  Only
@@ -1155,8 +1153,7 @@ class WorkerRecoveryController:
             or row.get("repository") != target.repository
             or labels != target.labels
             or row.get("recovery_action") != target.action
-            or row.get("expected_agent_certificate_sha256")
-            != self._agent_certificate(target)
+            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
             or row.get("interface_version") != INTERFACE_VERSION
             or row.get("interface_digest") != INTERFACE_DIGEST
             or row.get("agent_release_digest") != self._agent_release_digest()
