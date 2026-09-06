@@ -36,6 +36,13 @@ repository_admission_disk_mb:
   # the worker's independent 4.5 GiB running floor and controller checks.
   belilovsky/platform-portal:
     qdev-ci: 4096
+  # ID's static-contract workflow installs jsonschema and ShellCheck, then
+  # validates its Compose definition without building or importing images.
+  # Reserve 4 GiB for this repository/profile while retaining the worker's
+  # independent 4.5 GiB free-space floor and the default 20 GiB reservation
+  # for every other Docker workload.
+  belilovsky/id-qdev-run:
+    qdev-ci-docker: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
