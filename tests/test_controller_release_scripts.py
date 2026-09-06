@@ -14,6 +14,15 @@ def _load_recovery_binding_provisioner():
     return module
 
 
+def _load_controller_capacity_gate():
+    path = ROOT / "scripts/controller_capacity_gate.py"
+    spec = importlib.util.spec_from_file_location("controller_capacity_gate", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
@@ -32,8 +41,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
         in script
     )
-    assert "min_free_gib * 1048576" in script
-    assert "used > max_used && free <" in script
+    assert 'python3 "$script_root/scripts/controller_capacity_gate.py"' in script
     capacity = json.loads(
         (ROOT / "config/controller-capacity.json").read_text(encoding="utf-8")
     )
@@ -78,6 +86,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qazposter.service" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
+
     assert "scripts/prepare_controller_candidate.py" in script
     assert "src/qdev_runner/controller_candidate.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
@@ -146,6 +155,46 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "restore_operator_identity_metadata()" in script
     assert '"$release/scripts/provision_operator_identity.sh"' in script
     assert "operator mTLS identity is not usable" in script
+
+
+def test_controller_activation_capacity_gate_has_independent_absolute_boundaries() -> None:
+    helper = _load_controller_capacity_gate()
+    gib = 1024**3
+    common = {
+        "memory_kib": 8 * gib // 1024,
+        "cpu_count": 4,
+        "load_15": 1.0,
+        "max_disk_used_pct": 96,
+        "min_free_gib": 8,
+        "min_memory_gib": 4,
+        "max_load_per_cpu": 2,
+        "estimated_peak_incremental_bytes": gib,
+    }
+
+    assert helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=9 * gib // 1024,
+        no_build=False,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=7 * gib // 1024,
+        no_build=True,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=97,
+        disk_free_kib=9 * gib // 1024,
+        no_build=False,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=(9 * gib // 1024) - 1,
+        no_build=False,
+        **common,
+    )
 
 
 def test_controller_provisions_only_the_operator_identity_permissions() -> None:
