@@ -1165,6 +1165,37 @@ def create_app(
             response["dispatch_claim_signature"] = signature
         return response
 
+    @app.get("/internal/v1/release-hosts/{placement}/jobs/{release_id}/idp-inputs")
+    def idp_dispatch_inputs(
+        placement: str,
+        release_id: str,
+        release_lane: str | None = Query(default=None),
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            lane = release_policy().lane_for_host(placement, release_lane)
+        except ReleaseLaneError:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted",
+            ) from None
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        # No jobs/next call: reading retained inputs must not create or renew a claim.
+        try:
+            key = _release_host_dispatch_signing_key(
+                settings.release_host_dispatch_keys_file, lane.host_agent_mtls_identity,
+            )
+            check_storage(settings.release_jobs_root, lane)
+            return release_state().idp_dispatch_inputs(
+                lane, release_id, lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence, signing_key=key,
+            )
+        except (ReleaseLaneError, ValidationError):
+            raise HTTPException(
+                status_code=409, detail="IdP dispatch inputs are unavailable",
+            ) from None
+
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/idp-file-authorization")
     async def authorize_idp_file_apply(
         placement: str,

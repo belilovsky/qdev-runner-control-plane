@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TextIO
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -2445,6 +2445,53 @@ def _idp_reobserved_completion(retained, fresh):
         ) from None
     # Preserve original evidence; a later observation cannot rewrite history.
     return retained
+
+
+def retain_controller_idp_inputs(config, profile, lane, job, archive, *, transaction):
+    """Authenticate full candidate intake using the existing private transport.
+
+    The installed owner supplies the archive fetched by the native CI artifact
+    path, never a caller-selected downloader. This boundary does not load helpers,
+    stage native state, poll jobs/next, renew claims or authorize file application.
+    Restarts after publication use invoke_retained_idp, not this network intake.
+    """
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate")
+            result[key] = value
+        return result
+
+    try:
+        _validate_idp_file_scope(config, profile, lane)
+        # Freeze caller input before network I/O; only already-signed jobs enter.
+        job = json.loads(_canonical_bytes(job))
+        release_id, _, lease, fence, _, _, _, _ = _validated_job(job, profile, config)
+        status, body = request(
+            config, "GET",
+            f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/idp-inputs?"
+            + urlencode({"release_lane": lane.name}),
+            headers=_controller_headers(lease, fence),
+        )
+        if status != 200 or not isinstance(body, bytes) or not 0 < len(body) <= 1024 * 1024:
+            raise ValueError("transport")
+        value = json.loads(body, object_pairs_hook=unique)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "status", "job", "candidate_receipt", "acceptance"}
+            or value["schema"] != "qdev-controller-idp-dispatch-inputs-v1"
+            or value["status"] != "authenticated_inputs" or value["acceptance"] != "not_run"
+            or _canonical_bytes(value["job"]) != _canonical_bytes(job)
+            or not isinstance(value["candidate_receipt"], dict)
+        ):
+            raise ValueError("envelope")
+        invocation = IdPNativeInvocation(config, profile, lane, job, value["candidate_receipt"])
+        # A live read is not a live apply permit; expiry is rechecked after I/O.
+        invocation._verified_job(live=True)
+        return invocation.retain(archive, transaction=transaction)
+    except Exception:
+        raise AgentError("IdP controller input intake requires verified-state inspection") from None
 
 
 class IdPNativeInvocation:

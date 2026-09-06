@@ -1546,6 +1546,98 @@ class ReleaseStore:
             self._write(self._job_path(lane.name), job)
             return job
 
+    def idp_dispatch_inputs(
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        *,
+        lease_id: str | None,
+        fence: str | None,
+        signing_key: str | bytes,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Read an existing signed dispatch, without admission or TTL renewal.
+
+        Called only after the private handler authenticates the configured host.
+        A stale lookup snapshot may be repaired from the existing durable journal;
+        this operation never appends a new event or contacts the provider.
+        """
+        from .idp_file_issuer import check_storage
+        from .idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
+
+        if (
+            lane.project_id, lane.canonical_repository,
+            lane.native_host_adapter, lane.artifact_ref_prefix,
+        ) != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX):
+            raise ReleaseLaneError("lane is not the fixed IdP file adapter")
+        current = time.time() if now is None else now
+        check_storage(self.root, lane)
+        with self._lock(lane.name):
+            check_storage(self.root, lane)
+            job = self._job_unlocked(lane)
+            if (
+                job is None or job.get("release_id") != release_id
+                or job.get("status") != "dispatched"
+                or not lease_id or job.get("lease_id") != lease_id
+                or not fence or job.get("fence") != fence
+            ):
+                raise ReleaseLaneError("IdP dispatch is not current")
+            self._ensure_live_lease(job, lane, now=current)
+            claim = job.get("dispatch_claim")
+            signature = job.get("dispatch_claim_signature")
+            if (
+                not isinstance(claim, dict) or not isinstance(signature, str)
+                or not _HEX64.fullmatch(signature)
+                or type(claim.get("issued_at")) is not int
+                or type(claim.get("expires_at")) is not int
+                or not isinstance(claim.get("nonce"), str)
+                or claim["issued_at"] > current + _CONTROLLER_CLAIM_CLOCK_SKEW_SECONDS
+                or claim["expires_at"] <= current
+            ):
+                raise ReleaseLaneError("IdP dispatch claim is not live")
+            candidate = job.get("candidate_receipt")
+            validate_candidate(ReleaseAdmissionRequest.model_validate({
+                "schema": REQUEST_SCHEMA, "release_lane": lane.name, "project_id": lane.project_id,
+                "placement": lane.placement, "source_sha": job.get("source_sha"),
+                "artifact_digest": job.get("artifact_digest"),
+                "artifact_ref": job.get("artifact_ref"),
+                "candidate_receipt": candidate,
+            }), lane)
+            if (
+                not isinstance(candidate, dict)
+                or candidate.get("workflow") != "quality.yml"
+                or candidate.get("job") != "static-contracts"
+                or candidate.get("runner_profile") != "qdev-ci-docker"
+                or candidate.get("artifact_type") != "http-archive"
+                or job["artifact_digest"] != f"sha256:{candidate.get('archive_sha256')}"
+            ):
+                raise ReleaseLaneError("IdP candidate does not bind the required CI")
+            expected = host_dispatch_claim_payload(
+                job, lane, host_identity=lane.host_agent_mtls_identity,
+                issued_at=claim["issued_at"], expires_at=claim["expires_at"],
+                nonce=claim["nonce"],
+            )
+            if claim != expected or not hmac.compare_digest(
+                signature, sign_host_dispatch_claim(expected, signing_key=signing_key),
+            ):
+                raise ReleaseLaneError("IdP dispatch signature or binding is invalid")
+            return {
+                "schema": "qdev-controller-idp-dispatch-inputs-v1",
+                "status": "authenticated_inputs", "acceptance": "not_run",
+                "job": {
+                    "schema": "qdev-release-host-agent-job-v1",
+                    "release_lane": lane.name, "project_id": lane.project_id,
+                    "placement": lane.placement,
+                    **{key: job[key] for key in (
+                        "release_id", "source_sha", "artifact_digest", "artifact_ref",
+                        "lease_id", "fence", "lease_expires_at", "rollback_anchor",
+                        "dispatch_claim", "dispatch_claim_signature",
+                    )},
+                    "candidate_evidence": claim["candidate_evidence"],
+                },
+                "candidate_receipt": candidate,
+            }
+
     def authorize_idp_file_apply(
         self,
         lane: ReleaseLane,

@@ -364,6 +364,37 @@ after each write and rename, mode/owner/link violations, restart tampering,
 expiry, lock ordering and missing initial publication. All use synthetic
 artifacts and authority; they do not prove production enrollment or execution.
 
+## Authenticated full-candidate intake
+
+The private `GET /internal/v1/release-hosts/{placement}/jobs/{release_id}/idp-inputs`
+endpoint resolves the configured lane (including explicit `release_lane`), then
+authenticates the exact host mTLS identity before reading private keys or state.
+It requires the existing lease/fence and a live signed IdP dispatch. Its
+`qdev-controller-idp-dispatch-inputs-v1` envelope includes the strict job and full
+candidate whose canonical digest is already covered by that dispatch signature.
+Wrong SHA, artifact, attempt, profile, rollback anchor, claim, identity or private
+storage prevents disclosure. It never calls `jobs/next`, allocates or renews a
+claim, contacts GitHub or appends a journal event. The native store may only
+reconstruct an interrupted lookup snapshot from the already-durable journal.
+
+`retain_controller_idp_inputs` is the installed-code intake boundary. It validates
+and freezes the existing signed job before a single private GET, strictly parses
+a bounded envelope without duplicate fields, verifies exact response/job equality
+and the complete candidate, then rechecks expiry before the existing archive and
+retention validators run. No downloaded helper is loaded during intake. Network,
+storage and unknown-result failures are redacted and never automatically retried.
+The archive bytes must come from the existing native CI-artifact fetch path;
+no arbitrary URL downloader or caller-selected executable is added. Historical
+recovery uses the retained entrypoint without a new read or refreshed admission.
+`authenticated_inputs` and `retained` are provenance states, not fresh provider
+CI observations, file-apply authorization or live acceptance (`not_run`).
+
+Tests connect the real private broker, durable journal, key map, host signature
+checks, nested archive verifier and private retention using synthetic authority
+and artifact bytes. They do not establish installed polling/enrollment or a
+production controller claim. Apply still requires the separately collected fresh
+CI and controller authorization under the native global lock.
+
 ## Still required before enrollment or production use
 
 1. Release and enroll the implemented fixed issuer through the existing controller
@@ -373,9 +404,10 @@ artifacts and authority; they do not prove production enrollment or execution.
 2. Install the fixed IdP invocation through the native verified-helper/global-lock
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
    and the explicit installed inspect/recovery entrypoint. The code-only invocation,
-   factory, immutable retention and restart entrypoint above are implemented,
-   but the polling owner must still acquire the full authenticated job/candidate
-   and published archive and call those fixed entrypoints.
+   factory, immutable retention, restart entrypoint and authenticated
+   full-candidate intake above are implemented, but the polling
+   owner must still fetch the published archive through the native CI path and
+   call those fixed entrypoints for its exact enrolled target.
    Native reconciliation is now connected to its existing pending host journal
    in the code-only invocation; the installed polling owner must use it. They are
    not an installed executable integration.
