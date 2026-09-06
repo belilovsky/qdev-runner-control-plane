@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -514,6 +515,75 @@ def test_local_is_never_provider_evidence() -> None:
     CI.validate_context("local", {}, SHA)
     with pytest.raises(ValueError):
         CI.validate_context("github-hosted", {}, SHA)
+
+
+def test_main_emits_a_complete_local_receipt_without_provider_binding(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def check_output(command: list[str], **_kwargs: object) -> str:
+        if command == ["git", "rev-parse", "HEAD"]:
+            return SHA
+        assert command == ["git", "status", "--porcelain"]
+        return ""
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(CI.subprocess, "check_output", check_output)
+    monkeypatch.setattr(CI.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py", "--lane", "local"])
+
+    assert CI.main() == 0
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["sha"] == SHA
+    assert receipt["source_binding"] is None
+    assert receipt["source_scope"] == "commit"
+    assert receipt["checks"] == ["lint", "typing", "pytest", "runner-policy", "runtime-install"]
+    assert commands == CI.commands(sys.executable)
+
+
+def test_main_rejects_dirty_provider_evidence_before_running_checks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def check_output(command: list[str], **_kwargs: object) -> str:
+        if command == ["git", "rev-parse", "HEAD"]:
+            return SHA
+        assert command == ["git", "status", "--porcelain"]
+        return " M scripts/verify_controller_ci.py\n"
+
+    monkeypatch.setattr(CI.subprocess, "check_output", check_output)
+    monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py", "--lane", "managed"])
+
+    with pytest.raises(SystemExit) as error:
+        CI.main()
+    assert error.value.code == 2
+    assert "provider evidence requires an unchanged exact-SHA checkout" in capsys.readouterr().err
+
+
+def test_managed_specific_guards_reject_after_provider_binding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    environment = managed(tmp_path)
+    monkeypatch.setattr(CI, "provider_binding", lambda _environment, _sha: {})
+
+    environment["GITHUB_EVENT_NAME"] = "schedule"
+    with pytest.raises(ValueError, match="managed CI received an untrusted event"):
+        CI.validate_context("managed", environment, SHA)
+
+    environment["GITHUB_EVENT_NAME"] = "push"
+    environment["GITHUB_REPOSITORY"] = "belilovsky/other"
+    with pytest.raises(ValueError, match="managed CI is bound to the controller repository"):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_recovery_specific_guard_rejects_non_dispatch_after_provider_binding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    environment = context(tmp_path)
+    monkeypatch.setattr(CI, "provider_binding", lambda _environment, _sha: {})
+    environment["GITHUB_EVENT_NAME"] = "push"
+
+    with pytest.raises(ValueError, match="recovery requires manual workflow_dispatch"):
+        CI.validate_context("controller-recovery", environment, SHA)
 
 
 def test_every_lane_uses_full_shared_suite() -> None:
