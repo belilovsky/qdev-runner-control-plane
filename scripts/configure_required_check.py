@@ -82,18 +82,14 @@ def protection_update_payload(protection: dict[str, Any]) -> dict[str, Any]:
         "required_linear_history": bool(
             (protection.get("required_linear_history") or {}).get("enabled")
         ),
-        "allow_force_pushes": bool(
-            (protection.get("allow_force_pushes") or {}).get("enabled")
-        ),
+        "allow_force_pushes": bool((protection.get("allow_force_pushes") or {}).get("enabled")),
         "allow_deletions": bool((protection.get("allow_deletions") or {}).get("enabled")),
         "block_creations": bool((protection.get("block_creations") or {}).get("enabled")),
         "required_conversation_resolution": bool(
             (protection.get("required_conversation_resolution") or {}).get("enabled")
         ),
         "lock_branch": bool((protection.get("lock_branch") or {}).get("enabled")),
-        "allow_fork_syncing": bool(
-            (protection.get("allow_fork_syncing") or {}).get("enabled")
-        ),
+        "allow_fork_syncing": bool((protection.get("allow_fork_syncing") or {}).get("enabled")),
     }
 
 
@@ -180,8 +176,7 @@ def main() -> None:
     selected = inventory["repositories"]
     if args.repository:
         requested = {
-            value if "/" in value else f"{inventory['owner']}/{value}"
-            for value in args.repository
+            value if "/" in value else f"{inventory['owner']}/{value}" for value in args.repository
         }
         selected = [repo for repo in selected if repo["full_name"] in requested]
         missing = requested - {repo["full_name"] for repo in selected}

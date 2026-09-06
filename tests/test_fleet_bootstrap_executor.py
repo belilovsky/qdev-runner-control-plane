@@ -3,12 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     BootstrapOperationStore,
-    FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
 )
@@ -21,7 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "fleet-bootstrap.yml"
 RELEASE_LANES = ROOT / "config" / "release-lanes.yml"
 _CONTROLLER_DIGEST = "sha256:" + "b" * 64
-_CURRENT_CONTROLLER = ("c" * 40, "sha256:" + "d" * 64)
+_CONTROLLER_IMAGE_DIGEST = "sha256:" + "c" * 64
+_CONTROLLER_INTERNAL_IMAGE_DIGEST = "sha256:" + "e" * 64
+_ACTIVATION_ENVELOPE_DIGEST = "sha256:" + "d" * 64
 
 
 def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest:
@@ -34,8 +33,10 @@ def _request(worker_name: str = "qdev-platform-ci-187") -> FleetBootstrapRequest
             "job_id": 456,
             "attempt": 1,
             "claim_ttl_seconds": 300,
-            "controller_revision": "a" * 40,
-            "controller_release_digest": _CONTROLLER_DIGEST,
+            "controller_revision": None,
+            "controller_release_digest": None,
+            "controller_image_digest": None,
+            "activation_envelope_digest": None,
             "release_lane": None,
             "worker_name": worker_name,
         }
@@ -58,6 +59,9 @@ def _bootstrap_request(
             "claim_ttl_seconds": 300,
             "controller_revision": "a" * 40,
             "controller_release_digest": _CONTROLLER_DIGEST,
+            "controller_image_digest": _CONTROLLER_IMAGE_DIGEST,
+            "controller_internal_image_digest": _CONTROLLER_INTERNAL_IMAGE_DIGEST,
+            "activation_envelope_digest": _ACTIVATION_ENVELOPE_DIGEST,
             "release_lane": release_lane,
             "worker_name": None,
         }
@@ -67,11 +71,11 @@ def _bootstrap_request(
 def _adapter(path: Path, *, status: str = "completed") -> Path:
     path.write_text(
         "#!/bin/sh\n"
-        "python3 -c 'import json,sys; x=json.load(sys.stdin); t=x[\"target\"]; "
-        f"print(json.dumps({{\"schema\":\"qdev-fleet-worker-recovery-result-v1\","
-        f"\"status\":\"{status}\",\"worker_name\":t[\"worker_name\"],"
-        "\"target_id\":t[\"target_id\"],\"service_unit\":t[\"service_unit\"],"
-        "\"active_jobs\":0,\"result\":{\"native\":\"ok\"}}))'\n",
+        'python3 -c \'import json,sys; x=json.load(sys.stdin); t=x["target"]; '
+        f'print(json.dumps({{"schema":"qdev-fleet-worker-recovery-result-v1",'
+        f'"status":"{status}","worker_name":t["worker_name"],'
+        '"target_id":t["target_id"],"service_unit":t["service_unit"],'
+        '"active_jobs":0,"result":{"native":"ok"}}))\'\n',
         encoding="utf-8",
     )
     path.chmod(0o700)
@@ -91,19 +95,26 @@ def _bootstrap_adapter(
         "r, t = x['request'], x['target']\n"
         "lane = t.get('release_lane')\n"
         "host = t.get('host_agent_mtls_identity')\n"
-        "rollback_sha = t.get('rollback_revision', 'c' * 40)\n"
-        "rollback_digest = t.get('rollback_release_digest', 'sha256:' + 'd' * 64)\n"
+        "rollback_sha = 'c' * 40\n"
+        "rollback_digest = 'sha256:' + 'e' * 64\n"
+        "rollback_internal_digest = 'sha256:' + 'd' * 64\n"
         f"revision = {revision_expression}\n"
         "print(json.dumps({\n"
-        "  'schema': 'qdev-fleet-bootstrap-adapter-result-v1',\n"
+        "  'schema': 'qdev-fleet-bootstrap-adapter-result-v2',\n"
         "  'status': 'completed',\n"
         "  'action': r['action'],\n"
         "  'controller_revision': revision,\n"
         "  'controller_release_digest': r['controller_release_digest'],\n"
+        "  'controller_image_digest': r['controller_image_digest'],\n"
+        "  'controller_internal_image_digest': r['controller_internal_image_digest'],\n"
+        "  'activation_envelope_digest': r['activation_envelope_digest'],\n"
         "  'release_lane': lane,\n"
         "  'host_agent_mtls_identity': host,\n"
         "  'rollback_source_sha': rollback_sha,\n"
         "  'rollback_artifact_digest': rollback_digest,\n"
+        "  'rollback_internal_artifact_digest': rollback_internal_digest,\n"
+        "  'rollback_policy_digest': 'sha256:' + 'f' * 64,\n"
+        "  'rollback_generation': 7,\n"
         "  'result': {'native_status': 'verified'}\n"
         "}))\n",
         encoding="utf-8",
@@ -178,10 +189,10 @@ def test_adapter_identity_mismatch_fails_closed(tmp_path: Path) -> None:
     # adapter is covered by replacing its output with an unsafe identity.
     adapter.write_text(
         "#!/bin/sh\n"
-        "printf '%s' '{\"schema\":\"qdev-fleet-worker-recovery-result-v1\","
-        "\"status\":\"completed\",\"worker_name\":\"other\","
-        "\"target_id\":\"other\",\"service_unit\":\"other.service\","
-        "\"active_jobs\":0,\"result\":{}}'\n",
+        'printf \'%s\' \'{"schema":"qdev-fleet-worker-recovery-result-v1",'
+        '"status":"completed","worker_name":"other",'
+        '"target_id":"other","service_unit":"other.service",'
+        '"active_jobs":0,"result":{}}\'\n',
         encoding="utf-8",
     )
     adapter.chmod(0o700)
@@ -206,7 +217,6 @@ def test_controller_activation_missing_adapter_remains_pending(tmp_path: Path) -
         idempotency_key="controller-activation-001",
         adapter=tmp_path / "not-installed",
         receipt_path=tmp_path / "receipt.json",
-        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert result.status == "access_blocked"
     assert result.operation_status == "pending"
@@ -226,7 +236,6 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
         idempotency_key="controller-activation-002",
         adapter=adapter,
         receipt_path=tmp_path / "receipt.json",
-        controller_runtime=_CURRENT_CONTROLLER,
     )
     second = execute_bootstrap_operation(
         policy=policy,
@@ -234,13 +243,15 @@ def test_controller_activation_is_verified_and_idempotent(tmp_path: Path) -> Non
         request=request,
         idempotency_key="controller-activation-002",
         adapter=tmp_path / "no-longer-needed",
-        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert first.status == second.status == "completed"
     assert first.operation_status == second.operation_status == "completed"
     assert first.result is not None
-    assert first.result["rollback_source_sha"] == _CURRENT_CONTROLLER[0]
-    assert first.result["rollback_artifact_digest"] == _CURRENT_CONTROLLER[1]
+    assert first.result["rollback_source_sha"] == "c" * 40
+    assert first.result["rollback_artifact_digest"] == "sha256:" + "e" * 64
+    assert first.result["rollback_internal_artifact_digest"] == "sha256:" + "d" * 64
+    assert first.result["rollback_policy_digest"] == "sha256:" + "f" * 64
+    assert first.result["rollback_generation"] == 7
     assert json.loads((tmp_path / "receipt.json").read_text())["status"] == "completed"
 
 
@@ -251,26 +262,10 @@ def test_controller_activation_rejects_adapter_identity_mismatch(tmp_path: Path)
         request=_bootstrap_request("activate-controller"),
         idempotency_key="controller-activation-003",
         adapter=_bootstrap_adapter(tmp_path / "activate", identity_mismatch=True),
-        controller_runtime=_CURRENT_CONTROLLER,
     )
     assert result.status == "failed"
     assert result.operation_status == "pending"
     assert result.error_code == "adapter_identity_mismatch"
-
-
-def test_controller_activation_requires_verified_runtime_anchor(tmp_path: Path) -> None:
-    request = _bootstrap_request("activate-controller")
-    with pytest.raises(
-        FleetBootstrapError,
-        match="verified current controller runtime",
-    ):
-        execute_bootstrap_operation(
-            policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
-            store=BootstrapOperationStore(tmp_path / "activation.json"),
-            request=request,
-            idempotency_key="controller-activation-004",
-            adapter=_bootstrap_adapter(tmp_path / "activate"),
-        )
 
 
 def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Path) -> None:
@@ -287,4 +282,5 @@ def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Pat
     assert result.host_agent_mtls_identity == "qdev-host-agent:total-qdev-origin"
     assert result.result is not None
     assert result.result["rollback_source_sha"] == "c" * 40
-    assert result.result["rollback_artifact_digest"] == "sha256:" + "d" * 64
+    assert result.result["rollback_artifact_digest"] == "sha256:" + "e" * 64
+    assert result.result["rollback_internal_artifact_digest"] == "sha256:" + "d" * 64

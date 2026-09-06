@@ -94,8 +94,10 @@ def _regular(fd: int, limit: int) -> None:
 @contextmanager
 def _lock(root: int) -> Iterator[None]:
     fd = os.open(
-        "intake.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-        0o600, dir_fd=root,
+        "intake.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+        0o600,
+        dir_fd=root,
     )
     try:
         _regular(fd, 0)
@@ -118,7 +120,10 @@ def _read_file(directory: int, name: str, limit: int) -> bytes:
 
 def _write_file(directory: int, name: str, value: bytes) -> None:
     fd = os.open(
-        name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory,
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory,
     )
     with os.fdopen(fd, "wb") as stream:
         stream.write(value)
@@ -158,7 +163,10 @@ def _load(root: int, transaction: str) -> tuple[dict[str, Any], bytes]:
 
 
 def retain(
-    transaction: str, job: dict[str, Any], candidate: dict[str, Any], archive: bytes,
+    transaction: str,
+    job: dict[str, Any],
+    candidate: dict[str, Any],
+    archive: bytes,
 ) -> None:
     """Persist already-verified inputs; exact replay never overwrites history."""
     transaction_name(transaction)
@@ -167,7 +175,10 @@ def retain(
     if not isinstance(archive, bytes) or not 0 < len(archive) <= MAX_ARCHIVE:
         raise RetentionError("invalid retained IdP archive size")
     value = {
-        "schema": SCHEMA, "transaction": transaction, "job": job, "candidate": candidate,
+        "schema": SCHEMA,
+        "transaction": transaction,
+        "job": job,
+        "candidate": candidate,
         "archive_sha256": hashlib.sha256(archive).hexdigest(),
     }
     raw = _canonical(value)

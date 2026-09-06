@@ -94,8 +94,10 @@ def test_corrupt_publication_is_not_repaired(store, name, fault):
 def test_symlink_component_is_rejected(store, target, monkeypatch):
     save()
     path = {
-        "root": store, "transaction": store / TRANSACTION,
-        "ancestor": store.parent, "lock": store / "intake.lock",
+        "root": store,
+        "transaction": store / TRANSACTION,
+        "ancestor": store.parent,
+        "lock": store / "intake.lock",
     }[target]
     if target == "ancestor":
         alias = store.parent / "alias"
@@ -113,8 +115,10 @@ def test_symlink_component_is_rejected(store, target, monkeypatch):
 def test_writable_or_nonprivate_mode_is_rejected(store, target):
     save()
     path = {
-        "root": store, "transaction": store / TRANSACTION,
-        "ancestor": store.parent, "lock": store / "intake.lock",
+        "root": store,
+        "transaction": store / TRANSACTION,
+        "ancestor": store.parent,
+        "lock": store / "intake.lock",
     }[target]
     original = stat.S_IMODE(path.stat().st_mode)
     try:

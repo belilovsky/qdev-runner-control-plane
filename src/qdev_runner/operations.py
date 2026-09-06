@@ -17,6 +17,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .fleet_bootstrap_executor import BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
+
 HARD_MIN_FREE_GIB = 4.5
 # Runtime overrides remain repository-, SHA-, profile- and time-bound.  The
 # absolute free-space floor plus the repository reservation is the primary
@@ -82,11 +84,17 @@ def sign_payload(payload: Mapping[str, Any], key: str) -> str:
 
 
 _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
-    "controller-release-audit": {"kind", "observed_at", "controller_release"},
+    "controller-release-audit": {
+        "kind",
+        "observed_at",
+        "controller_release",
+        "controller_activation",
+    },
     "admin-platform-audit": {
         "kind",
         "observed_at",
         "controller_release",
+        "controller_activation",
         "managed_registry",
         "admin_platform_ledger",
         "active_candidate",
@@ -201,6 +209,41 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "previous_ledger_sha256",
         "target_ledger_sha256",
     },
+    "managed-ci-registration": {
+        "kind",
+        "observed_at",
+        "repository",
+        "source_sha",
+        "run_id",
+        "attempt",
+        "job_id",
+        "profile",
+        "provider",
+        "idempotent",
+        "backup_path",
+    },
+    "managed-ci-reconciliation": {
+        "kind",
+        "observed_at",
+        "repository",
+        "source_sha",
+        "run_ids",
+        "bindings",
+        "provider",
+        "idempotent",
+        "backup_path",
+    },
+    "qazgeo-release-claim-issued": {
+        "kind",
+        "observed_at",
+        "release_lane",
+        "source_sha",
+        "artifact_digest",
+        "candidate_evidence_digest",
+        "claim",
+        "claim_signature",
+        "preflight",
+    },
 }
 
 
@@ -307,15 +350,20 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             "replaced_expired_scope",
             "rolled_over_terminal_scope",
             "rebound_legacy_scope",
+            "repaired_managed_scope",
         }
     if set(value) != expected:
         raise ValueError("controller receipt payload fields are invalid")
     if kind != "fifo-claim-scope-issued" and not isinstance(value.get("observed_at"), str):
         raise ValueError("controller receipt observed_at is invalid")
-    if kind == "controller-release-audit" and not isinstance(value["controller_release"], dict):
+    if kind == "controller-release-audit" and (
+        not isinstance(value["controller_release"], dict)
+        or not isinstance(value["controller_activation"], dict)
+    ):
         raise ValueError("controller release payload is invalid")
     if kind == "admin-platform-audit" and (
         not isinstance(value["controller_release"], dict)
+        or not isinstance(value["controller_activation"], dict)
         or not isinstance(value["managed_registry"], dict)
         or not isinstance(value["admin_platform_ledger"], dict)
         or not isinstance(value["active_candidate"], str)
@@ -499,6 +547,9 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             "request_fingerprint",
             "controller_revision",
             "controller_release_digest",
+            "controller_image_digest",
+            "controller_internal_image_digest",
+            "activation_envelope_digest",
             "release_lane",
             "host_agent_mtls_identity",
             "error_code",
@@ -538,7 +589,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         else:
             state_invalid = True
         if (
-            execution.get("schema") != "qdev-fleet-bootstrap-execution-receipt-v1"
+            execution.get("schema") != BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
             or state_invalid
             or action not in {"activate-controller", "enrol-host-agent"}
             or not isinstance(execution.get("idempotency_key"), str)
@@ -552,9 +603,17 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             or not _SOURCE_SHA.fullmatch(execution["controller_revision"])
             or not isinstance(execution.get("controller_release_digest"), str)
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution["controller_release_digest"])
+            or not isinstance(execution.get("controller_image_digest"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution["controller_image_digest"])
+            or not isinstance(execution.get("controller_internal_image_digest"), str)
+            or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", execution["controller_internal_image_digest"]
+            )
+            or not isinstance(execution.get("activation_envelope_digest"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution["activation_envelope_digest"])
             or (
                 action == "activate-controller"
-                and (release_lane is not None or host_identity is not None)
+                and any(item is not None for item in (release_lane, host_identity))
             )
             or (
                 action == "enrol-host-agent"
@@ -633,6 +692,40 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         or value["previous_ledger_sha256"] == value["target_ledger_sha256"]
     ):
         raise ValueError("admin platform ledger link is invalid")
+    if kind in {"managed-ci-registration", "managed-ci-reconciliation"} and (
+        value.get("repository") != "belilovsky/qazgeo"
+        or not isinstance(value.get("source_sha"), str)
+        or not _SOURCE_SHA.fullmatch(value["source_sha"])
+        or not isinstance(value.get("provider"), dict)
+        or not isinstance(value.get("idempotent"), bool)
+        or (value.get("backup_path") is not None and not isinstance(value["backup_path"], str))
+    ):
+        raise ValueError("managed CI payload is invalid")
+    if kind == "managed-ci-registration" and (
+        not isinstance(value.get("run_id"), int)
+        or isinstance(value["run_id"], bool)
+        or value["run_id"] <= 0
+        or not isinstance(value.get("attempt"), int)
+        or isinstance(value["attempt"], bool)
+        or value["attempt"] < 1
+        or not isinstance(value.get("job_id"), int)
+        or isinstance(value["job_id"], bool)
+        or value["job_id"] <= 0
+        or not isinstance(value.get("profile"), str)
+        or not _WORKER_NAME.fullmatch(value["profile"])
+    ):
+        raise ValueError("managed CI registration payload is invalid")
+    if kind == "managed-ci-reconciliation" and (
+        not isinstance(value.get("run_ids"), list)
+        or any(
+            not isinstance(item, int) or isinstance(item, bool) or item <= 0
+            for item in value["run_ids"]
+        )
+        or len(value["run_ids"]) != len(set(value["run_ids"]))
+        or not isinstance(value.get("bindings"), list)
+        or any(not isinstance(item, dict) for item in value["bindings"])
+    ):
+        raise ValueError("managed CI reconciliation payload is invalid")
     return value
 
 

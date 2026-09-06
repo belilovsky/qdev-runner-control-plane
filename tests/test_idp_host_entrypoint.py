@@ -21,17 +21,21 @@ inputs = inputs_fixture
 def host(inputs, monkeypatch):
     root = storage.ROOT.parent
     profile = replace(
-        AGENT.IDP_PROFILE, state_path=inputs.profile.state_path, lock_path=inputs.profile.lock_path,
+        AGENT.IDP_PROFILE,
+        state_path=inputs.profile.state_path,
+        lock_path=inputs.profile.lock_path,
     )
     monkeypatch.setattr(AGENT, "IDP_PROFILE", profile)
     inputs.profile, inputs.lane = profile, AGENT._idp_lane()
     inputs.config = replace(inputs.config, host_identity=inputs.lane.host_agent_mtls_identity)
     inputs.job["placement"] = profile.placement
     inputs.job["dispatch_claim"].update(
-        placement=profile.placement, host_identity=inputs.config.host_identity,
+        placement=profile.placement,
+        host_identity=inputs.config.host_identity,
     )
     inputs.job["dispatch_claim_signature"] = sign_host_dispatch_claim(
-        inputs.job["dispatch_claim"], signing_key=KEY,
+        inputs.job["dispatch_claim"],
+        signing_key=KEY,
     )
     inputs.response["job"] = json.loads(json.dumps(inputs.job))
     inputs.stage = root / "releases" / TRANSACTION
@@ -42,13 +46,19 @@ def host(inputs, monkeypatch):
     for path in (cert, key, ca, secret):
         path.write_bytes(KEY if path == secret else b"synthetic-credential-not-production")
         path.chmod(0o600)
-    config.write_text("\n".join([
-        "QDEV_RELEASE_CONTROLLER_URL=https://worker.ci.qdev.run",
-        f"QDEV_RELEASE_AGENT_CERT={cert}", f"QDEV_RELEASE_AGENT_KEY={key}",
-        f"QDEV_RELEASE_CONTROLLER_CA={ca}",
-        f"QDEV_RELEASE_HOST_IDENTITY={inputs.config.host_identity}",
-        f"QDEV_RELEASE_DISPATCH_SECRET_FILE={secret}",
-    ]) + "\n")
+    config.write_text(
+        "\n".join(
+            [
+                "QDEV_RELEASE_CONTROLLER_URL=https://worker.ci.qdev.run",
+                f"QDEV_RELEASE_AGENT_CERT={cert}",
+                f"QDEV_RELEASE_AGENT_KEY={key}",
+                f"QDEV_RELEASE_CONTROLLER_CA={ca}",
+                f"QDEV_RELEASE_HOST_IDENTITY={inputs.config.host_identity}",
+                f"QDEV_RELEASE_DISPATCH_SECRET_FILE={secret}",
+            ]
+        )
+        + "\n"
+    )
     config.chmod(0o600)
     inputs.config_path = config
     inputs.config = replace(inputs.config, client_cert=cert, client_key=key, controller_ca=ca)
@@ -74,16 +84,14 @@ def test_cli_intake_and_expired_exact_retry_without_network_or_rewrite(host, mon
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "retained" and len(host.calls) == 1
     snapshots = {
-        p.name: (p.read_bytes(), p.stat().st_ino)
-        for p in (storage.ROOT / TRANSACTION).iterdir()
+        p.name: (p.read_bytes(), p.stat().st_ino) for p in (storage.ROOT / TRANSACTION).iterdir()
     }
     monkeypatch.setattr(AGENT.time, "time", lambda: NOW + 1000)
     monkeypatch.setattr(AGENT, "request", lambda *a, **k: pytest.fail("network retry"))
     monkeypatch.setattr(storage, "_write_file", lambda *a, **k: pytest.fail("overwrite"))
     assert run() == result
     assert snapshots == {
-        p.name: (p.read_bytes(), p.stat().st_ino)
-        for p in (storage.ROOT / TRANSACTION).iterdir()
+        p.name: (p.read_bytes(), p.stat().st_ino) for p in (storage.ROOT / TRANSACTION).iterdir()
     }
     with pytest.raises(AGENT.AgentError):
         run("apply", "ci-0123456789abcdef.json")
@@ -153,13 +161,23 @@ def test_conflicting_retry_never_overwrites_or_refreshes_authority(host, fault):
     assert metadata["job"] == host.job and archive == host.archive
 
 
-@pytest.mark.parametrize("name", [
-    "idp.env", "secret", "cert", "key", "ca", "controller-job.json", "artifact.tar.gz",
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "idp.env",
+        "secret",
+        "cert",
+        "key",
+        "ca",
+        "controller-job.json",
+        "artifact.tar.gz",
+    ],
+)
 @pytest.mark.parametrize("fault", ["missing", "symlink", "hardlink", "permissions"])
 def test_private_input_failures_are_redacted_and_do_not_publish(host, name, fault, capsys):
     parent = (
-        host.stage if name in {"controller-job.json", "artifact.tar.gz"}
+        host.stage
+        if name in {"controller-job.json", "artifact.tar.gz"}
         else host.config_path.parent
     )
     path = parent / name
@@ -195,9 +213,14 @@ def test_symlink_ancestor_rejected(host, monkeypatch, target):
     assert not storage.ROOT.exists() and not host.calls
 
 
-@pytest.mark.parametrize("value", [
-    "https://worker.ci.qdev.run:444", "https://user@worker.ci.qdev.run", "https://other.invalid",
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://worker.ci.qdev.run:444",
+        "https://user@worker.ci.qdev.run",
+        "https://other.invalid",
+    ],
+)
 def test_config_cannot_select_another_endpoint(host, value):
     host.config_path.write_text(
         host.config_path.read_text().replace("https://worker.ci.qdev.run", value),
@@ -244,21 +267,32 @@ def test_real_host_guard_rejects_wrong_placement_or_nonroot(monkeypatch, uid, ho
         AGENT._require_idp_host()
 
 
-@pytest.mark.parametrize("arguments", [
-    ["--config", "/untrusted/other"], ["--profile", "qmt"], ["--target", "/untrusted/other"],
-    ["--command", "sh"], ["--state-root", "/untrusted/other"],
-])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--config", "/untrusted/other"],
+        ["--profile", "qmt"],
+        ["--target", "/untrusted/other"],
+        ["--command", "sh"],
+        ["--state-root", "/untrusted/other"],
+    ],
+)
 def test_cli_has_no_arbitrary_paths_profiles_or_commands(arguments):
     with pytest.raises(SystemExit) as error:
         AGENT.main(["idp", "inspect", "--transaction", TRANSACTION, *arguments])
     assert error.value.code == 2 and "idp" not in AGENT.PROFILES
 
 
-@pytest.mark.parametrize("action,transaction,ci", [
-    ("apply", TRANSACTION, "none"), ("intake", TRANSACTION, "ci-0123456789abcdef.json"),
-    ("inspect", "../other-stage", "none"), ("observe", TRANSACTION, "../secret"),
-    ("rollback", TRANSACTION, "none"),
-])
+@pytest.mark.parametrize(
+    "action,transaction,ci",
+    [
+        ("apply", TRANSACTION, "none"),
+        ("intake", TRANSACTION, "ci-0123456789abcdef.json"),
+        ("inspect", "../other-stage", "none"),
+        ("observe", TRANSACTION, "../secret"),
+        ("rollback", TRANSACTION, "none"),
+    ],
+)
 def test_invalid_operations_never_read_configuration(host, monkeypatch, action, transaction, ci):
     monkeypatch.setattr(AGENT, "load_config", lambda *a, **k: pytest.fail("config read"))
     with pytest.raises(AGENT.AgentError):
@@ -274,9 +308,19 @@ def test_unknown_native_outcome_is_redacted_and_not_retried(host, monkeypatch, c
         raise RuntimeError("synthetic-credential-private-error")
 
     monkeypatch.setattr(VerifiedNativeBundle, "load", invoke)
-    assert AGENT.main([
-        "idp", "apply", "--transaction", TRANSACTION, "--ci", "ci-0123456789abcdef.json",
-    ]) == 1
+    assert (
+        AGENT.main(
+            [
+                "idp",
+                "apply",
+                "--transaction",
+                TRANSACTION,
+                "--ci",
+                "ci-0123456789abcdef.json",
+            ]
+        )
+        == 1
+    )
     output = capsys.readouterr()
     assert "synthetic-credential" not in output.err and not output.out
     assert calls == [1] and len(host.calls) == 1

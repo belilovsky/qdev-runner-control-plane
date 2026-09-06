@@ -6,8 +6,10 @@ bootstrap:
   audience: qdev-fleet-bootstrap-v1
   max_claim_ttl_seconds: 900
 activation:
-  rollback_revision: 0a3f418bc45375f431481b60470cdf8bee218eae
-  rollback_release_digest: sha256:570e44d17fb99c927fffef2cc429fd411c2a3240ab9d7e15bc7c9065f8c2834e
+  mode: signed-external-envelope
+  envelope_schema: qdev-controller-activation-envelope-v1
+  public_key_binding: controller-registry
+  max_envelope_ttl_seconds: 1800
 enrolment:
   lanes:
     - qdev-release-ortcom
@@ -15,6 +17,7 @@ enrolment:
     - qdev-release-total
     - qdev-release-qazposter
     - qdev-release-qmt
+    - qdev-release-qazgeo
 workers:
   - qdev-ci
   - qdev-ci-browser

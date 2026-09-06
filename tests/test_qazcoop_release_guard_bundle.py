@@ -72,9 +72,9 @@ def _bundle(tmp_path: Path) -> tuple[Path, ModuleType]:
 def _rewrite_manifest_digest(bundle: Path, name: str, relative: Path) -> None:
     manifest_path = bundle / "bundle.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"][name] = "sha256:" + hashlib.sha256(
-        (bundle / relative).read_bytes()
-    ).hexdigest()
+    manifest["files"][name] = (
+        "sha256:" + hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    )
     manifest_path.write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -174,7 +174,8 @@ def test_preinstalled_guard_must_match_exact_inventory_and_digests(tmp_path: Pat
         destination = installed / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         source_name = next(
-            name for name, source_relative in installer.EXPECTED_FILES.items()
+            name
+            for name, source_relative in installer.EXPECTED_FILES.items()
             if source_relative == relative
         )
         destination.write_bytes((bundle / installer.EXPECTED_FILES[source_name]).read_bytes())

@@ -46,16 +46,28 @@ def test_read_full_signed_candidate_does_not_admit_or_collect(api, monkeypatch):
     value = first.json()
     assert value == {
         "schema": "qdev-controller-idp-dispatch-inputs-v1",
-        "status": "authenticated_inputs", "acceptance": "not_run",
+        "status": "authenticated_inputs",
+        "acceptance": "not_run",
         "candidate_receipt": api.candidate,
         "job": {
             "schema": "qdev-release-host-agent-job-v1",
             "source_sha": api.candidate["source_sha"],
-            **{key: api.claim[key] for key in (
-                "release_id", "release_lane", "project_id", "placement",
-                "artifact_digest", "artifact_ref", "lease_id", "fence", "lease_expires_at",
-                "rollback_anchor", "candidate_evidence",
-            )},
+            **{
+                key: api.claim[key]
+                for key in (
+                    "release_id",
+                    "release_lane",
+                    "project_id",
+                    "placement",
+                    "artifact_digest",
+                    "artifact_ref",
+                    "lease_id",
+                    "fence",
+                    "lease_expires_at",
+                    "rollback_anchor",
+                    "candidate_evidence",
+                )
+            },
             "dispatch_claim": api.claim,
             "dispatch_claim_signature": sign_host_dispatch_claim(api.claim, signing_key=KEY),
         },
@@ -95,11 +107,28 @@ def test_exact_lease_and_fence_required(api, field, wrong):
     assert api.store.operation_events(api.lane) == before
 
 
-@pytest.mark.parametrize("fault", [
-    "status", "release", "expired_lease", "expired_claim", "future_claim", "signature",
-    "unicode_signature", "candidate", "attempt", "rollback", "profile", "workflow", "job",
-    "archive_digest", "omitted_candidate", "omitted_source", "boolean_time",
-])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "status",
+        "release",
+        "expired_lease",
+        "expired_claim",
+        "future_claim",
+        "signature",
+        "unicode_signature",
+        "candidate",
+        "attempt",
+        "rollback",
+        "profile",
+        "workflow",
+        "job",
+        "archive_digest",
+        "omitted_candidate",
+        "omitted_source",
+        "boolean_time",
+    ],
+)
 def test_drift_or_expiry_cannot_refresh_admission(api, fault):
     def mutation(job):
         if fault == "status":
@@ -128,7 +157,8 @@ def test_drift_or_expiry_cannot_refresh_admission(api, fault):
             job["dispatch_claim"][key] = job["candidate_receipt"][key]
             job["dispatch_claim"]["candidate_evidence"] = candidate_evidence(job, api.lane)
             job["dispatch_claim_signature"] = sign_host_dispatch_claim(
-                job["dispatch_claim"], signing_key=KEY,
+                job["dispatch_claim"],
+                signing_key=KEY,
             )
         elif fault == "archive_digest":
             job["candidate_receipt"]["archive_sha256"] = "f" * 64
@@ -178,8 +208,11 @@ def test_missing_snapshot_restores_only_existing_journal_job(api):
 def test_no_idp_disclosure_on_another_lane(api):
     with pytest.raises(ReleaseLaneError, match="fixed IdP"):
         api.store.idp_dispatch_inputs(
-            replace(api.lane, project_id="another-product"), api.claim["release_id"],
-            lease_id=api.claim["lease_id"], fence=api.claim["fence"], signing_key=KEY,
+            replace(api.lane, project_id="another-product"),
+            api.claim["release_id"],
+            lease_id=api.claim["lease_id"],
+            fence=api.claim["fence"],
+            signing_key=KEY,
         )
 
 

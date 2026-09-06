@@ -63,14 +63,14 @@ repository_admission_disk_mb:
   # for every other repository.
   belilovsky/adilet-digest-studio:
     qdev-ci-docker: 12288
-  # QGeo's exact candidate has 176 MiB of tracked source, a 290 MiB local test
-  # environment and a 142 MiB production image. Its qdev-ci-docker lane adds
-  # one pinned PostGIS service before publishing one immutable image. Reserve
-  # 4 GiB (over 6.7x the measured 608 MiB inputs) for this repository only;
-  # the worker's independent 4.5 GiB free-space floor remains enforced before
-  # selection and throughout execution.
+  # QGeo's recovery image is a small 142 MiB compressed runtime on the
+  # production target; its qdev-ci-docker lane runs the pinned dependency and
+  # PostGIS checks before publishing one immutable image. Reserve 15 GiB for
+  # this repository only, in addition to the dedicated 20 GiB production and
+  # rollback reserve: QGeo admission therefore requires at least 35 GiB free.
+  # The worker's independent running floor and workflow preflight remain active.
   belilovsky/qazgeo:
-    qdev-ci-docker: 4096
+    qdev-ci-docker: 15360
   # Qaz.Vision's release image has a measured 201 MiB compressed runtime and
   # its candidate checkout is 331 MiB. Its Docker lane is a single slim
   # Python image build with no nested services; reserve the supported 12 GiB
@@ -83,6 +83,14 @@ repository_admission_disk_mb:
   # worker's independent hard floor remains enforced during execution.
   belilovsky/qazpolit:
     qdev-ci-docker: 12288
+repository_admission_constraints:
+  # QGeo production and rollback bytes retain 20 GiB independently of the
+  # 15 GiB exact build reservation above. This absolute server-side floor is
+  # not reducible by a capacity override, and the ephemeral worker may execute
+  # only one exact provider job at a time.
+  belilovsky/qazgeo:
+    min_disk_free_gib: 35
+    max_concurrency: 1
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]

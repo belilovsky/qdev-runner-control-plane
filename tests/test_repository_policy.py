@@ -45,12 +45,22 @@ def hosted_repository(tmp_path: Path, workflow: str) -> Path:
     return root
 
 
+def controller_managed_repository(tmp_path: Path, workflow: str) -> Path:
+    root = repository(tmp_path, workflow)
+    (root / ".github/qdev-runner.yml").write_text(
+        "schema_version: qdev-runner-v3\n"
+        "execution_mode: controller-managed-self-hosted\n"
+        "github_hosted_fallback: false\n"
+        "profiles:\n  - qdev-ci\n",
+        encoding="utf-8",
+    )
+    return root
+
+
 def declare_release_registry_workflow(root: Path, name: str = "deploy.yml") -> None:
     contract = root / ".github/qdev-runner.yml"
     contract.write_text(
-        contract.read_text(encoding="utf-8")
-        + "release_registry_workflows:\n"
-        + f"  - {name}\n",
+        contract.read_text(encoding="utf-8") + "release_registry_workflows:\n" + f"  - {name}\n",
         encoding="utf-8",
     )
 
@@ -234,6 +244,41 @@ def test_v2_accepts_manual_recovery_inputs_but_not_an_extra_trigger(tmp_path: Pa
         result = run_guard(root)
         assert result.returncode == 1
         assert "recovery-workflow-not-manual-only" in result.stdout
+
+
+def test_v3_installs_controller_managed_contract_and_accepts_exact_labels(
+    tmp_path: Path,
+) -> None:
+    root = controller_managed_repository(tmp_path, GOOD_WORKFLOW)
+    installer = load_installer()
+    installer.install(root)
+
+    assert run_guard(root).returncode == 0
+    contract_workflow = (root / ".github/workflows/qdev-runner-contract.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "ubuntu-latest" not in contract_workflow
+    assert "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-contract" in (contract_workflow)
+    assert "controller-managed" in (root / ".github/QDEV_RUNNERS.md").read_text(encoding="utf-8")
+
+
+def test_v3_rejects_hosted_runner_or_enabled_fallback(tmp_path: Path) -> None:
+    root = controller_managed_repository(
+        tmp_path,
+        "jobs:\n  verify:\n    runs-on: ubuntu-latest\n",
+    )
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "github_hosted_fallback: false", "github_hosted_fallback: true"
+        ),
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "hosted-fallback-not-disabled" in result.stdout
+    assert "hosted-runner" in result.stdout
 
 
 def test_v2_allows_ghcr_only_in_declared_non_pr_release_workflow(
@@ -555,8 +600,7 @@ jobs:
     )
     contract = root / ".github/qdev-runner.yml"
     contract.write_text(
-        contract.read_text(encoding="utf-8")
-        + "primary_self_hosted_workflows:\n  - ci.yml\n",
+        contract.read_text(encoding="utf-8") + "primary_self_hosted_workflows:\n  - ci.yml\n",
         encoding="utf-8",
     )
     load_installer().install(root)

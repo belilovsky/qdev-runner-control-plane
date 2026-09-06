@@ -143,7 +143,7 @@ class ControllerRuntimeHealth:
     """Typed, non-secret projection of the activated controller runtime."""
 
     schema: Literal["qdev-controller-runtime-health-v1"]
-    state: Literal["active", "legacy", "unavailable"]
+    state: Literal["active", "unavailable"]
     revision: str | None
     digest: str | None
     activated: str | None
@@ -246,9 +246,7 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError("admin platform program owner is invalid")
         if program["status"] not in {"active", "blocked", "complete"}:
             raise AdminPlatformLedgerError("admin platform program status is invalid")
-        program_updated_at = _require_aware_timestamp(
-            program["updated_at"], "program updated_at"
-        )
+        program_updated_at = _require_aware_timestamp(program["updated_at"], "program updated_at")
 
         active_stage = document["active_stage"]
         if active_stage is not None and (
@@ -534,17 +532,12 @@ class AdminPlatformLedger:
             if not isinstance(outcome, str) or outcome not in RESULT_OUTCOMES_V3:
                 raise AdminPlatformLedgerError(f"{entry_id} result outcome is invalid")
             if outcome == "queued" and lane not in {"ci", "deploy"}:
-                raise AdminPlatformLedgerError(
-                    f"{entry_id} result lane {lane} cannot be queued"
-                )
+                raise AdminPlatformLedgerError(f"{entry_id} result lane {lane} cannot be queued")
             if outcome == "auth_blocked" and lane != "browser":
                 raise AdminPlatformLedgerError(
                     f"{entry_id} result lane {lane} cannot be auth_blocked"
                 )
-            if (
-                outcome == "not_applicable"
-                and lane not in NOT_APPLICABLE_LANES_V3[entry_id]
-            ):
+            if outcome == "not_applicable" and lane not in NOT_APPLICABLE_LANES_V3[entry_id]:
                 raise AdminPlatformLedgerError(
                     f"{entry_id} result lane {lane} cannot be not_applicable"
                 )
@@ -558,9 +551,7 @@ class AdminPlatformLedger:
                 )
             previous_result_time = latest_result_time.get(release_id)
             if previous_result_time is not None and recorded_at < previous_result_time:
-                raise AdminPlatformLedgerError(
-                    f"{entry_id} result history is not chronological"
-                )
+                raise AdminPlatformLedgerError(f"{entry_id} result history is not chronological")
             previous_outcome = results_by_attempt[release_id].get(lane)
             self._validate_result_transition(entry_id, lane, previous_outcome, outcome)
             self._validate_lane_prerequisites(
@@ -654,9 +645,7 @@ class AdminPlatformLedger:
                     raise AdminPlatformLedgerError(
                         f"{entry_id} live acceptance does not have complete lane receipts"
                     )
-                if latest_results.get("source") != "passed" or latest_results.get(
-                    "ci"
-                ) != "passed":
+                if latest_results.get("source") != "passed" or latest_results.get("ci") != "passed":
                     raise AdminPlatformLedgerError(
                         f"{entry_id} live acceptance requires passing source and CI"
                     )
@@ -717,9 +706,7 @@ class AdminPlatformLedger:
             raise AdminPlatformLedgerError(
                 f"{entry_id} result lane {lane} requires passing CI evidence"
             )
-        if lane in {"deploy", "rollback", "observation"} and latest.get(
-            "publication"
-        ) != "passed":
+        if lane in {"deploy", "rollback", "observation"} and latest.get("publication") != "passed":
             raise AdminPlatformLedgerError(
                 f"{entry_id} result lane {lane} requires passing publication evidence"
             )
@@ -948,9 +935,7 @@ class AdminPlatformLedger:
                     link.get("kind") != "admin-platform-ledger-link"
                     or link.get("target_ledger_sha256") != cursor
                 ):
-                    raise AdminPlatformLedgerError(
-                        "admin platform ledger lineage is inconsistent"
-                    )
+                    raise AdminPlatformLedgerError("admin platform ledger lineage is inconsistent")
                 cursor = cast(str, link["previous_ledger_sha256"])
         finally:
             os.close(links_fd)
@@ -1109,9 +1094,7 @@ class AdminPlatformLedger:
         ):
             return False
         assert self._raw_v3 is not None
-        entry = cast(dict[str, dict[str, Any]], self._raw_v3["entries"])[
-            self.active_stage
-        ]
+        entry = cast(dict[str, dict[str, Any]], self._raw_v3["entries"])[self.active_stage]
         latest: str | None = None
         for result in cast(list[dict[str, Any]], entry["results"]):
             if (
@@ -1142,19 +1125,20 @@ def controller_runtime_health(path: Path) -> ControllerRuntimeHealth:
     if not isinstance(value, dict):
         return unavailable
     schema = value.get("schema")
-    if schema not in {CONTROLLER_RELEASE_SCHEMA_V1, CONTROLLER_RELEASE_SCHEMA_V2}:
+    if schema != CONTROLLER_RELEASE_SCHEMA_V2:
         return unavailable
     if value.get("state") != "active":
         return unavailable
-    legacy_keys = {
+    measured_keys = {
         "schema",
         "state",
         "revision",
         "release_digest",
         "activated_at",
+        "runtime_identity",
+        "dependency_identity",
     }
-    measured_keys = legacy_keys | {"runtime_identity", "dependency_identity"}
-    if set(value) != (legacy_keys if schema == CONTROLLER_RELEASE_SCHEMA_V1 else measured_keys):
+    if set(value) != measured_keys:
         return unavailable
     revision = value.get("revision")
     release_digest = value.get("release_digest")
@@ -1163,7 +1147,7 @@ def controller_runtime_health(path: Path) -> ControllerRuntimeHealth:
         return unavailable
     if not isinstance(release_digest, str) or not _SHA256.fullmatch(release_digest):
         return unavailable
-    if schema == CONTROLLER_RELEASE_SCHEMA_V2 and not release_digest.startswith("sha256:"):
+    if not release_digest.startswith("sha256:"):
         return unavailable
     if not isinstance(activated_at, str):
         return unavailable
@@ -1173,24 +1157,8 @@ def controller_runtime_health(path: Path) -> ControllerRuntimeHealth:
         return unavailable
     if parsed.tzinfo is None:
         return unavailable
-    normalized_digest = (
-        release_digest if release_digest.startswith("sha256:") else f"sha256:{release_digest}"
-    )
+    normalized_digest = release_digest
     receipt = cast(dict[str, Any], _json_safe(value))
-    if schema == CONTROLLER_RELEASE_SCHEMA_V1:
-        # Existing installations remain observable during the bounded bootstrap,
-        # but a legacy activation is never represented as measured evidence.
-        return ControllerRuntimeHealth(
-            schema=RUNTIME_HEALTH_SCHEMA_V1,
-            state="legacy",
-            revision=revision,
-            digest=normalized_digest,
-            activated=activated_at,
-            runtime_identity=None,
-            dependency_identity=None,
-            receipt=receipt,
-        )
-
     runtime_identity = value.get("runtime_identity")
     dependency_identity = value.get("dependency_identity")
     if not isinstance(runtime_identity, dict) or set(runtime_identity) != {

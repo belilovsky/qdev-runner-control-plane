@@ -30,8 +30,12 @@ def retain(invocation):
 
 def invoke(invocation, action="inspect", **kwargs):
     return AGENT.invoke_retained_idp(
-        invocation.config, invocation.profile, invocation.lane,
-        transaction=TRANSACTION, action=action, **kwargs,
+        invocation.config,
+        invocation.profile,
+        invocation.lane,
+        transaction=TRANSACTION,
+        action=action,
+        **kwargs,
     )
 
 
@@ -60,8 +64,11 @@ def test_unverified_inputs_cannot_be_published(invocation, monkeypatch, fault):
     else:
         monkeypatch.setattr(AGENT.time, "time", lambda: NOW + 1000)
     invocation.invocation = AGENT.IdPNativeInvocation(
-        invocation.config, invocation.profile, invocation.lane,
-        invocation.job, invocation.candidate,
+        invocation.config,
+        invocation.profile,
+        invocation.lane,
+        invocation.job,
+        invocation.candidate,
     )
     monkeypatch.setattr(storage, "retain", lambda *a: pytest.fail("unverified write"))
     monkeypatch.setattr(VerifiedNativeBundle, "load", lambda self: pytest.fail("unverified load"))
@@ -72,7 +79,8 @@ def test_unverified_inputs_cannot_be_published(invocation, monkeypatch, fault):
 
 
 def test_expired_exact_published_retry_finishes_durability_without_mutation(
-    invocation, monkeypatch,
+    invocation,
+    monkeypatch,
 ):
     original = retain(invocation)
     snapshot = storage.read(TRANSACTION)
@@ -105,7 +113,9 @@ def test_incomplete_intake_inspect_never_executes_helper(invocation, monkeypatch
         (storage.ROOT / ".incomplete.pending").mkdir(mode=0o700)
     monkeypatch.setattr(VerifiedNativeBundle, "load", lambda self: pytest.fail("helper loaded"))
     assert invoke(invocation) == {
-        "schema": storage.SCHEMA, "transaction": TRANSACTION, "status": "inputs_not_published",
+        "schema": storage.SCHEMA,
+        "transaction": TRANSACTION,
+        "status": "inputs_not_published",
     }
     for action in ("reconcile", "observe", "apply", "rollback"):
         with pytest.raises(AGENT.AgentError):
@@ -137,7 +147,9 @@ def test_restart_revalidates_full_retained_chain(invocation, monkeypatch, fault)
 
 @pytest.mark.parametrize("action", ["inspect", "reconcile", "observe", "apply"])
 def test_restart_releases_intake_lock_before_fixed_native_invocation(
-    invocation, monkeypatch, action,
+    invocation,
+    monkeypatch,
+    action,
 ):
     retain(invocation)
     calls = []
@@ -181,7 +193,9 @@ def test_unknown_native_result_requires_inspection_not_retry(invocation, monkeyp
         raise RuntimeError("synthetic-private-value")
 
     monkeypatch.setattr(
-        VerifiedNativeBundle, "load", lambda self: (SimpleNamespace(dispatch=fail), {}),
+        VerifiedNativeBundle,
+        "load",
+        lambda self: (SimpleNamespace(dispatch=fail), {}),
     )
     with pytest.raises(AGENT.AgentError) as caught:
         invoke(invocation)

@@ -27,6 +27,7 @@ def test_managed_registry_separates_admin_wave_from_qazgeo_production() -> None:
         "https://qgeo.tech/health",
         "https://qgeo.tech/health/live",
         "https://qgeo.tech/health/ready",
+        "https://qgeo.tech/health/quality",
     )
 
 

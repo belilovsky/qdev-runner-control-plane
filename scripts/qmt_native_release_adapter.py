@@ -56,9 +56,9 @@ class AdapterError(RuntimeError):
 
 
 def canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 def atomic_json(path: Path, value: object, mode: int = 0o600) -> None:
@@ -243,7 +243,7 @@ def prove_image(record: dict[str, Any]) -> dict[str, Any]:
     release = record["release"]
     inspected = image_inspect(release["artifact_ref"])
     repo_digests = inspected.get("RepoDigests")
-    labels = ((inspected.get("Config") or {}).get("Labels") or {})
+    labels = (inspected.get("Config") or {}).get("Labels") or {}
     if (
         not isinstance(repo_digests, list)
         or release["artifact_ref"] not in repo_digests
@@ -427,7 +427,7 @@ def enroll_current_runtime() -> dict[str, Any]:
     if not isinstance(image_id, str) or not _DIGEST.fullmatch(image_id):
         raise AdapterError("existing QMT image identity is invalid")
     inspected = image_inspect(image_id)
-    labels = ((inspected.get("Config") or {}).get("Labels") or {})
+    labels = (inspected.get("Config") or {}).get("Labels") or {}
     if (
         not isinstance(labels, dict)
         or labels.get("org.opencontainers.image.revision") != LEGACY_SOURCE_SHA
@@ -599,13 +599,17 @@ def main() -> int:
             result = enroll_current_runtime()
         elif arguments.action == "receipt":
             state = recover_interrupted(read_state())
-            record = state["active"] if arguments.current else next(
-                (
-                    value
-                    for value in (state["active"], state["rollback"])
-                    if validate_record(value)["release"] == selected_release(arguments)
-                ),
-                None,
+            record = (
+                state["active"]
+                if arguments.current
+                else next(
+                    (
+                        value
+                        for value in (state["active"], state["rollback"])
+                        if validate_record(value)["release"] == selected_release(arguments)
+                    ),
+                    None,
+                )
             )
             if record is None:
                 raise AdapterError("requested QMT release tuple is not retained")

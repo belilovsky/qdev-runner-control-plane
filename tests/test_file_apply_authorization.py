@@ -67,7 +67,10 @@ def fixture():
             "observed_at": datetime.fromtimestamp(NOW, UTC).isoformat(),
             "quality": ci,
             "runner_contract": {
-                **ci, "profile": "qdev-ci", "run_id": 3, "job_id": 4,
+                **ci,
+                "profile": "qdev-ci",
+                "run_id": 3,
+                "job_id": 4,
                 "workflow": "qdev-runner-contract.yml",
                 "url": "https://github.com/belilovsky/id-qdev-run/actions/runs/3/job/4",
             },
@@ -123,10 +126,20 @@ def fixture():
         "schema": "qdev-release-candidate-receipt-v1",
         "status": "passed",
         "source_sha": SHA,
-        **{key: claim[key] for key in (
-            "repository", "workflow", "job", "run_id", "job_id", "attempt",
-            "runner_profile", "artifact_ref", "artifact_digest",
-        )},
+        **{
+            key: claim[key]
+            for key in (
+                "repository",
+                "workflow",
+                "job",
+                "run_id",
+                "job_id",
+                "attempt",
+                "runner_profile",
+                "artifact_ref",
+                "artifact_digest",
+            )
+        },
         "artifact_type": "http-archive",
         "artifact_uri": "https://artifacts.example.test/idp-release.tar.gz",
         "archive_sha256": "d" * 64,
@@ -230,7 +243,11 @@ def test_binding_tamper_before_consume(fixture, field):
         ("quality", "started_at", "2026-02-30T00:00:00Z"),
         ("quality", "unknown", True),
         ("runner_contract", "workflow", "quality.yml"),
-        ("runner_contract", "url", "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/2"),
+        (
+            "runner_contract",
+            "url",
+            "https://github.com/belilovsky/id-qdev-run/actions/runs/1/job/2",
+        ),
         ("runner_contract", "source_sha", "b" * 40),
         ("runner_contract", "conclusion", "failure"),
         ("runner_contract", "profile", "unknown"),
@@ -357,9 +374,13 @@ def test_broken_native_context_cannot_suppress_apply_error(fixture):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("source_sha", "b" * 40), ("status", "queued"),
-        ("workflow", "runner-smoke.yml"), ("job", "smoke"), ("attempt", 2),
-        ("archive_sha256", "a" * 64), ("payload_sha256", "c" * 64),
+        ("source_sha", "b" * 40),
+        ("status", "queued"),
+        ("workflow", "runner-smoke.yml"),
+        ("job", "smoke"),
+        ("attempt", 2),
+        ("archive_sha256", "a" * 64),
+        ("payload_sha256", "c" * 64),
         ("artifact_type", "oci"),
     ],
 )

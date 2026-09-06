@@ -37,6 +37,8 @@ def _copy_release(tmp_path: Path) -> Path:
         Path("src/qdev_runner/controller_candidate.py"),
         Path("src/qdev_runner/durable_state.py"),
         Path("scripts/prepare_controller_candidate.py"),
+        Path("src/qdev_runner/controller_recovery_artifact.py"),
+        Path("scripts/controller_recovery_artifact.py"),
     ):
         if not (release / new_runtime_module).exists():
             (release / new_runtime_module).parent.mkdir(parents=True, exist_ok=True)

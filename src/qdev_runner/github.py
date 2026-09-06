@@ -19,8 +19,12 @@ from .models import GitHubRegistrationToken, GitHubRunnerObservation
 
 _PRIVATE_HTTP: ContextVar[bool] = ContextVar("qdev_private_github_http", default=False)
 _TRANSPORT_LOGGERS = (
-    "httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2",
-    "httpcore.proxy", "httpcore.socks",
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
 )
 
 
@@ -426,6 +430,68 @@ class GitHubAppClient:
             raise GitHubError("workflow run response is malformed")
         return cast(dict[str, Any], data)
 
+    def workflow_run_jobs(
+        self,
+        installation_id: int,
+        repository: str,
+        run_id: int,
+        attempt: int,
+    ) -> list[dict[str, Any]]:
+        """Return the complete job set for one exact workflow-run attempt."""
+
+        if run_id < 1 or attempt < 1:
+            raise GitHubError("workflow run job request identity is invalid")
+        token = self.installation_token(installation_id)
+        jobs: list[dict[str, Any]] = []
+        total_count: int | None = None
+        page = 1
+        while True:
+            response = self._request(
+                "GET",
+                f"/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+                headers=self._headers(token),
+                params={"filter": "all", "per_page": 100, "page": page},
+            )
+            if response.status_code != 200:
+                raise GitHubError(
+                    "workflow run jobs request failed: "
+                    f"{response.status_code} {response.text[:300]}"
+                )
+            value = response.json()
+            if not isinstance(value, dict) or set(value) < {"total_count", "jobs"}:
+                raise GitHubError("workflow run jobs response is invalid")
+            page_total = value["total_count"]
+            page_jobs = value["jobs"]
+            if (
+                not isinstance(page_total, int)
+                or isinstance(page_total, bool)
+                or page_total < 0
+                or not isinstance(page_jobs, list)
+                or any(not isinstance(item, dict) for item in page_jobs)
+            ):
+                raise GitHubError("workflow run jobs response is invalid")
+            if total_count is None:
+                total_count = page_total
+            elif page_total != total_count:
+                raise GitHubError("workflow run jobs response changed during pagination")
+            jobs.extend(cast(list[dict[str, Any]], page_jobs))
+            if len(jobs) >= total_count:
+                break
+            if not page_jobs or page >= 100:
+                raise GitHubError("workflow run jobs response is incomplete")
+            page += 1
+        if len(jobs) != total_count:
+            raise GitHubError("workflow run jobs response count is invalid")
+        job_ids = [item.get("id") for item in jobs]
+        if any(
+            not isinstance(job_id, int) or isinstance(job_id, bool) or job_id < 1
+            for job_id in job_ids
+        ):
+            raise GitHubError("workflow run jobs response identity is invalid")
+        if len(job_ids) != len(set(job_ids)):
+            raise GitHubError("workflow run jobs response is duplicated")
+        return jobs
+
     def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, Any]:
         response = self._request(
             "GET",
@@ -457,9 +523,7 @@ class GitHubAppClient:
             raise GitHubError("workflow attempt response is malformed")
         return cast(dict[str, Any], data)
 
-    def workflow_job_log(
-        self, installation_id: int, repository: str, job_id: int
-    ) -> bytes:
+    def workflow_job_log(self, installation_id: int, repository: str, job_id: int) -> bytes:
         """Read bounded ephemeral logs; never return signed URLs in errors.
 
         GitHub's REST endpoint redirects once to its log store. The second
@@ -471,7 +535,8 @@ class GitHubAppClient:
         context = _PRIVATE_HTTP.set(True)
         try:
             request = self._client.build_request(
-                "GET", f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}/logs",
+                "GET",
+                f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}/logs",
                 headers=self._headers(self.installation_token(installation_id)),
             )
             response = self._client.send(request, stream=True, follow_redirects=False)
@@ -482,8 +547,10 @@ class GitHubAppClient:
                 raise GitHubError("workflow log storage location was rejected")
             url = httpx.URL(location)
             if (
-                url.scheme != "https" or url.port not in (None, 443)
-                or url.userinfo or url.fragment
+                url.scheme != "https"
+                or url.port not in (None, 443)
+                or url.userinfo
+                or url.fragment
                 or not any(
                     url.host.endswith(suffix)
                     for suffix in (".blob.core.windows.net", ".actions.githubusercontent.com")

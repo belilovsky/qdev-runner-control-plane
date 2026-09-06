@@ -130,9 +130,7 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
 
         run([sys.executable, str(INSTALLER), str(checkout)], cwd=checkout)
         workflow_root = checkout / ".github/workflows"
-        workflow_files = sorted(workflow_root.glob("*.yml")) + sorted(
-            workflow_root.glob("*.yaml")
-        )
+        workflow_files = sorted(workflow_root.glob("*.yml")) + sorted(workflow_root.glob("*.yaml"))
         if workflow_files:
             paths = [str(path) for path in workflow_files]
             run(
@@ -213,8 +211,7 @@ def main() -> None:
     selected = inventory["repositories"]
     if args.repository:
         names = {
-            name if "/" in name else f"{inventory['owner']}/{name}"
-            for name in args.repository
+            name if "/" in name else f"{inventory['owner']}/{name}" for name in args.repository
         }
         selected = [repo for repo in selected if repo["full_name"] in names]
         missing = names - {repo["full_name"] for repo in selected}
@@ -233,9 +230,7 @@ def main() -> None:
     for repo in selected:
         try:
             print(
-                json.dumps(
-                    rollout(repo, prepare_only=args.prepare_only), sort_keys=True
-                ),
+                json.dumps(rollout(repo, prepare_only=args.prepare_only), sort_keys=True),
                 flush=True,
             )
         except subprocess.CalledProcessError as exc:

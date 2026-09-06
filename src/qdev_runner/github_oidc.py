@@ -22,9 +22,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 GITHUB_ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
-GITHUB_ACTIONS_OIDC_JWKS_URL = (
-    "https://token.actions.githubusercontent.com/.well-known/jwks"
-)
+GITHUB_ACTIONS_OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
 GITHUB_ACTIONS_ARTIFACT_AUDIENCE = "qdev-artifact-v1"
 _CLOCK_SKEW_SECONDS = 60
 _MAX_TOKEN_AGE_SECONDS = 15 * 60

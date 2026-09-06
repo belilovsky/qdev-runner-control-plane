@@ -24,8 +24,10 @@ def inputs(tmp_path, monkeypatch):
     value = make_invocation(tmp_path, monkeypatch)
     value.response = {
         "schema": "qdev-controller-idp-dispatch-inputs-v1",
-        "status": "authenticated_inputs", "acceptance": "not_run",
-        "job": json.loads(json.dumps(value.job)), "candidate_receipt": value.candidate,
+        "status": "authenticated_inputs",
+        "acceptance": "not_run",
+        "job": json.loads(json.dumps(value.job)),
+        "candidate_receipt": value.candidate,
     }
     value.calls = []
 
@@ -51,7 +53,11 @@ def inputs(tmp_path, monkeypatch):
 
 def intake(value):
     return AGENT.retain_controller_idp_inputs(
-        value.config, value.profile, value.lane, value.job, value.archive,
+        value.config,
+        value.profile,
+        value.lane,
+        value.job,
+        value.archive,
         transaction=retained.TRANSACTION,
     )
 
@@ -82,9 +88,19 @@ def test_invalid_job_never_contacts_controller(inputs, monkeypatch, fault):
     assert not inputs.calls and not storage.ROOT.exists()
 
 
-@pytest.mark.parametrize("fault", [
-    "job", "candidate", "attempt", "schema", "status", "acceptance", "extra", "archive",
-])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "job",
+        "candidate",
+        "attempt",
+        "schema",
+        "status",
+        "acceptance",
+        "extra",
+        "archive",
+    ],
+)
 def test_drift_cannot_publish_any_inputs(inputs, fault):
     if fault == "job":
         inputs.response["job"]["source_sha"] = "f" * 40
@@ -104,10 +120,17 @@ def test_drift_cannot_publish_any_inputs(inputs, fault):
     assert len(inputs.calls) == 1 and not storage.ROOT.exists()
 
 
-@pytest.mark.parametrize("body", [
-    b"private-fixture", b"\xff", b"{}", b'{"job":{},"job":{}}',
-    b"[" * 2000, b"x" * (1024 * 1024 + 1),
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"private-fixture",
+        b"\xff",
+        b"{}",
+        b'{"job":{},"job":{}}',
+        b"[" * 2000,
+        b"x" * (1024 * 1024 + 1),
+    ],
+)
 def test_malformed_bounded_transport_never_publishes(inputs, monkeypatch, body):
     monkeypatch.setattr(AGENT, "request", lambda *a, **k: (200, body))
     with pytest.raises(AGENT.AgentError) as caught:
@@ -149,17 +172,26 @@ def test_actual_private_broker_response_to_verified_host_retention(api, inputs, 
     # nested archive/component validation and durable host retention. The archive
     # and authority are synthetic test fixtures, not live release evidence.
     assert api.lane.name == inputs.lane.name
-    mutate_job(api, lambda job: job.update(
-        **inputs.job, candidate_receipt=inputs.candidate,
-    ))
+    mutate_job(
+        api,
+        lambda job: job.update(
+            **inputs.job,
+            candidate_receipt=inputs.candidate,
+        ),
+    )
     before = api.store.operation_events(api.lane)
     calls = []
     with TestClient(api.factory()) as client:
+
         def request(config, method, path, payload=None, *, headers):
             calls.append(path)
-            response = client.get(path, headers={
-                **headers, "X-QDev-mTLS-Identity": config.host_identity,
-            })
+            response = client.get(
+                path,
+                headers={
+                    **headers,
+                    "X-QDev-mTLS-Identity": config.host_identity,
+                },
+            )
             return response.status_code, response.content
 
         monkeypatch.setattr(AGENT, "request", request)

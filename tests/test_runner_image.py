@@ -140,18 +140,36 @@ def test_docker_profile_has_compose_plugin() -> None:
     assert "docker.io docker-buildx docker-compose-v2" in dockerfile
 
 
-def test_docker_profile_uses_verified_buildkit_release_without_critical_findings() -> None:
+def test_docker_profile_uses_source_built_pinned_buildkit() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
     provisioner = (ROOT / "scripts/provision_worker.sh").read_text(encoding="utf-8")
+    settings = (ROOT / "src/qdev_runner/settings.py").read_text(encoding="utf-8")
 
     assert "ARG BUILDKIT_VERSION=0.33.0" in dockerfile
     assert (
-        "ARG BUILDKIT_SHA256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+        "ARG BUILDKIT_SOURCE_SHA256="
+        "c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
     ) in dockerfile
+    assert "ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173" in dockerfile
+    assert "FROM golang:1.26.8-alpine3.23@sha256:" in dockerfile
+    assert "github.com/moby/go-archive@v${BUILDKIT_GO_ARCHIVE_VERSION}" in dockerfile
+    assert "COPY --from=buildkit-builder /out/buildkitd /usr/local/bin/buildkitd" in dockerfile
+    assert "COPY --from=buildkit-builder /out/buildctl /usr/local/bin/buildctl" in dockerfile
+    assert "source-revision" in dockerfile
+    assert "source-sha256" in dockerfile
+    assert 'org.qdev.buildkit.source-revision="${BUILDKIT_SOURCE_REVISION}"' in dockerfile
+    assert "buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz" not in dockerfile
     assert "buildkit_version=0.33.0" in provisioner
     assert (
-        "buildkit_sha256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead"
+        "buildkit_source_sha256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
     ) in provisioner
+    assert "buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173" in provisioner
+    assert "QDEV_BUILDKIT_ARTIFACT_ROOT" in provisioner
+    assert "QDEV_BUILDKIT_IMAGE_REF" in provisioner
+    assert "source-bound BuildKit artifact failed validation" in provisioner
+    assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in provisioner
+    assert "/opt/qdev-buildkit/0.33.0/bin/buildkitd" in settings
+    assert "/opt/qdev-buildkit/0.33.0/bin/buildctl" in settings
 
 
 def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:

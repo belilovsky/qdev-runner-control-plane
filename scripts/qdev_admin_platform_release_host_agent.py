@@ -192,9 +192,13 @@ PROFILES = {
 # Compiled scope is not enrollment or authority: the controller must separately
 # configure this exact lane/identity and issue its own signed live dispatch.
 IDP_PROFILE = Profile(
-    name="idp", lane="qdev-release-idp", project_id="id-qdev-run",
-    repository="belilovsky/id-qdev-run", placement="srv1380923",
-    artifact_prefix="qdev/idp-release", adapter="idp-file-v1",
+    name="idp",
+    lane="qdev-release-idp",
+    project_id="id-qdev-run",
+    repository="belilovsky/id-qdev-run",
+    placement="srv1380923",
+    artifact_prefix="qdev/idp-release",
+    adapter="idp-file-v1",
     minimum_free_gib=1,
     state_path=_STATE_ROOT / "idp.json",
     lock_path=_LOCK_ROOT / "qdev-admin-platform-idp.lock",
@@ -210,12 +214,15 @@ def _idp_lane():
     from qdev_runner.release_lane import ReleaseLane
 
     return ReleaseLane(
-        name=IDP_PROFILE.lane, project_id=IDP_PROFILE.project_id,
+        name=IDP_PROFILE.lane,
+        project_id=IDP_PROFILE.project_id,
         placement=IDP_PROFILE.placement,
         client_mtls_identity="qdev-release-client:id-qdev-run",
         host_agent_mtls_identity=f"qdev-host-agent:{IDP_PROFILE.placement}",
-        minimum_free_gib=IDP_PROFILE.minimum_free_gib, heartbeat_ttl_seconds=90,
-        artifact_repository="idp-release", canonical_repository=IDP_PROFILE.repository,
+        minimum_free_gib=IDP_PROFILE.minimum_free_gib,
+        heartbeat_ttl_seconds=90,
+        artifact_repository="idp-release",
+        canonical_repository=IDP_PROFILE.repository,
         artifact_ref_prefix=IDP_PROFILE.artifact_prefix,
         native_host_adapter=IDP_PROFILE.adapter,
         runtime_endpoints=("https://id.qdev.run/healthz",),
@@ -269,10 +276,7 @@ def load_config(path: Path, *, private_reader: Callable[[Path], bytes] | None = 
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if (
-            not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key)
-            or not value or key in values
-        ):
+        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or not value or key in values:
             raise AgentError("admin-platform host-agent configuration has an invalid line")
         values[key] = value
     expected = {
@@ -289,7 +293,8 @@ def load_config(path: Path, *, private_reader: Callable[[Path], bytes] | None = 
     if (
         parsed.scheme != "https"
         or parsed.hostname != "worker.ci.qdev.run"
-        or parsed.username is not None or parsed.password is not None
+        or parsed.username is not None
+        or parsed.password is not None
         or parsed.port not in {None, 443}
         or parsed.path not in {"", "/"}
         or parsed.query
@@ -1658,7 +1663,9 @@ def _write_operation(
 
 
 def _pending_operation(
-    profile: Profile, *, include_completed: bool = False,
+    profile: Profile,
+    *,
+    include_completed: bool = False,
 ) -> dict[str, Any] | None:
     events = [event for event in _journal_events(profile) if "release_id" in event]
     if not events:
@@ -2504,6 +2511,7 @@ def retain_controller_idp_inputs(config, profile, lane, job, archive, *, transac
     stage native state, poll jobs/next, renew claims or authorize file application.
     Restarts after publication use invoke_retained_idp, not this network intake.
     """
+
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -2518,7 +2526,8 @@ def retain_controller_idp_inputs(config, profile, lane, job, archive, *, transac
         job = json.loads(_canonical_bytes(job))
         release_id, _, lease, fence, _, _, _, _ = _validated_job(job, profile, config)
         status, body = request(
-            config, "GET",
+            config,
+            "GET",
             f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/idp-inputs?"
             + urlencode({"release_lane": lane.name}),
             headers=_controller_headers(lease, fence),
@@ -2530,7 +2539,8 @@ def retain_controller_idp_inputs(config, profile, lane, job, archive, *, transac
             not isinstance(value, dict)
             or set(value) != {"schema", "status", "job", "candidate_receipt", "acceptance"}
             or value["schema"] != "qdev-controller-idp-dispatch-inputs-v1"
-            or value["status"] != "authenticated_inputs" or value["acceptance"] != "not_run"
+            or value["status"] != "authenticated_inputs"
+            or value["acceptance"] != "not_run"
             or _canonical_bytes(value["job"]) != _canonical_bytes(job)
             or not isinstance(value["candidate_receipt"], dict)
         ):
@@ -2595,9 +2605,18 @@ class IdPNativeInvocation:
         if (
             candidate_evidence({"candidate_receipt": candidate}, self._lane)
             != job["candidate_evidence"]
-            or any(candidate.get(key) != claim[key] for key in (
-                "repository", "workflow", "job", "run_id", "job_id", "attempt", "runner_profile"
-            ))
+            or any(
+                candidate.get(key) != claim[key]
+                for key in (
+                    "repository",
+                    "workflow",
+                    "job",
+                    "run_id",
+                    "job_id",
+                    "attempt",
+                    "runner_profile",
+                )
+            )
             or candidate.get("workflow") != "quality.yml"
             or candidate.get("job") != "static-contracts"
             or candidate.get("runner_profile") != "qdev-ci-docker"
@@ -2620,7 +2639,8 @@ class IdPNativeInvocation:
             storage.transaction_name(transaction)
             job, candidate = self._verified_job(live=False)
             verify_native_archive(
-                archive, source_sha=job["source_sha"],
+                archive,
+                source_sha=job["source_sha"],
                 archive_sha256=candidate["archive_sha256"],
                 bundle_sha256=candidate["payload_sha256"],
             )
@@ -2632,8 +2652,11 @@ class IdPNativeInvocation:
         except Exception:
             raise AgentError("IdP input retention requires verified-state inspection") from None
         return {
-            "schema": storage.SCHEMA, "transaction": transaction, "status": "retained",
-            "source_sha": job["source_sha"], "artifact_digest": job["artifact_digest"],
+            "schema": storage.SCHEMA,
+            "transaction": transaction,
+            "status": "retained",
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
         }
 
     def invoke(self, archive, *, action, transaction, ci="none"):
@@ -2669,24 +2692,38 @@ class IdPNativeInvocation:
         )
         adapter = (
             ControllerIssuedIdPFileApplyAdapter(self._config, self._profile, self._lane, job)
-            if action == "apply" else None
+            if action == "apply"
+            else None
         )
         recovery = (
-            {"controller_recovery": lambda reader: self._reconcile_controller(
-                reader, bundle, transaction,
-            )}
-            if action == "reconcile" else {}
+            {
+                "controller_recovery": lambda reader: self._reconcile_controller(
+                    reader,
+                    bundle,
+                    transaction,
+                )
+            }
+            if action == "reconcile"
+            else {}
         )
         try:
             result = native.dispatch(
-                self.STATE_ROOT, self.STATE_ROOT / transaction, self.TARGET, args, helpers,
+                self.STATE_ROOT,
+                self.STATE_ROOT / transaction,
+                self.TARGET,
+                args,
+                helpers,
                 controller_adapter=adapter,
                 **recovery,
             )
             native.contract.validate_native_response(
-                _canonical_bytes(result), action=action, transaction=transaction,
-                source_sha=args.source_sha, expected_previous=args.expected_previous,
-                bundle_sha256=args.bundle_digest, manifest_sha256=args.manifest_digest,
+                _canonical_bytes(result),
+                action=action,
+                transaction=transaction,
+                source_sha=args.source_sha,
+                expected_previous=args.expected_previous,
+                bundle_sha256=args.bundle_digest,
+                manifest_sha256=args.manifest_digest,
             )
         except Exception:
             # No raw native output/exception or automatic second invocation.
@@ -2708,14 +2745,16 @@ class IdPNativeInvocation:
             pending = _pending_operation(profile, include_completed=True)
             claim = job["dispatch_claim"]
             expected = {
-                "release_id": job["release_id"], "lease_id": job["lease_id"],
-                "fence": job["fence"], "dispatch_nonce": claim["nonce"],
+                "release_id": job["release_id"],
+                "lease_id": job["lease_id"],
+                "fence": job["fence"],
+                "dispatch_nonce": claim["nonce"],
                 "lease_expires_at": job["lease_expires_at"],
                 "rollback_anchor": job["rollback_anchor"],
                 "previous_release": job["rollback_anchor"],
-                "candidate_release": {key: job[key] for key in (
-                    "source_sha", "artifact_digest", "artifact_ref"
-                )},
+                "candidate_release": {
+                    key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")
+                },
             }
             if pending is None or any(pending.get(k) != v for k, v in expected.items()):
                 raise AgentError("IdP recovery does not match the retained host operation")
@@ -2734,18 +2773,30 @@ class IdPNativeInvocation:
             # Verify signature/CI/archives at the actual cutover time, not now.
             # This is historical authentication and never authorizes installation.
             verify_dispatch_binding(
-                raw_binding, lane=lane, claim=claim, candidate=candidate,
-                signature=job["dispatch_claim_signature"], signing_key=config.dispatch_secret,
+                raw_binding,
+                lane=lane,
+                claim=claim,
+                candidate=candidate,
+                signature=job["dispatch_claim_signature"],
+                signing_key=config.dispatch_secret,
                 now=timestamp(observation["events"][6]["observed_at"]),
                 previous_observation=previous,
             )
             current = native_receipt(
-                observation, installed=True, expected_binding=raw_binding, now=time.time(),
+                observation,
+                installed=True,
+                expected_binding=raw_binding,
+                now=time.time(),
                 previous_observation=previous,
             )
             active, rollback = read_state(profile.state_path, profile, allow_bootstrap=False)
             result = _recover_pending(
-                config, profile, active, rollback, pending, observe_current=lambda: current,
+                config,
+                profile,
+                active,
+                rollback,
+                pending,
+                observe_current=lambda: current,
             )
             if result.get("status") != "verified":
                 raise ControllerOutcomeUnresolved("IdP controller recovery is not verified")
@@ -2772,12 +2823,17 @@ def invoke_retained_idp(config, profile, lane, *, transaction, action, ci="none"
             if action != "inspect" or ci != "none":
                 raise AgentError("IdP inputs have not been published")
             return {
-                "schema": storage.SCHEMA, "transaction": transaction,
+                "schema": storage.SCHEMA,
+                "transaction": transaction,
                 "status": "inputs_not_published",
             }
         metadata, archive = retained
         invocation = IdPNativeInvocation(
-            config, profile, lane, metadata["job"], metadata["candidate"],
+            config,
+            profile,
+            lane,
+            metadata["job"],
+            metadata["candidate"],
         )
         return invocation.invoke(archive, action=action, transaction=transaction, ci=ci)
     except Exception:
@@ -2819,13 +2875,19 @@ def run_idp_once(*, transaction: str, action: str, ci: str = "none"):
         ):
             raise AgentError("invalid one-shot IdP operation")
         config = load_config(
-            IDP_CONFIG_PATH, private_reader=lambda path: private_bytes(path, limit=65536),
+            IDP_CONFIG_PATH,
+            private_reader=lambda path: private_bytes(path, limit=65536),
         )
         lane = _idp_lane()
         _validate_idp_file_scope(config, IDP_PROFILE, lane)
         if action != "intake":
             return invoke_retained_idp(
-                config, IDP_PROFILE, lane, transaction=transaction, action=action, ci=ci,
+                config,
+                IDP_PROFILE,
+                lane,
+                transaction=transaction,
+                action=action,
+                ci=ci,
             )
 
         stage = IdPNativeInvocation.STATE_ROOT / transaction
@@ -2848,10 +2910,19 @@ def run_idp_once(*, transaction: str, action: str, ci: str = "none"):
             # Finish an interrupted durable publication without a fresh network
             # request or treating a historical signature as a live apply permit.
             return IdPNativeInvocation(
-                config, IDP_PROFILE, lane, job, metadata["candidate"],
+                config,
+                IDP_PROFILE,
+                lane,
+                job,
+                metadata["candidate"],
             ).retain(archive, transaction=transaction)
         return retain_controller_idp_inputs(
-            config, IDP_PROFILE, lane, job, archive, transaction=transaction,
+            config,
+            IDP_PROFILE,
+            lane,
+            job,
+            archive,
+            transaction=transaction,
         )
     except Exception:
         raise AgentError("IdP one-shot operation requires verified-state inspection") from None
@@ -2867,9 +2938,16 @@ def idp_main(argv: list[str]) -> int:
         result = run_idp_once(transaction=args.transaction, action=args.action, ci=args.ci)
     except Exception:
         # Never render raw transport/provider, filesystem, or credential errors.
-        print(json.dumps({
-            "status": "blocked", "reason": "IdP operation requires verified-state inspection",
-        }, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "reason": "IdP operation requires verified-state inspection",
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

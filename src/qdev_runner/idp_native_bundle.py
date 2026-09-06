@@ -147,7 +147,10 @@ def verify_native_archive(
     except (ValueError, TypeError, KeyError, RecursionError):
         raise ReleaseLaneError("IdP published component manifest is invalid") from None
     return VerifiedNativeBundle(
-        source_sha, bundle_sha256, manifest_sha256, inner,
+        source_sha,
+        bundle_sha256,
+        manifest_sha256,
+        inner,
         entries[f"release/scripts/{HELPERS[0]}"][1],
         entries[f"release/scripts/{HELPERS[1]}"][1],
     )

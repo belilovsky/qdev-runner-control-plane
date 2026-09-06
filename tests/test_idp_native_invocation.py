@@ -85,7 +85,14 @@ def test_load_after_signature_verification_and_fixed_arguments(invocation, monke
     calls = []
 
     def dispatch(
-        root, stage, target, args, helpers, *, controller_adapter, controller_recovery=None,
+        root,
+        stage,
+        target,
+        args,
+        helpers,
+        *,
+        controller_adapter,
+        controller_recovery=None,
     ):
         calls.append(args.action)
         assert str(root) == "/var/lib/qdev-idp/releases"

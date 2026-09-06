@@ -233,9 +233,7 @@ def test_prepare_controller_candidate_advances_retry_sequence(tmp_path: Path) ->
         signer_state_root=signer_root,
     )
 
-    assert result["candidate"]["release_id"] == (
-        f"controller-v3-{NEXT_SHA}:retry-2"
-    )
+    assert result["candidate"]["release_id"] == (f"controller-v3-{NEXT_SHA}:retry-2")
     _, snapshot = state.current()
     assert snapshot["active_candidate"] == result["candidate"]
 
@@ -258,9 +256,7 @@ def test_prepare_controller_candidate_accepts_repeated_terminal_runtime_attempts
     _, snapshot = state.current()
     entry = snapshot["entries"][0]
     runtime_attempts = [
-        attempt
-        for attempt in entry["attempts"]
-        if attempt["source_sha"] == CURRENT_SHA
+        attempt for attempt in entry["attempts"] if attempt["source_sha"] == CURRENT_SHA
     ]
     assert [attempt["terminal_state"] for attempt in runtime_attempts] == [
         "blocked",
@@ -361,11 +357,14 @@ def test_restart_survives_commit_failure_without_enforced_orphan(
     before = ledger.read_bytes()
     root_receipts_before = sorted(receipts.glob("*.json"))
 
-    with patch.object(
-        AdminPlatformStateStore,
-        "_commit_locked",
-        side_effect=RuntimeError("simulated restart commit failure"),
-    ), pytest.raises(RuntimeError, match="simulated restart commit failure"):
+    with (
+        patch.object(
+            AdminPlatformStateStore,
+            "_commit_locked",
+            side_effect=RuntimeError("simulated restart commit failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated restart commit failure"),
+    ):
         _prepare(tmp_path)
 
     assert ledger.read_bytes() == before
@@ -403,18 +402,24 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
     before = ledger.read_bytes()
     before_digest = hashlib.sha256(before).hexdigest()
 
-    with patch.object(
-        AdminPlatformStateStore,
-        "_commit_locked",
-        side_effect=RuntimeError("simulated commit failure"),
-    ), pytest.raises(RuntimeError, match="simulated commit failure"):
+    with (
+        patch.object(
+            AdminPlatformStateStore,
+            "_commit_locked",
+            side_effect=RuntimeError("simulated commit failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated commit failure"),
+    ):
         _prepare(tmp_path)
 
-    with patch.object(
-        AdminPlatformStateStore,
-        "_commit_locked",
-        side_effect=RuntimeError("simulated commit failure"),
-    ), pytest.raises(RuntimeError, match="simulated commit failure"):
+    with (
+        patch.object(
+            AdminPlatformStateStore,
+            "_commit_locked",
+            side_effect=RuntimeError("simulated commit failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated commit failure"),
+    ):
         _prepare(tmp_path)
 
     assert ledger.read_bytes() == before
@@ -430,8 +435,7 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
     assert interrupted_binding["previous_ledger_sha256"] == before_digest
     assert interrupted_binding["target_ledger_sha256"] != before_digest
     assert all(
-        receipt["receipt_uri"].encode() not in before
-        for receipt in interrupted_binding["receipts"]
+        receipt["receipt_uri"].encode() not in before for receipt in interrupted_binding["receipts"]
     )
     orphan = json.loads(
         next(
@@ -442,9 +446,7 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
     )
     with pytest.raises(ValueError, match="requires committed ledger context"):
         verify_controller_receipt(orphan, receipt_key=RECEIPT_KEY)
-    orphan_binding = json.loads(
-        (interrupted_transactions[0] / "ledger-binding.json").read_text()
-    )
+    orphan_binding = json.loads((interrupted_transactions[0] / "ledger-binding.json").read_text())
     with pytest.raises(ValueError, match="requires committed ledger context"):
         verify_controller_receipt(orphan_binding, receipt_key=RECEIPT_KEY)
 
@@ -464,8 +466,7 @@ def test_prepare_controller_candidate_survives_commit_failure_without_split_stat
         for transaction in (receipts / "transactions").iterdir()
     ]
     assert any(
-        binding["target_ledger_sha256"] == result["ledger_sha256"]
-        for binding in committed_bindings
+        binding["target_ledger_sha256"] == result["ledger_sha256"] for binding in committed_bindings
     )
     AdminPlatformLedger(
         ledger,
@@ -908,13 +909,9 @@ def test_active_runtime_lineage_rejects_unsafe_retry(
     )
     base_release_id = f"controller-v3-{CURRENT_SHA}"
     retry_release_id = f"{base_release_id}:retry-1"
-    results = [
-        {"release_id": base_release_id, "lane": "source", "outcome": "passed"}
-    ]
+    results = [{"release_id": base_release_id, "lane": "source", "outcome": "passed"}]
     if include_retry_source_evidence:
-        results.append(
-            {"release_id": retry_release_id, "lane": "source", "outcome": "passed"}
-        )
+        results.append({"release_id": retry_release_id, "lane": "source", "outcome": "passed"})
     entry = {
         "status": "candidate",
         "attempts": [
@@ -927,9 +924,7 @@ def test_active_runtime_lineage_rejects_unsafe_retry(
             {
                 "release_id": retry_release_id,
                 "source_sha": CURRENT_SHA,
-                "finished_at": (
-                    "2026-09-05T00:00:02Z" if terminal_state is not None else None
-                ),
+                "finished_at": ("2026-09-05T00:00:02Z" if terminal_state is not None else None),
                 "terminal_state": terminal_state,
             },
         ],

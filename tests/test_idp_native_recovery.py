@@ -27,16 +27,23 @@ def setup_recovery(tmp_path, monkeypatch, *, associated=False):
 
     def fresh_observation():
         observed = original_reader()
-        observed["observed_at"] = datetime.fromtimestamp(
-            AGENT.time.time(), UTC
-        ).isoformat().replace("+00:00", "Z")
+        observed["observed_at"] = (
+            datetime.fromtimestamp(AGENT.time.time(), UTC).isoformat().replace("+00:00", "Z")
+        )
         return observed
 
     reader.observe_installed = fresh_observation
     return SimpleNamespace(
-        adapter=adapter, reader=reader, raw=raw, state=state, profile=profile,
-        invocation=invocation, bundle=bundle, transaction=binding["transaction"],
-        active=active, candidate=candidate,
+        adapter=adapter,
+        reader=reader,
+        raw=raw,
+        state=state,
+        profile=profile,
+        invocation=invocation,
+        bundle=bundle,
+        transaction=binding["transaction"],
+        active=active,
+        candidate=candidate,
     )
 
 
@@ -96,9 +103,11 @@ def test_expired_uncompleted_lease_remains_pending_without_submission(tmp_path, 
         case.state["installed"] = True
         raise OSError("synthetic interruption")
     original = AGENT.request
+
     def readonly(*args, **kwargs):
         assert args[1] == "GET", "expired lease must not submit completion"
         return original(*args, **kwargs)
+
     monkeypatch.setattr(AGENT, "request", readonly)
     monkeypatch.setattr(AGENT.time, "time", lambda: NOW + 1000)
     with pytest.raises(AGENT.ControllerOutcomeUnresolved):
