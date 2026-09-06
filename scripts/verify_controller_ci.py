@@ -68,7 +68,14 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
         ):
             raise ValueError("pull request merge context mismatch")
         event_merge_sha = pr.get("merge_commit_sha")
-        if event_merge_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", str(event_merge_sha)):
+        # ``pull_request.merge_commit_sha`` is provider-computed: GitHub may
+        # leave it null or retain a previous candidate while a current PR run
+        # has a distinct ``GITHUB_SHA``.  It is format-checked only; the
+        # authoritative merge identity is ``GITHUB_SHA`` and the checkout is
+        # bound to ``head.sha``.
+        if event_merge_sha is not None and not re.fullmatch(
+            r"[0-9a-f]{40}", str(event_merge_sha)
+        ):
             raise ValueError("pull request event merge SHA is invalid")
         # GitHub can regenerate refs/pull/<number>/merge after the webhook
         # payload was created but before the job starts.  Both values are
@@ -91,7 +98,7 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
                 or not re.fullmatch(r"[0-9a-f]{40}", str(revision.get("sha", "")))
             ):
                 raise ValueError("pull request source identity mismatch")
-        if pr["head"]["sha"] != sha:
+        if pr["head"]["sha"] != sha or provider_sha == pr["head"]["sha"]:
             raise ValueError("pull request head does not match checkout")
         binding.update({"pull_request": number, "provider_merge_sha": provider_sha})
     elif name in {"push", "workflow_dispatch"}:

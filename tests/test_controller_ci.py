@@ -9,7 +9,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "controller_ci", ROOT / "scripts/verify_controller_ci.py"
+    "scripts.verify_controller_ci", ROOT / "scripts/verify_controller_ci.py"
 )
 assert SPEC and SPEC.loader
 CI = importlib.util.module_from_spec(SPEC)
@@ -223,16 +223,33 @@ def test_pr_preserves_provider_merge_when_computed_field_is_pending(
         CI.validate_context("managed", environment, MERGE_SHA)
 
 
-def test_pr_accepts_provider_regenerated_merge_ref(tmp_path: Path) -> None:
+@pytest.mark.parametrize("event_merge_sha", ["3" * 40, "4" * 40])
+def test_pr_does_not_confuse_computed_merge_field_with_provider_merge(
+    tmp_path: Path, event_merge_sha: str
+) -> None:
     environment = context(tmp_path, "pull_request")
     path = Path(environment["GITHUB_EVENT_PATH"])
     event = json.loads(path.read_text())
-    event["pull_request"]["merge_commit_sha"] = "3" * 40
+    event["pull_request"]["merge_commit_sha"] = event_merge_sha
     path.write_text(json.dumps(event))
     environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+
     binding = CI.validate_context("managed", environment, SHA)
-    assert binding["checkout_sha"] == SHA
+
     assert binding["provider_merge_sha"] == MERGE_SHA
+    assert binding["checkout_sha"] == SHA
+
+
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+def test_pr_accepts_each_documented_open_action(tmp_path: Path, action: str) -> None:
+    environment = context(tmp_path, "pull_request")
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["action"] = action
+    path.write_text(json.dumps(event))
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+
+    assert CI.validate_context("managed", environment, SHA)["pull_request"] == 99
 
 
 @pytest.mark.parametrize(
@@ -250,6 +267,8 @@ def test_pr_accepts_provider_regenerated_merge_ref(tmp_path: Path) -> None:
         ("pull_request.base.sha", "short"),
         ("pull_request.head", None),
         ("pull_request.merge_commit_sha", "short"),
+        ("pull_request.merge_commit_sha", "not-a-sha"),
+        ("pull_request.merge_commit_sha", True),
         ("pull_request.number", 100),
         ("number", True),
         ("action", "closed"),
@@ -260,6 +279,7 @@ def test_pr_rejects_inconsistent_or_missing_payload(
     tmp_path: Path, field: str, value: object
 ) -> None:
     environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
     path = Path(environment["GITHUB_EVENT_PATH"])
     event = json.loads(path.read_text())
     target = event
@@ -268,7 +288,93 @@ def test_pr_rejects_inconsistent_or_missing_payload(
         target = target[part]
     target[parts[-1]] = value
     path.write_text(json.dumps(event))
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+@pytest.mark.parametrize("field", ["GITHUB_SHA", "GITHUB_EVENT_PATH"])
+def test_pr_rejects_missing_required_provider_fields(tmp_path: Path, field: str) -> None:
+    environment = context(tmp_path, "pull_request")
     environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    environment.pop(field)
+
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_pr_rejects_boolean_repository_id_even_when_other_bindings_match(tmp_path: Path) -> None:
+    environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["repository"]["id"] = True
+    event["pull_request"]["base"]["repo"]["id"] = True
+    event["pull_request"]["head"]["repo"]["id"] = True
+    environment["GITHUB_REPOSITORY_ID"] = "True"
+    path.write_text(json.dumps(event))
+
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_pr_rejects_zero_repository_id(tmp_path: Path) -> None:
+    environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["repository"]["id"] = 0
+    event["pull_request"]["base"]["repo"]["id"] = 0
+    event["pull_request"]["head"]["repo"]["id"] = 0
+    environment["GITHUB_REPOSITORY_ID"] = "0"
+    path.write_text(json.dumps(event))
+
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_pr_accepts_positive_repository_id_one(tmp_path: Path) -> None:
+    environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["repository"]["id"] = 1
+    event["pull_request"]["base"]["repo"]["id"] = 1
+    event["pull_request"]["head"]["repo"]["id"] = 1
+    environment["GITHUB_REPOSITORY_ID"] = "1"
+    path.write_text(json.dumps(event))
+
+    assert CI.validate_context("managed", environment, SHA)["repository_id"] == 1
+
+
+@pytest.mark.parametrize("number", [0, True])
+def test_pr_rejects_nonpositive_or_boolean_number(tmp_path: Path, number: int | bool) -> None:
+    environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["number"] = number
+    event["pull_request"]["number"] = number
+    environment["GITHUB_REF"] = f"refs/pull/{number}/merge"
+    path.write_text(json.dumps(event))
+
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_pr_rejects_uppercase_provider_computed_or_base_revision_sha(tmp_path: Path) -> None:
+    environment = context(tmp_path, "pull_request")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["pull_request"]["merge_commit_sha"] = "A" * 40
+    path.write_text(json.dumps(event))
+
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+    event["pull_request"]["merge_commit_sha"] = MERGE_SHA
+    event["pull_request"]["base"]["sha"] = "A" * 40
+    path.write_text(json.dumps(event))
     with pytest.raises(ValueError):
         CI.validate_context("managed", environment, SHA)
 
@@ -279,6 +385,20 @@ def test_provider_event_must_be_bounded_valid_json(tmp_path: Path, payload: str)
     Path(environment["GITHUB_EVENT_PATH"]).write_text(payload)
     with pytest.raises(ValueError):
         CI.validate_context("controller-recovery", environment, SHA)
+
+
+def test_provider_event_size_limit_is_exact_and_not_truncated(tmp_path: Path) -> None:
+    environment = context(tmp_path, "push")
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    payload = json.dumps(json.loads(path.read_text())).encode()
+    at_limit = payload + b" " * (1024 * 1024 - len(payload))
+    path.write_bytes(at_limit)
+    assert CI.validate_context("managed", environment, SHA)["checkout_sha"] == SHA
+
+    path.write_bytes(at_limit + b" ")
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
 
 
 @pytest.mark.parametrize("event_name", ["push", "workflow_dispatch"])
