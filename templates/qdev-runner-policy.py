@@ -353,6 +353,7 @@ def check_repository(root: Path) -> list[str]:
     recovery_workflows: set[str] = set()
     primary_self_hosted_workflows: set[str] = set()
     allow_hosted = False
+    self_hosted_primary = False
     contract = root / ".github/qdev-runner.yml"
     if not contract.is_file():
         errors.append(".github/qdev-runner.yml:1: missing-contract")
@@ -362,17 +363,22 @@ def check_repository(root: Path) -> list[str]:
         if not version_match:
             errors.append(".github/qdev-runner.yml:1: invalid-contract-version")
         version = version_match.group(1) if version_match else ""
-        allow_hosted = version == "qdev-runner-v2"
+        execution_mode = ""
+        execution_match = re.search(r"(?m)^execution_mode:\s*([^\s#]+)\s*$", text)
+        if execution_match:
+            execution_mode = execution_match.group(1)
+        allow_hosted = version == "qdev-runner-v2" and execution_mode == "github-hosted-primary"
+        self_hosted_primary = version == "qdev-runner-v2" and execution_mode == "self-hosted-primary"
         if version == "qdev-runner-v1" and not re.search(
             r"(?m)^github_hosted_fallback:\s*false\s*$", text
         ):
             errors.append(".github/qdev-runner.yml:1: hosted-fallback-not-disabled")
-        if allow_hosted and not re.search(
-            r"(?m)^execution_mode:\s*github-hosted-primary\s*$", text
-        ):
+        if version == "qdev-runner-v2" and not (allow_hosted or self_hosted_primary):
             errors.append(".github/qdev-runner.yml:1: invalid-execution-mode")
         if allow_hosted and not re.search(r"(?m)^self_hosted_recovery:\s*true\s*$", text):
             errors.append(".github/qdev-runner.yml:1: self-hosted-recovery-not-enabled")
+        if self_hosted_primary and re.search(r"(?m)^self_hosted_recovery:\s*true\s*$", text):
+            errors.append(".github/qdev-runner.yml:1: hosted-recovery-not-allowed")
         allowed_profiles = set(contract_list(text, "profiles"))
         allowed_profiles &= {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
         if not allowed_profiles:

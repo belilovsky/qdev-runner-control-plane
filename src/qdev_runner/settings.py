@@ -67,6 +67,20 @@ class BrokerSettings:
     registry_username: str = "qdev-runner"
     registry_password: str | None = None
     operator_token: str | None = None
+    operator_group: str = "qdev-ci-operators"
+    scheduler_enabled: bool = True
+    scheduler_poll_seconds: float = 15.0
+    # The Platform proxy proves that an incoming operator request crossed the
+    # authenticated server-to-server hop.  Keep this separate from worker and
+    # artifact credentials; it is never returned to a browser.
+    operator_proxy_secret: str | None = None
+    operator_origin: str | None = None
+    # Legacy local OIDC headers are an explicit development-only escape hatch.
+    # Production must authenticate the Platform-to-controller hop with the
+    # server-side proxy secret instead of trusting client-supplied identity
+    # headers or loopback source addresses.
+    allow_legacy_local_oidc: bool = False
+    max_artifact_bytes: int = 250 * 1024 * 1024
     operator_receipt_key: str | None = None
     operator_directive_key: str | None = None
     # Optional controller-to-broker claim key.  When configured, every v2
@@ -113,7 +127,6 @@ class BrokerSettings:
     # Recovery crosses the authenticated controller edge.  The shared secret
     # proves the edge hop while the edge-overwritten certificate fingerprint
     # selects one fixed operator or host-agent identity.
-    operator_proxy_secret: str | None = None
     recovery_operator_certificate_sha256s: tuple[str, ...] = ()
     recovery_platform_agent_certificate_sha256: str | None = None
     recovery_qazstack_agent_certificate_sha256: str | None = None
@@ -181,6 +194,29 @@ class BrokerSettings:
             registry_username=os.environ.get("QDEV_REGISTRY_USERNAME", "qdev-runner").strip(),
             registry_password=os.environ.get("QDEV_REGISTRY_PASSWORD", "").strip() or None,
             operator_token=os.environ.get("QDEV_OPERATOR_TOKEN", "").strip() or None,
+            operator_group=os.environ.get("QDEV_OPERATOR_GROUP", "qdev-ci-operators").strip()
+            or "qdev-ci-operators",
+            scheduler_enabled=os.environ.get("QDEV_SCHEDULER_ENABLED", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            scheduler_poll_seconds=max(
+                5.0, float(os.environ.get("QDEV_SCHEDULER_POLL_SECONDS", "15"))
+            ),
+            operator_proxy_secret=(
+                os.environ.get("QDEV_OPERATOR_PROXY_SECRET", "").strip() or None
+            ),
+            operator_origin=os.environ.get("QDEV_OPERATOR_ORIGIN", "").strip() or None,
+            allow_legacy_local_oidc=os.environ.get(
+                "QDEV_ALLOW_LEGACY_LOCAL_OIDC", "0"
+            ).strip().lower()
+            not in {"0", "false", "no", "off"},
+            max_artifact_bytes=max(
+                1,
+                int(
+                    os.environ.get(
+                        "QDEV_MAX_ARTIFACT_BYTES", str(250 * 1024 * 1024)
+                    )
+                ),
+            ),
             operator_receipt_key=(os.environ.get("QDEV_OPERATOR_RECEIPT_KEY", "").strip() or None),
             operator_directive_key=(
                 os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
@@ -274,9 +310,6 @@ class BrokerSettings:
                     "QDEV_FLEET_HOST_DISPATCH_RESULT_ROOT",
                     "/var/lib/qdev-runner/fleet-host-dispatch/results",
                 )
-            ),
-            operator_proxy_secret=(
-                os.environ.get("QDEV_OPERATOR_PROXY_SECRET", "").strip() or None
             ),
             recovery_operator_certificate_sha256s=tuple(
                 item.strip().lower()

@@ -48,6 +48,15 @@ if [[ "$rollback_mode" != true && "$rollback_mode" != false ]]; then
   printf 'QDEV_CONTROLLER_ROLLBACK must be true or false\n' >&2
   exit 64
 fi
+no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
+if [[ "$no_build" != true && "$no_build" != false ]]; then
+  printf 'QDEV_CONTROLLER_NO_BUILD must be true or false\n' >&2
+  exit 64
+fi
+if [[ "$rollback_mode" == true && "$no_build" != true ]]; then
+  printf 'controller rollback requires QDEV_CONTROLLER_NO_BUILD=true\n' >&2
+  exit 64
+fi
 expected_current_revision="${QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION:-}"
 if [[ ! "$expected_current_revision" =~ ^[0-9a-f]{40}$ ]]; then
   printf 'activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION\n' >&2
@@ -394,7 +403,6 @@ disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
 memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
-no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
 max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
@@ -430,17 +438,19 @@ if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
   exit 64
 fi
-awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
-  -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
-  -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if (used > max_used || free < (min_free_gib * 1048576) ||
-        mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
-  }' || {
-    printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
-      "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
-    exit 75
-  }
+if [[ "$rollback_mode" != true ]]; then
+  awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
+    -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
+    -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
+    -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
+      if (used > max_used || free < (min_free_gib * 1048576) ||
+          mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
+    }' || {
+      printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
+        "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
+      exit 75
+    }
+fi
 
 current="$release_root/current"
 previous="$(readlink -f -- "$current" 2>/dev/null || true)"
@@ -519,24 +529,25 @@ previous_public_image="$(docker inspect qdev-runner-broker-public --format '{{.I
 previous_public_ref="$(docker inspect qdev-runner-broker-public --format '{{.Config.Image}}' 2>/dev/null || true)"
 previous_internal_image="$(docker inspect qdev-runner-broker-internal --format '{{.Image}}' 2>/dev/null || true)"
 previous_internal_ref="$(docker inspect qdev-runner-broker-internal --format '{{.Config.Image}}' 2>/dev/null || true)"
-rollback_public_ref="qdev-runner-rollback-public:$$"
-rollback_internal_ref="qdev-runner-rollback-internal:$$"
+backup_tag_prefix="qdev-runner-rollback:${BASHPID}"
+previous_public_backup_ref="${backup_tag_prefix}-public"
+previous_internal_backup_ref="${backup_tag_prefix}-internal"
 if [[ -n "$previous_public_image" ]]; then
-  docker image tag "$previous_public_image" "$rollback_public_ref"
+  docker image tag "$previous_public_image" "$previous_public_backup_ref"
 fi
 if [[ -n "$previous_internal_image" ]]; then
-  docker image tag "$previous_internal_image" "$rollback_internal_ref"
+  docker image tag "$previous_internal_image" "$previous_internal_backup_ref"
 fi
 
-cleanup_rollback_images() {
-  docker image rm "$rollback_public_ref" "$rollback_internal_ref" >/dev/null 2>&1 || true
+cleanup_backup_tags() {
+  docker image rm "$previous_public_backup_ref" "$previous_internal_backup_ref" >/dev/null 2>&1 || true
 }
 cleanup_qazcoop_guard_temporary() {
   if [[ -n "$qazcoop_guard_temporary" ]]; then
     rm -rf -- "$qazcoop_guard_temporary"
   fi
 }
-trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup" "$admission_host_tool_backup"; cleanup_qazcoop_guard_temporary; cleanup_rollback_images' EXIT
+trap 'rm -f -- "$temporary_link" "$repos_backup" "$profiles_backup" "$release_lanes_backup" "$fleet_bootstrap_backup" "$managed_registry_backup" "$managed_release_ledger_backup" "$release_status_backup" "$operator_identity_metadata_backup" "$admission_host_tool_backup"; cleanup_qazcoop_guard_temporary; cleanup_backup_tags' EXIT
 
 activate_link() {
   local target="$1"
@@ -1388,10 +1399,10 @@ rollback() {
   fi
   activate_link "$previous"
   if [[ -n "$previous_public_image" && -n "$previous_public_ref" ]]; then
-    docker image tag "$rollback_public_ref" "$previous_public_ref"
+    docker image tag "$previous_public_backup_ref" "$previous_public_ref"
   fi
   if [[ -n "$previous_internal_image" && -n "$previous_internal_ref" ]]; then
-    docker image tag "$rollback_internal_ref" "$previous_internal_ref"
+    docker image tag "$previous_internal_backup_ref" "$previous_internal_ref"
   fi
   docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
     up -d --force-recreate --no-build --no-deps broker-public broker-internal

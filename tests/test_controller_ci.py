@@ -67,6 +67,7 @@ def test_recovery_rejects_untrusted_context(key: str, value: str) -> None:
 
 def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted() -> None:
     CI.validate_context("controller-recovery", recovery(), SHA)
+    CI.validate_context("self-hosted", recovery(), SHA)
     with pytest.raises(ValueError):
         CI.validate_context("hosted", recovery(), SHA)
     with pytest.raises(ValueError):
@@ -116,7 +117,7 @@ def test_every_lane_uses_full_shared_suite() -> None:
     ]
     normal = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     manual = yaml.safe_load((ROOT / ".github/workflows/runner-smoke.yml").read_text())
-    assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "hosted"
+    assert manual[True]["workflow_dispatch"]["inputs"]["execution_lane"]["default"] == "recovery"
     assert manual["concurrency"]["cancel-in-progress"] is False
     for job in [normal["jobs"]["verify"], *manual["jobs"].values()]:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
@@ -130,6 +131,7 @@ def test_every_lane_uses_full_shared_suite() -> None:
         "QDEV_EXPECTED_SHA": "${{ github.sha }}",
         "QDEV_MANAGED_CI": "true",
     }
+    assert normal["jobs"]["verify"]["runs-on"][-2] == "qdev-ci"
 
 
 def test_runner_contract_push_is_limited_to_default_branch() -> None:

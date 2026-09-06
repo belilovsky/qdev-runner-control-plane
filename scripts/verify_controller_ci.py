@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One complete verification entrypoint for hosted, owner recovery and local CI."""
+"""One complete verification entrypoint for self-hosted, recovery and local CI."""
 
 from __future__ import annotations
 
@@ -67,7 +67,9 @@ def commands(python: str) -> list[list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--lane", choices=("local", "hosted", "managed", "controller-recovery"), required=True
+        "--lane",
+        choices=("local", "hosted", "self-hosted", "managed", "controller-recovery"),
+        required=True,
     )
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):
