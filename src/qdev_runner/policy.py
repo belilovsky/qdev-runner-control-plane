@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -58,13 +59,10 @@ class Policy:
             repository = self.repositories.get(repository_name)
             if repository is None or repository.archived:
                 raise PolicyError(
-                    "repository admission override is not in the active allowlist: "
-                    f"{full_name}"
+                    f"repository admission override is not in the active allowlist: {full_name}"
                 )
             if not isinstance(profile_overrides, dict):
-                raise PolicyError(
-                    f"repository admission overrides must be a mapping: {full_name}"
-                )
+                raise PolicyError(f"repository admission overrides must be a mapping: {full_name}")
             for profile_name, raw_disk_mb in profile_overrides.items():
                 profile_key = str(profile_name)
                 profile = self.profiles.get(profile_key)
@@ -91,6 +89,58 @@ class Policy:
                     raw_disk_mb
                 )
 
+        self.repository_min_disk_free_gib: dict[str, float] = {}
+        self.repository_max_concurrency: dict[str, int] = {}
+        raw_constraints = profiles_data.get("repository_admission_constraints", {})
+        if not isinstance(raw_constraints, dict):
+            raise PolicyError("repository_admission_constraints must be a mapping")
+        allowed_constraint_keys = {"min_disk_free_gib", "max_concurrency"}
+        for full_name, raw_repository_constraints in raw_constraints.items():
+            repository_name = str(full_name).casefold()
+            repository = self.repositories.get(repository_name)
+            if repository is None or repository.archived:
+                raise PolicyError(
+                    f"repository admission constraint is not in the active allowlist: {full_name}"
+                )
+            if not isinstance(raw_repository_constraints, dict):
+                raise PolicyError(
+                    f"repository admission constraints must be a mapping: {full_name}"
+                )
+            unknown_keys = set(raw_repository_constraints) - allowed_constraint_keys
+            if unknown_keys:
+                raise PolicyError(
+                    "repository admission constraint has unknown fields: "
+                    f"{full_name}/{','.join(sorted(str(item) for item in unknown_keys))}"
+                )
+            if not raw_repository_constraints:
+                raise PolicyError(f"repository admission constraints cannot be empty: {full_name}")
+
+            if "min_disk_free_gib" in raw_repository_constraints:
+                raw_minimum = raw_repository_constraints["min_disk_free_gib"]
+                if (
+                    isinstance(raw_minimum, bool)
+                    or not isinstance(raw_minimum, (int, float))
+                    or not math.isfinite(float(raw_minimum))
+                    or float(raw_minimum) <= 0
+                ):
+                    raise PolicyError(
+                        "repository minimum free disk must be a positive finite GiB value: "
+                        f"{full_name}"
+                    )
+                self.repository_min_disk_free_gib[repository_name] = float(raw_minimum)
+
+            if "max_concurrency" in raw_repository_constraints:
+                raw_concurrency = raw_repository_constraints["max_concurrency"]
+                if (
+                    isinstance(raw_concurrency, bool)
+                    or not isinstance(raw_concurrency, int)
+                    or raw_concurrency < 1
+                ):
+                    raise PolicyError(
+                        f"repository maximum concurrency must be a positive integer: {full_name}"
+                    )
+                self.repository_max_concurrency[repository_name] = raw_concurrency
+
     def repository(self, full_name: str, repository_id: int | None = None) -> RepositoryPolicy:
         repo = self.repositories.get(full_name.casefold())
         if repo is None or repo.archived:
@@ -116,6 +166,40 @@ class Policy:
         if not required.issubset(normalized):
             raise PolicyError(f"runner labels do not satisfy profile {matches[0].name}")
         return matches[0]
+
+    def authorize_worker_resources(
+        self,
+        full_name: str,
+        *,
+        disk_free_gib: object,
+        concurrency: object,
+    ) -> None:
+        """Enforce server-owned per-repository capacity constraints."""
+
+        repository_name = self.repository(full_name).full_name.casefold()
+        minimum_free_gib = self.repository_min_disk_free_gib.get(repository_name)
+        if minimum_free_gib is not None and (
+            isinstance(disk_free_gib, bool)
+            or not isinstance(disk_free_gib, (int, float))
+            or not math.isfinite(float(disk_free_gib))
+            or float(disk_free_gib) < minimum_free_gib
+        ):
+            raise PolicyError(
+                "repository admission requires at least "
+                f"{minimum_free_gib:g} GiB free disk: {repository_name}"
+            )
+
+        maximum_concurrency = self.repository_max_concurrency.get(repository_name)
+        if maximum_concurrency is not None and (
+            isinstance(concurrency, bool)
+            or not isinstance(concurrency, int)
+            or concurrency < 1
+            or concurrency > maximum_concurrency
+        ):
+            raise PolicyError(
+                "repository admission requires worker concurrency at most "
+                f"{maximum_concurrency}: {repository_name}"
+            )
 
     def authorize_run(self, full_name: str, profile: Profile, run: dict[str, Any]) -> None:
         repo = self.repository(full_name)

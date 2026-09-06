@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from qdev_runner.claim_scope import SCHEMA_V2, ClaimScope, ScopedFifoSkip, ScopedJob
+from qdev_runner.claim_scope import (
+    MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    SCHEMA_V2,
+    ClaimScope,
+    ScopedFifoSkip,
+    ScopedJob,
+)
 from qdev_runner.models import QueuedJob
 from qdev_runner.store import MINIMUM_QUEUE_TIMESTAMP, Store
 
@@ -33,6 +39,37 @@ def job(
         head_sha=head_sha,
         head_branch="main",
         payload={"workflow_job": {"run_attempt": attempt}},
+    )
+
+
+def _admit_scoped_worker(
+    store: Store,
+    scope: ClaimScope,
+    profiles: tuple[str, ...] = ("qdev-ci",),
+) -> None:
+    capacity = {
+        "allowed": True,
+        "disk_free_gib": 64.0,
+        "disk_used_pct": 50.0,
+        "blockers": [],
+    }
+    store.heartbeat(
+        scope.worker_name,
+        profiles,
+        0,
+        (),
+        {
+            **capacity,
+            "tier": scope.tier,
+            "raw_capacity": capacity,
+            "baseline_capacity": capacity,
+            "effective_capacity": capacity,
+            "effective_profiles": list(profiles),
+            "configured_claim_scope_id": scope.scope_id,
+            "concurrency": 1,
+            "slots_available": 1,
+            "min_disk_free_gib": 30.0,
+        },
     )
 
 
@@ -210,6 +247,7 @@ def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
@@ -247,6 +285,7 @@ def test_exact_capacity_directive_uses_fifo_within_its_validated_tuple(tmp_path:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     claimed = store.claim(
         "qdev-platform-primary",
@@ -320,6 +359,7 @@ def test_v2_scope_can_skip_only_an_exact_signed_stale_fifo_tuple(tmp_path: Path)
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     claimed = store.claim(
         "qdev-portfolio-primary",
@@ -384,6 +424,7 @@ def test_v2_scope_cannot_reuse_a_skip_after_the_fifo_row_reactivates(tmp_path: P
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     # The controller's fresh classification no longer includes job 100, so
     # the older row must block FIFO even though a still-valid scope signed the
@@ -444,10 +485,90 @@ def test_v2_scope_tampered_fifo_skip_tuple_does_not_bypass_head(tmp_path: Path) 
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
     assert store.job_status(101) == "pending"
+
+
+def test_managed_exact_candidate_scope_can_claim_its_exact_job_behind_backlog(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job("older", 100, repository="belilovsky/qazlake", head_sha="a" * 40))
+    assert store.enqueue(
+        job(
+            "authorized-later",
+            101,
+            repository="belilovsky/qazgeo",
+            head_sha="b" * 40,
+            run_id=201,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="qgeo-recovery-20260904",
+        worker_name="qgeo-primary",
+        tier="primary",
+        repository="belilovsky/qazgeo",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazgeo",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    )
+    _admit_scoped_worker(store, scope)
+
+    claimed = store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope)
+
+    assert claimed is not None and claimed["job_id"] == 101
+    assert store.job_status(100) == "pending"
+
+
+def test_managed_exact_candidate_scope_still_cannot_claim_a_foreign_job(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "foreign",
+            100,
+            repository="belilovsky/qazgeo",
+            head_sha="c" * 40,
+            run_id=200,
+        )
+    )
+    scope = ClaimScope(
+        scope_id="qgeo-recovery-20260904",
+        worker_name="qgeo-primary",
+        tier="primary",
+        repository="belilovsky/qazgeo",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                101,
+                "qdev-ci",
+                repository="belilovsky/qazgeo",
+                run_id=201,
+                attempt=1,
+                exact_sha="b" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+        fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    )
+    _admit_scoped_worker(store, scope)
+
+    assert store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope) is None
+    assert store.job_status(100) == "pending"
 
 
 def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
@@ -479,6 +600,7 @@ def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
@@ -580,9 +702,7 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
         )
     )
     profile_disk_mb = {"qdev-ci-docker": 20480}
-    repository_profile_disk_mb = {
-        ("belilovsky/qazshield", "qdev-ci-docker"): 15360
-    }
+    repository_profile_disk_mb = {("belilovsky/qazshield", "qdev-ci-docker"): 15360}
 
     claimed = store.claim(
         "primary-1",
@@ -607,6 +727,78 @@ def test_repository_disk_override_does_not_lower_other_repository_reservation(
         is None
     )
     assert store.job_status(101) == "pending"
+
+
+def test_repository_floor_and_concurrency_cannot_be_lowered_by_claim_override(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(
+        job(
+            "qazgeo",
+            100,
+            "qdev-ci-docker",
+            repository="belilovsky/qazgeo",
+        )
+    )
+    claim_arguments = {
+        "disk_free_gib": 34.999,
+        "min_disk_free_gib": 4.5,
+        "profile_disk_mb": {"qdev-ci-docker": 20480},
+        "repository_profile_disk_mb": {("belilovsky/qazgeo", "qdev-ci-docker"): 15360},
+        "repository_min_disk_free_gib": {"belilovsky/qazgeo": 35.0},
+        "repository_max_concurrency": {"belilovsky/qazgeo": 1},
+    }
+    store.heartbeat(
+        "qazgeo-worker",
+        ("qdev-ci-docker",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 34.999,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+
+    assert store.claim("qazgeo-worker", ("qdev-ci-docker",), **claim_arguments) is None
+
+    store.heartbeat(
+        "qazgeo-worker",
+        ("qdev-ci-docker",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 2,
+            "disk_free_gib": 40,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    claim_arguments["disk_free_gib"] = 40
+    assert store.claim("qazgeo-worker", ("qdev-ci-docker",), **claim_arguments) is None
+
+    store.heartbeat(
+        "qazgeo-worker",
+        ("qdev-ci-docker",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 35,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    claim_arguments["disk_free_gib"] = 35
+    claimed = store.claim("qazgeo-worker", ("qdev-ci-docker",), **claim_arguments)
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
 
 
 def test_reserve_claims_profile_that_primary_cannot_fit(tmp_path: Path) -> None:
@@ -793,21 +985,27 @@ def test_failed_worker_job_is_released_atomically_without_losing_fifo(tmp_path: 
     assert [row["job_id"] for row in failed] == [100]
     original = failed[0]
 
-    assert store.release_failed_job(
-        100,
-        "provider reconciled queued",
-        expected_updated_at=float(original["updated_at"]),
-    ) is True
+    assert (
+        store.release_failed_job(
+            100,
+            "provider reconciled queued",
+            expected_updated_at=float(original["updated_at"]),
+        )
+        is True
+    )
     released = store.job(100)
     assert released is not None
     assert released["status"] == "pending"
     assert released["completed_at"] is None
     assert float(released["created_at"]) == float(original["created_at"])
-    assert store.release_failed_job(
-        100,
-        "must not release twice",
-        expected_updated_at=float(original["updated_at"]),
-    ) is False
+    assert (
+        store.release_failed_job(
+            100,
+            "must not release twice",
+            expected_updated_at=float(original["updated_at"]),
+        )
+        is False
+    )
 
 
 def test_non_worker_failure_is_not_recoverable_as_failed_worker_job(tmp_path: Path) -> None:

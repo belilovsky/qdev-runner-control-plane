@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
-import os
 import stat
 import sys
 from pathlib import Path
@@ -14,6 +14,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
+IMAGE_DIGEST = "sha256:" + "c" * 64
+ENVELOPE_DIGEST = "sha256:" + "d" * 64
 
 
 def _load(name: str) -> ModuleType:
@@ -33,7 +35,6 @@ FIXED_RECOVERY = _load("qdev_fixed_worker_recovery_dispatch")
 HOST_ENROL = _load("qdev_recovery_host_enrol_adapter")
 HOST_APPLY = _load("qdev_recovery_host_apply")
 PROVISION = _load("provision_fleet_host_dispatch_state")
-PREPARE = _load("prepare_controller_candidate")
 
 
 def _request(action: str) -> dict[str, Any]:
@@ -52,15 +53,37 @@ def _request(action: str) -> dict[str, Any]:
     }
 
 
+def _bootstrap_request(action: str) -> dict[str, Any]:
+    return {
+        "schema": "qdev-fleet-bootstrap-request-v2",
+        "action": action,
+        "source_sha": SHA,
+        "run_id": 101,
+        "job_id": 202,
+        "attempt": 1,
+        "claim_ttl_seconds": 300,
+        "controller_revision": SHA,
+        "controller_release_digest": DIGEST,
+        "controller_image_digest": IMAGE_DIGEST,
+        "activation_envelope_digest": ENVELOPE_DIGEST,
+        "release_lane": None,
+        "worker_name": None,
+    }
+
+
 def _activation_envelope() -> dict[str, Any]:
     return {
-        "schema": "qdev-fleet-bootstrap-adapter-request-v1",
-        "request": _request("activate-controller"),
+        "schema": "qdev-fleet-bootstrap-adapter-request-v2",
+        "request": _bootstrap_request("activate-controller"),
         "target": {
             "controller_revision": SHA,
             "controller_release_digest": DIGEST,
-            "rollback_revision": "c" * 40,
-            "rollback_release_digest": "sha256:" + "d" * 64,
+            "controller_image_digest": IMAGE_DIGEST,
+            "activation_envelope_digest": ENVELOPE_DIGEST,
+            "activation_mode": "signed-external-envelope",
+            "activation_envelope_schema": "qdev-controller-activation-envelope-v1",
+            "activation_public_key_binding": "controller-registry",
+            "activation_max_envelope_ttl_seconds": 1800,
         },
     }
 
@@ -86,7 +109,7 @@ def _recovery_target() -> dict[str, Any]:
     }
 
 
-def test_activation_adapter_binds_source_target_and_anchor() -> None:
+def test_activation_adapter_binds_source_target_and_signed_envelope() -> None:
     envelope = _activation_envelope()
     request, target = ACTIVATION._validate_request(envelope)
     assert request["source_sha"] == target["controller_revision"]
@@ -110,7 +133,7 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
         )
 
 
-def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
+def test_activation_adapter_rejects_legacy_runtime_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status = tmp_path / "controller-release.json"
@@ -137,6 +160,11 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
     with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
         ACTIVATION._read_status()
 
+
+def test_activation_adapter_accepts_measured_runtime_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status = tmp_path / "controller-release.json"
     status.write_text(
         json.dumps(
             {
@@ -144,12 +172,12 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
                 "state": "active",
                 "revision": SHA,
                 "release_digest": DIGEST,
-                "activated_at": "2026-09-05T00:00:00Z",
+                "activated_at": "2026-09-05T12:00:00Z",
                 "runtime_identity": {
                     "source_revision": SHA,
-                    "source_digest": "sha256:" + "c" * 64,
-                    "public_image_id": "sha256:" + "d" * 64,
-                    "internal_image_id": "sha256:" + "e" * 64,
+                    "source_digest": "sha256:" + "e" * 64,
+                    "public_image_id": IMAGE_DIGEST,
+                    "internal_image_id": IMAGE_DIGEST,
                 },
                 "dependency_identity": {
                     "requirements_digest": "sha256:" + "f" * 64,
@@ -160,77 +188,141 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
         ),
         encoding="utf-8",
     )
-    assert ACTIVATION._read_status() == (SHA, DIGEST)
-
-
-def test_candidate_preparation_requires_same_measured_runtime_anchor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    status = tmp_path / "controller-release.json"
-    monkeypatch.setattr(PREPARE, "RELEASE_STATUS_PATH", status)
+    status.chmod(0o600)
+    monkeypatch.setattr(ACTIVATION, "STATUS_PATH", status)
     original_lstat = Path.lstat
 
     def root_owned(path: Path) -> Any:
         metadata = original_lstat(path)
-        return SimpleNamespace(
-            st_mode=metadata.st_mode,
-            st_uid=os.geteuid(),
-            st_size=metadata.st_size,
-        )
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
 
     monkeypatch.setattr(Path, "lstat", root_owned)
+    assert ACTIVATION._read_status() == (SHA, DIGEST, IMAGE_DIGEST, IMAGE_DIGEST)
 
-    status.write_text(
-        json.dumps(
-            {
-                "schema": "qdev-controller-release-status-v1",
-                "state": "active",
-                "revision": SHA,
-                "release_digest": DIGEST,
-                "activated_at": "2026-09-05T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    status.chmod(0o600)
-    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
-        PREPARE._active_runtime_source_sha()
 
-    measured = {
-        "schema": "qdev-controller-release-status-v2",
+def test_activation_adapter_binds_committed_status_to_signed_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status = tmp_path / "activation-status.json"
+    payload = {
+        "schema": "qdev-controller-activation-status-v1",
         "state": "active",
-        "revision": SHA,
-        "release_digest": DIGEST,
-        "activated_at": "2026-09-05T00:00:00Z",
-        "runtime_identity": {
-            "source_revision": "c" * 40,
-            "source_digest": "sha256:" + "d" * 64,
-            "public_image_id": "sha256:" + "e" * 64,
-            "internal_image_id": "sha256:" + "f" * 64,
+        "generation": 8,
+        "source_sha": SHA,
+        "image_digest": IMAGE_DIGEST[7:],
+        "policy_bundle_digest": "e" * 64,
+        "previous": {
+            "generation": 7,
+            "source_sha": "f" * 40,
+            "image_digest": "1" * 64,
+            "policy_bundle_digest": "2" * 64,
         },
-        "dependency_identity": {
-            "requirements_digest": "sha256:" + "1" * 64,
-            "public_installed_digest": "sha256:" + "2" * 64,
-            "internal_installed_digest": "sha256:" + "2" * 64,
-        },
+        "transaction_id": "transaction-0001",
+        "activated_at": "2026-09-05T01:00:00Z",
     }
-    status.write_text(json.dumps(measured), encoding="utf-8")
-    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
-        PREPARE._active_runtime_source_sha()
+    status.write_text(json.dumps(payload), encoding="utf-8")
+    status.chmod(0o600)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_STATUS_PATH", status)
+    original_lstat = Path.lstat
 
-    measured["runtime_identity"]["source_revision"] = SHA
-    status.write_text(json.dumps(measured), encoding="utf-8")
-    assert PREPARE._active_runtime_source_sha() == SHA
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+    assert ACTIVATION._read_activation_status(
+        expected_source_sha=SHA,
+        expected_public_image_digest=IMAGE_DIGEST[7:],
+        expected_internal_image_digest=IMAGE_DIGEST[7:],
+        expected_policy_digest="e" * 64,
+        expected_transaction_id="transaction-0001",
+    ) == (
+        "f" * 40,
+        "sha256:" + "1" * 64,
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        7,
+    )
+
+    for field, value in (
+        ("source_sha", "0" * 40),
+        ("image_digest", "0" * 64),
+        ("policy_bundle_digest", "0" * 64),
+        ("transaction_id", "transaction-forged"),
+    ):
+        forged = {**payload, field: value}
+        status.write_text(json.dumps(forged), encoding="utf-8")
+        with pytest.raises(ACTIVATION.AdapterError, match="activation_status_invalid"):
+            ACTIVATION._read_activation_status(
+                expected_source_sha=SHA,
+                expected_public_image_digest=IMAGE_DIGEST[7:],
+                expected_internal_image_digest=IMAGE_DIGEST[7:],
+                expected_policy_digest="e" * 64,
+                expected_transaction_id="transaction-0001",
+            )
+
+
+def test_activation_adapter_resolves_core_raw_digest_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assets = tmp_path / "activation"
+    envelopes = assets / "envelopes"
+    artifacts = assets / "artifacts"
+    envelopes.mkdir(parents=True)
+    artifacts.mkdir()
+    public_key = tmp_path / "activation.pub"
+    public_key.write_text("trusted-key", encoding="utf-8")
+    transaction_id = "transaction-0001"
+    manifest_digest = "3" * 64
+    policy_digest = "4" * 64
+    envelope = {
+        "schema": "qdev-controller-activation-envelope-v1",
+        "transaction_id": transaction_id,
+        "candidate": {
+            "source_sha": SHA,
+            "image_digest": IMAGE_DIGEST[7:],
+            "policy_bundle_digest": policy_digest,
+        },
+        "candidate_release_digest": DIGEST[7:],
+        "artifact_manifest_digest": manifest_digest,
+    }
+    canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    envelope_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    envelope_path = envelopes / f"{envelope_digest[7:]}.json"
+    envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
+    manifest_path = artifacts / f"{manifest_digest}.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    for path in (envelope_path, manifest_path):
+        path.chmod(0o600)
+    public_key.chmod(0o644)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_ASSETS_ROOT", assets)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_PUBLIC_KEY", public_key)
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+    request = {**_bootstrap_request("activate-controller")}
+    request["activation_envelope_digest"] = envelope_digest
+    assert ACTIVATION._activation_assets(request) == (
+        envelope_path,
+        manifest_path,
+        public_key,
+        policy_digest,
+        transaction_id,
+    )
 
 
 def test_enrolment_adapter_rejects_extra_request_fields_and_registry_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = _enrolment_target()
-    request = _request("enrol-host-agent")
+    request = _bootstrap_request("enrol-host-agent")
     request["release_lane"] = target["release_lane"]
     envelope = {
-        "schema": "qdev-fleet-bootstrap-adapter-request-v1",
+        "schema": "qdev-fleet-bootstrap-adapter-request-v2",
         "request": request,
         "target": target,
     }
@@ -240,7 +332,10 @@ def test_enrolment_adapter_rejects_extra_request_fields_and_registry_drift(
         SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
     )
     _, parsed_request, parsed_target = ENROLMENT._parse()
-    assert parsed_request == request
+    assert parsed_request == {
+        **request,
+        "controller_internal_image_digest": IMAGE_DIGEST,
+    }
     assert parsed_target == target
 
     extra = {**envelope, "request": {**request, "command": "ignored"}}
@@ -718,9 +813,3 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source
         assert "shell=True" not in source
-
-    activation = (ROOT / "scripts" / "qdev_controller_activation_adapter.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'str(candidate / "src" / "qdev_runner" / "controller_release.py")' not in activation
-    assert 'str(candidate / "src")' in activation

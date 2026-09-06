@@ -125,8 +125,5 @@ def test_worker_service_is_default_deny_and_drains_without_timeout() -> None:
     service = (ROOT / "deploy/qdev-runner-worker.service").read_text(encoding="utf-8")
 
     assert "ConditionPathExists=/etc/qdev/qdev-runner-worker.enabled" in service
-    assert (
-        "ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit"
-        in service
-    )
+    assert "ExecCondition=+/usr/local/sbin/qdev-runner-worker-gate validate-permit" in service
     assert "TimeoutStopSec=infinity" in service

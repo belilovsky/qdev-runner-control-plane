@@ -1,10 +1,10 @@
 name: QDev runner contract
 
 on:
+  # This policy is a required admission check for every internal PR.  A
+  # source-only change can alter the runner contract just as easily as a
+  # workflow edit, so path filtering would leave the required context absent.
   pull_request:
-    paths:
-      - ".github/**"
-      - "AGENTS.md"
   push:
     branches:
       - main
@@ -32,6 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Validate QDev runner contract
         run: python3 .github/scripts/qdev-runner-policy.py --root .

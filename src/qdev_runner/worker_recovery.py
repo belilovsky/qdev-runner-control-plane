@@ -378,9 +378,7 @@ class WorkerRecoveryController:
             repository=target.repository,
             labels=target.labels,
             provider_runner_id=provider_runner_id,
-            provider_status=(
-                None if provider_runner_id is None else cast(str, observed["status"])
-            ),
+            provider_status=(None if provider_runner_id is None else cast(str, observed["status"])),
             provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
@@ -1052,8 +1050,7 @@ class WorkerRecoveryController:
             "recovery_action": target.action,
             "execution_disposition": (
                 "verify_only"
-                if target.action == "restore_saved_configuration"
-                and provider_status == "online"
+                if target.action == "restore_saved_configuration" and provider_status == "online"
                 else target.action
             ),
             "operator_certificate_sha256": row["operator_certificate_sha256"],
@@ -1198,9 +1195,7 @@ class WorkerRecoveryController:
             release=release,
         )
 
-    def _require_acceptance_row(
-        self, row: dict[str, Any], *, release: dict[str, Any]
-    ) -> None:
+    def _require_acceptance_row(self, row: dict[str, Any], *, release: dict[str, Any]) -> None:
         """Allow a completed native mutation to finish after controller upgrade.
 
         Native execution remains bound to its original immutable release.  Only
@@ -1228,8 +1223,7 @@ class WorkerRecoveryController:
             or row.get("repository") != target.repository
             or labels != target.labels
             or row.get("recovery_action") != target.action
-            or row.get("expected_agent_certificate_sha256")
-            != self._agent_certificate(target)
+            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
             or row.get("interface_version") != INTERFACE_VERSION
             or row.get("interface_digest") != INTERFACE_DIGEST
             or row.get("agent_release_digest") != self._agent_release_digest()
@@ -1254,18 +1248,17 @@ class WorkerRecoveryController:
         for target in RECOVERY_TARGETS.values():
             self._agent_certificate(target)
         release = self.release_status_reader()
-        release_digest = release.get("release_digest")
         if (
             release.get("state") != "active"
             or not isinstance(release.get("revision"), str)
             or not _GIT_REVISION.fullmatch(str(release["revision"]))
-            or not isinstance(release_digest, str)
-            or not _SHA256_DIGEST.fullmatch(release_digest)
+            or not isinstance(release.get("release_digest"), str)
+            or not _SHA256_HEX.fullmatch(str(release["release_digest"]))
         ):
             raise WorkerRecoveryConfigurationError(
                 "active controller release binding is unavailable"
             )
-        return {**release, "release_digest": release_digest.removeprefix("sha256:")}
+        return release
 
     def _validate_provenance(
         self,

@@ -38,9 +38,12 @@ GitHub API.
   `QDEV_WORKER_MAX_DISK_USED_PCT`, `QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB`,
   `QDEV_WORKER_MAX_LOAD_PER_CPU` and `QDEV_WORKER_MAX_CPU_PSI_AVG10`.
   A source-reviewed `repository_admission_disk_mb` entry may lower only one
-  exact repository/profile reservation, never below 12 GiB. All other jobs keep
-  the profile default, and the worker rechecks its hard disk floor throughout
-  execution and terminates a job before that floor is crossed.
+  exact repository/profile reservation within its validated bounds. An
+  optional `repository_admission_constraints` entry adds a server-owned
+  absolute free-space floor and concurrency ceiling that no capacity override
+  can weaken. All other jobs keep the profile default, and the worker rechecks
+  its hard disk floor throughout execution and terminates a job before that
+  floor is crossed.
 - Every registered repository carries the managed root `AGENTS.md` policy,
   `.github/QDEV_RUNNERS.md`, and the local `qdev-runner-contract` check. Future
   agents must install this starter bundle instead of creating a standalone
@@ -75,6 +78,21 @@ GitHub API.
 
 The operating model, failure taxonomy, recovery sequence, and evidence
 contract are in `docs/github-actions-operating-model.md`.
+
+### Repository CI source evidence
+
+This repository has a bounded `primary_self_hosted_workflows` exception in
+`.github/qdev-runner.yml`. Its normal `CI` workflow therefore reports the
+`controller` lane, not `hosted`. The explicit manual recovery lane remains
+separate, and all lanes run the same complete native checks.
+
+For an internal pull request, checkout and verification use the exact head SHA
+from the provider event, with matching base/head repository IDs and branch
+refs. The execution receipt preserves GitHub's separate provider merge SHA;
+`GITHUB_SHA` is never overwritten. Push and owner-authorized dispatch evidence
+remain bound to the exact provider SHA. Missing or conflicting provenance is
+an error. A native CI receipt is unsigned execution evidence, not controller
+admission, an image scan, or a runtime activation receipt.
 
 ## Repository onboarding
 
@@ -288,6 +306,18 @@ revision with `scripts/release_runner_images.py`. The private key must remain
 mode 0600 on the controller host and is never copied into the evidence root.
 The publisher refuses mutable references, dirty source, a revision mismatch,
 Critical findings, and unreviewed High findings.
+
+The worker provisioner does not download a BuildKit release archive.  The
+Docker executor image is built from the pinned BuildKit source and carries
+`/usr/local/share/qdev-buildkit/source-revision` and `source-sha256` markers.
+Before provisioning, the release operator must either stage that exact
+materialization as a root-owned artifact directory (with `bin/buildkitd`,
+`bin/buildctl`, and the two read-only markers) and set
+`QDEV_BUILDKIT_ARTIFACT_ROOT`, or provide the immutable
+`QDEV_BUILDKIT_IMAGE_REF` digest so the stopped worker can copy and validate
+the binaries from the published image.  The installer rejects symlinks,
+unexpected ownership or permissions, marker mismatches, mutable image tags,
+and any existing unverified materialization.
 
 Validate both the envelope and its protected files before placing matching
 references in `worker.env`:

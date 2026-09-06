@@ -95,9 +95,7 @@ def _bytes_at(repository: Path, revision: str, relative_path: str) -> bytes:
 
 
 def _file_digest_at(repository: Path, revision: str, relative_path: str) -> str:
-    return "sha256:" + hashlib.sha256(
-        _bytes_at(repository, revision, relative_path)
-    ).hexdigest()
+    return "sha256:" + hashlib.sha256(_bytes_at(repository, revision, relative_path)).hexdigest()
 
 
 def _exact_fields(value: Mapping[str, object], expected: set[str], label: str) -> None:
@@ -566,18 +564,17 @@ def verify_qazcoop_admission(
     ):
         raise QazCoopReleaseGuardError("admission receipt is unavailable")
     receipt_status = receipt_path.stat()
-    if receipt_status.st_uid not in {0, os.geteuid()} or stat.S_IMODE(
-        receipt_status.st_mode
-    ) & 0o022:
+    if (
+        receipt_status.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(receipt_status.st_mode) & 0o022
+    ):
         raise QazCoopReleaseGuardError("admission receipt is not owner controlled")
     receipt = load_json_strict(receipt_path)
     receipt_root = _mapping(receipt, "controller receipt")
     signed_payload = _mapping(receipt_root.get("payload"), "controller receipt payload")
     workflow = _mapping(signed_payload.get("workflow"), "controller receipt workflow")
     workflow_run_id = _non_negative(workflow.get("run_id"), "workflow run ID")
-    workflow_run_attempt = _non_negative(
-        workflow.get("run_attempt"), "workflow run attempt"
-    )
+    workflow_run_attempt = _non_negative(workflow.get("run_attempt"), "workflow run attempt")
     if workflow_run_id == 0 or workflow_run_attempt == 0:
         raise QazCoopReleaseGuardError("controller workflow identity must be positive")
     required_jobs = signed_payload.get("required_jobs")
@@ -594,15 +591,11 @@ def verify_qazcoop_admission(
     if set(job_ids) != set(EXPECTED_JOBS):
         raise QazCoopReleaseGuardError("controller receipt job set is invalid")
     expected_evidence = {
-        "release_payload_sha256": _file_digest_at(
-            repository, evidence_commit_sha, PAYLOAD_PATH
-        ),
+        "release_payload_sha256": _file_digest_at(repository, evidence_commit_sha, PAYLOAD_PATH),
         "controller_contract_sha256": _file_digest_at(
             repository, evidence_commit_sha, CONTROLLER_PATH
         ),
-        "release_lock_sha256": _file_digest_at(
-            repository, evidence_commit_sha, LOCK_PATH
-        ),
+        "release_lock_sha256": _file_digest_at(repository, evidence_commit_sha, LOCK_PATH),
     }
     if require_authoritative:
         verified = verify_and_consume_receipt(

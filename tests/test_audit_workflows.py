@@ -16,7 +16,12 @@ def load_auditor() -> ModuleType:
     return module
 
 
-def audit(deploy_workflow: str, ci_workflow: str = "jobs: {}\n") -> dict[str, object]:
+def audit(
+    deploy_workflow: str,
+    ci_workflow: str = "jobs: {}\n",
+    *,
+    contract_text: str | None = None,
+) -> dict[str, object]:
     module = load_auditor()
     paths = [
         ".github/workflows/ci.yml",
@@ -25,7 +30,8 @@ def audit(deploy_workflow: str, ci_workflow: str = "jobs: {}\n") -> dict[str, ob
         ".github/workflows/runner-smoke.yml",
     ]
     contents = {
-        ".github/qdev-runner.yml": (
+        ".github/qdev-runner.yml": contract_text
+        or (
             "schema_version: qdev-runner-v2\n"
             "execution_mode: github-hosted-primary\n"
             "self_hosted_recovery: true\n"
@@ -34,9 +40,7 @@ def audit(deploy_workflow: str, ci_workflow: str = "jobs: {}\n") -> dict[str, ob
             "release_registry_workflows:\n  - deploy.yml\n"
         ),
         "AGENTS.md": (
-            "<!-- qdev-runner-policy:start -->\n"
-            "managed\n"
-            "<!-- qdev-runner-policy:end -->\n"
+            "<!-- qdev-runner-policy:start -->\nmanaged\n<!-- qdev-runner-policy:end -->\n"
         ),
         ".github/QDEV_RUNNERS.md": "managed\n",
         ".github/scripts/qdev-runner-policy.py": "managed\n",
@@ -111,3 +115,49 @@ jobs:
     )
     kinds = {item["kind"] for item in result["violations"]}
     assert kinds == {"self-hosted-runner-outside-recovery"}
+
+
+def test_fleet_audit_allows_v3_controller_managed_job() -> None:
+    result = audit(
+        "jobs: {}\n",
+        """on:
+  pull_request:
+jobs:
+  verify:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-verify
+""",
+        contract_text=(
+            "schema_version: qdev-runner-v3\n"
+            "execution_mode: controller-managed-self-hosted\n"
+            "github_hosted_fallback: false\n"
+            "profiles:\n  - qdev-ci\n"
+        ),
+    )
+    assert result["violations"] == []
+
+
+def test_fleet_audit_v3_rejects_hosted_runner_and_fallback() -> None:
+    result = audit(
+        "jobs: {}\n",
+        "jobs:\n  verify:\n    runs-on: ubuntu-latest\n",
+        contract_text=(
+            "schema_version: qdev-runner-v3\n"
+            "execution_mode: controller-managed-self-hosted\n"
+            "github_hosted_fallback: true\n"
+            "profiles:\n  - qdev-ci\n"
+        ),
+    )
+    kinds = {item["kind"] for item in result["violations"]}
+    assert kinds == {
+        "hosted-fallback-not-disabled",
+        "hosted-runner",
+        "unapproved-runner-profile",
+    }

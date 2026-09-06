@@ -96,9 +96,7 @@ def _https_url(
     ):
         raise BootstrapValidationError(f"{name} has conflicting host allowlists")
     if allowed_host is not None and parsed.hostname != allowed_host:
-        raise BootstrapValidationError(
-            f"{name} host {parsed.hostname!r} is not allowlisted"
-        )
+        raise BootstrapValidationError(f"{name} host {parsed.hostname!r} is not allowlisted")
     suffix_allowed = bool(
         allowed_host_suffixes
         and any(
@@ -108,13 +106,9 @@ def _https_url(
     )
     if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
         if not suffix_allowed:
-            raise BootstrapValidationError(
-                f"{name} host {parsed.hostname!r} is not allowlisted"
-            )
+            raise BootstrapValidationError(f"{name} host {parsed.hostname!r} is not allowlisted")
     elif allowed_host_suffixes is not None and not suffix_allowed:
-        raise BootstrapValidationError(
-            f"{name} host {parsed.hostname!r} is not allowlisted"
-        )
+        raise BootstrapValidationError(f"{name} host {parsed.hostname!r} is not allowlisted")
     return value
 
 
@@ -240,9 +234,7 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     if repository != policy.identity.repository:
         raise BootstrapValidationError("workflow repository is not allowlisted")
     run_id = _positive_int(_required("GITHUB_RUN_ID"), "GITHUB_RUN_ID")
-    attempt = _positive_int(
-        os.environ.get("GITHUB_RUN_ATTEMPT", "1"), "GITHUB_RUN_ATTEMPT"
-    )
+    attempt = _positive_int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"), "GITHUB_RUN_ATTEMPT")
     expected_job_name = _required("BOOTSTRAP_JOB_NAME")
     job_id = resolve_job_id(repository, run_id, expected_name=expected_job_name)
     source_sha = _source_sha()
@@ -259,9 +251,25 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
         ),
         "controller_revision": source_sha,
         "controller_release_digest": controller_release_digest(ROOT),
+        "controller_image_digest": os.environ.get("BOOTSTRAP_CONTROLLER_IMAGE_DIGEST") or None,
+        "controller_internal_image_digest": (
+            os.environ.get("BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST") or None
+        ),
+        "activation_envelope_digest": (
+            os.environ.get("BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST") or None
+        ),
         "release_lane": os.environ.get("BOOTSTRAP_RELEASE_LANE") or None,
         "worker_name": os.environ.get("BOOTSTRAP_WORKER_NAME") or None,
     }
+    for field in (
+        "controller_revision",
+        "controller_image_digest",
+        "controller_internal_image_digest",
+        "activation_envelope_digest",
+    ):
+        value = raw[field]
+        if isinstance(value, str):
+            raw[field] = value.strip().lower() or None
     try:
         request = FleetBootstrapRequest.model_validate(raw)
     except ValidationError as error:
