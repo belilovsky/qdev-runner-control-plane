@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .claim_scope import SCHEMA_V2, ClaimScope
 from .models import QueuedJob
@@ -391,6 +391,46 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_active_idx
     ON worker_recoveries(worker_name) WHERE state!='released';
+
+-- A prepared recovery may be abandoned only through a fresh controller-owned
+-- provider observation.  The signed receipt is append-only so releasing the
+-- fence cannot erase which release and operator made that decision.
+CREATE TABLE IF NOT EXISTS worker_recovery_aborts (
+    receipt_digest TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    worker_name TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    operator_certificate_sha256 TEXT NOT NULL,
+    original_controller_revision TEXT NOT NULL,
+    original_controller_release_digest TEXT NOT NULL,
+    abort_controller_revision TEXT NOT NULL,
+    abort_controller_release_digest TEXT NOT NULL,
+    policy_digest TEXT NOT NULL,
+    agent_release_digest TEXT NOT NULL,
+    provider_idle_proof_digest TEXT NOT NULL,
+    provider_reconciliation_digest TEXT NOT NULL,
+    provider_observation_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    provider_observed_at REAL NOT NULL,
+    aborted_at REAL NOT NULL,
+    FOREIGN KEY(operation_id) REFERENCES worker_recoveries(operation_id)
+);
+CREATE INDEX IF NOT EXISTS worker_recovery_aborts_operation_idx
+    ON worker_recovery_aborts(operation_id, aborted_at);
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_aborts_no_update
+BEFORE UPDATE ON worker_recovery_aborts
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery aborts are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_aborts_no_delete
+BEFORE DELETE ON worker_recovery_aborts
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery aborts are append-only');
+END;
 
 -- Native observations are append-only.  An ambiguous or failed observation
 -- keeps the worker fenced, but a later terminal observation for the exact same
@@ -3310,13 +3350,44 @@ class Store:
         )
         return canary
 
+    @staticmethod
+    def _worker_recovery_projection(
+        connection: sqlite3.Connection, *, column: str, value: str
+    ) -> sqlite3.Row | None:
+        if column == "operation_id":
+            predicate = "WHERE wr.operation_id=?"
+        elif column == "idempotency_key":
+            predicate = "WHERE wr.idempotency_key=?"
+        else:
+            raise ValueError("native recovery lookup is invalid")
+        query = (
+            """
+            SELECT
+                wr.*,
+                wa.receipt_digest AS abort_receipt_digest,
+                wa.signature AS abort_signature,
+                wa.reason AS abort_reason,
+                wa.abort_controller_revision,
+                wa.abort_controller_release_digest,
+                wa.provider_idle_proof_digest AS abort_provider_idle_proof_digest,
+                wa.provider_reconciliation_digest AS abort_provider_reconciliation_digest,
+                wa.provider_observation_json AS abort_provider_observation_json,
+                wa.provider_observed_at AS abort_provider_observed_at,
+                wa.aborted_at
+            FROM worker_recoveries AS wr
+            LEFT JOIN worker_recovery_aborts AS wa ON wa.operation_id=wr.operation_id
+            """
+            + predicate
+        )
+        return cast(sqlite3.Row | None, connection.execute(query, (value,)).fetchone())
+
     def worker_recovery(self, operation_id: str) -> dict[str, Any] | None:
         if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
             raise ValueError("native recovery operation identity is invalid")
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM worker_recoveries WHERE operation_id=?", (operation_id,)
-            ).fetchone()
+            row = self._worker_recovery_projection(
+                connection, column="operation_id", value=operation_id
+            )
         return dict(row) if row is not None else None
 
     def worker_recovery_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any] | None:
@@ -3325,11 +3396,230 @@ class Store:
         if not isinstance(idempotency_key, str) or not _RECOVERY_KEY.fullmatch(idempotency_key):
             raise ValueError("worker recovery idempotency key is invalid")
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM worker_recoveries WHERE idempotency_key=?",
-                (idempotency_key,),
-            ).fetchone()
+            row = self._worker_recovery_projection(
+                connection, column="idempotency_key", value=idempotency_key
+            )
         return dict(row) if row is not None else None
+
+    def abort_worker_recovery(
+        self,
+        *,
+        operation_id: str,
+        request_fingerprint: str,
+        operator_certificate_sha256: str,
+        abort_controller_revision: str,
+        abort_controller_release_digest: str,
+        policy_digest: str,
+        agent_release_digest: str,
+        provider_idle_proof: dict[str, Any],
+        provider_proof_key: str,
+        reason: str,
+        proof_max_age_seconds: float = 120.0,
+    ) -> dict[str, Any]:
+        """Atomically release one never-invoked fence with an append-only receipt."""
+
+        normalized_reason = reason.strip() if isinstance(reason, str) else ""
+        if (
+            not isinstance(operation_id, str)
+            or not _SHA256_HEX.fullmatch(operation_id)
+            or not isinstance(request_fingerprint, str)
+            or not _SHA256_HEX.fullmatch(request_fingerprint)
+            or not isinstance(operator_certificate_sha256, str)
+            or not _SHA256_HEX.fullmatch(operator_certificate_sha256)
+            or not isinstance(abort_controller_revision, str)
+            or not _GIT_REVISION.fullmatch(abort_controller_revision)
+            or not isinstance(abort_controller_release_digest, str)
+            or not _SHA256_HEX.fullmatch(abort_controller_release_digest)
+            or not isinstance(policy_digest, str)
+            or not _SHA256_DIGEST.fullmatch(policy_digest)
+            or not isinstance(agent_release_digest, str)
+            or not _SHA256_DIGEST.fullmatch(agent_release_digest)
+            or normalized_reason != reason
+            or not 8 <= len(normalized_reason) <= 500
+            or not isinstance(provider_proof_key, str)
+            or not provider_proof_key
+        ):
+            raise ValueError("worker recovery abort binding is invalid")
+        proof_max_age_seconds = _recovery_proof_window(proof_max_age_seconds)
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                recovery = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if recovery is None:
+                    raise ValueError("worker recovery transaction changed")
+                labels = tuple(json.loads(str(recovery["labels_json"])))
+                target = _WORKER_RECOVERY_BINDINGS.get(str(recovery["worker_name"]))
+                if (
+                    target is None
+                    or target["repository"] != recovery["repository"]
+                    or target["labels"] != labels
+                    or target["recovery_action"] != recovery["recovery_action"]
+                    or recovery["request_fingerprint"] != request_fingerprint
+                    or recovery["operator_certificate_sha256"]
+                    != operator_certificate_sha256
+                ):
+                    raise ValueError("worker recovery abort binding changed")
+
+                existing = connection.execute(
+                    "SELECT * FROM worker_recovery_aborts WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        recovery["state"] != "released"
+                        or existing["request_fingerprint"] != request_fingerprint
+                        or existing["operator_certificate_sha256"]
+                        != operator_certificate_sha256
+                        or existing["abort_controller_revision"]
+                        != abort_controller_revision
+                        or existing["abort_controller_release_digest"]
+                        != abort_controller_release_digest
+                        or existing["policy_digest"] != policy_digest
+                        or existing["agent_release_digest"] != agent_release_digest
+                        or existing["reason"] != normalized_reason
+                    ):
+                        raise ValueError("worker recovery abort replay changed")
+                    replay = self._worker_recovery_projection(
+                        connection, column="operation_id", value=operation_id
+                    )
+                    if replay is None:
+                        raise ValueError("worker recovery transaction changed")
+                    connection.execute("COMMIT")
+                    row = dict(replay)
+                    row["abort_idempotent_replay"] = True
+                    return row
+
+                provider = self.verify_worker_provider_idle_proof(
+                    provider_idle_proof,
+                    key=provider_proof_key,
+                    worker_name=str(recovery["worker_name"]),
+                    repository=str(recovery["repository"]),
+                    labels=labels,
+                    max_age_seconds=proof_max_age_seconds,
+                )
+                _, provider_observation_json, _ = _canonical_provider_observation(
+                    provider["provider_observation"]
+                )
+                if (
+                    recovery["state"] != "prepared"
+                    or recovery["invoked_at"] is not None
+                    or recovery["native_outcome"] is not None
+                    or recovery["native_outcome_digest"] is not None
+                    or recovery["native_outcome_signature"] is not None
+                    or recovery["agent_identity"] is not None
+                    or recovery["agent_certificate_sha256"] is not None
+                    or recovery["reconciled_at"] is not None
+                    or recovery["native_finalized_at"] is not None
+                    or recovery["acceptance_proof_digest"] is not None
+                    or recovery["canary_run_id"] is not None
+                    or connection.execute(
+                        "SELECT 1 FROM worker_recovery_outcomes WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    is not None
+                    or connection.execute(
+                        "SELECT 1 FROM worker_recovery_acceptances WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    is not None
+                    or connection.execute(
+                        "SELECT 1 FROM worker_recovery_canaries WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("worker recovery operation cannot be aborted")
+                self._require_no_durable_worker_work(
+                    connection, str(recovery["worker_name"])
+                )
+                aborted_at = time.time()
+                payload = {
+                    "schema": "qdev-worker-recovery-abort-receipt-v1",
+                    "operation_id": operation_id,
+                    "worker_name": recovery["worker_name"],
+                    "repository": recovery["repository"],
+                    "request_fingerprint": request_fingerprint,
+                    "operator_certificate_sha256": operator_certificate_sha256,
+                    "original_controller_revision": recovery["controller_revision"],
+                    "original_controller_release_digest": recovery[
+                        "controller_release_digest"
+                    ],
+                    "abort_controller_revision": abort_controller_revision,
+                    "abort_controller_release_digest": abort_controller_release_digest,
+                    "policy_digest": policy_digest,
+                    "agent_release_digest": agent_release_digest,
+                    "provider_idle_proof_digest": provider["digest"],
+                    "provider_reconciliation_digest": provider[
+                        "provider_reconciliation_digest"
+                    ],
+                    "provider_observation": provider["provider_observation"],
+                    "reason": normalized_reason,
+                    "provider_observed_at": provider["observed_at"],
+                    "aborted_at": aborted_at,
+                }
+                canonical = json.dumps(
+                    payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                receipt_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+                signature = hmac.new(
+                    provider_proof_key.encode("utf-8"), canonical, hashlib.sha256
+                ).hexdigest()
+                connection.execute(
+                    """
+                    INSERT INTO worker_recovery_aborts(
+                        receipt_digest,operation_id,worker_name,repository,
+                        request_fingerprint,operator_certificate_sha256,
+                        original_controller_revision,original_controller_release_digest,
+                        abort_controller_revision,abort_controller_release_digest,
+                        policy_digest,agent_release_digest,provider_idle_proof_digest,
+                        provider_reconciliation_digest,provider_observation_json,reason,
+                        signature,provider_observed_at,aborted_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        receipt_digest,
+                        operation_id,
+                        recovery["worker_name"],
+                        recovery["repository"],
+                        request_fingerprint,
+                        operator_certificate_sha256,
+                        recovery["controller_revision"],
+                        recovery["controller_release_digest"],
+                        abort_controller_revision,
+                        abort_controller_release_digest,
+                        policy_digest,
+                        agent_release_digest,
+                        provider["digest"],
+                        provider["provider_reconciliation_digest"],
+                        provider_observation_json,
+                        normalized_reason,
+                        signature,
+                        provider["observed_at"],
+                        aborted_at,
+                    ),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE worker_recoveries
+                    SET state='released', updated_at=?, released_at=?
+                    WHERE operation_id=? AND state='prepared' AND invoked_at IS NULL
+                    """,
+                    (aborted_at, aborted_at, operation_id),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("worker recovery transaction changed")
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        result = self.worker_recovery(operation_id)
+        assert result is not None
+        result["abort_idempotent_replay"] = False
+        return result
 
     def prepared_worker_recovery(self, worker_name: str) -> dict[str, Any] | None:
         if not isinstance(worker_name, str) or worker_name not in _WORKER_RECOVERY_BINDINGS:

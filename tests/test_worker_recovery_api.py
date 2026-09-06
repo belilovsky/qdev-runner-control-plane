@@ -243,15 +243,20 @@ def _harness(
     return RecoveryHarness(client=TestClient(app), github=github, settings=settings)
 
 
-def _provenance(*, nonce: str = "nonce-0001") -> dict[str, Any]:
+def _provenance(
+    *,
+    nonce: str = "nonce-0001",
+    controller_revision: str = CONTROLLER_REVISION,
+    controller_release_digest: str = CONTROLLER_RELEASE_DIGEST,
+) -> dict[str, Any]:
     issued_at = datetime.now(UTC) - timedelta(seconds=1)
     return {
         "schema": "qdev-runner-recovery-provenance-v1",
         "nonce": nonce,
         "issued_at": issued_at.isoformat().replace("+00:00", "Z"),
         "expires_at": (issued_at + timedelta(seconds=60)).isoformat().replace("+00:00", "Z"),
-        "controller_revision": CONTROLLER_REVISION,
-        "controller_release_digest": CONTROLLER_RELEASE_DIGEST,
+        "controller_revision": controller_revision,
+        "controller_release_digest": controller_release_digest,
         "policy_digest": POLICY_DIGEST,
         "agent_release_digest": AGENT_RELEASE_DIGEST,
     }
@@ -290,6 +295,44 @@ def _status_body(operation: dict[str, Any], *, nonce: str = "nonce-0002") -> dic
         "request_fingerprint": operation["request_fingerprint"],
         "provenance": _provenance(nonce=nonce),
     }
+
+
+def _abort_body(
+    operation: dict[str, Any],
+    *,
+    nonce: str = "nonce-abort-0001",
+    controller_revision: str = CONTROLLER_REVISION,
+    controller_release_digest: str = CONTROLLER_RELEASE_DIGEST,
+    reason: str = "Release a never-invoked operation after a controller upgrade.",
+) -> dict[str, Any]:
+    return {
+        "schema": "qdev-runner-recovery-abort-v1",
+        "operation_id": operation["operation_id"],
+        "request_fingerprint": operation["request_fingerprint"],
+        "reason": reason,
+        "provenance": _provenance(
+            nonce=nonce,
+            controller_revision=controller_revision,
+            controller_release_digest=controller_release_digest,
+        ),
+    }
+
+
+def _write_active_release(
+    settings: BrokerSettings, *, revision: str, release_digest: str
+) -> None:
+    settings.controller_release_status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v1",
+                "state": "active",
+                "revision": revision,
+                "release_digest": "sha256:" + release_digest,
+                "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _claim(
@@ -785,6 +828,146 @@ def test_qazstack_absent_registration_rejects_active_named_job(
 
     assert response.status_code == 409
     assert harness.github.runner_name_job_checks == 1
+
+
+def test_stale_prepared_operation_aborts_once_with_fresh_provider_proof(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    harness.github.runner_present = False
+    prepared = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-abort"),
+        headers=OPERATOR_HEADERS,
+    ).json()
+    assert harness.github.runner_name_job_checks == 1
+
+    current_revision = "6" * 40
+    current_release_digest = "7" * 64
+    _write_active_release(
+        harness.settings,
+        revision=current_revision,
+        release_digest=current_release_digest,
+    )
+    body = _abort_body(
+        prepared,
+        controller_revision=current_revision,
+        controller_release_digest=current_release_digest,
+    )
+    aborted = harness.client.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert aborted.status_code == 200
+    assert aborted.json()["state"] == "aborted"
+    assert aborted.json()["idempotent_replay"] is False
+    assert harness.github.runner_name_job_checks == 2
+
+    row = harness.client.app.state.store.worker_recovery(prepared["operation_id"])
+    assert row is not None
+    assert row["state"] == "released"
+    assert row["abort_receipt_digest"].startswith("sha256:")
+    assert len(row["abort_signature"]) == 64
+
+    replay = harness.client.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        json=_abort_body(
+            prepared,
+            nonce="nonce-abort-replay",
+            controller_revision=current_revision,
+            controller_release_digest=current_release_digest,
+        ),
+        headers=OPERATOR_HEADERS,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["state"] == "aborted"
+    assert replay.json()["idempotent_replay"] is True
+    assert harness.github.runner_name_job_checks == 2
+
+    claim = harness.client.post(
+        "/internal/v1/worker-recovery/claim",
+        json={
+            "schema": "qdev-runner-recovery-agent-claim-v1",
+            "operation_id": prepared["operation_id"],
+        },
+        headers=_agent_headers("qdev-qazstack-01"),
+    )
+    assert claim.status_code == 204
+
+    status = harness.client.post(
+        "/internal/v1/operations/worker-recovery/status",
+        json={
+            "schema": "qdev-runner-recovery-status-v1",
+            "operation_id": prepared["operation_id"],
+            "request_fingerprint": prepared["request_fingerprint"],
+            "provenance": _provenance(
+                nonce="nonce-aborted-status",
+                controller_revision=current_revision,
+                controller_release_digest=current_release_digest,
+            ),
+        },
+        headers=OPERATOR_HEADERS,
+    )
+    assert status.status_code == 200
+    assert status.json()["state"] == "aborted"
+
+
+def test_abort_rejects_other_operator_and_active_provider_job(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    harness.github.runner_present = False
+    prepared = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(
+            "qdev-qazstack-01", idempotency_key="recovery-qazstack-abort-reject"
+        ),
+        headers=OPERATOR_HEADERS,
+    ).json()
+
+    wrong_owner = harness.client.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        json=_abort_body(prepared),
+        headers=OPERATOR_HEADERS
+        | {"X-QDev-Verified-Client-Certificate-SHA256": OTHER_OPERATOR_CERTIFICATE},
+    )
+    assert wrong_owner.status_code == 409
+
+    harness.github.runner_name_active_job_ids = (771,)
+    active_job = harness.client.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        json=_abort_body(prepared, nonce="nonce-abort-active-job"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert active_job.status_code == 409
+    row = harness.client.app.state.store.worker_recovery(prepared["operation_id"])
+    assert row is not None
+    assert row["state"] == "prepared"
+    assert row["abort_receipt_digest"] is None
+
+
+def test_abort_rejects_claimed_operation(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    prepared = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-platform-abort-claimed"),
+        headers=OPERATOR_HEADERS,
+    ).json()
+    _claim(harness, prepared, "qdev-platform-ci-187")
+
+    aborted = harness.client.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        json=_abort_body(prepared),
+        headers=OPERATOR_HEADERS,
+    )
+    assert aborted.status_code == 409
+    row = harness.client.app.state.store.worker_recovery(prepared["operation_id"])
+    assert row is not None
+    assert row["state"] == "invoking"
+    assert row["abort_receipt_digest"] is None
 
 
 def test_project_maps_released_completion_and_validates_target_lookup(
