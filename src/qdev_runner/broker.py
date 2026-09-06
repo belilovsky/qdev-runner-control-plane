@@ -3732,6 +3732,15 @@ def create_app(
         # admission path without weakening FIFO for any other scoped job.
         controller_scoped_admission: AdminPlatformCandidate | None = None
         if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+            _, audit = current_worker(request.worker_name)
+            if (
+                not audit.get("fresh")
+                or int(audit.get("active_jobs") or 0) != 0
+                or int(audit.get("slots_available") or 0) < 1
+                or not audit.get("capacity_allowed")
+                or audit.get("configured_claim_scope_id") != claim_scope.scope_id
+            ):
+                return Response(status_code=204)
             try:
                 ledger = admin_platform_ledger()
                 active_candidate = ledger.active_candidate

@@ -970,7 +970,11 @@ class Store:
             selected = None
             selected_profile = None
             worker_row = connection.execute(
-                "SELECT detail_json FROM workers WHERE name=?", (worker_name,)
+                """
+                SELECT profiles_json, active_jobs, last_seen, detail_json
+                FROM workers WHERE name=?
+                """,
+                (worker_name,),
             ).fetchone()
             worker_detail: dict[str, Any] = {}
             if worker_row is not None:
@@ -980,7 +984,60 @@ class Store:
                     parsed_worker_detail = None
                 if isinstance(parsed_worker_detail, dict):
                     worker_detail = parsed_worker_detail
-            if disk_free_gib is not None:
+            scoped_profiles: frozenset[str] | None = None
+            if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
+                try:
+                    registered_profiles = {
+                        str(item).lower() for item in json.loads(str(worker_row["profiles_json"]))
+                    }
+                    effective_capacity = worker_detail["effective_capacity"]
+                    raw_capacity = worker_detail["raw_capacity"]
+                    scoped_profiles = frozenset(
+                        str(item).lower() for item in worker_detail["effective_profiles"]
+                    )
+                    observed_disk_free_gib = float(raw_capacity["disk_free_gib"])
+                    observed_min_disk_free_gib = float(worker_detail["min_disk_free_gib"])
+                    concurrency = int(worker_detail["concurrency"])
+                    slots_available = int(worker_detail["slots_available"])
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                if (
+                    worker_row is None
+                    or not 0 <= now - float(worker_row["last_seen"]) < primary_max_age_seconds
+                    or worker_detail.get("tier") != tier
+                    or worker_detail.get("allowed") is not True
+                    or not isinstance(effective_capacity, dict)
+                    or effective_capacity.get("allowed") is not True
+                    or not isinstance(raw_capacity, dict)
+                    or not math.isfinite(observed_disk_free_gib)
+                    or not math.isfinite(observed_min_disk_free_gib)
+                    or observed_disk_free_gib < 0
+                    or observed_min_disk_free_gib < 0
+                    or concurrency < 1
+                    or int(worker_row["active_jobs"]) >= concurrency
+                    or slots_available < 1
+                    or worker_detail.get("configured_claim_scope_id") != claim_scope.scope_id
+                    or not {profile.lower() for profile in profiles}.issubset(registered_profiles)
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                # A v2 recovery claim is admitted only from the last authenticated
+                # heartbeat stored under this transaction.  Capacity assertions in
+                # the claim request are compatibility fields, not evidence.
+                worker_detail = raw_capacity | {
+                    "concurrency": concurrency,
+                    "disk_free_gib": observed_disk_free_gib,
+                    "min_disk_free_gib": observed_min_disk_free_gib,
+                }
+                disk_free_gib = observed_disk_free_gib
+                min_disk_free_gib = observed_min_disk_free_gib
+            elif disk_free_gib is not None:
                 worker_detail["disk_free_gib"] = disk_free_gib
             # Do not cap this scan: a long backlog of jobs for unavailable profiles
             # must not starve a later job that this worker can actually run.  The
@@ -1067,6 +1124,8 @@ class Store:
                     (profile for profile in profiles if profile.lower() in labels), None
                 )
                 if matching_profile is None:
+                    continue
+                if scoped_profiles is not None and matching_profile.lower() not in scoped_profiles:
                     continue
                 if enforce_profile_fifo and profile_heads.get(matching_profile.lower()) != int(
                     row["job_id"]

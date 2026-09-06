@@ -1952,7 +1952,7 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
 
 def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
-    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary", disk_free_gib=50.0)
     stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
     _seed_pending_job(
         client,
@@ -2010,6 +2010,91 @@ def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Pat
     assert claimed.status_code == 200
     assert claimed.json()["job_id"] == 42
     assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_v2_claim_rejects_stale_empty_heartbeat_without_issuing_jit(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    client = _app(tmp_path, github)
+    scope_id = "srv1879763-primary"
+    _heartbeat(client, admitted=True, scope_id=scope_id)
+    _seed_pending_job(client, 42, "delivery-42")
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": scope_id,
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "stale-heartbeat-regression",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+    store: Store = client.app.state.store
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET last_seen=?, detail_json=? WHERE name=?",
+            (time.time() - 120, "{}", WORKER_NAME),
+        )
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": scope_id,
+            "disk_free_gib": 200.0,
+            "min_disk_free_gib": 0.0,
+        },
+    )
+
+    assert claimed.status_code == 204
+    assert store.job_status(42) == "pending"
+
+
+def test_v2_claim_uses_heartbeat_capacity_not_claim_assertions(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    scope_id = "srv1879763-primary"
+    _heartbeat(client, admitted=True, scope_id=scope_id, disk_free_gib=30.0)
+    _seed_pending_job(client, 42, "delivery-42")
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": scope_id,
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "heartbeat-capacity-regression",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": scope_id,
+            "disk_free_gib": 200.0,
+            "min_disk_free_gib": 0.0,
+        },
+    )
+
+    assert claimed.status_code == 204
+    assert client.app.state.store.job_status(42) == "pending"
 
 
 def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: Path) -> None:
@@ -2367,6 +2452,7 @@ def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
         admitted=True,
         scope_id=scope_id,
         profiles=["qdev-ci-docker"],
+        disk_free_gib=50.0,
     )
     _seed_pending_job(client, 41, "stale-capacity-candidate")
     _seed_pending_job(

@@ -42,6 +42,37 @@ def job(
     )
 
 
+def _admit_scoped_worker(
+    store: Store,
+    scope: ClaimScope,
+    profiles: tuple[str, ...] = ("qdev-ci",),
+) -> None:
+    capacity = {
+        "allowed": True,
+        "disk_free_gib": 64.0,
+        "disk_used_pct": 50.0,
+        "blockers": [],
+    }
+    store.heartbeat(
+        scope.worker_name,
+        profiles,
+        0,
+        (),
+        {
+            **capacity,
+            "tier": scope.tier,
+            "raw_capacity": capacity,
+            "baseline_capacity": capacity,
+            "effective_capacity": capacity,
+            "effective_profiles": list(profiles),
+            "configured_claim_scope_id": scope.scope_id,
+            "concurrency": 1,
+            "slots_available": 1,
+            "min_disk_free_gib": 30.0,
+        },
+    )
+
+
 def test_enqueue_is_idempotent(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     assert store.enqueue(job()) is True
@@ -216,6 +247,7 @@ def test_v2_scope_preserves_fifo_within_a_profile(tmp_path: Path) -> None:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
@@ -253,6 +285,7 @@ def test_exact_capacity_directive_uses_fifo_within_its_validated_tuple(tmp_path:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     claimed = store.claim(
         "qdev-platform-primary",
@@ -326,6 +359,7 @@ def test_v2_scope_can_skip_only_an_exact_signed_stale_fifo_tuple(tmp_path: Path)
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     claimed = store.claim(
         "qdev-portfolio-primary",
@@ -390,6 +424,7 @@ def test_v2_scope_cannot_reuse_a_skip_after_the_fifo_row_reactivates(tmp_path: P
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     # The controller's fresh classification no longer includes job 100, so
     # the older row must block FIFO even though a still-valid scope signed the
@@ -450,6 +485,7 @@ def test_v2_scope_tampered_fifo_skip_tuple_does_not_bypass_head(tmp_path: Path) 
             ),
         ),
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
@@ -490,6 +526,7 @@ def test_managed_exact_candidate_scope_can_claim_its_exact_job_behind_backlog(
         schema=SCHEMA_V2,
         fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
     )
+    _admit_scoped_worker(store, scope)
 
     claimed = store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope)
 
@@ -528,6 +565,7 @@ def test_managed_exact_candidate_scope_still_cannot_claim_a_foreign_job(tmp_path
         schema=SCHEMA_V2,
         fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qgeo-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
@@ -562,6 +600,7 @@ def test_v2_scope_rejects_a_different_run_attempt(tmp_path: Path) -> None:
         ),
         schema=SCHEMA_V2,
     )
+    _admit_scoped_worker(store, scope)
 
     assert store.claim("qdev-portfolio-primary", ("qdev-ci",), claim_scope=scope) is None
     assert store.job_status(100) == "pending"
