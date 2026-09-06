@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import time
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -14,6 +16,22 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from .models import GitHubRegistrationToken, GitHubRunnerObservation
+
+_PRIVATE_HTTP: ContextVar[bool] = ContextVar("qdev_private_github_http", default=False)
+_TRANSPORT_LOGGERS = (
+    "httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2",
+    "httpcore.proxy", "httpcore.socks",
+)
+
+
+class _PrivateHTTPFilter(logging.Filter):
+    """Suppress credential-bearing transport traces only in this call context."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _PRIVATE_HTTP.get()
+
+
+_PRIVATE_HTTP_FILTER = _PrivateHTTPFilter()
 
 
 class GitHubError(RuntimeError):
@@ -37,6 +55,8 @@ class GitHubAppClient:
         self.private_key_path = private_key_path
         self.api_url = api_url.rstrip("/")
         self.api_version = api_version
+        for name in _TRANSPORT_LOGGERS:
+            logging.getLogger(name).addFilter(_PRIVATE_HTTP_FILTER)
         self._client = httpx.Client(timeout=30, transport=transport)
         self._token_cache: dict[int, tuple[str, float]] = {}
 
@@ -66,10 +86,13 @@ class GitHubAppClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Make a GitHub API request with a broker-recoverable error boundary."""
+        context = _PRIVATE_HTTP.set(True)
         try:
             return self._client.request(method, f"{self.api_url}{path}", **kwargs)
         except httpx.HTTPError as error:
             raise GitHubError(f"GitHub API transport failure: {error}") from error
+        finally:
+            _PRIVATE_HTTP.reset(context)
 
     def installation_token(self, installation_id: int) -> str:
         cached = self._token_cache.get(installation_id)
@@ -376,6 +399,80 @@ class GitHubAppClient:
         if not isinstance(data, dict):
             raise GitHubError("workflow job response is malformed")
         return cast(dict[str, Any], data)
+
+    def workflow_run_attempt(
+        self, installation_id: int, repository: str, run_id: int, attempt: int
+    ) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/actions/runs/{run_id}/attempts/{attempt}",
+            headers=self._headers(self.installation_token(installation_id)),
+        )
+        if response.status_code != 200:
+            raise GitHubError(f"workflow attempt request failed: {response.status_code}")
+        try:
+            data = response.json()
+        except ValueError:
+            raise GitHubError("workflow attempt response is malformed") from None
+        if not isinstance(data, dict):
+            raise GitHubError("workflow attempt response is malformed")
+        return cast(dict[str, Any], data)
+
+    def workflow_job_log(
+        self, installation_id: int, repository: str, job_id: int
+    ) -> bytes:
+        """Read bounded ephemeral logs; never return signed URLs in errors.
+
+        GitHub's REST endpoint redirects once to its log store. The second
+        request carries neither installation authorization nor client cookies.
+        Unknown storage hosts fail closed instead of accepting caller URLs.
+        """
+        limit = 16 * 1024 * 1024
+        response: httpx.Response | None = None
+        context = _PRIVATE_HTTP.set(True)
+        try:
+            request = self._client.build_request(
+                "GET", f"{self.api_url}/repos/{repository}/actions/jobs/{job_id}/logs",
+                headers=self._headers(self.installation_token(installation_id)),
+            )
+            response = self._client.send(request, stream=True, follow_redirects=False)
+            if response.status_code != 302:
+                raise GitHubError("workflow log locator request was rejected")
+            location = response.headers.get("Location", "")
+            if any(ord(character) < 33 for character in location):
+                raise GitHubError("workflow log storage location was rejected")
+            url = httpx.URL(location)
+            if (
+                url.scheme != "https" or url.port not in (None, 443)
+                or url.userinfo or url.fragment
+                or not any(
+                    url.host.endswith(suffix)
+                    for suffix in (".blob.core.windows.net", ".actions.githubusercontent.com")
+                )
+            ):
+                raise GitHubError("workflow log storage location was rejected")
+            response.close()
+            response = None
+            request = self._client.build_request("GET", url, headers={"Accept": "text/plain"})
+            request.headers.pop("Authorization", None)
+            request.headers.pop("Cookie", None)
+            response = self._client.send(request, stream=True, follow_redirects=False)
+            if response.status_code != 200:
+                raise GitHubError("workflow log download was rejected")
+            chunks = bytearray()
+            for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                if len(chunks) + len(chunk) > limit:
+                    raise GitHubError("workflow log exceeds the bounded read limit")
+                chunks.extend(chunk)
+            return bytes(chunks)
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError):
+            raise GitHubError("workflow log transport or response failure") from None
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                _PRIVATE_HTTP.reset(context)
 
     def workflow_jobs(
         self,

@@ -17,6 +17,7 @@ from typing import Any, Literal, TypeVar, cast
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from .admin_platform import (
     CONTROLLER_RELEASE_SCHEMA_V1,
@@ -36,6 +37,7 @@ from .claim_scope import (
     resolve_claim_scope,
     upsert_claim_scope,
 )
+from .file_apply_authorization import canonical_bytes
 from .fleet_bootstrap import (
     BootstrapOperationStore,
     FleetBootstrapError,
@@ -45,6 +47,7 @@ from .fleet_bootstrap import (
 from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
+from .idp_file_evidence import observe_idp_ci
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
 from .models import (
@@ -1006,6 +1009,57 @@ def create_app(
             "release_lane": lane.name,
             "placement": lane.placement,
             "received_at": record["received_at"],
+        }
+
+    @app.post("/internal/v1/releases/{lane_name}/idp-ci-observation")
+    async def idp_ci_observation(
+        lane_name: str,
+        request: Request,
+        x_qdev_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            lane = release_policy().lane(lane_name)
+        except ReleaseLaneError:
+            raise HTTPException(status_code=404, detail="release lane is not allowlisted") from None
+        require_release_mtls(x_qdev_mtls_identity, lane.client_mtls_identity)
+        if (
+            lane.project_id != "id-qdev-run"
+            or lane.canonical_repository != "belilovsky/id-qdev-run"
+            or lane.native_host_adapter != "idp-file-v1"
+        ):
+            raise HTTPException(status_code=422, detail="lane is not the fixed IdP file adapter")
+        key = settings.controller_claim_key
+        if not key:
+            raise HTTPException(
+                status_code=503, detail="controller observation signer is unavailable"
+            )
+        # Authenticate before reading. Do not let validation errors echo input
+        # values, which may accidentally contain credentials. Bound streamed
+        # bodies as well as Content-Length; the native binding is canonical.
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 32768:
+                raise HTTPException(status_code=413, detail="IdP binding exceeds size limit")
+            body.extend(chunk)
+        try:
+            observation = await run_in_threadpool(
+                observe_idp_ci, bytes(body), github=require_github(),
+                artifact_root=settings.artifact_root,
+            )
+        except ReleaseLaneError:
+            raise HTTPException(
+                status_code=422, detail="IdP provider evidence was not verified"
+            ) from None
+        observation["release_lane"] = lane.name
+        # A distinct schema and LF serialization: this signature is NOT a
+        # release claim or host-dispatch authorization. No lease is allocated.
+        return {
+            "schema": "qdev-controller-idp-ci-signed-observation-v1",
+            "observation": observation,
+            "signature_algorithm": "hmac-sha256-canonical-json-lf",
+            "signature": hmac.new(
+                key.encode(), canonical_bytes(observation), hashlib.sha256
+            ).hexdigest(),
         }
 
     @app.post("/internal/v1/releases/qaz-tours", status_code=202)

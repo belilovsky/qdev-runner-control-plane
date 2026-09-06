@@ -1,7 +1,9 @@
 # IdP file-apply binding adapter — source-only
 
-This module does not enroll IdP, issue a live authorization, install a host agent,
-or dispatch a release. Existing release/claim APIs and their schemas are unchanged.
+This implementation does not enroll IdP, issue a live authorization, install a
+host agent, or dispatch a release. Existing release/claim APIs and their schemas
+are unchanged. A separate private read-only CI observation endpoint is described
+below; its signature is explicitly not a claim or an apply authorization.
 It adds no AVDS or IdP profiles. Existing host-agent lock opening now rejects
 link substitution and unsafe ancestry, retaining the native sticky `/run/lock`.
 
@@ -129,11 +131,64 @@ already known active artifact with a new snapshot digest. Subsequent release
 enrollment must explicitly reconcile the retained snapshot with the independently
 verified previous release identity; that association is not implemented here.
 
+## Provider-backed CI observation (not release admission)
+
+`POST /internal/v1/releases/{lane}/idp-ci-observation` is exposed only on the
+private broker surface. It requires the lane's existing exact mTLS operator
+identity, a configured observation signer, and the fixed IdP repository/project/
+`idp-file-v1` adapter. It does not enroll a missing lane. Public callers receive
+404, including callers supplying a forged identity header. As for existing
+private APIs, only the configured certificate-authenticating edge may supply
+that header.
+
+The request is the bounded (32 KiB), canonical native binding above. Authentication
+precedes reading/parsing; validation errors do not echo input values. The handler
+does **not** sign supplied CI-success flags. `qdev_runner.idp_file_evidence` uses
+the existing GitHub App identity to read the current run, exact attempt and exact
+job for **both** quality and runner-contract workflows. Repository, source SHA,
+workflow, job name, attempt, successful terminal result, time, required steps and
+job-specific profile labels must agree. Quality requires `qdev-ci-docker`;
+runner-contract requires its own `qdev-ci` job, not a substitute profile.
+
+The verifier reads exactly one `QDEV_IDP_CI_BUNDLE` record from the quality job's
+provider-hosted log, compares every field with the request, and hashes the
+existing controller CI-store archive. It neither uploads nor rebuilds an
+artifact. Store roots come from broker configuration, not caller paths. Reads
+walk no-follow directory handles; directories must be root/controller-owned
+and non-writable by others. The archive must be a regular controller-owned 0600
+file with one link and at most 250 MiB. Changes during hashing are rejected.
+Both current attempts are reread after hashing; an intervening retry or a
+verification lasting over 300 seconds invalidates the observation.
+
+The GitHub log redirect is allowed only once, to HTTPS port 443 on a declared
+GitHub Actions/Azure Blob storage hostname, without userinfo or fragments.
+No authorization header or cookie is forwarded. The 16 MiB bounded log stays
+in memory and is never returned. Credential-bearing HTTP transport diagnostics
+are suppressed in that request's context, including INFO URLs and DEBUG headers;
+unrelated threads' diagnostics and post-request logging remain unchanged.
+Unknown hosts, extra redirects, ambiguous records and failures are redacted.
+
+The returned wrapper is `qdev-controller-idp-ci-signed-observation-v1`, containing
+a `qdev-controller-idp-ci-observation-v1` observation, a 120-second expiry and
+HMAC-SHA256 over compact sorted JSON **with one LF**, using the existing protected
+controller key. The distinct schema/serialization is not a release claim or
+host-dispatch signature. No lease, journal entry or release state is allocated.
+The result attests `provider_ci_archive_verified` only; inner bundle/components,
+native runtime, rollback and controller admission remain `not_verified`, and
+acceptance remains `not_run`. It does not attest a caller's snapshot or local
+CI-observation file digest. This must be combined with separately verified
+native evidence and real admission by the future enrolled issuer.
+
+Tests cover the actual private handler/verifier with synthetic provider/store
+fixtures, archive mutation, current-attempt drift, mandatory steps/profiles,
+redirection, privacy and public-surface isolation. They are not live CI proof.
+
 ## Still required before enrollment or production use
 
 1. An approved controller issuer must bind freshly verified provider CI and native
-   snapshot/transaction evidence into this envelope. This source helper is not
-   an HTTP issuer endpoint and does not establish provider provenance itself.
+   snapshot/transaction evidence into this envelope. The new read-only HTTP CI
+   observation verifies provider/archive provenance, but does not issue this
+   envelope, verify native snapshots, or allocate a release claim.
 2. Install the fixed IdP adapter through the native verified-helper/global-lock
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
    and the explicit inspect/recovery entrypoint. The code-only factory and typed
