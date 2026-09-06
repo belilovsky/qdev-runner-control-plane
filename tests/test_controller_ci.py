@@ -29,6 +29,20 @@ def recovery() -> dict[str, str]:
     }
 
 
+def managed() -> dict[str, str]:
+    return {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_SHA": SHA,
+        "QDEV_EXPECTED_SHA": SHA,
+        "QDEV_MANAGED_CI": "true",
+        "RUNNER_ENVIRONMENT": "self-hosted",
+        "RUNNER_NAME": "qdev-ephemeral-1",
+        "GITHUB_REPOSITORY_OWNER": "belilovsky",
+        "GITHUB_REPOSITORY": "belilovsky/qdev-runner-control-plane",
+        "GITHUB_EVENT_NAME": "push",
+    }
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -59,6 +73,32 @@ def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted() -> None:
         CI.validate_context("local", recovery(), SHA)
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("QDEV_EXPECTED_SHA", ""),
+        ("QDEV_EXPECTED_SHA", "2" * 40),
+        ("QDEV_MANAGED_CI", "false"),
+        ("RUNNER_ENVIRONMENT", "github-hosted"),
+        ("RUNNER_NAME", ""),
+        ("GITHUB_REPOSITORY_OWNER", ""),
+        ("GITHUB_REPOSITORY", "someone/else"),
+        ("GITHUB_EVENT_NAME", "schedule"),
+    ],
+)
+def test_managed_rejects_unbound_context(key: str, value: str) -> None:
+    environment = managed()
+    environment[key] = value
+    with pytest.raises(ValueError):
+        CI.validate_context("managed", environment, SHA)
+
+
+def test_managed_accepts_controller_bound_self_hosted_job() -> None:
+    CI.validate_context("managed", managed(), SHA)
+    with pytest.raises(ValueError):
+        CI.validate_context("hosted", managed(), SHA)
+
+
 def test_local_is_never_provider_evidence() -> None:
     CI.validate_context("local", {}, SHA)
     with pytest.raises(ValueError):
@@ -80,6 +120,16 @@ def test_every_lane_uses_full_shared_suite() -> None:
     assert manual["concurrency"]["cancel-in-progress"] is False
     for job in [normal["jobs"]["verify"], *manual["jobs"].values()]:
         assert any("scripts/verify_controller_ci.py" in s.get("run", "") for s in job["steps"])
+    normal_step = next(
+        step
+        for step in normal["jobs"]["verify"]["steps"]
+        if "scripts/verify_controller_ci.py" in step.get("run", "")
+    )
+    assert normal_step["run"].endswith("--lane managed")
+    assert normal_step["env"] == {
+        "QDEV_EXPECTED_SHA": "${{ github.sha }}",
+        "QDEV_MANAGED_CI": "true",
+    }
 
 
 def test_runner_contract_push_is_limited_to_default_branch() -> None:
