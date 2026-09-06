@@ -1986,15 +1986,22 @@ def _trivy_actionable_findings(report: object) -> int:
     for result in results:
         if not isinstance(result, dict):
             raise ControllerActivationError("controller artifact Trivy result is invalid")
-        vulnerabilities = result.get("Vulnerabilities") or []
-        secrets = result.get("Secrets") or []
+        vulnerabilities = result.get("Vulnerabilities")
+        secrets = result.get("Secrets")
+        if vulnerabilities is None:
+            vulnerabilities = []
+        if secrets is None:
+            secrets = []
         if not isinstance(vulnerabilities, list) or not isinstance(secrets, list):
             raise ControllerActivationError("controller artifact Trivy findings are invalid")
-        total += sum(
-            1
-            for finding in vulnerabilities
-            if isinstance(finding, dict) and finding.get("Severity") in {"HIGH", "CRITICAL"}
-        )
+        for finding in vulnerabilities:
+            if not isinstance(finding, dict) or finding.get("Severity") not in {"HIGH", "CRITICAL"}:
+                raise ControllerActivationError(
+                    "controller artifact Trivy vulnerability is invalid"
+                )
+            total += 1
+        if not all(isinstance(secret, dict) for secret in secrets):
+            raise ControllerActivationError("controller artifact Trivy secret is invalid")
         total += len(secrets)
     return total
 

@@ -184,12 +184,27 @@ def test_trivy_report_rejects_unidentified_or_malformed_output() -> None:
         trivy_high_critical_count(_trivy_report(results={}))
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"Vulnerabilities": False, "Secrets": []},
+        {"Vulnerabilities": [None], "Secrets": []},
+        {"Vulnerabilities": [{"VulnerabilityID": "CVE-EXAMPLE"}], "Secrets": []},
+        {"Vulnerabilities": [{"Severity": "LOW"}], "Secrets": []},
+        {"Vulnerabilities": [], "Secrets": False},
+        {"Vulnerabilities": [], "Secrets": [None]},
+    ],
+)
+def test_trivy_report_rejects_malformed_findings(result: object) -> None:
+    with pytest.raises(ControllerRecoveryArtifactError, match="invalid"):
+        trivy_high_critical_count(_trivy_report(results=[result]))
+
+
 def test_trivy_report_counts_high_critical_vulnerabilities_and_secrets() -> None:
     report = _trivy_report(
         results=[
             {
                 "Vulnerabilities": [
-                    {"Severity": "LOW"},
                     {"Severity": "HIGH"},
                     {"Severity": "CRITICAL"},
                 ],

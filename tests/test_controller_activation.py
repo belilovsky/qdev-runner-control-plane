@@ -28,6 +28,7 @@ from qdev_runner.controller_activation import (
     ControllerTuple,
     LegacyMeasuredControllerReleaseStatus,
     MeasuredControllerReleaseStatus,
+    _trivy_actionable_findings,
     fingerprint_config_files,
     fingerprint_release_tree,
     verify_controller_artifact_manifest,
@@ -406,6 +407,27 @@ def _trivy_report(
     if results is not None:
         report["Results"] = results
     return report
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"Vulnerabilities": False, "Secrets": []},
+        {"Vulnerabilities": [None], "Secrets": []},
+        {"Vulnerabilities": [{"VulnerabilityID": "CVE-EXAMPLE"}], "Secrets": []},
+        {"Vulnerabilities": [{"Severity": "LOW"}], "Secrets": []},
+        {"Vulnerabilities": [], "Secrets": False},
+        {"Vulnerabilities": [], "Secrets": [None]},
+    ],
+)
+def test_activation_rejects_malformed_trivy_findings(result: object) -> None:
+    report = _trivy_report(
+        "controller-source",
+        "repository",
+        results=[result],
+    )
+    with pytest.raises(ControllerActivationError, match="invalid"):
+        _trivy_actionable_findings(report)
 
 
 def _artifact_bundle(

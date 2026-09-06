@@ -1,8 +1,14 @@
 schema_version: qdev-runner-v2
 execution_mode: github-hosted-primary
 self_hosted_recovery: true
-# Normal verification runs on the provider-hosted lane. The sole self-hosted
-# workflow is an owner-dispatched, exact-SHA controller recovery job.
+# The recovery job remains manual-only. Existing controller capacity is the
+# bounded primary lane while provider-hosted jobs are unavailable; both normal
+# workflows require exact, controller-issued per-job labels.
+recovery_workflows:
+  - runner-smoke.yml
+primary_self_hosted_workflows:
+  - ci.yml
+  - qdev-runner-contract.yml
 profiles:
   - qdev-ci
 trusted_events:
@@ -15,5 +21,3 @@ resources:
   disk_mb: 12288
 artifact_policy: qdev-artifact-v1
 release_runner: null
-recovery_workflows:
-  - runner-smoke.yml

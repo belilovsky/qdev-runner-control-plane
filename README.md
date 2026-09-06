@@ -79,6 +79,21 @@ GitHub API.
 The operating model, failure taxonomy, recovery sequence, and evidence
 contract are in `docs/github-actions-operating-model.md`.
 
+### Repository CI source evidence
+
+This repository has a bounded `primary_self_hosted_workflows` exception in
+`.github/qdev-runner.yml`. Its normal `CI` workflow therefore reports the
+`controller` lane, not `hosted`. The explicit manual recovery lane remains
+separate, and all lanes run the same complete native checks.
+
+For an internal pull request, checkout and verification use the exact head SHA
+from the provider event, with matching base/head repository IDs and branch
+refs. The execution receipt preserves GitHub's separate provider merge SHA;
+`GITHUB_SHA` is never overwritten. Push and owner-authorized dispatch evidence
+remain bound to the exact provider SHA. Missing or conflicting provenance is
+an error. A native CI receipt is unsigned execution evidence, not controller
+admission, an image scan, or a runtime activation receipt.
+
 ## Repository onboarding
 
 Start from `templates/qdev-runner.yml` and `templates/runner-smoke.yml`, then

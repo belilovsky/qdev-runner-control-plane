@@ -12,9 +12,107 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY = "belilovsky/qdev-runner-control-plane"
 
 
-def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
+def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | int]:
+    """Bind the checkout to the provider event, preserving its separate merge SHA."""
+    provider_sha = environment.get("GITHUB_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", provider_sha):
+        raise ValueError("exact provider SHA is required")
+    event_path = environment.get("GITHUB_EVENT_PATH", "")
+    try:
+        with Path(event_path).open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("provider event exceeds size limit")
+        event = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("readable provider event is required") from error
+    if not isinstance(event, dict):
+        raise ValueError("provider event must be an object")
+    repository = event.get("repository")
+    if (
+        not isinstance(repository, dict)
+        or repository.get("full_name") != REPOSITORY
+        or environment.get("GITHUB_REPOSITORY") != REPOSITORY
+        or type(repository.get("id")) is not int
+        or repository["id"] <= 0
+        or str(repository["id"]) != environment.get("GITHUB_REPOSITORY_ID")
+        or environment.get("GITHUB_REPOSITORY_OWNER") != REPOSITORY.split("/")[0]
+    ):
+        raise ValueError("provider repository identity mismatch")
+    name = environment.get("GITHUB_EVENT_NAME", "")
+    binding: dict[str, str | int] = {
+        "event": name,
+        "repository": REPOSITORY,
+        "repository_id": repository["id"],
+        "provider_sha": provider_sha,
+        "checkout_sha": sha,
+    }
+    if name == "pull_request":
+        pr = event.get("pull_request")
+        number = event.get("number")
+        if (
+            event.get("action") not in ("opened", "synchronize", "reopened")
+            or not isinstance(pr, dict)
+            or type(number) is not int
+            or number <= 0
+            or pr.get("number") != number
+            or environment.get("GITHUB_REF") != f"refs/pull/{number}/merge"
+            # GitHub may not have populated the computed merge field yet.
+            # GITHUB_SHA still identifies the provider merge; the checkout
+            # is independently bound to the required exact head below.
+            or pr.get("merge_commit_sha") not in (None, provider_sha)
+        ):
+            raise ValueError("pull request merge context mismatch")
+        for side, ref_variable in (("base", "GITHUB_BASE_REF"), ("head", "GITHUB_HEAD_REF")):
+            revision = pr.get(side)
+            if not isinstance(revision, dict):
+                raise ValueError("pull request source identity missing")
+            repo = revision.get("repo")
+            if (
+                not isinstance(repo, dict)
+                or repo.get("full_name") != REPOSITORY
+                or type(repo.get("id")) is not int
+                or repo["id"] != repository["id"]
+                or not revision.get("ref")
+                or revision["ref"] != environment.get(ref_variable)
+                or not re.fullmatch(r"[0-9a-f]{40}", str(revision.get("sha", "")))
+            ):
+                raise ValueError("pull request source identity mismatch")
+        if pr["head"]["sha"] != sha:
+            raise ValueError("pull request head does not match checkout")
+        binding.update({"pull_request": number, "provider_merge_sha": provider_sha})
+    elif name in {"push", "workflow_dispatch"}:
+        if provider_sha != sha:
+            raise ValueError("provider SHA does not match checkout")
+        ref = environment.get("GITHUB_REF", "")
+        if not ref.startswith("refs/heads/") or ref == "refs/heads/":
+            raise ValueError("provider branch ref is required")
+        if name == "push" and (event.get("after") != sha or event.get("ref") != ref):
+            raise ValueError("push event does not match checkout")
+        if name == "workflow_dispatch":
+            sender = event.get("sender")
+            owner = environment["GITHUB_REPOSITORY_OWNER"]
+            event_ref = event.get("ref")
+            if (
+                environment.get("GITHUB_ACTOR") != owner
+                or not isinstance(sender, dict)
+                or sender.get("login") != owner
+                or event_ref not in (ref, ref.removeprefix("refs/heads/"))
+            ):
+                raise ValueError("dispatch requires a confirmed owner and exact branch")
+    else:
+        raise ValueError("unsupported provider event")
+    return binding
+
+
+def validate_context(
+    lane: str, environment: dict[str, str], sha: str
+) -> dict[str, str | int] | None:
+    if lane not in {"local", "github-hosted", "managed", "controller-recovery"}:
+        raise ValueError("unknown execution lane")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("exact checkout SHA is required")
     expected = environment.get("QDEV_EXPECTED_SHA", "")
@@ -26,8 +124,7 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
         return
     if lane == "local":
         raise ValueError("Actions must identify its real execution lane")
-    if environment.get("GITHUB_SHA") != sha:
-        raise ValueError("provider SHA does not match checkout")
+    binding = provider_binding(environment, sha)
     runner_environment = "github-hosted" if lane == "github-hosted" else "self-hosted"
     if environment.get("RUNNER_ENVIRONMENT") != runner_environment:
         raise ValueError("runner environment does not match requested execution lane")
@@ -67,19 +164,14 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
                 raise ValueError("recovery requires exact provider run identity")
         if environment.get("QDEV_OWNER_RECOVERY") != "true" or not expected:
             raise ValueError("explicit owner recovery confirmation and exact SHA are required")
-    if lane == "github-hosted":
-        owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
-        if (
-            not owner
-            or environment.get("GITHUB_REPOSITORY") != f"{owner}/qdev-runner-control-plane"
-            or environment.get("GITHUB_EVENT_NAME")
-            not in {"push", "workflow_dispatch", "pull_request"}
-            or not environment.get("GITHUB_RUN_ID", "").isdigit()
-            or int(environment.get("GITHUB_RUN_ID", "0")) < 1
-            or not environment.get("GITHUB_RUN_ATTEMPT", "").isdigit()
-            or int(environment.get("GITHUB_RUN_ATTEMPT", "0")) < 1
-        ):
-            raise ValueError("hosted CI requires exact provider repository and run identity")
+    if lane == "github-hosted" and (
+        not environment.get("GITHUB_RUN_ID", "").isdigit()
+        or int(environment.get("GITHUB_RUN_ID", "0")) < 1
+        or not environment.get("GITHUB_RUN_ATTEMPT", "").isdigit()
+        or int(environment.get("GITHUB_RUN_ATTEMPT", "0")) < 1
+    ):
+        raise ValueError("hosted CI requires exact provider repository and run identity")
+    return binding
 
 
 def commands(python: str) -> list[list[str]]:
@@ -109,7 +201,7 @@ def main() -> int:
     if dirty and args.lane != "local":
         parser.error("provider evidence requires an unchanged exact-SHA checkout")
     try:
-        validate_context(args.lane, dict(os.environ), sha)
+        binding = validate_context(args.lane, dict(os.environ), sha)
     except ValueError as error:
         parser.error(str(error))
     for command in commands(sys.executable):
@@ -122,6 +214,7 @@ def main() -> int:
                 "source_scope": "working-tree" if dirty else "commit",
                 "dirty": dirty,
                 "lane": args.lane,
+                "source_binding": binding,
                 "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
                 "run_id": os.environ.get("GITHUB_RUN_ID"),
                 "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
