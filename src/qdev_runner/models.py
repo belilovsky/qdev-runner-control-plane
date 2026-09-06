@@ -70,6 +70,11 @@ RecoveryIdentifier = Annotated[
 ]
 RecoveryTargetId = Literal["qdev-platform-ci-187", "qdev-qazstack-01"]
 RecoveryAction = Literal["restore_saved_configuration", "replace_existing_registration"]
+RecoveryExecutionDisposition = Literal[
+    "verify_only",
+    "restore_saved_configuration",
+    "replace_existing_registration",
+]
 RecoveryNativeOutcome = Literal["completed", "not_applied", "failed", "ambiguous"]
 
 
@@ -204,8 +209,10 @@ class RecoveryAgentCommand(BaseModel):
     worker_name: RecoveryIdentifier
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     provider_runner_id: int | None = Field(default=None, gt=0)
+    provider_status: Literal["online", "offline"] | None = None
     labels: tuple[str, ...] = Field(min_length=1, max_length=16)
     recovery_action: RecoveryAction
+    execution_disposition: RecoveryExecutionDisposition
     operator_certificate_sha256: Sha256Hex
     expected_agent_certificate_sha256: Sha256Hex
     interface_version: RecoveryIdentifier
@@ -244,6 +251,26 @@ class RecoveryAgentCommand(BaseModel):
             raise ValueError("replacement recovery requires a registration token")
         if self.recovery_action == "restore_saved_configuration" and token_present:
             raise ValueError("saved-configuration recovery cannot receive a registration token")
+        if self.provider_runner_id is None:
+            if self.provider_status is not None:
+                raise ValueError("absent provider runner cannot have a status")
+            if self.recovery_action == "restore_saved_configuration":
+                raise ValueError("saved-configuration recovery requires a provider runner")
+        elif self.provider_status is None:
+            raise ValueError("present provider runner requires a status")
+        elif (
+            self.recovery_action == "replace_existing_registration"
+            and self.provider_status != "offline"
+        ):
+            raise ValueError("replacement recovery requires an offline provider runner")
+        expected_disposition = (
+            "verify_only"
+            if self.recovery_action == "restore_saved_configuration"
+            and self.provider_status == "online"
+            else self.recovery_action
+        )
+        if self.execution_disposition != expected_disposition:
+            raise ValueError("execution disposition contradicts the observed provider state")
         return self
 
 

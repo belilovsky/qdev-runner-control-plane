@@ -58,7 +58,7 @@ OPERATOR_HEADERS = {
 class FakeRecoveryGitHub:
     def __init__(self, target_id: RecoveryTargetId) -> None:
         self.target = RECOVERY_TARGETS[target_id]
-        self.runner_id = 187 if target_id == "qdev-platform-ci-187" else 901
+        self.runner_id = 278 if target_id == "qdev-platform-ci-187" else 901
         self.status = "offline"
         self.busy = False
         self.active_job_ids: tuple[int, ...] = ()
@@ -355,7 +355,7 @@ def test_prepare_is_provider_observed_and_exactly_idempotent(
         "target_id": "qdev-platform-ci-187",
         "worker_name": "qdev-platform-ci-187",
         "repository": "belilovsky/platform-portal",
-        "provider_runner_id": 187,
+        "provider_runner_id": 278,
         "state": "prepared",
         "native_outcome": None,
         "controller_revision": CONTROLLER_REVISION,
@@ -395,9 +395,37 @@ def test_exact_online_idle_saved_platform_runner_prepares_without_restart(
     assert operation["state"] == "prepared"
     row = harness.client.app.state.store.worker_recovery(operation["operation_id"])
     assert row is not None
-    assert row["provider_runner_id"] == 187
+    assert row["provider_runner_id"] == 278
     assert harness.github.status == "online"
     assert harness.github.busy is False
+
+    envelope = _claim(harness, operation, "qdev-platform-ci-187")
+    assert envelope["command"]["provider_status"] == "online"
+    assert envelope["command"]["execution_disposition"] == "verify_only"
+    reconcile_body = _reconcile_body(envelope)
+    reconciled = harness.client.post(
+        "/internal/v1/worker-recovery/reconcile",
+        json=reconcile_body,
+        headers=_reconcile_headers(reconcile_body, "qdev-platform-ci-187"),
+    )
+    assert reconciled.status_code == 200
+    assert reconciled.json()["state"] == "awaiting_acceptance"
+
+
+def test_platform_prepare_rejects_wrong_fixed_provider_runner_id(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    harness.github.runner_id = 279
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-platform-wrong-runner-id"),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "worker recovery request rejected"
 
 
 def test_online_replacement_runner_is_not_admitted_as_absent(
@@ -575,6 +603,8 @@ def test_platform_claim_and_reconcile_have_exact_signed_shapes_and_replay(
     assert command["schema"] == "qdev-runner-recovery-agent-command-v1"
     assert command["target_id"] == "qdev-platform-ci-187"
     assert command["recovery_action"] == "restore_saved_configuration"
+    assert command["provider_status"] == "offline"
+    assert command["execution_disposition"] == "restore_saved_configuration"
     assert command["interface_version"] == INTERFACE_VERSION
     assert command["interface_digest"] == INTERFACE_DIGEST
     assert command["registration_token"] is None

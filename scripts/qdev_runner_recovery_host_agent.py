@@ -367,8 +367,10 @@ def validate_envelope(
         "worker_name",
         "repository",
         "provider_runner_id",
+        "provider_status",
         "labels",
         "recovery_action",
+        "execution_disposition",
         "operator_certificate_sha256",
         "expected_agent_certificate_sha256",
         "interface_version",
@@ -440,15 +442,30 @@ def validate_envelope(
     ):
         raise AgentError("signed command request nonce is invalid")
     provider_id = command.get("provider_runner_id")
+    provider_status = command.get("provider_status")
+    execution_disposition = command.get("execution_disposition")
     if profile.recovery_action == "restore_saved_configuration":
         if not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0:
             raise AgentError("signed command provider runner id is invalid")
         if provider_id != profile.expected_provider_runner_id:
             raise AgentError("signed command provider runner id does not match saved identity")
+        if provider_status not in {"online", "offline"}:
+            raise AgentError("signed command provider status is invalid")
+        expected_disposition = (
+            "verify_only" if provider_status == "online" else profile.recovery_action
+        )
+        if execution_disposition != expected_disposition:
+            raise AgentError("signed command execution disposition contradicts provider state")
     elif provider_id is not None and (
         not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0
     ):
         raise AgentError("signed command provider runner id is invalid")
+    elif provider_id is None and provider_status is not None:
+        raise AgentError("absent provider runner cannot have a status")
+    elif provider_id is not None and provider_status != "offline":
+        raise AgentError("replacement recovery requires an offline provider runner")
+    elif execution_disposition != profile.recovery_action:
+        raise AgentError("signed command execution disposition contradicts provider state")
     if command["expected_agent_certificate_sha256"] != _certificate_sha256(config.client_cert):
         raise AgentError("signed command is bound to another host-agent certificate")
     issued_at = _parse_time(command.get("issued_at"), "issued_at")
@@ -609,6 +626,14 @@ def _recover_platform(
     dropin_digest = profile.retirement_dropin_sha256
     assert marker is not None and dropin is not None
     assert marker_digest is not None and dropin_digest is not None
+    if command["execution_disposition"] == "verify_only":
+        if marker.exists() or dropin.exists() or not _systemctl_ok(profile.service_unit):
+            raise ExecutionFailure(
+                "online Platform runner does not match the local active service state",
+                outcome="not_applied",
+                proof={"mutation": "none", "rollback": "not_required"},
+            )
+        return {"mutation": "already_applied", "service": "active_enabled"}
     if not marker.exists() and not dropin.exists():
         if not _systemctl_ok(profile.service_unit):
             raise ExecutionFailure(

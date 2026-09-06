@@ -120,8 +120,10 @@ def _replacement_command(
         "worker_name": "qdev-qazstack-01",
         "repository": "belilovsky/qazstack",
         "provider_runner_id": provider_runner_id,
+        "provider_status": None if provider_runner_id is None else "offline",
         "labels": ("self-hosted", "Linux", "X64", "qdev-ci"),
         "recovery_action": "replace_existing_registration",
+        "execution_disposition": "replace_existing_registration",
         "operator_certificate_sha256": "c" * 64,
         "expected_agent_certificate_sha256": "d" * 64,
         "interface_version": "recovery-v1",
@@ -176,3 +178,15 @@ def test_replacement_agent_command_allows_absent_provider_registration() -> None
     )
 
     assert command.provider_runner_id is None
+
+
+def test_agent_command_rejects_contradictory_execution_disposition() -> None:
+    issued_at = datetime(2026, 9, 5, tzinfo=UTC)
+    body = _replacement_command(
+        expires_at=issued_at + timedelta(minutes=1),
+        token_expires_at=issued_at + timedelta(minutes=1),
+    )
+    body["execution_disposition"] = "verify_only"
+
+    with pytest.raises(ValidationError, match="execution disposition contradicts"):
+        RecoveryAgentCommand.model_validate(body)

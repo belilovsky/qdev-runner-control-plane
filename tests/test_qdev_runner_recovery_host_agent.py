@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from qdev_runner.worker_recovery import RECOVERY_TARGETS
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/qdev_runner_recovery_host_agent.py"
 SPEC = importlib.util.spec_from_file_location("qdev_runner_recovery_host_agent", SCRIPT)
@@ -45,7 +47,7 @@ def _config(tmp_path: Path) -> Any:
         expected_controller_release_digest=HEX_DIGEST,
         expected_policy_digest=DIGEST,
         expected_agent_release_digest="sha256:" + "d" * 64,
-        expected_interface_version="qdev-worker-recovery-v2",
+        expected_interface_version="qdev-worker-recovery-v3",
         expected_interface_digest="e" * 64,
     )
 
@@ -63,8 +65,10 @@ def _command(profile: Any, config: Any, *, provider_runner_id: int | None = None
             if profile.expected_provider_runner_id is not None
             else (279 if provider_runner_id is None else provider_runner_id)
         ),
+        "provider_status": "offline",
         "labels": list(profile.labels),
         "recovery_action": profile.recovery_action,
+        "execution_disposition": profile.recovery_action,
         "operator_certificate_sha256": "3" * 64,
         "expected_agent_certificate_sha256": "4" * 64,
         "interface_version": config.expected_interface_version,
@@ -118,6 +122,11 @@ def test_signed_command_is_bound_to_one_compiled_target(
         AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW)
 
 
+def test_platform_controller_and_host_bind_the_same_provider_runner_id() -> None:
+    assert RECOVERY_TARGETS["qdev-platform-ci-187"].expected_provider_runner_id == 278
+    assert AGENT.PROFILES["platform"].expected_provider_runner_id == 278
+
+
 def test_replacement_target_accepts_absent_provider_registration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -125,6 +134,7 @@ def test_replacement_target_accepts_absent_provider_registration(
     config = _config(tmp_path)
     command = _command(profile, config)
     command["provider_runner_id"] = None
+    command["provider_status"] = None
     monkeypatch.setattr(AGENT, "_certificate_sha256", lambda _path: "4" * 64)
 
     assert AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW) == command
@@ -137,10 +147,68 @@ def test_saved_configuration_target_rejects_absent_provider_registration(
     config = _config(tmp_path)
     command = _command(profile, config)
     command["provider_runner_id"] = None
+    command["provider_status"] = None
     monkeypatch.setattr(AGENT, "_certificate_sha256", lambda _path: "4" * 64)
 
     with pytest.raises(AGENT.AgentError, match="provider runner id is invalid"):
         AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW)
+
+
+def test_online_platform_command_is_strict_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = replace(
+        AGENT.PROFILES["platform"],
+        retirement_marker=tmp_path / "retired.marker",
+        retirement_dropin=tmp_path / "retired.conf",
+    )
+    config = _config(tmp_path)
+    command = _command(profile, config)
+    command["provider_status"] = "online"
+    command["execution_disposition"] = "verify_only"
+    monkeypatch.setattr(AGENT, "_platform_identity", lambda *_args: None)
+    monkeypatch.setattr(AGENT, "_systemctl_ok", lambda _unit: True)
+    monkeypatch.setattr(
+        AGENT,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("online recovery attempted a mutation"),
+    )
+
+    outcome, proof = AGENT.execute(profile, command, config)
+
+    assert outcome == "completed"
+    assert proof == {"mutation": "already_applied", "service": "active_enabled"}
+
+
+def test_online_platform_command_rejects_retirement_controls_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "retired.marker"
+    marker.write_text("retired", encoding="utf-8")
+    profile = replace(
+        AGENT.PROFILES["platform"],
+        retirement_marker=marker,
+        retirement_dropin=tmp_path / "retired.conf",
+    )
+    config = _config(tmp_path)
+    command = _command(profile, config)
+    command["provider_status"] = "online"
+    command["execution_disposition"] = "verify_only"
+    monkeypatch.setattr(AGENT, "_platform_identity", lambda *_args: None)
+    monkeypatch.setattr(
+        AGENT,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("contradictory online recovery mutated state"),
+    )
+
+    outcome, proof = AGENT.execute(profile, command, config)
+
+    assert outcome == "not_applied"
+    assert proof == {
+        "mutation": "none",
+        "rollback": "not_required",
+        "error_class": "native_recovery_failed",
+    }
 
 
 def test_signed_command_rejects_extra_fields_and_expired_validity(

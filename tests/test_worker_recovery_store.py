@@ -109,7 +109,7 @@ def _begin_arguments(**overrides: Any) -> dict[str, Any]:
         "recovery_action": "restore_saved_configuration",
         "operator_certificate_sha256": "b" * 64,
         "expected_agent_certificate_sha256": "c" * 64,
-        "interface_version": "qdev-worker-recovery-v2",
+        "interface_version": "qdev-worker-recovery-v3",
         "interface_digest": "d" * 64,
         "controller_revision": "e" * 40,
         "controller_release_digest": "f" * 64,
