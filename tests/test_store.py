@@ -946,21 +946,27 @@ def test_failed_worker_job_is_released_atomically_without_losing_fifo(tmp_path: 
     assert [row["job_id"] for row in failed] == [100]
     original = failed[0]
 
-    assert store.release_failed_job(
-        100,
-        "provider reconciled queued",
-        expected_updated_at=float(original["updated_at"]),
-    ) is True
+    assert (
+        store.release_failed_job(
+            100,
+            "provider reconciled queued",
+            expected_updated_at=float(original["updated_at"]),
+        )
+        is True
+    )
     released = store.job(100)
     assert released is not None
     assert released["status"] == "pending"
     assert released["completed_at"] is None
     assert float(released["created_at"]) == float(original["created_at"])
-    assert store.release_failed_job(
-        100,
-        "must not release twice",
-        expected_updated_at=float(original["updated_at"]),
-    ) is False
+    assert (
+        store.release_failed_job(
+            100,
+            "must not release twice",
+            expected_updated_at=float(original["updated_at"]),
+        )
+        is False
+    )
 
 
 def test_non_worker_failure_is_not_recoverable_as_failed_worker_job(tmp_path: Path) -> None:

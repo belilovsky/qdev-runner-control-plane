@@ -3545,9 +3545,7 @@ def create_app(
         try:
             github_client = require_github()
             remote_job = github_client.workflow_job(installation_id, repository, job_id)
-            remote_run = github_client.workflow_run(
-                installation_id, repository, int(row["run_id"])
-            )
+            remote_run = github_client.workflow_run(installation_id, repository, int(row["run_id"]))
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),

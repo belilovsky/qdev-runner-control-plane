@@ -495,8 +495,9 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
 
 def test_fifo_receipt_schema_binds_provider_attempt() -> None:
     schema = json.loads(
-        (Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json")
-        .read_text(encoding="utf-8")
+        (
+            Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json"
+        ).read_text(encoding="utf-8")
     )
     fifo_skip = schema["$defs"]["fifo_skipped"]["items"]
 

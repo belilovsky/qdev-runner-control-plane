@@ -452,10 +452,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         return controller_request(
             settings,
             method="POST",
-            path=(
-                f"/internal/v1/operations/jobs/{arguments.job_id}"
-                "/recover-failed-worker-exit"
-            ),
+            path=(f"/internal/v1/operations/jobs/{arguments.job_id}/recover-failed-worker-exit"),
             body={
                 "owner": arguments.owner,
                 "reason": arguments.reason,

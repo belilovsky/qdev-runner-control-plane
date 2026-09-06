@@ -139,9 +139,7 @@ def test_failed_worker_recovery_uses_provider_reconciled_endpoint(
 
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
-    assert captured["path"] == (
-        "/internal/v1/operations/jobs/42/recover-failed-worker-exit"
-    )
+    assert captured["path"] == ("/internal/v1/operations/jobs/42/recover-failed-worker-exit")
     assert captured["body"] == {
         "owner": "portfolio-ci",
         "reason": "provider remains queued",

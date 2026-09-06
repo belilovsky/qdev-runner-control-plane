@@ -1213,10 +1213,13 @@ def _seed_stale_running_job(client: TestClient) -> float:
 def _seed_failed_worker_job(client: TestClient) -> float:
     created_at = _seed_stale_running_job(client)
     store: Store = client.app.state.store
-    assert store.fail_if_active(
-        42,
-        f"worker={WORKER_NAME} exit=143 capacity override expired",
-    ) is True
+    assert (
+        store.fail_if_active(
+            42,
+            f"worker={WORKER_NAME} exit=143 capacity override expired",
+        )
+        is True
+    )
     return created_at
 
 
@@ -3478,7 +3481,5 @@ def test_failed_worker_job_with_provider_tuple_mismatch_is_not_released(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "provider immutable tuple does not match the failed job"
-    )
+    assert response.json()["detail"] == ("provider immutable tuple does not match the failed job")
     assert client.app.state.store.job_status(42) == "failed"

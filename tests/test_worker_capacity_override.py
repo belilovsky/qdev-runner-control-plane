@@ -249,9 +249,7 @@ async def test_expired_override_keeps_frozen_running_job_disk_floor(tmp_path: Pa
             admission=expired,
         )
         assert output == b"runner stopped after directive expiry"
-        assert detail == (
-            "worker disk hard floor reached: free=4.00GiB minimum=4.50GiB"
-        )
+        assert detail == ("worker disk hard floor reached: free=4.00GiB minimum=4.50GiB")
     finally:
         await worker.close()
 
