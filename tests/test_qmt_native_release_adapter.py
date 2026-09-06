@@ -97,9 +97,7 @@ def test_current_legacy_runtime_is_enrolled_by_registry_digest(
                 "Id": image_id,
                 "Size": 100,
                 "Config": {
-                    "Labels": {
-                        "org.opencontainers.image.revision": ADAPTER.LEGACY_SOURCE_SHA
-                    }
+                    "Labels": {"org.opencontainers.image.revision": ADAPTER.LEGACY_SOURCE_SHA}
                 },
                 "RepoDigests": [],
             }
@@ -107,9 +105,7 @@ def test_current_legacy_runtime_is_enrolled_by_registry_digest(
         return {
             "Id": image_id,
             "Size": 100,
-            "Config": {
-                "Labels": {"org.opencontainers.image.revision": ADAPTER.LEGACY_SOURCE_SHA}
-            },
+            "Config": {"Labels": {"org.opencontainers.image.revision": ADAPTER.LEGACY_SOURCE_SHA}},
             "RepoDigests": [registry_ref],
         }
 
@@ -137,9 +133,7 @@ def test_current_legacy_runtime_is_enrolled_by_registry_digest(
     assert [command[1] for command in commands] == ["tag", "push"]
 
 
-def test_enrollment_refuses_existing_state(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_enrollment_refuses_existing_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _paths(monkeypatch, tmp_path)
     ADAPTER.write_state(_legacy(), _legacy())
 

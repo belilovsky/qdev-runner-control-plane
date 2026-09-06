@@ -125,9 +125,22 @@ lanes:
     required_readiness: [native, public, identity]
   qdev-release-qazgeo:
     project_id: qazgeo
-    placement: vps-main
+    # Logical application-runtime placement. Admission remains fail-closed
+    # until the controller receives a fresh mTLS heartbeat from an enrolled
+    # application host proving the exact active and rollback tuples.
+    placement: qazgeo-app-runtime
     client_mtls_identity: qdev-release-client:qazgeo
-    host_agent_mtls_identity: qdev-host-agent:vps-main
+    host_agent_mtls_identity: qdev-host-agent:qazgeo-app-runtime
     minimum_free_gib: 20
     heartbeat_ttl_seconds: 90
-    artifact_repository: qazgeo
+    artifact_repository: belilovsky/qazgeo
+    canonical_repository: belilovsky/qazgeo
+    artifact_ref_prefix: registry.ci.qdev.run/belilovsky/qazgeo
+    native_host_adapter: qazgeo-native-immutable-release-v1
+    runtime_endpoints:
+      - https://qgeo.tech/health
+      - https://qgeo.tech/health/live
+      - https://qgeo.tech/health/ready
+      - https://qgeo.tech/health/quality
+    rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
+    required_readiness: [db, postgis, martin, photon, redis, app]

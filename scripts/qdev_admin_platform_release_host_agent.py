@@ -421,9 +421,7 @@ def request(
     try:
         return int(raw_status), raw_body
     except ValueError as error:
-        raise ControllerTransportError(
-            "controller response did not expose HTTP status"
-        ) from error
+        raise ControllerTransportError("controller response did not expose HTTP status") from error
 
 
 def _ensure_dispatcher(path: Path) -> None:
@@ -484,10 +482,7 @@ def native_receipt(
     ):
         raise AgentError("native receipt does not bind the requested release tuple")
     measured_release = _release(
-        {
-            field: document.get(field)
-            for field in ("source_sha", "artifact_digest", "artifact_ref")
-        },
+        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
     if release is not None and measured_release != release:
@@ -586,9 +581,9 @@ def heartbeat(
 
 
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
 
 
 def _validated_job(
@@ -699,15 +694,18 @@ def _validated_job(
     nonce = claim.get("nonce")
     if not isinstance(nonce, str) or not _NONCE.fullmatch(nonce):
         raise AgentError("controller host dispatch nonce is invalid")
-    if any(
-        not isinstance(claim.get(field), int)
-        or isinstance(claim.get(field), bool)
-        or claim[field] <= 0
-        for field in ("run_id", "job_id", "attempt")
-    ) or claim.get("runner_profile") not in _RUNNER_PROFILES or any(
-        not isinstance(claim.get(field), str)
-        or not _CI_SCOPE_VALUE.fullmatch(claim[field])
-        for field in ("workflow", "job")
+    if (
+        any(
+            not isinstance(claim.get(field), int)
+            or isinstance(claim.get(field), bool)
+            or claim[field] <= 0
+            for field in ("run_id", "job_id", "attempt")
+        )
+        or claim.get("runner_profile") not in _RUNNER_PROFILES
+        or any(
+            not isinstance(claim.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(claim[field])
+            for field in ("workflow", "job")
+        )
     ):
         raise AgentError("controller host dispatch CI identity is invalid")
     rollback_anchor = _release(document.get("rollback_anchor"), profile)
@@ -768,9 +766,7 @@ def validate_job(
     now: float | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Validate one signed, short-lived controller dispatch for this fixed host."""
-    release_id, release, _, _, nonce, _, _, _ = _validated_job(
-        document, profile, config, now=now
-    )
+    release_id, release, _, _, nonce, _, _, _ = _validated_job(document, profile, config, now=now)
     if _dispatch_nonce_seen(profile, nonce):
         raise AgentError("controller host dispatch claim was already consumed")
     return release_id, release
@@ -865,9 +861,7 @@ def _write_journal(
         "release_lane": profile.lane,
         "placement": profile.placement,
         "journal_seq": len(events) + 1,
-        "previous_event_sha256": (
-            events[-1]["event_sha256"] if events else _JOURNAL_GENESIS
-        ),
+        "previous_event_sha256": (events[-1]["event_sha256"] if events else _JOURNAL_GENESIS),
         "phase": phase,
         "recorded_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
@@ -1005,10 +999,7 @@ def _validate_native_runtime(
 
 def _native_release(document: dict[str, Any], profile: Profile) -> dict[str, str]:
     release = _release(
-        {
-            field: document.get(field)
-            for field in ("source_sha", "artifact_digest", "artifact_ref")
-        },
+        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
     _validate_native_runtime(document, profile, release)
@@ -1081,8 +1072,7 @@ def _validate_completion_receipt(
     rollback_raw = receipt.get("rollback")
     if (
         not isinstance(rollback_raw, dict)
-        or set(rollback_raw)
-        != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
+        or set(rollback_raw) != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
         or rollback_raw.get("verified") is not True
     ):
         raise AgentError("controller runtime receipt rollback anchor is invalid")
@@ -1093,9 +1083,7 @@ def _validate_completion_receipt(
         },
         profile,
     )
-    if measured_rollback == release or (
-        rollback is not None and measured_rollback != rollback
-    ):
+    if measured_rollback == release or (rollback is not None and measured_rollback != rollback):
         raise AgentError("controller runtime receipt rollback anchor does not match")
     _runtime_evidence(receipt, profile, release)
     return receipt
@@ -1155,9 +1143,7 @@ def _validate_rollback_receipt(
     ):
         raise AgentError("controller rollback receipt does not bind the managed operation")
     measured_restored = _release(receipt.get("restored_release"), profile)
-    if measured_restored == candidate or (
-        restored is not None and measured_restored != restored
-    ):
+    if measured_restored == candidate or (restored is not None and measured_restored != restored):
         raise AgentError("controller rollback receipt restored tuple does not match")
     native = receipt.get("native_receipt")
     if not isinstance(native, dict):
@@ -1288,16 +1274,15 @@ def _controller_status(
         raise AgentError("controller release outcome identity is invalid")
     controller_state = document.get("status")
     if controller_state in {"accepted", "dispatched"}:
-        if document.get("runtime_receipt") is not None or document.get(
-            "rollback_receipt"
-        ) is not None:
+        if (
+            document.get("runtime_receipt") is not None
+            or document.get("rollback_receipt") is not None
+        ):
             raise AgentError("active controller release has a terminal receipt")
     elif controller_state == "verified":
         if document.get("rollback_receipt") is not None:
             raise AgentError("verified controller release has a rollback receipt")
-        _validate_completion_receipt(
-            document.get("runtime_receipt"), profile, candidate, restored
-        )
+        _validate_completion_receipt(document.get("runtime_receipt"), profile, candidate, restored)
     elif controller_state == "rolled_back":
         if document.get("runtime_receipt") is not None:
             raise AgentError("rolled-back controller release has a runtime receipt")
@@ -1363,20 +1348,14 @@ def _resolve_completion_outcome(
         ) from error
     if state["status"] == "verified":
         if state["runtime_receipt"] != receipt:
-            raise ControllerOutcomeUnresolved(
-                "controller verified a different runtime receipt"
-            )
+            raise ControllerOutcomeUnresolved("controller verified a different runtime receipt")
         return
     if state["status"] == "rolled_back":
-        raise ControllerOutcomeUnresolved(
-            "controller already records the operation as rolled back"
-        )
+        raise ControllerOutcomeUnresolved("controller already records the operation as rolled back")
     submission_error: AgentError | None = None
     try:
         _ensure_live_lease(lease_expires_at)
-        _submit_completion(
-            config, profile, release_id, lease_id, fence, receipt
-        )
+        _submit_completion(config, profile, release_id, lease_id, fence, receipt)
         return
     except AgentError as error:
         submission_error = error
@@ -1407,9 +1386,7 @@ def _resolve_completion_outcome(
         ) from submission_error
     try:
         _ensure_live_lease(lease_expires_at)
-        _submit_completion(
-            config, profile, release_id, lease_id, fence, receipt
-        )
+        _submit_completion(config, profile, release_id, lease_id, fence, receipt)
         return
     except AgentError as retry_error:
         try:
@@ -1461,14 +1438,10 @@ def _resolve_rollback_outcome(
         ) from error
     if state["status"] == "rolled_back":
         if state["rollback_receipt"] != receipt:
-            raise ControllerOutcomeUnresolved(
-                "controller recorded a different rollback receipt"
-            )
+            raise ControllerOutcomeUnresolved("controller recorded a different rollback receipt")
         return
     if state["status"] == "verified":
-        raise ControllerOutcomeUnresolved(
-            "controller already records the candidate as verified"
-        )
+        raise ControllerOutcomeUnresolved("controller already records the candidate as verified")
     submission_error: AgentError | None = None
     try:
         _ensure_live_lease(lease_expires_at)
@@ -1488,9 +1461,7 @@ def _resolve_rollback_outcome(
             restored=restored,
         )
     except (AgentError, ControllerTransportError) as error:
-        raise ControllerOutcomeUnresolved(
-            "controller rollback outcome remains unknown"
-        ) from error
+        raise ControllerOutcomeUnresolved("controller rollback outcome remains unknown") from error
     if state["status"] == "rolled_back" and state["rollback_receipt"] == receipt:
         return
     if state["status"] not in {"accepted", "dispatched"}:
@@ -1752,9 +1723,7 @@ def _recover_pending(
     verified_state = active == candidate and rollback == previous_release
     if not before_state and not verified_state:
         reason = "local state does not match either durable operation boundary"
-        _record_recovery_unresolved(
-            profile, release_id, lease_id, fence, context, reason
-        )
+        _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
         raise ControllerOutcomeUnresolved(reason)
 
     current_native = native_receipt(profile, current=True)
@@ -1771,9 +1740,7 @@ def _recover_pending(
         )
     except AgentError as error:
         reason = "controller outcome is unavailable during recovery"
-        _record_recovery_unresolved(
-            profile, release_id, lease_id, fence, context, reason
-        )
+        _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
         raise ControllerOutcomeUnresolved(reason) from error
 
     if state["status"] == "verified":
@@ -1781,15 +1748,11 @@ def _recover_pending(
         assert isinstance(measured_receipt, dict)
         if runtime_receipt is not None and runtime_receipt != measured_receipt:
             reason = "controller and durable runtime receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         if current_release != candidate:
             reason = "controller is verified but the candidate is not running"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         verified_context = _operation_context(
             profile,
@@ -1836,15 +1799,11 @@ def _recover_pending(
         assert isinstance(measured_receipt, dict)
         if rollback_receipt is not None and rollback_receipt != measured_receipt:
             reason = "controller and durable rollback receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         if current_release != previous_release:
             reason = "controller is rolled back but the rollback anchor is not running"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         rolled_back_context = _operation_context(
             profile,
@@ -1888,18 +1847,12 @@ def _recover_pending(
         )
         if rollback_intent:
             reason = "candidate is still running after durable rollback intent"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
-        measured_receipt = _completion_receipt(
-            profile, candidate, previous_release, current_native
-        )
+        measured_receipt = _completion_receipt(profile, candidate, previous_release, current_native)
         if runtime_receipt is not None and runtime_receipt != measured_receipt:
             reason = "fresh and durable runtime receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         verified_context = _operation_context(
             profile,
@@ -1974,18 +1927,14 @@ def _recover_pending(
     if current_release == previous_release:
         if any(phase in {"verified", "verified_state_write_failed"} for phase in phases):
             reason = "verified journal state conflicts with active controller state"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         measured_receipt = _rollback_receipt(
             profile, release_id, candidate, previous_release, current_native
         )
         if rollback_receipt is not None and rollback_receipt != measured_receipt:
             reason = "fresh and durable rollback receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         rolled_back_context = _operation_context(
             profile,
@@ -2077,9 +2026,7 @@ def rollback_remote(
             restored=restored,
         )
     except (AgentError, ControllerTransportError) as error:
-        raise ControllerOutcomeUnresolved(
-            "controller state is unknown before rollback"
-        ) from error
+        raise ControllerOutcomeUnresolved("controller state is unknown before rollback") from error
     if state["status"] == "verified":
         raise ControllerOutcomeUnresolved(
             "controller already verified the candidate; rollback is not safe"
@@ -2126,9 +2073,7 @@ def rollback_remote(
         raise ControllerOutcomeUnresolved(
             "native release is neither the candidate nor the verified rollback anchor"
         )
-    receipt = _rollback_receipt(
-        profile, release_id, candidate, restored, restored_native
-    )
+    receipt = _rollback_receipt(profile, release_id, candidate, restored, restored_native)
     context = _operation_context(
         profile,
         candidate,
@@ -2139,9 +2084,7 @@ def rollback_remote(
         rollback_anchor,
         rollback_receipt=receipt,
     )
-    _write_operation(
-        profile, "rollback_ready", release_id, lease_id, fence, context
-    )
+    _write_operation(profile, "rollback_ready", release_id, lease_id, fence, context)
     try:
         _resolve_rollback_outcome(
             config,
@@ -2164,9 +2107,7 @@ def rollback_remote(
             context,
         )
         raise
-    _write_operation(
-        profile, "rolled_back", release_id, lease_id, fence, context
-    )
+    _write_operation(profile, "rolled_back", release_id, lease_id, fence, context)
     return receipt
 
 
@@ -2232,9 +2173,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 "capacity_free_gib": beat["capacity_free_gib"],
                 **active,
             }
-        active, rollback = read_state(
-            profile.state_path, profile, allow_bootstrap=True
-        )
+        active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
         pending = _pending_operation(profile)
         if pending is not None:
             return _recover_pending(config, profile, active, rollback, pending)
@@ -2309,9 +2248,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             _validate_native_runtime(candidate_native, profile, candidate)
             if profile.name == "qmt" and (
                 candidate_native.get("dependency_identity")
-                != {
-                    "qmt_version": candidate_evidence["release_version"]
-                }
+                != {"qmt_version": candidate_evidence["release_version"]}
                 or candidate_native.get("artifact_provenance")
                 != {
                     key: candidate_evidence[key]
@@ -2323,9 +2260,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 }
             ):
                 raise AgentError("native QMT receipt does not bind candidate evidence")
-            runtime_receipt = _completion_receipt(
-                profile, candidate, active, candidate_native
-            )
+            runtime_receipt = _completion_receipt(profile, candidate, active, candidate_native)
             context = _operation_context(
                 profile,
                 candidate,

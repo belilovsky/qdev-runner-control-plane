@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One complete verification entrypoint for hosted, owner recovery and local CI."""
+"""One complete verification entrypoint for controller-managed, recovery and local CI."""
 
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ def commands(python: str) -> list[list[str]]:
     # Every lane executes every check. Failures stop the sequence; no partial success receipt.
     return [
         [python, "-m", "ruff", "check", "."],
+        [python, "-m", "ruff", "format", "--check", "."],
         [python, "-m", "mypy"],
         [python, "-m", "pytest", "-q"],
         [python, ".github/scripts/qdev-runner-policy.py", "--root", "."],
@@ -93,7 +94,14 @@ def main() -> int:
                 "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
                 "run_id": os.environ.get("GITHUB_RUN_ID"),
                 "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
-                "checks": ["lint", "typing", "pytest", "runner-policy", "runtime-install"],
+                "checks": [
+                    "lint",
+                    "format",
+                    "typing",
+                    "pytest",
+                    "runner-policy",
+                    "runtime-install",
+                ],
                 "status": "passed",
                 "signed": False,
             },

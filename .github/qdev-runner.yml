@@ -4,6 +4,7 @@ self_hosted_recovery: true
 # Self-hosted profiles are permitted only in these manual recovery workflows.
 recovery_workflows:
   - runner-smoke.yml
+  - fleet-bootstrap.yml
 # Existing QDev capacity is the bounded primary lane for repository verification
 # while provider-hosted jobs are unavailable. Each workflow remains fork-guarded
 # and binds to a unique controller-issued runner label.

@@ -26,9 +26,7 @@ def test_claim_scope_uses_fifo_endpoint(
 
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
 
-    def fake_request(
-        settings: operator.OperatorSettings, **kwargs: Any
-    ) -> dict[str, Any]:
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
         captured["settings"] = settings
         captured.update(kwargs)
         return {"schema": "qdev-controller-receipt-v2"}
@@ -103,9 +101,7 @@ def test_capacity_override_sends_exact_source_binding(
 
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
-    assert captured["path"].endswith(
-        "/workers/srv1879763-light-primary/capacity-override"
-    )
+    assert captured["path"].endswith("/workers/srv1879763-light-primary/capacity-override")
     assert captured["body"] == {
         "repository": "belilovsky/qazlake",
         "head_sha": "b" * 40,
@@ -175,8 +171,7 @@ def test_capacity_override_cancel_requires_exact_operation_id(
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "DELETE"
     assert captured["path"].endswith(
-        "/workers/srv1879763-light-primary/capacity-override"
-        "?operation_id=operation-123"
+        "/workers/srv1879763-light-primary/capacity-override?operation_id=operation-123"
     )
 
 
@@ -328,6 +323,63 @@ def test_recovery_accept_binds_owner_supplied_exact_canary_sha(
 def test_retired_recovery_command_is_not_exposed() -> None:
     with pytest.raises(SystemExit):
         operator.build_parser().parse_args(["recover-existing-worker"])
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_path", "expected_body"),
+    [
+        (
+            "register-ci",
+            "/internal/v1/operations/releases/qazgeo/ci-registration",
+            {
+                "repository": "belilovsky/qazgeo",
+                "source_sha": "a" * 40,
+                "run_id": 33870997811,
+                "attempt": 1,
+                "job_id": 101016693706,
+            },
+        ),
+        (
+            "reconcile-ci",
+            "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+            {"source_sha": "a" * 40},
+        ),
+    ],
+)
+def test_qgeo_ci_commands_use_managed_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    expected_path: str,
+    expected_body: dict[str, Any],
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    arguments = [command, "--source-sha", "a" * 40]
+    if command == "register-ci":
+        arguments.extend(["--run-id", "33870997811", "--job-id", "101016693706"])
+
+    assert operator.run(arguments) == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == expected_path
+    assert captured["body"] == expected_body
+
+
+@pytest.mark.parametrize("command", ["register-ci", "reconcile-ci"])
+def test_qgeo_ci_commands_reject_non_lowercase_sha(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    arguments = [command, "--source-sha", "A" * 40]
+    if command == "register-ci":
+        arguments.extend(["--run-id", "1", "--job-id", "2"])
+    with pytest.raises(ValueError, match="invalid Git source SHA"):
+        operator.run(arguments)
 
 
 @pytest.mark.parametrize(
@@ -512,11 +564,6 @@ def test_recovery_request_never_self_asserts_edge_identity(
     )
 
     assert response.interface_version == operator.INTERFACE_VERSION
-    assert captured["client_kwargs"]["headers"] == {
-        "X-QDev-Operator-Token": "inert-operator-token"
-    }
+    assert captured["client_kwargs"]["headers"] == {"X-QDev-Operator-Token": "inert-operator-token"}
     assert "X-QDev-Operator-Proxy-Auth" not in captured["client_kwargs"]["headers"]
-    assert (
-        "X-QDev-Verified-Client-Certificate-SHA256"
-        not in captured["client_kwargs"]["headers"]
-    )
+    assert "X-QDev-Verified-Client-Certificate-SHA256" not in captured["client_kwargs"]["headers"]

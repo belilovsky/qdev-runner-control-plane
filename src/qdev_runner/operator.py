@@ -25,6 +25,7 @@ _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _ENDPOINT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
 OPERATOR_MTLS_IDENTITY = "qdev-fleet-operations"
 
 
@@ -66,7 +67,7 @@ def _sha256_hex(value: str, *, field: str) -> str:
     return normalized
 
 
-def _git_revision(value: str, *, field: str) -> str:
+def _git_revision(value: str, *, field: str = "Git source SHA") -> str:
     normalized = value.lower()
     if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
         raise ValueError(f"invalid {field}")
@@ -240,9 +241,7 @@ def _fresh_recovery_provenance(settings: OperatorSettings) -> dict[str, Any]:
         "schema": "qdev-runner-recovery-provenance-v1",
         "nonce": f"recovery-{secrets.token_hex(16)}",
         "issued_at": issued_at.isoformat().replace("+00:00", "Z"),
-        "expires_at": (issued_at + timedelta(seconds=lifetime))
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "expires_at": (issued_at + timedelta(seconds=lifetime)).isoformat().replace("+00:00", "Z"),
         "controller_revision": bindings.controller_revision,
         "controller_release_digest": bindings.controller_release_digest,
         "policy_digest": bindings.policy_digest,
@@ -355,6 +354,20 @@ def build_parser() -> argparse.ArgumentParser:
     enrol_host_agent.add_argument("--request", required=True, type=Path)
     enrol_host_agent.add_argument("--idempotency-key", required=True)
     enrol_host_agent.add_argument("--timeout-seconds", type=float, default=120.0)
+
+    register_ci = commands.add_parser(
+        "register-ci", help="Register one verified QGeo main-push workflow job"
+    )
+    register_ci.add_argument("--repository", default="belilovsky/qazgeo")
+    register_ci.add_argument("--source-sha", required=True)
+    register_ci.add_argument("--run-id", type=int, required=True)
+    register_ci.add_argument("--attempt", type=int, default=1)
+    register_ci.add_argument("--job-id", type=int, required=True)
+
+    reconcile_ci = commands.add_parser(
+        "reconcile-ci", help="Reconcile all allowlisted QGeo CI jobs"
+    )
+    reconcile_ci.add_argument("--source-sha", required=True)
     return parser
 
 
@@ -531,6 +544,30 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             method="POST",
             path=f"/internal/v1/operations/fleet-bootstrap/{arguments.command}",
             body=bootstrap_body,
+        )
+    if arguments.command == "register-ci":
+        source_sha = _git_revision(arguments.source_sha)
+        if arguments.run_id <= 0 or arguments.attempt < 1 or arguments.job_id <= 0:
+            raise ValueError("invalid QGeo CI tuple")
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/releases/qazgeo/ci-registration",
+            body={
+                "repository": arguments.repository,
+                "source_sha": source_sha,
+                "run_id": arguments.run_id,
+                "attempt": arguments.attempt,
+                "job_id": arguments.job_id,
+            },
+        )
+    if arguments.command == "reconcile-ci":
+        source_sha = _git_revision(arguments.source_sha)
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/releases/qazgeo/ci-reconcile",
+            body={"source_sha": source_sha},
         )
     raise AssertionError("unreachable command")
 

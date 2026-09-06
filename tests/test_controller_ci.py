@@ -109,6 +109,7 @@ def test_every_lane_uses_full_shared_suite() -> None:
     commands = CI.commands("python")
     assert commands == [
         ["python", "-m", "ruff", "check", "."],
+        ["python", "-m", "ruff", "format", "--check", "."],
         ["python", "-m", "mypy"],
         ["python", "-m", "pytest", "-q"],
         ["python", ".github/scripts/qdev-runner-policy.py", "--root", "."],
@@ -130,6 +131,12 @@ def test_every_lane_uses_full_shared_suite() -> None:
         "QDEV_EXPECTED_SHA": "${{ github.sha }}",
         "QDEV_MANAGED_CI": "true",
     }
+    assert normal["jobs"]["verify"]["runs-on"][:4] == [
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci",
+    ]
 
 
 def test_runner_contract_push_is_limited_to_default_branch() -> None:

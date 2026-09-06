@@ -11,6 +11,7 @@ from qdev_runner.fleet_bootstrap import (
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
     bootstrap_request_fingerprint,
+    bootstrap_request_fingerprints,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,8 @@ def _request(**overrides: object) -> FleetBootstrapRequest:
         "claim_ttl_seconds": 300,
         "controller_revision": SOURCE_SHA,
         "controller_release_digest": "sha256:" + "b" * 64,
+        "controller_image_digest": "sha256:" + "c" * 64,
+        "activation_envelope_digest": "sha256:" + "d" * 64,
         "release_lane": None,
         "worker_name": None,
     }
@@ -57,7 +60,7 @@ def _claims(**overrides: object) -> dict[str, object]:
     return values
 
 
-def test_bootstrap_policy_accepts_only_the_fixed_transition() -> None:
+def test_bootstrap_policy_accepts_dynamic_source_bound_signed_transition() -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     policy.validate(_request())
     policy.validate_oidc_claims(_claims(), _request())
@@ -76,13 +79,15 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
         action="restore-existing-worker",
         release_lane=None,
         worker_name="qdev-platform-ci-187",
+        controller_revision=None,
+        controller_release_digest=None,
+        controller_image_digest=None,
+        activation_envelope_digest=None,
     )
     policy.validate(request)
     target = policy.worker_target("qdev-platform-ci-187")
     assert target is not None
-    assert target.target_id == (
-        "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187"
-    )
+    assert target.target_id == ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187")
     assert target.service_unit.endswith(".service")
     assert target.host_binding == "controller-registry"
 
@@ -90,7 +95,10 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"controller_revision": "b" * 40}, "source-bound"),
+        ({"controller_revision": "b" * 40}, "workflow source"),
+        ({"controller_release_digest": "sha256:bad"}, "signed envelope"),
+        ({"controller_image_digest": "sha256:bad"}, "signed envelope"),
+        ({"activation_envelope_digest": "sha256:bad"}, "signed envelope"),
         ({"claim_ttl_seconds": 901}, "TTL"),
         (
             {
@@ -105,6 +113,10 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
                 "action": "restore-existing-worker",
                 "release_lane": None,
                 "worker_name": "temporary-runner",
+                "controller_revision": None,
+                "controller_release_digest": None,
+                "controller_image_digest": None,
+                "activation_envelope_digest": None,
             },
             "worker",
         ),
@@ -132,6 +144,21 @@ def test_bootstrap_policy_rejects_oidc_claim_drift(claims: dict[str, object]) ->
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     with pytest.raises(FleetBootstrapError, match="OIDC"):
         policy.validate_oidc_claims(claims, _request())
+
+
+def test_bootstrap_policy_has_no_pinned_controller_or_rollback_tuple() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    assert policy.activation.mode == "signed-external-envelope"
+    assert policy.activation.envelope_schema == "qdev-controller-activation-envelope-v1"
+    assert policy.activation.public_key_binding == "controller-registry"
+    policy.validate(
+        _request(
+            source_sha="d" * 40,
+            controller_revision="d" * 40,
+            controller_image_digest="sha256:" + "e" * 64,
+            activation_envelope_digest="sha256:" + "f" * 64,
+        )
+    )
 
 
 def test_bootstrap_operation_store_is_idempotent_and_rejects_drift(tmp_path: Path) -> None:
@@ -162,3 +189,30 @@ def test_bootstrap_operation_store_never_persists_sensitive_result_keys(tmp_path
     store.begin("bootstrap-operation-002", request)
     with pytest.raises(FleetBootstrapError, match="safe"):
         store.complete("bootstrap-operation-002", request, {"oidc_token": "redacted"})
+
+
+def test_bootstrap_operation_store_preserves_legacy_single_image_fingerprint(
+    tmp_path: Path,
+) -> None:
+    request = _request()
+    current = bootstrap_request_fingerprint(request)
+    legacy = next(value for value in bootstrap_request_fingerprints(request) if value != current)
+    path = tmp_path / "operations.json"
+    path.write_text(
+        (
+            '{"idempotency_key":"legacy-operation-001","request_fingerprint":"'
+            + legacy
+            + '","result":null,"schema":"qdev-fleet-bootstrap-operation-v1",'
+            '"status":"pending"}\n'
+        ),
+        encoding="utf-8",
+    )
+    store = BootstrapOperationStore(path)
+
+    pending = store.begin("legacy-operation-001", request)
+    assert pending.request_fingerprint == legacy
+    completed = store.complete(
+        "legacy-operation-001", request, {"action": "validated", "attempt": 1}
+    )
+    assert completed.request_fingerprint == legacy
+    assert store.begin("legacy-operation-001", request) == completed

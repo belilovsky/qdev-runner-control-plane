@@ -188,11 +188,22 @@ def _settings(
     release_status.write_text(
         json.dumps(
             {
-                "schema": "qdev-controller-release-status-v1",
+                "schema": "qdev-controller-release-status-v2",
                 "state": "active",
                 "revision": CONTROLLER_REVISION,
                 "release_digest": ACTIVE_CONTROLLER_RELEASE_DIGEST,
                 "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "runtime_identity": {
+                    "source_revision": CONTROLLER_REVISION,
+                    "source_digest": "sha256:" + "4" * 64,
+                    "public_image_id": "sha256:" + "5" * 64,
+                    "internal_image_id": "sha256:" + "6" * 64,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "7" * 64,
+                    "public_installed_digest": "sha256:" + "8" * 64,
+                    "internal_installed_digest": "sha256:" + "8" * 64,
+                },
             }
         ),
         encoding="utf-8",

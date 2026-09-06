@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .claim_scope import SCHEMA_V2, ClaimScope
+from .claim_scope import MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION, SCHEMA_V2, ClaimScope
 from .models import QueuedJob
 
 MINIMUM_QUEUE_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
@@ -290,7 +290,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     claimed_at REAL,
     completed_at REAL,
     result TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    infra_retries INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at);
 
@@ -524,6 +525,35 @@ def _disk_headroom_allowed(detail: dict[str, Any], profile_disk_mb: int | None) 
     return disk_free_gib >= min_disk_free_gib + profile_disk_mb / 1024
 
 
+def _repository_worker_allowed(
+    detail: dict[str, Any],
+    *,
+    minimum_free_gib: float | None,
+    maximum_concurrency: int | None,
+) -> bool:
+    """Apply server-owned repository constraints to a worker observation."""
+
+    if minimum_free_gib is not None:
+        raw_free = detail.get("disk_free_gib")
+        if (
+            isinstance(raw_free, bool)
+            or not isinstance(raw_free, (int, float))
+            or not math.isfinite(float(raw_free))
+            or float(raw_free) < minimum_free_gib
+        ):
+            return False
+    if maximum_concurrency is not None:
+        raw_concurrency = detail.get("concurrency")
+        if (
+            isinstance(raw_concurrency, bool)
+            or not isinstance(raw_concurrency, int)
+            or raw_concurrency < 1
+            or raw_concurrency > maximum_concurrency
+        ):
+            return False
+    return True
+
+
 def _is_valid_queue_timestamp(value: object) -> bool:
     return (
         isinstance(value, (int, float))
@@ -615,6 +645,14 @@ class Store:
     @staticmethod
     def _migrate_schema(connection: sqlite3.Connection) -> None:
         """Apply additive migrations to databases created by older brokers."""
+
+        job_columns = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "infra_retries" not in job_columns:
+            connection.execute(
+                "ALTER TABLE jobs ADD COLUMN infra_retries INTEGER NOT NULL DEFAULT 0"
+            )
 
         recovery_columns = {
             str(row["name"])
@@ -872,6 +910,8 @@ class Store:
         *,
         profile: str | None = None,
         profile_disk_mb: int | None = None,
+        repository_min_disk_free_gib: float | None = None,
+        repository_max_concurrency: int | None = None,
     ) -> bool:
         rows = connection.execute(
             """
@@ -892,6 +932,11 @@ class Store:
                 and detail.get("allowed", True) is True
                 and int(row["active_jobs"]) < _worker_concurrency(detail)
                 and _disk_headroom_allowed(detail, profile_disk_mb)
+                and _repository_worker_allowed(
+                    detail,
+                    minimum_free_gib=repository_min_disk_free_gib,
+                    maximum_concurrency=repository_max_concurrency,
+                )
             ):
                 return True
         return False
@@ -906,15 +951,15 @@ class Store:
         min_disk_free_gib: float | None = None,
         profile_disk_mb: dict[str, int] | None = None,
         repository_profile_disk_mb: dict[tuple[str, str], int] | None = None,
+        repository_min_disk_free_gib: dict[str, float] | None = None,
+        repository_max_concurrency: dict[str, int] | None = None,
         repository: str | None = None,
         head_sha: str | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
         fifo_skip_job_ids: frozenset[int] = frozenset(),
     ) -> dict[str, Any] | None:
-        if fifo_skip_job_ids and (
-            claim_scope is None or claim_scope.schema != SCHEMA_V2
-        ):
+        if fifo_skip_job_ids and (claim_scope is None or claim_scope.schema != SCHEMA_V2):
             raise ValueError("FIFO skips require an exact v2 claim scope")
         now = time.time()
         with self.connect() as connection:
@@ -925,6 +970,19 @@ class Store:
             self._repair_invalid_queue_timestamps(connection)
             selected = None
             selected_profile = None
+            worker_row = connection.execute(
+                "SELECT detail_json FROM workers WHERE name=?", (worker_name,)
+            ).fetchone()
+            worker_detail: dict[str, Any] = {}
+            if worker_row is not None:
+                try:
+                    parsed_worker_detail = json.loads(str(worker_row["detail_json"]))
+                except (TypeError, json.JSONDecodeError):
+                    parsed_worker_detail = None
+                if isinstance(parsed_worker_detail, dict):
+                    worker_detail = parsed_worker_detail
+            if disk_free_gib is not None:
+                worker_detail["disk_free_gib"] = disk_free_gib
             # Do not cap this scan: a long backlog of jobs for unavailable profiles
             # must not starve a later job that this worker can actually run.  The
             # status/created_at index preserves FIFO ordering for each eligible job.
@@ -942,10 +1000,18 @@ class Store:
                     key=lambda row: scope_order.get(int(row["job_id"]), len(scope_order))
                 )
             profile_heads: dict[str, int] = {}
+            managed_exact_exception = bool(
+                claim_scope is not None
+                and claim_scope.schema == SCHEMA_V2
+                and claim_scope.fifo_exception == MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+            )
             enforce_profile_fifo = bool(
-                (claim_scope is not None and claim_scope.schema == SCHEMA_V2)
-                or repository is not None
-                or head_sha is not None
+                not managed_exact_exception
+                and (
+                    (claim_scope is not None and claim_scope.schema == SCHEMA_V2)
+                    or repository is not None
+                    or head_sha is not None
+                )
             )
             if enforce_profile_fifo:
                 # v2 scopes may authorize independent profiles concurrently, but
@@ -1026,6 +1092,23 @@ class Store:
                         )
                 if profile_disk_mb is not None and required_disk_mb is None:
                     continue
+                repository_name = str(row["repository"]).lower()
+                minimum_free_gib = (
+                    repository_min_disk_free_gib.get(repository_name)
+                    if repository_min_disk_free_gib is not None
+                    else None
+                )
+                maximum_concurrency = (
+                    repository_max_concurrency.get(repository_name)
+                    if repository_max_concurrency is not None
+                    else None
+                )
+                if not _repository_worker_allowed(
+                    worker_detail,
+                    minimum_free_gib=minimum_free_gib,
+                    maximum_concurrency=maximum_concurrency,
+                ):
+                    continue
                 if (
                     disk_free_gib is not None
                     and min_disk_free_gib is not None
@@ -1044,6 +1127,8 @@ class Store:
                     now - primary_max_age_seconds,
                     profile=matching_profile,
                     profile_disk_mb=required_disk_mb,
+                    repository_min_disk_free_gib=minimum_free_gib,
+                    repository_max_concurrency=maximum_concurrency,
                 ):
                     connection.execute("COMMIT")
                     return None

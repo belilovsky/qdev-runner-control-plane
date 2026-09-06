@@ -1181,18 +1181,17 @@ class WorkerRecoveryController:
         for target in RECOVERY_TARGETS.values():
             self._agent_certificate(target)
         release = self.release_status_reader()
-        release_digest = release.get("release_digest")
         if (
             release.get("state") != "active"
             or not isinstance(release.get("revision"), str)
             or not _GIT_REVISION.fullmatch(str(release["revision"]))
-            or not isinstance(release_digest, str)
-            or not _SHA256_DIGEST.fullmatch(release_digest)
+            or not isinstance(release.get("release_digest"), str)
+            or not _SHA256_HEX.fullmatch(str(release["release_digest"]))
         ):
             raise WorkerRecoveryConfigurationError(
                 "active controller release binding is unavailable"
             )
-        return {**release, "release_digest": release_digest.removeprefix("sha256:")}
+        return release
 
     def _validate_provenance(
         self,

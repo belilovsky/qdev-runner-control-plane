@@ -191,9 +191,7 @@ def _read_trusted_key_file(
         mode = stat.S_IMODE(status.st_mode)
         allowed_owners = {os.geteuid(), 0}
         if not stat.S_ISREG(status.st_mode) or status.st_uid not in allowed_owners:
-            raise ControllerAdmissionError(
-                f"{label} must be a trusted regular file"
-            )
+            raise ControllerAdmissionError(f"{label} must be a trusted regular file")
         if owner_only:
             if mode & 0o077:
                 raise ControllerAdmissionError(f"{label} must be owner-only")
@@ -400,9 +398,7 @@ def _expected_jobs(
         name, separator, binding = item.partition("=")
         profile, id_separator, job_id_text = binding.partition(":")
         if not separator or not _IDENTIFIER.fullmatch(name) or not _PROFILE.fullmatch(profile):
-            raise ControllerAdmissionError(
-                "expected job must use NAME=CONTROLLER_PROFILE[:JOB_ID]"
-            )
+            raise ControllerAdmissionError("expected job must use NAME=CONTROLLER_PROFILE[:JOB_ID]")
         if name in expected:
             raise ControllerAdmissionError("expected jobs contain a duplicate name")
         expected[name] = profile
@@ -546,8 +542,7 @@ def _validate_replay_store_schema(connection: sqlite3.Connection) -> None:
         ("consumed_at", "TEXT", 1, 0),
     ]
     actual_columns = [
-        (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
-        for row in columns
+        (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5])) for row in columns
     ]
     if actual_columns != expected_columns:
         raise ControllerAdmissionError("receipt replay store schema is invalid")
@@ -568,8 +563,7 @@ def _validate_replay_store_schema(connection: sqlite3.Connection) -> None:
         raise ControllerAdmissionError("receipt replay store uniqueness is invalid")
 
     triggers = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-        "AND tbl_name = 'consumed_receipts'"
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'consumed_receipts'"
     ).fetchall()
     if triggers:
         raise ControllerAdmissionError("receipt replay store must not contain triggers")
@@ -603,9 +597,7 @@ def _consume_verified_receipt(
         "functional_source_sha",
     )
     fingerprint = hashlib.sha256(f"{key_id}:{signature_value}".encode()).hexdigest()
-    observed = (consumed_at or datetime.now(UTC)).astimezone(UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    observed = (consumed_at or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
         replay_store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
@@ -615,9 +607,7 @@ def _consume_verified_receipt(
             or parent_status.st_uid not in {os.geteuid(), 0}
             or parent_status.st_mode & 0o022
         ):
-            raise ControllerAdmissionError(
-                "receipt replay store directory is not owner-controlled"
-            )
+            raise ControllerAdmissionError("receipt replay store directory is not owner-controlled")
         if replay_store_path.is_symlink():
             raise ControllerAdmissionError("receipt replay store must not be a symlink")
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
@@ -634,11 +624,10 @@ def _consume_verified_receipt(
                 )
             with sqlite3.connect(replay_store_path, timeout=5) as connection:
                 path_status = replay_store_path.lstat()
-                if (
-                    not stat.S_ISREG(path_status.st_mode)
-                    or (path_status.st_dev, path_status.st_ino)
-                    != (file_status.st_dev, file_status.st_ino)
-                ):
+                if not stat.S_ISREG(path_status.st_mode) or (
+                    path_status.st_dev,
+                    path_status.st_ino,
+                ) != (file_status.st_dev, file_status.st_ino):
                     raise ControllerAdmissionError(
                         "receipt replay store changed while it was opened"
                     )

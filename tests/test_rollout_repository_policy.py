@@ -54,13 +54,16 @@ def test_merge_default_preserves_default_side_of_managed_conflict(tmp_path: Path
     repo = conflicting_repository(tmp_path, "AGENTS.md")
     load_rollout().merge_default(repo, "master")
     assert (repo / "AGENTS.md").read_text(encoding="utf-8") == "default\n"
-    assert subprocess.run(  # noqa: S603
-        [GIT, "diff", "--name-only", "--diff-filter=U"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout == ""
+    assert (
+        subprocess.run(  # noqa: S603
+            [GIT, "diff", "--name-only", "--diff-filter=U"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
 
 
 def test_merge_default_rejects_product_conflict(tmp_path: Path) -> None:

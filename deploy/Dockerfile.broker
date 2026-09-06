@@ -1,4 +1,8 @@
 FROM python:3.12.11-slim-bookworm
+ARG QDEV_SOURCE_REVISION=unknown
+ARG QDEV_POLICY_BUNDLE_DIGEST=unknown
+LABEL org.opencontainers.image.revision="${QDEV_SOURCE_REVISION}" \
+      run.qdev.controller.policy-bundle-digest="${QDEV_POLICY_BUNDLE_DIGEST}"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN groupadd --system --gid 9020 qdev-runner \
     && useradd --system --uid 9020 --gid 9020 --home /nonexistent \

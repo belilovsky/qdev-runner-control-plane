@@ -25,7 +25,6 @@ from .fleet_bootstrap import (
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
     WorkerRecoveryTarget,
-    bootstrap_request_fingerprint,
 )
 from .release_lane import ReleaseLane
 
@@ -40,8 +39,8 @@ _ADAPTER_STATUSES = frozenset(
 _DEFAULT_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
 _DEFAULT_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
 _DEFAULT_ENROLMENT_ADAPTER = Path("/usr/local/sbin/qdev-release-host-agent-enrol")
-BOOTSTRAP_ADAPTER_RESULT_SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
-BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA = "qdev-fleet-bootstrap-execution-receipt-v1"
+BOOTSTRAP_ADAPTER_RESULT_SCHEMA = "qdev-fleet-bootstrap-adapter-result-v2"
+BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA = "qdev-fleet-bootstrap-execution-receipt-v2"
 _BOOTSTRAP_ADAPTER_STATUSES = frozenset(
     {"completed", "already_completed", "access_blocked", "failed"}
 )
@@ -51,9 +50,7 @@ _BOOTSTRAP_ADAPTER_STATUSES = frozenset(
 class RecoveryExecution:
     """A non-secret result suitable for a private operator receipt."""
 
-    status: Literal[
-        "completed", "access_blocked", "active_work", "target_unregistered", "failed"
-    ]
+    status: Literal["completed", "access_blocked", "active_work", "target_unregistered", "failed"]
     operation_status: Literal["pending", "completed"]
     idempotency_key: str
     request_fingerprint: str
@@ -92,6 +89,9 @@ class BootstrapExecution:
     request_fingerprint: str
     controller_revision: str
     controller_release_digest: str
+    controller_image_digest: str
+    controller_internal_image_digest: str
+    activation_envelope_digest: str
     release_lane: str | None = None
     host_agent_mtls_identity: str | None = None
     error_code: str | None = None
@@ -107,6 +107,9 @@ class BootstrapExecution:
             "request_fingerprint": self.request_fingerprint,
             "controller_revision": self.controller_revision,
             "controller_release_digest": self.controller_release_digest,
+            "controller_image_digest": self.controller_image_digest,
+            "controller_internal_image_digest": self.controller_internal_image_digest,
+            "activation_envelope_digest": self.activation_envelope_digest,
             "release_lane": self.release_lane,
             "host_agent_mtls_identity": self.host_agent_mtls_identity,
             "error_code": self.error_code,
@@ -162,15 +165,19 @@ def _bootstrap_target(
     controller_runtime: tuple[str, str] | None = None,
 ) -> tuple[dict[str, Any], ReleaseLane | None]:
     if request.action == "activate-controller":
-        if controller_runtime is None:
-            raise FleetBootstrapError(
-                "verified current controller runtime is required for activation"
-            )
-        rollback_revision, rollback_release_digest = controller_runtime
+        rollback_revision = controller_runtime[0] if controller_runtime is not None else None
+        rollback_release_digest = controller_runtime[1] if controller_runtime is not None else None
         return (
             {
                 "controller_revision": request.controller_revision,
                 "controller_release_digest": request.controller_release_digest,
+                "controller_image_digest": request.controller_image_digest,
+                "controller_internal_image_digest": request.controller_internal_image_digest,
+                "activation_envelope_digest": request.activation_envelope_digest,
+                "activation_mode": policy.activation.mode,
+                "activation_envelope_schema": policy.activation.envelope_schema,
+                "activation_public_key_binding": policy.activation.public_key_binding,
+                "activation_max_envelope_ttl_seconds": (policy.activation.max_envelope_ttl_seconds),
                 "rollback_revision": rollback_revision,
                 "rollback_release_digest": rollback_release_digest,
             },
@@ -201,7 +208,7 @@ def _invoke_bootstrap_adapter(
     timeout_seconds: float,
 ) -> tuple[str, dict[str, Any] | None]:
     envelope = {
-        "schema": "qdev-fleet-bootstrap-adapter-request-v1",
+        "schema": "qdev-fleet-bootstrap-adapter-request-v2",
         "request": request.model_dump(mode="json", by_alias=True),
         "target": target,
     }
@@ -228,10 +235,16 @@ def _invoke_bootstrap_adapter(
         "action",
         "controller_revision",
         "controller_release_digest",
+        "controller_image_digest",
+        "controller_internal_image_digest",
+        "activation_envelope_digest",
         "release_lane",
         "host_agent_mtls_identity",
         "rollback_source_sha",
         "rollback_artifact_digest",
+        "rollback_internal_artifact_digest",
+        "rollback_policy_digest",
+        "rollback_generation",
         "result",
     }
     if not isinstance(raw, dict) or set(raw) != expected_fields:
@@ -242,29 +255,44 @@ def _invoke_bootstrap_adapter(
         or raw.get("action") != request.action
         or raw.get("controller_revision") != request.controller_revision
         or raw.get("controller_release_digest") != request.controller_release_digest
+        or raw.get("controller_image_digest") != request.controller_image_digest
+        or raw.get("controller_internal_image_digest") != request.controller_internal_image_digest
+        or raw.get("activation_envelope_digest") != request.activation_envelope_digest
+    ):
+        return "failed", {"error_code": "adapter_identity_mismatch"}
+    rollback_sha = raw.get("rollback_source_sha")
+    rollback_digest = raw.get("rollback_artifact_digest")
+    rollback_internal_digest = raw.get("rollback_internal_artifact_digest")
+    rollback_policy_digest = raw.get("rollback_policy_digest")
+    rollback_generation = raw.get("rollback_generation")
+    if (
+        not isinstance(rollback_sha, str)
+        or len(rollback_sha) != 40
+        or any(character not in "0123456789abcdef" for character in rollback_sha)
+        or not isinstance(rollback_digest, str)
+        or len(rollback_digest) != 71
+        or not rollback_digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in rollback_digest[7:])
+        or not isinstance(rollback_internal_digest, str)
+        or len(rollback_internal_digest) != 71
+        or not rollback_internal_digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in rollback_internal_digest[7:])
+        or not isinstance(rollback_policy_digest, str)
+        or len(rollback_policy_digest) != 71
+        or not rollback_policy_digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in rollback_policy_digest[7:])
+        or isinstance(rollback_generation, bool)
+        or not isinstance(rollback_generation, int)
+        or rollback_generation < 0
     ):
         return "failed", {"error_code": "adapter_identity_mismatch"}
     if lane is None:
-        if (
-            raw.get("release_lane") is not None
-            or raw.get("host_agent_mtls_identity") is not None
-            or raw.get("rollback_source_sha") != target["rollback_revision"]
-            or raw.get("rollback_artifact_digest") != target["rollback_release_digest"]
-        ):
+        if raw.get("release_lane") is not None or raw.get("host_agent_mtls_identity") is not None:
             return "failed", {"error_code": "adapter_identity_mismatch"}
     else:
-        rollback_sha = raw.get("rollback_source_sha")
-        rollback_digest = raw.get("rollback_artifact_digest")
         if (
             raw.get("release_lane") != lane.name
             or raw.get("host_agent_mtls_identity") != lane.host_agent_mtls_identity
-            or not isinstance(rollback_sha, str)
-            or len(rollback_sha) != 40
-            or any(character not in "0123456789abcdef" for character in rollback_sha)
-            or not isinstance(rollback_digest, str)
-            or len(rollback_digest) != 71
-            or not rollback_digest.startswith("sha256:")
-            or any(character not in "0123456789abcdef" for character in rollback_digest[7:])
         ):
             return "failed", {"error_code": "adapter_identity_mismatch"}
     result = _safe_adapter_result(raw.get("result"))
@@ -274,6 +302,8 @@ def _invoke_bootstrap_adapter(
         {
             "rollback_source_sha": raw["rollback_source_sha"],
             "rollback_artifact_digest": raw["rollback_artifact_digest"],
+            "rollback_policy_digest": raw["rollback_policy_digest"],
+            "rollback_generation": raw["rollback_generation"],
         }
     )
     return str(raw["status"]), result
@@ -398,6 +428,19 @@ def execute_bootstrap_operation(
     policy.validate(request)
     if request.action not in {"activate-controller", "enrol-host-agent"}:
         raise FleetBootstrapError("executor accepts only activation or host-agent enrolment")
+    controller_revision = request.controller_revision
+    controller_release_digest = request.controller_release_digest
+    controller_image_digest = request.controller_image_digest
+    controller_internal_image_digest = request.controller_internal_image_digest
+    activation_envelope_digest = request.activation_envelope_digest
+    if (
+        controller_revision is None
+        or controller_release_digest is None
+        or controller_image_digest is None
+        or controller_internal_image_digest is None
+        or activation_envelope_digest is None
+    ):
+        raise FleetBootstrapError("controller activation binding is incomplete")
     action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
     target, lane = _bootstrap_target(
         policy=policy,
@@ -405,7 +448,7 @@ def execute_bootstrap_operation(
         controller_runtime=controller_runtime,
     )
     record = store.begin(idempotency_key, request)
-    fingerprint = bootstrap_request_fingerprint(request)
+    fingerprint = record.request_fingerprint
 
     def execution(
         status: Literal["completed", "access_blocked", "failed"],
@@ -420,8 +463,11 @@ def execute_bootstrap_operation(
             action=action,
             idempotency_key=idempotency_key,
             request_fingerprint=fingerprint,
-            controller_revision=request.controller_revision,
-            controller_release_digest=request.controller_release_digest,
+            controller_revision=controller_revision,
+            controller_release_digest=controller_release_digest,
+            controller_image_digest=controller_image_digest,
+            controller_internal_image_digest=controller_internal_image_digest,
+            activation_envelope_digest=activation_envelope_digest,
             release_lane=lane.name if lane else None,
             host_agent_mtls_identity=lane.host_agent_mtls_identity if lane else None,
             error_code=error_code,
@@ -465,6 +511,9 @@ def execute_bootstrap_operation(
         "action": action,
         "controller_revision": request.controller_revision,
         "controller_release_digest": request.controller_release_digest,
+        "controller_image_digest": request.controller_image_digest,
+        "controller_internal_image_digest": request.controller_internal_image_digest,
+        "activation_envelope_digest": request.activation_envelope_digest,
         "adapter_status": adapter_status,
     }
     if lane is not None:
@@ -506,7 +555,7 @@ def execute_existing_worker_recovery(
     if request.action != "restore-existing-worker" or request.worker_name is None:
         raise FleetBootstrapError("executor accepts only existing-worker recovery")
     record = store.begin(idempotency_key, request)
-    fingerprint = bootstrap_request_fingerprint(request)
+    fingerprint = record.request_fingerprint
     target = policy.worker_target(request.worker_name)
 
     def finish(value: RecoveryExecution) -> RecoveryExecution:

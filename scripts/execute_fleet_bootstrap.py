@@ -64,15 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--active-jobs", type=int)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--operation-state", type=Path, required=True)
-    parser.add_argument(
-        "--policy", type=Path, default=ROOT / "config" / "fleet-bootstrap.yml"
-    )
-    parser.add_argument(
-        "--release-lanes", type=Path, default=ROOT / "config" / "release-lanes.yml"
-    )
-    parser.add_argument(
-        "--controller-status", type=Path, default=DEFAULT_CONTROLLER_STATUS
-    )
+    parser.add_argument("--policy", type=Path, default=ROOT / "config" / "fleet-bootstrap.yml")
+    parser.add_argument("--release-lanes", type=Path, default=ROOT / "config" / "release-lanes.yml")
+    parser.add_argument("--controller-status", type=Path, default=DEFAULT_CONTROLLER_STATUS)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 

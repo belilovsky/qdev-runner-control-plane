@@ -17,6 +17,10 @@ from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.broker import create_app
 from qdev_runner.fleet_host_dispatch import FleetHostDispatchSpool
+from qdev_runner.managed_release_ledger import (
+    QGEO_REQUIRED_JOB_PROFILES,
+    qgeo_dynamic_job_label,
+)
 from qdev_runner.models import QueuedJob
 from qdev_runner.operations import OperationStore
 from qdev_runner.operator import verify_controller_receipt
@@ -46,6 +50,8 @@ def _fleet_bootstrap_activation() -> dict[str, str]:
     return {
         "controller_revision": "a" * 40,
         "controller_release_digest": "sha256:" + "b" * 64,
+        "controller_image_digest": "sha256:" + "c" * 64,
+        "activation_envelope_digest": "sha256:" + "d" * 64,
     }
 
 
@@ -92,78 +98,100 @@ def _app(
     github: Any | None = None,
     *,
     managed_release_ledger_path: Path | None = None,
+    include_qgeo: bool = False,
 ) -> TestClient:
     inventory = tmp_path / "repos.json"
-    inventory.write_text(
-        json.dumps(
+    repositories = [
+        {
+            "id": 1,
+            "full_name": "belilovsky/qazshield",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        },
+        {
+            "id": 2,
+            "full_name": "belilovsky/qazlake",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        },
+        {
+            "id": 3,
+            "full_name": "belilovsky/example",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
+        },
+        {
+            "id": 4,
+            "full_name": "belilovsky/qazposter",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        },
+    ]
+    repositories.append(
+        {
+            "id": 5,
+            "full_name": "belilovsky/qdev-runner-control-plane",
+            "private": True,
+            "archived": False,
+            "default_branch": "main",
+            "profiles": ["qdev-ci-docker"],
+        }
+    )
+    if include_qgeo:
+        repositories.append(
             {
-                "repositories": [
-                    {
-                        "id": 1,
-                        "full_name": "belilovsky/qazshield",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 2,
-                        "full_name": "belilovsky/qazlake",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 3,
-                        "full_name": "belilovsky/example",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker", "qdev-ci-browser"],
-                    },
-                    {
-                        "id": 4,
-                        "full_name": "belilovsky/qazposter",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 5,
-                        "full_name": "belilovsky/qdev-runner-control-plane",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                    {
-                        "id": 6,
-                        "full_name": "belilovsky/qazgeo",
-                        "private": True,
-                        "archived": False,
-                        "default_branch": "main",
-                        "profiles": ["qdev-ci-docker"],
-                    },
-                ]
+                "id": 6,
+                "full_name": "belilovsky/qazgeo",
+                "private": True,
+                "archived": False,
+                "default_branch": "main",
+                "profiles": ["qdev-ci", "qdev-ci-docker"],
             }
-        ),
+        )
+    inventory.write_text(
+        json.dumps({"repositories": repositories}),
         encoding="utf-8",
     )
     profiles = tmp_path / "profiles.yml"
+    admission_overrides: dict[str, dict[str, int]] = {
+        "belilovsky/qazshield": {"qdev-ci-docker": 15360},
+        "belilovsky/qazlake": {"qdev-ci-docker": 12288},
+        "belilovsky/example": {"qdev-ci-docker": 15360},
+        "belilovsky/qazposter": {"qdev-ci-docker": 15360},
+        "belilovsky/qdev-runner-control-plane": {"qdev-ci-docker": 15360},
+    }
+    repository_constraints: dict[str, dict[str, float | int]] = {}
+    if include_qgeo:
+        admission_overrides["belilovsky/qazgeo"] = {"qdev-ci-docker": 15360}
+        repository_constraints["belilovsky/qazgeo"] = {
+            "min_disk_free_gib": 35,
+            "max_concurrency": 1,
+        }
     profiles.write_text(
         yaml.safe_dump(
             {
-                "repository_admission_disk_mb": {
-                    "belilovsky/qazshield": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazlake": {"qdev-ci-docker": 12288},
-                    "belilovsky/example": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazposter": {"qdev-ci-docker": 15360},
-                    "belilovsky/qdev-runner-control-plane": {"qdev-ci-docker": 15360},
-                    "belilovsky/qazgeo": {"qdev-ci-docker": 15360},
-                },
+                "repository_admission_disk_mb": admission_overrides,
+                "repository_admission_constraints": repository_constraints,
                 "profiles": {
+                    "qdev-ci": {
+                        "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
+                        "resources": {
+                            "cpu": 1.0,
+                            "memory_mb": 3072,
+                            "disk_mb": 12288,
+                            "pids_limit": 512,
+                        },
+                        "timeout_minutes": 45,
+                        "allow_public_pr": True,
+                    },
                     "qdev-ci-docker": {
                         "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
                         "resources": {
@@ -193,33 +221,52 @@ def _app(
         encoding="utf-8",
     )
     release_lanes = tmp_path / "release-lanes.yml"
-    release_lanes.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "qdev-release-lanes-v1",
-                "lanes": {
-                    "qdev-release-qaz-tours": {
-                        "project_id": "qaz-tours",
-                        "placement": "vps-hostinger-186",
-                        "client_mtls_identity": "qdev-release-client:qaz-tours",
-                        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
-                        "minimum_free_gib": 60,
-                        "heartbeat_ttl_seconds": 90,
-                        "artifact_repository": "qaz-tours",
-                    },
-                    "qdev-release-qmt": {
-                        "project_id": "kaztilshi",
-                        "placement": "srv138jump",
-                        "client_mtls_identity": "qdev-release-client:kaztilshi",
-                        "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
-                        "minimum_free_gib": 20,
-                        "heartbeat_ttl_seconds": 90,
-                        "artifact_repository": "kaztilshi",
-                    },
-                },
+    lane_document: dict[str, Any] = {
+        "schema_version": "qdev-release-lanes-v2" if include_qgeo else "qdev-release-lanes-v1",
+        "lanes": {
+            "qdev-release-qaz-tours": {
+                "project_id": "qaz-tours",
+                "placement": "vps-hostinger-186",
+                "client_mtls_identity": "qdev-release-client:qaz-tours",
+                "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+                "minimum_free_gib": 60,
+                "heartbeat_ttl_seconds": 90,
+                "artifact_repository": "qaz-tours",
             },
-            sort_keys=True,
-        ),
+            "qdev-release-qmt": {
+                "project_id": "kaztilshi",
+                "placement": "srv138jump",
+                "client_mtls_identity": "qdev-release-client:kaztilshi",
+                "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
+                "minimum_free_gib": 20,
+                "heartbeat_ttl_seconds": 90,
+                "artifact_repository": "kaztilshi",
+            },
+        },
+    }
+    if include_qgeo:
+        lane_document["lanes"]["qdev-release-qazgeo"] = {
+            "project_id": "qazgeo",
+            "placement": "qazgeo-app-runtime",
+            "client_mtls_identity": "qdev-release-client:qazgeo",
+            "host_agent_mtls_identity": "qdev-host-agent:qazgeo-app-runtime",
+            "minimum_free_gib": 20,
+            "heartbeat_ttl_seconds": 90,
+            "artifact_repository": "belilovsky/qazgeo",
+            "canonical_repository": "belilovsky/qazgeo",
+            "artifact_ref_prefix": "registry.ci.qdev.run/belilovsky/qazgeo",
+            "native_host_adapter": "qazgeo-native-immutable-release-v1",
+            "runtime_endpoints": [
+                "https://qgeo.tech/health",
+                "https://qgeo.tech/health/live",
+                "https://qgeo.tech/health/ready",
+                "https://qgeo.tech/health/quality",
+            ],
+            "rollback_reference": "controller-verified immutable runtime rollback receipt",
+            "required_readiness": ["db", "postgis", "martin", "photon", "redis", "app"],
+        }
+    release_lanes.write_text(
+        yaml.safe_dump(lane_document, sort_keys=True),
         encoding="utf-8",
     )
     fleet_bootstrap_policy = tmp_path / "fleet-bootstrap.yml"
@@ -230,6 +277,12 @@ def _app(
         encoding="utf-8",
     )
     admin_platform_ledger, admin_platform_receipts = _initialized_admin_platform_ledger(tmp_path)
+    managed_release_ledger = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
+    if include_qgeo:
+        managed_release_ledger = tmp_path / "managed-release-ledger.yml"
+        managed_release_ledger.write_bytes(
+            (Path(__file__).parents[1] / "config" / "managed-release-ledger.yml").read_bytes()
+        )
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -244,6 +297,7 @@ def _app(
         operator_directive_key=DIRECTIVE_KEY,
         operations_root=tmp_path / "operations",
         controller_release_status_path=tmp_path / "controller-release.json",
+        controller_activation_status_path=tmp_path / "controller-activation.json",
         claim_scopes_path=tmp_path / "claim-scopes.json",
         release_lanes_path=release_lanes,
         fleet_bootstrap_policy_path=fleet_bootstrap_policy,
@@ -252,10 +306,11 @@ def _app(
         fleet_host_dispatch_request_root=tmp_path / "fleet-host-dispatch" / "incoming",
         fleet_host_dispatch_result_root=tmp_path / "fleet-host-dispatch" / "results",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
-        managed_release_ledger_path=managed_release_ledger_path
-        or Path(__file__).parents[1] / "config" / "managed-release-ledger.yml",
         admin_platform_ledger_path=admin_platform_ledger,
         admin_platform_receipt_root=admin_platform_receipts,
+        managed_release_ledger_path=(
+            managed_release_ledger_path or managed_release_ledger
+        ),
         release_jobs_root=tmp_path / "release-jobs",
         release_host_dispatch_keys_file=tmp_path / "release-host-dispatch-keys.json",
         release_host_dispatch_claim_ttl_seconds=120,
@@ -650,6 +705,39 @@ def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) 
     )
 
 
+def test_certificate_bound_release_lane_ignores_spoofed_identity_header(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    settings = client.app.state.settings
+    document = yaml.safe_load(settings.release_lanes_path.read_text(encoding="utf-8"))
+    document["lanes"]["qdev-release-qaz-tours"]["client_certificate_sha256"] = "a" * 64
+    document["lanes"]["qdev-release-qaz-tours"]["host_agent_certificate_sha256"] = "b" * 64
+    settings.release_lanes_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    heartbeat = _release_heartbeat()
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers={
+                "X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186",
+                "X-QDev-Client-Certificate-SHA256": "c" * 64,
+            },
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers={
+                "X-QDev-mTLS-Identity": "spoofed",
+                "X-QDev-Client-Certificate-SHA256": "b" * 64,
+            },
+        ).status_code
+        == 200
+    )
+
+
 class FakeGitHub:
     def __init__(
         self,
@@ -695,6 +783,402 @@ class FakeGitHub:
         labels: tuple[str, ...],
     ) -> str:
         return "signed-jit-config"
+
+
+QGEO_SOURCE_SHA = "9" * 40
+QGEO_PR_CHECKOUT_SHA = "8" * 40
+QGEO_PR_BRANCH = "codex/qgeo-final"
+_QGEO_PROVIDER_JOB_NAMES = {
+    "lint": "lint",
+    "security-source": "security-source",
+    "test": "test",
+    "docker-build": "docker-build",
+    "contract": "qdev-runner-contract",
+}
+
+
+def _qgeo_bindings(phase: str) -> tuple[dict[str, object], ...]:
+    event_offset = 0 if phase == "pull_request" else 1000
+    workflow_run_ids = {
+        ".github/workflows/ci.yml": 41001 + event_offset,
+        ".github/workflows/qdev-runner-contract.yml": 41002 + event_offset,
+    }
+    bindings: list[dict[str, object]] = []
+    job_id = 51000 + event_offset
+    for workflow_path, jobs in QGEO_REQUIRED_JOB_PROFILES[phase].items():
+        for job_name, profile in jobs.items():
+            job_id += 1
+            run_id = workflow_run_ids[workflow_path]
+            checkout_sha = QGEO_PR_CHECKOUT_SHA if phase == "pull_request" else QGEO_SOURCE_SHA
+            head_branch = QGEO_PR_BRANCH if phase == "pull_request" else "main"
+            ref = "refs/pull/63/merge" if phase == "pull_request" else "refs/heads/main"
+            bindings.append(
+                {
+                    "repository": "belilovsky/qazgeo",
+                    "candidate_sha": QGEO_SOURCE_SHA,
+                    "checkout_sha": checkout_sha,
+                    "run_id": run_id,
+                    "attempt": 1,
+                    "job_id": job_id,
+                    "workflow_path": workflow_path,
+                    "event": phase,
+                    "ref": ref,
+                    "head_branch": head_branch,
+                    "profile": profile,
+                    "job_name": job_name,
+                    "provider_name": _QGEO_PROVIDER_JOB_NAMES[job_name],
+                    "labels": sorted(
+                        [
+                            "self-hosted",
+                            "Linux",
+                            "X64",
+                            profile,
+                            qgeo_dynamic_job_label(str(run_id), "1", job_name),
+                        ]
+                    ),
+                }
+            )
+    return tuple(bindings)
+
+
+class QGeoFakeGitHub:
+    def __init__(self, *, phase: str = "pull_request") -> None:
+        self.phase = phase
+        self.run_status = "completed"
+        self.run_conclusion: str | None = "success"
+        self.job_status = "completed"
+        self.job_conclusion: str | None = "success"
+        self.run_overrides: dict[int, dict[str, object]] = {}
+        self.job_overrides: dict[int, dict[str, object]] = {}
+        self.extra_jobs_by_run: dict[int, list[dict[str, object]]] = {}
+
+    @property
+    def bindings(self) -> tuple[dict[str, object], ...]:
+        return _qgeo_bindings(self.phase)
+
+    def _binding_for_run(self, run_id: int) -> dict[str, object]:
+        return next(binding for binding in self.bindings if binding["run_id"] == run_id)
+
+    def _binding_for_job(self, job_id: int) -> dict[str, object]:
+        return next(binding for binding in self.bindings if binding["job_id"] == job_id)
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, object]:
+        binding = self._binding_for_run(run_id)
+        is_pr = self.phase == "pull_request"
+        value: dict[str, object] = {
+            "id": run_id,
+            "repository": {"full_name": "belilovsky/qazgeo"},
+            "head_sha": binding["checkout_sha"],
+            "run_attempt": 1,
+            "status": self.run_status,
+            "conclusion": self.run_conclusion,
+            "event": self.phase,
+            "path": binding["workflow_path"],
+            "ref": binding["ref"],
+            "head_branch": binding["head_branch"],
+            "pull_requests": (
+                [
+                    {
+                        "number": 63,
+                        "head": {
+                            "sha": QGEO_SOURCE_SHA,
+                            "ref": QGEO_PR_BRANCH,
+                            "repo": {"full_name": "belilovsky/qazgeo"},
+                        },
+                        "base": {"ref": "main"},
+                    }
+                ]
+                if is_pr
+                else []
+            ),
+        }
+        value.update(self.run_overrides.get(run_id, {}))
+        return value
+
+    def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, object]:
+        binding = self._binding_for_job(job_id)
+        value: dict[str, object] = {
+            "id": job_id,
+            "run_id": binding["run_id"],
+            "run_attempt": 1,
+            "head_sha": binding["checkout_sha"],
+            "head_branch": binding["head_branch"],
+            "status": self.job_status,
+            "conclusion": self.job_conclusion,
+            "name": binding["provider_name"],
+            "labels": binding["labels"],
+        }
+        value.update(self.job_overrides.get(job_id, {}))
+        return value
+
+    def workflow_run_jobs(
+        self, installation_id: int, repository: str, run_id: int, attempt: int
+    ) -> list[dict[str, object]]:
+        jobs = [
+            self.workflow_job(installation_id, repository, int(binding["job_id"]))
+            for binding in self.bindings
+            if binding["run_id"] == run_id
+        ]
+        first = self._binding_for_run(run_id)
+        if self.phase == "pull_request" and first["workflow_path"] == ".github/workflows/ci.yml":
+            jobs.append(
+                {
+                    "id": 51999,
+                    "run_id": run_id,
+                    "run_attempt": attempt,
+                    "head_sha": QGEO_PR_CHECKOUT_SHA,
+                    "head_branch": QGEO_PR_BRANCH,
+                    "status": "completed",
+                    "conclusion": "skipped",
+                    "name": "docker-build",
+                    "labels": sorted(
+                        [
+                            "self-hosted",
+                            "Linux",
+                            "X64",
+                            "qdev-ci-docker",
+                            qgeo_dynamic_job_label(str(run_id), str(attempt), "docker-build"),
+                        ]
+                    ),
+                }
+            )
+        jobs.extend(self.extra_jobs_by_run.get(run_id, []))
+        return jobs
+
+
+def _seed_qgeo_jobs(
+    client: TestClient,
+    bindings: tuple[dict[str, object], ...],
+) -> None:
+    store: Store = client.app.state.store
+    for index, binding in enumerate(bindings):
+        run_id = int(binding["run_id"])
+        job_id = int(binding["job_id"])
+        labels = tuple(str(label) for label in binding["labels"])
+        queued = QueuedJob(
+            delivery_id=f"qgeo-delivery-{job_id}",
+            job_id=job_id,
+            run_id=run_id,
+            repository="belilovsky/qazgeo",
+            repository_id=5,
+            installation_id=2,
+            labels=labels,
+            head_sha=str(binding["checkout_sha"]),
+            head_branch=str(binding["head_branch"]),
+            payload={
+                "action": "queued",
+                "repository": {"id": 5, "full_name": "belilovsky/qazgeo"},
+                "installation": {"id": 2},
+                "workflow_job": {
+                    "id": job_id,
+                    "run_id": run_id,
+                    "run_attempt": 1,
+                    "name": binding["provider_name"],
+                    "labels": list(labels),
+                    "head_sha": binding["checkout_sha"],
+                    "head_branch": binding["head_branch"],
+                },
+            },
+        )
+        assert store.enqueue(queued) is True, index
+
+
+def _qgeo_registration_body(binding: dict[str, object]) -> dict[str, object]:
+    return {
+        "repository": "belilovsky/qazgeo",
+        "source_sha": QGEO_SOURCE_SHA,
+        "run_id": binding["run_id"],
+        "attempt": binding["attempt"],
+        "job_id": binding["job_id"],
+    }
+
+
+def _register_qgeo_bindings(client: TestClient, bindings: tuple[dict[str, object], ...]) -> None:
+    for binding in bindings:
+        response = client.post(
+            "/internal/v1/operations/releases/qazgeo/ci-registration",
+            json=_qgeo_registration_body(binding),
+            headers=OPERATOR_HEADERS,
+        )
+        assert response.status_code == 200, response.text
+
+
+def test_qgeo_ci_registration_is_protected_exact_and_idempotent(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    body = _qgeo_registration_body(binding)
+
+    path = "/internal/v1/operations/releases/qazgeo/ci-registration"
+    assert client.post(path, json=body).status_code == 401
+    assert (
+        client.post(path, json=body, headers={"X-QDev-Operator-Token": OPERATOR_TOKEN}).status_code
+        == 403
+    )
+
+    first = client.post(path, json=body, headers=OPERATOR_HEADERS)
+    assert first.status_code == 200, first.text
+    first_payload = verify_controller_receipt(first.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert first_payload["idempotent"] is False
+    assert first_payload["provider"]["event"] == "pull_request"
+    assert first_payload["provider"]["candidate_sha"] == QGEO_SOURCE_SHA
+    assert first_payload["provider"]["checkout_sha"] == QGEO_PR_CHECKOUT_SHA
+    assert first_payload["provider"]["labels"] == binding["labels"]
+
+    repeated = client.post(path, json=body, headers=OPERATOR_HEADERS)
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+
+def test_qgeo_ci_registration_rejects_main_push_from_closed_ledger(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub(phase="push")
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=_qgeo_registration_body(binding),
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 409
+
+
+def test_qgeo_ci_registration_rejects_forged_provider_labels(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    github.job_overrides[int(binding["job_id"])] = {
+        "labels": [*binding["labels"], "forged-extra-label"]
+    }
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=_qgeo_registration_body(binding),
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "managed CI binding was rejected"
+
+
+def test_qgeo_ci_reconcile_promotes_all_bindings_and_is_idempotent(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, github.bindings)
+    _register_qgeo_bindings(client, github.bindings)
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["idempotent"] is False
+    assert payload["run_ids"] == [41001, 41002]
+    assert len(payload["bindings"]) == 4
+    ledger = yaml.safe_load(client.app.state.settings.managed_release_ledger_path.read_text())
+    entry = ledger["entries"]["qazgeo"]
+    assert entry["status"] == "ci_passed"
+    assert entry["registration"]["state"] == "sealed"
+    assert entry["registration"]["phase"] == "pull_request"
+    assert all(item["state"] == "terminal" for item in entry["ci_runs"])
+
+    repeated = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+
+def test_qgeo_ci_reconcile_seals_exact_main_push_after_verified_pr(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, github.bindings)
+    _register_qgeo_bindings(client, github.bindings)
+    pr_response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert pr_response.status_code == 200, pr_response.text
+
+    github.phase = "push"
+    _seed_qgeo_jobs(client, github.bindings)
+    _register_qgeo_bindings(client, github.bindings)
+    push_response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert push_response.status_code == 200, push_response.text
+    ledger = yaml.safe_load(client.app.state.settings.managed_release_ledger_path.read_text())
+    entry = ledger["entries"]["qazgeo"]
+    assert entry["registration"]["state"] == "sealed"
+    assert entry["registration"]["phase"] == "push"
+    assert len(entry["ci_runs"]) == 5
+    assert {item["event"] for item in entry["ci_runs"]} == {"push"}
+    assert {item["checkout_sha"] for item in entry["ci_runs"]} == {QGEO_SOURCE_SHA}
+
+
+def test_qgeo_ci_reconcile_rejects_extra_provider_job(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    _seed_qgeo_jobs(client, github.bindings)
+    _register_qgeo_bindings(client, github.bindings)
+    run_id = int(github.bindings[0]["run_id"])
+    github.extra_jobs_by_run[run_id] = [
+        {
+            "id": 59999,
+            "run_id": run_id,
+            "run_attempt": 1,
+            "head_sha": QGEO_PR_CHECKOUT_SHA,
+            "head_branch": QGEO_PR_BRANCH,
+            "status": "completed",
+            "conclusion": "success",
+            "name": "unexpected",
+            "labels": [],
+        }
+    ]
+    response = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-reconcile",
+        json={"source_sha": QGEO_SOURCE_SHA},
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "GitHub job set is not exact"
+
+
+def test_qgeo_ci_registration_rejects_non_success_and_synthetic_sha_forgery(
+    tmp_path: Path,
+) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    github.job_overrides[int(binding["job_id"])] = {"conclusion": "neutral"}
+    neutral = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=_qgeo_registration_body(binding),
+        headers=OPERATOR_HEADERS,
+    )
+    assert neutral.status_code == 409
+
+    github.job_overrides.clear()
+    github.run_overrides[int(binding["run_id"])] = {"head_sha": QGEO_SOURCE_SHA}
+    forged = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=_qgeo_registration_body(binding),
+        headers=OPERATOR_HEADERS,
+    )
+    assert forged.status_code == 409
 
 
 def _seed_stale_running_job(client: TestClient) -> float:
@@ -744,8 +1228,11 @@ def _heartbeat(
     admitted: bool = False,
     scope_id: str | None = None,
     profiles: list[str] | None = None,
+    effective_profiles: list[str] | None = None,
+    concurrency: int = 1,
 ) -> dict[str, object]:
-    registered_profiles = profiles or ["qdev-ci-docker"]
+    worker_profiles = profiles or ["qdev-ci-docker"]
+    admitted_profiles = effective_profiles if effective_profiles is not None else ["qdev-ci-docker"]
     raw = {
         "allowed": True,
         "disk_used_pct": 87.0,
@@ -763,7 +1250,7 @@ def _heartbeat(
         json={
             "worker_name": WORKER_NAME,
             "tier": "primary",
-            "profiles": registered_profiles,
+            "profiles": worker_profiles,
             "active_jobs": active_jobs,
             "active_job_ids": [42] if active_jobs else [],
             "detail": {
@@ -771,11 +1258,11 @@ def _heartbeat(
                 "raw_capacity": raw,
                 "baseline_capacity": baseline,
                 "effective_capacity": baseline,
-                "effective_profiles": registered_profiles if admitted else [],
+                "effective_profiles": admitted_profiles if admitted else [],
                 "capacity_directive_id": None,
                 "configured_claim_scope_id": scope_id,
-                "concurrency": 1,
-                "slots_available": 0 if active_jobs else 1,
+                "concurrency": concurrency,
+                "slots_available": max(0, concurrency - active_jobs),
                 "min_disk_free_gib": 30.0,
             },
         },
@@ -816,11 +1303,22 @@ def _seed_pending_job(
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
     status_path = tmp_path / "controller-release.json"
     status = {
-        "schema": "qdev-controller-release-status-v1",
+        "schema": "qdev-controller-release-status-v2",
         "state": "active",
         "revision": "a" * 40,
-        "release_digest": "b" * 64,
+        "release_digest": "sha256:" + "b" * 64,
         "activated_at": "2026-08-31T00:00:00Z",
+        "runtime_identity": {
+            "source_revision": "a" * 40,
+            "source_digest": "sha256:" + "c" * 64,
+            "public_image_id": "sha256:" + "d" * 64,
+            "internal_image_id": "sha256:" + "e" * 64,
+        },
+        "dependency_identity": {
+            "requirements_digest": "sha256:" + "f" * 64,
+            "public_installed_digest": "sha256:" + "1" * 64,
+            "internal_installed_digest": "sha256:" + "1" * 64,
+        },
     }
     status_path.write_text(json.dumps(status), encoding="utf-8")
     client = _app(tmp_path)
@@ -830,12 +1328,12 @@ def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_
     assert health.json()["controller_release"] == status
     assert client.get("/health/runtime").json() == {
         "schema": "qdev-controller-runtime-health-v1",
-        "state": "legacy",
+        "state": "active",
         "revision": "a" * 40,
         "digest": "sha256:" + "b" * 64,
         "activated": "2026-08-31T00:00:00Z",
-        "runtime_identity": None,
-        "dependency_identity": None,
+        "runtime_identity": status["runtime_identity"],
+        "dependency_identity": status["dependency_identity"],
         "receipt": status,
     }
 
@@ -932,18 +1430,20 @@ def test_controller_runtime_health_rejects_unbound_v2_identity(tmp_path: Path) -
 def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_adapter(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
-    activation = _fleet_bootstrap_activation()
+    # The bootstrap policy enrols the managed QGeo lane; include its test lane
+    # while retaining the active controller tuple from the policy fixture.
+    client = _app(tmp_path, include_qgeo=True)
     request = {
-        "schema": "qdev-fleet-bootstrap-request-v1",
+        "schema": "qdev-fleet-bootstrap-request-v2",
         "action": "restore-existing-worker",
         "source_sha": "a" * 40,
         "run_id": 123,
         "job_id": 456,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": activation["controller_revision"],
-        "controller_release_digest": activation["controller_release_digest"],
+        "controller_revision": None,
+        "controller_image_digest": None,
+        "activation_envelope_digest": None,
         "release_lane": None,
         "worker_name": "qdev-platform-ci-187",
     }
@@ -977,7 +1477,7 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     client = _app(tmp_path)
     activation = _fleet_bootstrap_activation()
     base_request: dict[str, Any] = {
-        "schema": "qdev-fleet-bootstrap-request-v1",
+        "schema": "qdev-fleet-bootstrap-request-v2",
         "source_sha": "a" * 40,
         "run_id": 123,
         "job_id": 456,
@@ -985,6 +1485,8 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
         "claim_ttl_seconds": 300,
         "controller_revision": activation["controller_revision"],
         "controller_release_digest": activation["controller_release_digest"],
+        "controller_image_digest": activation["controller_image_digest"],
+        "activation_envelope_digest": activation["activation_envelope_digest"],
         "worker_name": None,
     }
     activation_path = "/internal/v1/operations/fleet-bootstrap/activate-controller"
@@ -1024,7 +1526,6 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     assert activation_execution["release_lane"] is None
     assert activation_execution["host_agent_mtls_identity"] is None
     assert not (tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json").exists()
-
     incoming = tmp_path / "fleet-host-dispatch" / "incoming"
     results = tmp_path / "fleet-host-dispatch" / "results"
     incoming.mkdir(parents=True)
@@ -1080,6 +1581,7 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     assert enrolment_execution["release_lane"] == "qdev-release-qmt"
     assert enrolment_execution["host_agent_mtls_identity"] == "qdev-host-agent:srv138jump"
     assert (incoming / "host-enrolment-001.json").is_file()
+    assert not (tmp_path / "fleet-bootstrap-receipts" / "host-enrolment-001.json").exists()
 
     mismatched = client.post(
         activation_path,
@@ -1159,24 +1661,50 @@ def test_health_reports_profile_specific_admission_without_job_details(tmp_path:
     }
 
 
-def test_controller_release_status_rejects_unverifiable_values(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [
+        {
+            "schema": "qdev-controller-release-status-v1",
+            "state": "active",
+            "revision": "a" * 40,
+            "release_digest": "b" * 64,
+            "activated_at": "2026-08-31T09:00:00Z",
+        },
+        {
+            "schema": "qdev-controller-release-status-v2",
+            "state": "active",
+            "generation": 2,
+            "source_sha": "a" * 40,
+            "image_digest": "b" * 64,
+            "policy_bundle_digest": "c" * 63,
+            "previous": None,
+            "transaction_id": "activate-0002",
+            "activated_at": "2026-08-31T09:00:00Z",
+        },
+        {
+            "schema": "qdev-controller-release-status-v2",
+            "state": "active",
+            "generation": 2,
+            "source_sha": "a" * 40,
+            "image_digest": "b" * 64,
+            "policy_bundle_digest": "c" * 64,
+            "previous": None,
+            "transaction_id": "activate-0002",
+            "activated_at": "2026-08-31T09:00:00Z",
+            "forged": True,
+        },
+    ],
+)
+def test_controller_release_status_rejects_unverifiable_values(
+    tmp_path: Path, status: dict[str, object]
+) -> None:
     status_path = tmp_path / "controller-release.json"
-    status_path.write_text(
-        json.dumps(
-            {
-                "schema": "qdev-controller-release-status-v1",
-                "state": "active",
-                "revision": "unknown",
-                "release_digest": "b" * 64,
-                "activated_at": "2026-08-31T09:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
+    status_path.write_text(json.dumps(status), encoding="utf-8")
     client = _app(tmp_path)
 
     assert client.get("/health").json()["controller_release"] == {
-        "schema": "qdev-controller-release-status-v1",
+        "schema": "qdev-controller-release-status-v2",
         "state": "unavailable",
     }
     assert client.get("/health/runtime").json() == {
@@ -2067,6 +2595,102 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
     assert claim.json()["profile"]["name"] == "qdev-ci-browser"
 
 
+def test_managed_qgeo_scope_prunes_terminal_profile_tuple_on_reuse(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    github.run_status = "queued"
+    github.run_conclusion = None
+    github.job_status = "queued"
+    github.job_conclusion = None
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    store: Store = client.app.state.store
+    _seed_qgeo_jobs(client, github.bindings)
+    _register_qgeo_bindings(client, github.bindings)
+    first_binding = next(binding for binding in github.bindings if binding["profile"] == "qdev-ci")
+    second_binding = next(
+        binding for binding in github.bindings if binding["profile"] == "qdev-ci-docker"
+    )
+    first_job_id = int(first_binding["job_id"])
+    second_job_id = int(second_binding["job_id"])
+    scope_id = "qgeo-release-scope-20260904"
+    request = {
+        "job_id": first_job_id,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": scope_id,
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "qgeo-profile-transition",
+        "duration_seconds": 900,
+    }
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=40,
+        scope_id=scope_id,
+        profiles=["qdev-ci", "qdev-ci-docker"],
+        effective_profiles=["qdev-ci"],
+    )
+    headers = OPERATOR_HEADERS
+    first = client.post(
+        f"/internal/v1/operations/jobs/{first_job_id}/claim-scope",
+        headers=headers,
+        json=request,
+    )
+    assert first.status_code == 200, first.text
+    store.set_status(first_job_id, "completed", "success")
+
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=40,
+        scope_id=scope_id,
+        profiles=["qdev-ci", "qdev-ci-docker"],
+        effective_profiles=["qdev-ci-docker"],
+    )
+    second_request = request | {
+        "job_id": second_job_id,
+    }
+    rollover = client.post(
+        f"/internal/v1/operations/jobs/{second_job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert rollover.status_code == 200
+    rollover_payload = verify_controller_receipt(rollover.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert rollover_payload["rolled_over_terminal_scope"] is True
+    assert [item["job_id"] for item in rollover_payload["claim_scope"]["jobs"]] == [
+        first_job_id,
+        second_job_id,
+    ]
+
+    repaired = client.post(
+        f"/internal/v1/operations/jobs/{second_job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert repaired.status_code == 200
+    repaired_payload = verify_controller_receipt(repaired.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repaired_payload["idempotent"] is False
+    assert repaired_payload["repaired_managed_scope"] is True
+    assert [item["job_id"] for item in repaired_payload["claim_scope"]["jobs"]] == [second_job_id]
+
+    repeated = client.post(
+        f"/internal/v1/operations/jobs/{second_job_id}/claim-scope",
+        headers=headers,
+        json=second_request,
+    )
+    assert repeated.status_code == 200
+    repeated_payload = verify_controller_receipt(repeated.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
+    assert repeated_payload["idempotent"] is True
+
+
 def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
@@ -2180,6 +2804,88 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
     assert response.status_code == 200
     receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
     assert receipt["payload"]["operation"]["repository"] == "belilovsky/qazlake"
+
+
+@pytest.mark.parametrize(
+    ("disk_free_gib", "concurrency", "message"),
+    [
+        (34.999, 1, "repository admission requires at least 35 GiB free disk"),
+        (40.0, 2, "repository admission requires worker concurrency at most 1"),
+    ],
+)
+def test_qazgeo_capacity_override_cannot_weaken_repository_constraints(
+    tmp_path: Path,
+    disk_free_gib: float,
+    concurrency: int,
+    message: str,
+) -> None:
+    client = _app(tmp_path, include_qgeo=True)
+    _heartbeat(client, disk_free_gib=disk_free_gib, concurrency=concurrency)
+    _seed_pending_job(
+        client,
+        42,
+        "qazgeo-head",
+        repository="belilovsky/qazgeo",
+        head_sha="a" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazgeo",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "must preserve the QGeo absolute admission floor",
+        },
+    )
+
+    assert response.status_code == 409
+    assert message in response.json()["detail"]
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
+
+
+def test_qazgeo_capacity_override_accepts_exact_server_owned_boundary(tmp_path: Path) -> None:
+    client = _app(tmp_path, include_qgeo=True)
+    _heartbeat(client, disk_free_gib=35.0, concurrency=1)
+    _seed_pending_job(
+        client,
+        42,
+        "qazgeo-head",
+        repository="belilovsky/qazgeo",
+        head_sha="a" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazgeo",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "exact QGeo admission boundary regression",
+        },
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    operation = receipt["payload"]["operation"]
+    assert operation["repository"] == "belilovsky/qazgeo"
+    assert operation["min_disk_free_gib"] == 4.5
 
 
 def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
@@ -2556,9 +3262,7 @@ def test_capacity_override_does_not_prioritize_non_active_controller_sha(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "capacity override target is not the durable FIFO head"
-    )
+    assert response.json()["detail"] == ("capacity override target is not the durable FIFO head")
     assert (
         client.app.state.operations.active(
             WORKER_NAME,

@@ -11,6 +11,26 @@ on:
           - activate-controller
           - enrol-host-agent
           - restore-existing-worker
+      controller_revision:
+        description: "Exact pushed controller source SHA; activation/enrolment only"
+        required: false
+        type: string
+      controller_release_digest:
+        description: "Exact immutable controller release bundle digest; activation/enrolment only"
+        required: false
+        type: string
+      controller_image_digest:
+        description: "Exact immutable controller image digest; activation/enrolment only"
+        required: false
+        type: string
+      controller_internal_image_digest:
+        description: Exact internal controller OCI image digest (defaults to public for legacy releases)
+        required: false
+        type: string
+      activation_envelope_digest:
+        description: "Digest of the externally signed activation envelope"
+        required: false
+        type: string
       release_lane:
         description: "Required only for enrol-host-agent"
         required: false
@@ -41,7 +61,12 @@ concurrency:
 jobs:
   validate:
     name: fleet-bootstrap-validate
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-fleet-bootstrap-validate
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -55,6 +80,11 @@ jobs:
       - name: Validate signed bootstrap request
         env:
           BOOTSTRAP_ACTION: ${{ inputs.action }}
+          BOOTSTRAP_CONTROLLER_REVISION: ${{ inputs.controller_revision }}
+          BOOTSTRAP_CONTROLLER_RELEASE_DIGEST: ${{ inputs.controller_release_digest }}
+          BOOTSTRAP_CONTROLLER_IMAGE_DIGEST: ${{ inputs.controller_image_digest }}
+          BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST: ${{ inputs.controller_internal_image_digest }}
+          BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST: ${{ inputs.activation_envelope_digest }}
           BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
           BOOTSTRAP_WORKER_NAME: ${{ inputs.worker_name }}
           BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}

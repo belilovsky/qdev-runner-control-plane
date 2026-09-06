@@ -77,19 +77,18 @@ class BrokerSettings:
     controller_release_status_path: Path = Path(
         "/var/lib/qdev-runner/controller-status/controller-release.json"
     )
+    controller_activation_status_path: Path = Path(
+        "/var/lib/qdev-runner/controller-activation/activation-status.json"
+    )
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
     admin_platform_ledger_path: Path = Path(
         "/var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml"
     )
-    admin_platform_receipt_root: Path = Path(
-        "/var/lib/qdev-runner/admin-platform-receipts"
-    )
+    admin_platform_receipt_root: Path = Path("/var/lib/qdev-runner/admin-platform-receipts")
     managed_release_ledger_path: Path = Path("/etc/qdev-runner/managed-release-ledger.yml")
     release_jobs_root: Path = Path("/var/lib/qdev-runner/release-jobs")
-    release_host_dispatch_keys_file: Path = Path(
-        "/etc/qdev-runner/release-host-dispatch-keys.json"
-    )
+    release_host_dispatch_keys_file: Path = Path("/etc/qdev-runner/release-host-dispatch-keys.json")
     release_host_dispatch_claim_ttl_seconds: int = 120
     release_job_lease_ttl_seconds: int = 3600
     github_actions_oidc_issuer: str = "https://token.actions.githubusercontent.com"
@@ -98,18 +97,14 @@ class BrokerSettings:
     )
     github_actions_oidc_audience: str = "qdev-artifact-v1"
     fleet_bootstrap_policy_path: Path = Path("/etc/qdev-runner/fleet-bootstrap.yml")
-    fleet_bootstrap_operation_root: Path = Path(
-        "/var/lib/qdev-runner/operations/fleet-bootstrap"
-    )
+    fleet_bootstrap_operation_root: Path = Path("/var/lib/qdev-runner/operations/fleet-bootstrap")
     fleet_bootstrap_receipt_root: Path = Path(
         "/var/lib/qdev-runner/operations/fleet-bootstrap-receipts"
     )
     fleet_host_dispatch_request_root: Path = Path(
         "/var/lib/qdev-runner/fleet-host-dispatch/incoming"
     )
-    fleet_host_dispatch_result_root: Path = Path(
-        "/var/lib/qdev-runner/fleet-host-dispatch/results"
-    )
+    fleet_host_dispatch_result_root: Path = Path("/var/lib/qdev-runner/fleet-host-dispatch/results")
     # Recovery crosses the authenticated controller edge.  The shared secret
     # proves the edge hop while the edge-overwritten certificate fingerprint
     # selects one fixed operator or host-agent identity.
@@ -137,9 +132,7 @@ class BrokerSettings:
             else (os.environ.get("QDEV_GITHUB_APP_ID", "").strip() or None)
         )
         app_private_key_path = (
-            Path(_required("QDEV_GITHUB_APP_PRIVATE_KEY"))
-            if surface == "internal"
-            else None
+            Path(_required("QDEV_GITHUB_APP_PRIVATE_KEY")) if surface == "internal" else None
         )
         release_host_dispatch_claim_ttl_seconds = int(
             os.environ.get("QDEV_RELEASE_HOST_DISPATCH_CLAIM_TTL_SECONDS", "120")
@@ -152,18 +145,12 @@ class BrokerSettings:
             os.environ.get("QDEV_RELEASE_JOB_LEASE_TTL_SECONDS", "3600")
         )
         if not 60 <= release_job_lease_ttl_seconds <= 86400:
-            raise RuntimeError(
-                "QDEV_RELEASE_JOB_LEASE_TTL_SECONDS must be between 60 and 86400"
-            )
+            raise RuntimeError("QDEV_RELEASE_JOB_LEASE_TTL_SECONDS must be between 60 and 86400")
         return cls(
             app_id=app_id,
             app_private_key_path=app_private_key_path,
-            webhook_secret=(
-                _required("QDEV_GITHUB_WEBHOOK_SECRET") if surface == "public" else ""
-            ),
-            worker_token=(
-                _required("QDEV_WORKER_TOKEN") if surface == "internal" else None
-            ),
+            webhook_secret=(_required("QDEV_GITHUB_WEBHOOK_SECRET") if surface == "public" else ""),
+            worker_token=(_required("QDEV_WORKER_TOKEN") if surface == "internal" else None),
             inventory_path=Path(os.environ.get("QDEV_INVENTORY", "/etc/qdev-runner/repos.json")),
             profiles_path=Path(os.environ.get("QDEV_PROFILES", "/etc/qdev-runner/profiles.yml")),
             database_path=Path(os.environ.get("QDEV_DATABASE", "/var/lib/qdev-runner/broker.db")),
@@ -185,9 +172,7 @@ class BrokerSettings:
             operator_directive_key=(
                 os.environ.get("QDEV_OPERATOR_DIRECTIVE_KEY", "").strip() or None
             ),
-            controller_claim_key=(
-                os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None
-            ),
+            controller_claim_key=(os.environ.get("QDEV_RELEASE_CLAIM_KEY", "").strip() or None),
             operations_root=Path(
                 os.environ.get("QDEV_OPERATIONS_ROOT", "/var/lib/qdev-runner/operations")
             ),
@@ -195,6 +180,12 @@ class BrokerSettings:
                 os.environ.get(
                     "QDEV_CONTROLLER_RELEASE_STATUS",
                     "/var/lib/qdev-runner/controller-status/controller-release.json",
+                )
+            ),
+            controller_activation_status_path=Path(
+                os.environ.get(
+                    "QDEV_CONTROLLER_ACTIVATION_STATUS",
+                    "/var/lib/qdev-runner/controller-activation/activation-status.json",
                 )
             ),
             release_lanes_path=Path(
@@ -230,9 +221,7 @@ class BrokerSettings:
                     "/etc/qdev-runner/release-host-dispatch-keys.json",
                 )
             ),
-            release_host_dispatch_claim_ttl_seconds=(
-                release_host_dispatch_claim_ttl_seconds
-            ),
+            release_host_dispatch_claim_ttl_seconds=(release_host_dispatch_claim_ttl_seconds),
             release_job_lease_ttl_seconds=release_job_lease_ttl_seconds,
             github_actions_oidc_issuer=os.environ.get(
                 "QDEV_GITHUB_ACTIONS_OIDC_ISSUER",
@@ -280,61 +269,44 @@ class BrokerSettings:
             ),
             recovery_operator_certificate_sha256s=tuple(
                 item.strip().lower()
-                for item in os.environ.get(
-                    "QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S", ""
-                ).split(",")
+                for item in os.environ.get("QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S", "").split(
+                    ","
+                )
                 if item.strip()
             ),
             recovery_platform_agent_certificate_sha256=(
-                os.environ.get(
-                    "QDEV_RECOVERY_PLATFORM_AGENT_CERTIFICATE_SHA256", ""
-                )
+                os.environ.get("QDEV_RECOVERY_PLATFORM_AGENT_CERTIFICATE_SHA256", "")
                 .strip()
                 .lower()
                 or None
             ),
             recovery_qazstack_agent_certificate_sha256=(
-                os.environ.get(
-                    "QDEV_RECOVERY_QAZSTACK_AGENT_CERTIFICATE_SHA256", ""
-                )
+                os.environ.get("QDEV_RECOVERY_QAZSTACK_AGENT_CERTIFICATE_SHA256", "")
                 .strip()
                 .lower()
                 or None
             ),
             recovery_policy_digest=(
-                os.environ.get("QDEV_RECOVERY_POLICY_DIGEST", "").strip().lower()
-                or None
+                os.environ.get("QDEV_RECOVERY_POLICY_DIGEST", "").strip().lower() or None
             ),
             recovery_agent_release_digest=(
-                os.environ.get("QDEV_RECOVERY_AGENT_RELEASE_DIGEST", "")
-                .strip()
-                .lower()
-                or None
+                os.environ.get("QDEV_RECOVERY_AGENT_RELEASE_DIGEST", "").strip().lower() or None
             ),
             recovery_agent_signing_key=(
-                os.environ.get("QDEV_RECOVERY_AGENT_SIGNING_KEY", "").strip()
-                or None
+                os.environ.get("QDEV_RECOVERY_AGENT_SIGNING_KEY", "").strip() or None
             ),
             recovery_proof_max_age_seconds=max(
                 1.0,
                 min(
                     300.0,
-                    float(
-                        os.environ.get(
-                            "QDEV_RECOVERY_PROOF_MAX_AGE_SECONDS", "120"
-                        )
-                    ),
+                    float(os.environ.get("QDEV_RECOVERY_PROOF_MAX_AGE_SECONDS", "120")),
                 ),
             ),
             recovery_command_ttl_seconds=max(
                 30,
                 min(
                     300,
-                    int(
-                        os.environ.get(
-                            "QDEV_RECOVERY_COMMAND_TTL_SECONDS", "120"
-                        )
-                    ),
+                    int(os.environ.get("QDEV_RECOVERY_COMMAND_TTL_SECONDS", "120")),
                 ),
             ),
         )
