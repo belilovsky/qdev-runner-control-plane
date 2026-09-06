@@ -978,13 +978,17 @@ class Store:
                         (profile for profile in profiles if profile.lower() in labels), None
                     )
                     if matching_profile is not None:
-                        if claim_scope is not None and claim_scope.skips(
-                            int(row["job_id"]),
-                            str(row["repository"]),
-                            str(row["head_sha"]),
-                            matching_profile,
-                            run_id=int(row["run_id"]),
-                            attempt=_workflow_job_attempt(str(row["payload_json"])),
+                        if (
+                            claim_scope is not None
+                            and int(row["job_id"]) in fifo_skip_job_ids
+                            and claim_scope.skips(
+                                int(row["job_id"]),
+                                str(row["repository"]),
+                                str(row["head_sha"]),
+                                matching_profile,
+                                run_id=int(row["run_id"]),
+                                attempt=_workflow_job_attempt(str(row["payload_json"])),
+                            )
                         ):
                             continue
                         profile_heads.setdefault(matching_profile.lower(), int(row["job_id"]))
