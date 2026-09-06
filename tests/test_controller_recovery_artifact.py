@@ -15,6 +15,7 @@ from qdev_runner.controller_recovery_artifact import (
     candidate_config_digest,
     inspect_docker_archive,
     reconcile_workflow_identity,
+    trivy_high_critical_count,
     verify_current_snapshot,
     verify_recovery_claim_receipt,
 )
@@ -157,6 +158,46 @@ def _config_root(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{relative}\n", encoding="utf-8")
     return root
+
+
+def _trivy_report(*, results: object = None) -> dict[str, object]:
+    report: dict[str, object] = {
+        "SchemaVersion": 2,
+        "ArtifactName": "controller-source",
+        "ArtifactType": "repository",
+        "Trivy": {"Version": "0.74.0"},
+    }
+    if results is not None:
+        report["Results"] = results
+    return report
+
+
+def test_trivy_report_accepts_omitted_results_as_zero_findings() -> None:
+    assert trivy_high_critical_count(_trivy_report()) == 0
+    assert trivy_high_critical_count(_trivy_report(results=[])) == 0
+
+
+def test_trivy_report_rejects_unidentified_or_malformed_output() -> None:
+    with pytest.raises(ControllerRecoveryArtifactError, match="invalid"):
+        trivy_high_critical_count({})
+    with pytest.raises(ControllerRecoveryArtifactError, match="invalid"):
+        trivy_high_critical_count(_trivy_report(results={}))
+
+
+def test_trivy_report_counts_high_critical_vulnerabilities_and_secrets() -> None:
+    report = _trivy_report(
+        results=[
+            {
+                "Vulnerabilities": [
+                    {"Severity": "LOW"},
+                    {"Severity": "HIGH"},
+                    {"Severity": "CRITICAL"},
+                ],
+                "Secrets": [{"RuleID": "secret-a"}],
+            }
+        ]
+    )
+    assert trivy_high_critical_count(report) == 3
 
 
 def test_inspect_docker_archive_binds_labels_and_rejects_traversal(tmp_path: Path) -> None:
