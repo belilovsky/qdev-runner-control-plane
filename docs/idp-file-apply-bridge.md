@@ -284,16 +284,50 @@ IdP authorization endpoint with lease/fence headers. These are source-level
 integration tests using the real local controller store and host journals, with
 synthetic provider/native observations, not live authorization or deployment.
 
+## Signed archive to native invocation
+
+`IdPNativeInvocation` now provides the fixed in-process boundary. The installed
+owner supplies its protected config, profile, lane and retained signed job plus
+candidate; no request selects the executable, state root, target or key. It
+checks the original dispatch signature and the full candidate digest, source
+SHA, repository, quality workflow/job/run/job/attempt and `qdev-ci-docker`.
+`idp_native_bundle` verifies the published outer archive, inner bundle, canonical
+component manifest and every component before loading either helper. Helpers
+are compiled together and loaded as isolated modules, never imported from the
+staging directory. Archive limits, duplicate members/keys, links, unsafe paths,
+extra components and mismatched content or permissions fail closed.
+
+Only `apply`, `inspect`, `reconcile` and `observe` are exposed by this code-only
+boundary. Apply rechecks current dispatch expiry after archive verification and
+injects the fixed `ControllerIssuedIdPFileApplyAdapter`; native dispatch then
+owns the global lock and obtains fresh controller/provider authorization before
+the existing fenced write transaction. An expired signed dispatch may identify
+the historical archive for inspection/reconciliation, but cannot authorize apply
+or rollback. Native checks still require that exact retained stage/active binding.
+This does not renew a lease, consume another claim or repeat an unknown action.
+The versioned native response must match the exact source, previous revision,
+transaction and both inner digests. Unknown native results require retained-state
+inspection, without exposing helper exception contents or automatically retrying.
+
+Portable tests use synthetic archives and native dispatch. A separate local
+interoperability check against IdP `4e52d00115f7d0fad50cf1719da19dc41a367eeb`
+loaded all 123 actual components and passed 12 incomplete-staging recovery
+observations, including an untrusted staged helper and interruption before mkdir.
+That local Git-produced fixture is NOT a published CI artifact or release proof.
+
 ## Still required before enrollment or production use
 
 1. Release and enroll the implemented fixed issuer through the existing controller
    recovery/release transaction with exact-SHA CI and configured host identity.
    Its source-level tests use synthetic admission/provider/native state; no live
    authorization or operational enrollment has been performed here.
-2. Install the fixed IdP adapter through the native verified-helper/global-lock
+2. Install the fixed IdP invocation through the native verified-helper/global-lock
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
-   and the explicit inspect/recovery entrypoint. The code-only factory and typed
-   observations above are implemented, but not an installed executable integration.
+   and the explicit installed inspect/recovery entrypoint. The code-only invocation,
+   factory and typed observations above are implemented, but the polling owner must
+   still retain and supply the published outer archive and authenticated job and
+   connect native reconciliation to its existing pending host journal. They are
+   not an installed executable integration.
    No source from the IdP caller may replace the controller transaction, profile
    or protected key. No AVDS/QAK evidence is invented and no runtime validation
    is waived.

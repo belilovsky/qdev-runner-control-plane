@@ -132,7 +132,8 @@ def _capacity(value: Any, observed: float, *, database: bool = False) -> None:
     require(lanes == allowed)
 
 
-def _manifest(value: Any, binding: dict[str, Any]) -> int:
+def validate_component_manifest(value: Any, binding: dict[str, Any]) -> int:
+    """Shared strict manifest contract for native observations and bundle loading."""
     require(
         isinstance(value, dict)
         and set(value)
@@ -205,7 +206,7 @@ def _snapshot(value: Any, binding: dict[str, Any], manifest: dict[str, Any]) -> 
     if previous is None:
         require(index[INSTALLED_MANIFEST] is None)
     else:
-        _manifest(
+        validate_component_manifest(
             previous,
             {
                 "source_sha": binding["expected_previous_sha"],
@@ -436,7 +437,7 @@ def _translate(observation: dict[str, Any], installed: bool) -> dict[str, Any]:
     binding = _binding(observation, installed)
     require(binding["source_sha"] == observation["source_sha"])
     require(binding["transaction"] == observation["transaction"])
-    count = _manifest(observation["component_manifest"], binding)
+    count = validate_component_manifest(observation["component_manifest"], binding)
     if v2:
         _snapshot(observation["rollback_snapshot"], binding, observation["component_manifest"])
     dependencies = _images(observation["runtime_images"])

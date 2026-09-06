@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TextIO
 from urllib.parse import urlsplit
 
@@ -2411,6 +2412,122 @@ class ControllerIssuedIdPFileApplyAdapter:
                 yield guard
 
         return authorize
+
+
+class IdPNativeInvocation:
+    """Fixed code-only bridge from a signed job and published archive to native.
+
+    The installed owner supplies controller config/profile/lane and its retained
+    job/candidate. No request selects target, state root, executable or key. An
+    expired signature authenticates historical bytes ONLY for inspect/reconcile/
+    observe; apply separately requires a live dispatch, native global lock and
+    fresh controller/provider authorization. No retry or artifact rebuild here.
+    """
+
+    STATE_ROOT = Path("/var/lib/qdev-idp/releases")
+    TARGET = Path("/opt/id.qdev.run")
+
+    def __init__(self, config, profile, lane, job, candidate_receipt):
+        _validate_idp_file_scope(config, profile, lane)
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+        self._candidate = _canonical_bytes(candidate_receipt)
+
+    def _verified_job(self, *, live):
+        from qdev_runner.release_lane import (
+            REQUEST_SCHEMA,
+            ReleaseAdmissionRequest,
+            candidate_evidence,
+            validate_candidate,
+        )
+
+        job, candidate = json.loads(self._job), json.loads(self._candidate)
+        if not isinstance(job, dict) or not isinstance(candidate, dict):
+            raise AgentError("invalid retained IdP job or candidate")
+        claim = job.get("dispatch_claim")
+        if not isinstance(claim, dict):
+            raise AgentError("invalid retained IdP dispatch")
+        # Historical time is not a renewed permit. Recovery is confined to the
+        # exact already-staged native binding and cannot call apply or rollback.
+        at = None if live else claim.get("issued_at")
+        if not live and type(at) is not int:
+            raise AgentError("historical IdP dispatch has no authenticated issue time")
+        _validated_job(job, self._profile, self._config, now=at)
+        request_document = ReleaseAdmissionRequest(
+            schema=REQUEST_SCHEMA,
+            release_lane=self._lane.name,
+            project_id=self._lane.project_id,
+            placement=self._lane.placement,
+            **{key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")},
+            candidate_receipt=candidate,
+        )
+        validate_candidate(request_document, self._lane)
+        claim = job["dispatch_claim"]
+        if (
+            candidate_evidence({"candidate_receipt": candidate}, self._lane)
+            != job["candidate_evidence"]
+            or any(candidate.get(key) != claim[key] for key in (
+                "repository", "workflow", "job", "run_id", "job_id", "attempt", "runner_profile"
+            ))
+            or candidate.get("workflow") != "quality.yml"
+            or candidate.get("job") != "static-contracts"
+            or candidate.get("runner_profile") != "qdev-ci-docker"
+            or candidate.get("artifact_type") != "http-archive"
+            or job["artifact_digest"] != f"sha256:{candidate.get('archive_sha256')}"
+        ):
+            raise AgentError("IdP native artifact does not bind the signed candidate")
+        return job, candidate
+
+    def invoke(self, archive, *, action, transaction, ci="none"):
+        from qdev_runner.idp_native_bundle import verify_native_archive
+
+        if (
+            action not in {"apply", "inspect", "reconcile", "observe"}
+            or not isinstance(transaction, str)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{7,79}", transaction)
+            or not isinstance(ci, str)
+            or not (ci == "none" or re.fullmatch(r"ci-[0-9a-f]{16}\.json", ci))
+            or (action == "apply" and ci == "none")
+        ):
+            raise AgentError("invalid fixed IdP native operation")
+        job, candidate = self._verified_job(live=action == "apply")
+        bundle = verify_native_archive(
+            archive,
+            source_sha=job["source_sha"],
+            archive_sha256=candidate["archive_sha256"],
+            bundle_sha256=candidate["payload_sha256"],
+        )
+        # Loading can be expensive. Recheck live expiry before executing code;
+        # the locked bridge rechecks again after actual CI/network observations.
+        self._verified_job(live=action == "apply")
+        native, helpers = bundle.load()
+        args = SimpleNamespace(
+            action=action,
+            source_sha=job["source_sha"],
+            expected_previous=job["rollback_anchor"]["source_sha"],
+            bundle_digest=bundle.bundle_sha256,
+            manifest_digest=bundle.manifest_sha256,
+            ci=ci,
+        )
+        adapter = (
+            ControllerIssuedIdPFileApplyAdapter(self._config, self._profile, self._lane, job)
+            if action == "apply" else None
+        )
+        try:
+            result = native.dispatch(
+                self.STATE_ROOT, self.STATE_ROOT / transaction, self.TARGET, args, helpers,
+                controller_adapter=adapter,
+            )
+            native.contract.validate_native_response(
+                _canonical_bytes(result), action=action, transaction=transaction,
+                source_sha=args.source_sha, expected_previous=args.expected_previous,
+                bundle_sha256=args.bundle_digest, manifest_sha256=args.manifest_digest,
+            )
+        except Exception:
+            # No raw native output/exception or automatic second invocation.
+            # The caller must inspect/reconcile the retained native+host journals.
+            raise AgentError("IdP native outcome requires retained-state inspection") from None
+        return result
 
 
 class IdPFileApplyAdapter:
