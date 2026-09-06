@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from qdev_runner.claim_scope import (
+    MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
@@ -385,6 +386,129 @@ def test_v2_scope_binds_the_complete_provider_tuple(tmp_path: Path) -> None:
         attempt=1,
     )
     assert bound.host == "controller-host-01"
+
+
+def test_managed_exact_candidate_fifo_exception_is_narrow_and_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes-v2.json"
+    now = datetime.now(UTC)
+    sha = "b" * 40
+    document = {
+        "schema": "claim-scope-v2",
+        "scopes": [
+            {
+                "scope_id": "qgeo-recovery-01",
+                "worker_name": "qgeo-primary",
+                "tier": "primary",
+                "host": "controller-host-01",
+                "runner": "qgeo-primary",
+                "correlation_id": "corr-qgeo-recovery-01",
+                "fifo_exception": MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "jobs": [
+                    {
+                        "repository": "belilovsky/qazgeo",
+                        "run_id": 1,
+                        "job_id": 2,
+                        "attempt": 1,
+                        "exact_sha": sha,
+                        "profile": "qdev-ci",
+                    }
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    scope = resolve_claim_scope(
+        path, "qgeo-recovery-01", "qgeo-primary", "primary", ("qdev-ci",), now=now
+    )
+    assert scope is not None
+    assert scope.fifo_exception == MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+    upsert_claim_scope(path, scope)
+    assert json.loads(path.read_text(encoding="utf-8"))["scopes"][0]["fifo_exception"] == (
+        MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION
+    )
+
+
+def test_managed_exact_candidate_fifo_exception_rejects_foreign_jobs(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes-v2.json"
+    now = datetime.now(UTC)
+    document = {
+        "schema": "claim-scope-v2",
+        "scopes": [
+            {
+                "scope_id": "qgeo-recovery-02",
+                "worker_name": "qgeo-primary",
+                "tier": "primary",
+                "host": "controller-host-01",
+                "runner": "qgeo-primary",
+                "correlation_id": "corr-qgeo-recovery-02",
+                "fifo_exception": MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+                "expires_at": (now + timedelta(minutes=10)).isoformat(),
+                "jobs": [
+                    {
+                        "repository": "belilovsky/qazgeo",
+                        "run_id": 1,
+                        "job_id": 2,
+                        "attempt": 1,
+                        "exact_sha": "b" * 40,
+                        "profile": "qdev-ci",
+                    },
+                    {
+                        "repository": "belilovsky/qazlake",
+                        "run_id": 3,
+                        "job_id": 4,
+                        "attempt": 1,
+                        "exact_sha": "b" * 40,
+                        "profile": "qdev-ci-docker",
+                    },
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ClaimScopeError, match="requires one QGeo SHA"):
+        load_claim_scopes(path)
+
+
+def test_upsert_rejects_new_managed_scope_with_foreign_jobs(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes-v2.json"
+    scope = ClaimScope(
+        scope_id="qgeo-recovery-03",
+        worker_name="qgeo-primary",
+        tier="primary",
+        repository="belilovsky/qazgeo",
+        head_sha="b" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                job_id=2,
+                repository="belilovsky/qazgeo",
+                run_id=1,
+                attempt=1,
+                exact_sha="b" * 40,
+                profile="qdev-ci",
+            ),
+            ScopedJob(
+                job_id=4,
+                repository="belilovsky/qazlake",
+                run_id=3,
+                attempt=1,
+                exact_sha="b" * 40,
+                profile="qdev-ci-docker",
+            ),
+        ),
+        schema=SCHEMA_V2,
+        host="controller-host-01",
+        runner="qgeo-primary",
+        correlation_id="corr-qgeo-recovery-03",
+        fifo_exception=MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    )
+
+    with pytest.raises(ClaimScopeError, match="requires one QGeo SHA"):
+        upsert_claim_scope(path, scope)
+    assert not path.exists()
 
 
 def test_v2_scope_rejects_missing_or_duplicate_immutable_tuple(tmp_path: Path) -> None:

@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Build, attest, reconcile and sign one controller recovery artifact."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import socket
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from qdev_runner.controller_recovery_artifact import (
+    ControllerRecoveryArtifactError,
+    candidate_config_digest,
+    github_json,
+    reconcile_artifact,
+    reconcile_workflow_identity,
+    sign_activation_envelope,
+    trivy_high_critical_count,
+    verify_recovery_claim_receipt,
+)
+
+
+def _run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(command, cwd=cwd, check=True, capture_output=True)  # noqa: S603
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = ""
+        if isinstance(error, subprocess.CalledProcessError):
+            detail = error.stderr.decode("utf-8", errors="replace")[-2000:]
+        raise ControllerRecoveryArtifactError(
+            f"command failed: {Path(command[0]).name}: {detail}"
+        ) from error
+
+
+def _tool(name: str) -> str:
+    resolved = shutil.which(name)
+    if resolved is None:
+        raise ControllerRecoveryArtifactError(
+            f"required recovery build tool is unavailable: {name}"
+        )
+    return resolved
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_sha(root: Path) -> str:
+    sha = _run([_tool("git"), "-C", os.fspath(root), "rev-parse", "HEAD"]).stdout.decode().strip()
+    dirty = _run([_tool("git"), "-C", os.fspath(root), "status", "--porcelain"]).stdout
+    if len(sha) != 40 or any(character not in "0123456789abcdef" for character in sha) or dirty:
+        raise ControllerRecoveryArtifactError("build requires one clean exact-SHA checkout")
+    return sha
+
+
+def _json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ControllerRecoveryArtifactError(f"{label} is unavailable") from error
+    if not isinstance(value, dict):
+        raise ControllerRecoveryArtifactError(f"{label} is invalid")
+    return value
+
+
+def _receipt_key(path: Path) -> str:
+    try:
+        metadata = path.stat()
+        if metadata.st_mode & 0o077:
+            raise ControllerRecoveryArtifactError("controller receipt key permissions are unsafe")
+        key = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as error:
+        raise ControllerRecoveryArtifactError("controller receipt key is unavailable") from error
+    if not key:
+        raise ControllerRecoveryArtifactError("controller receipt key is unavailable")
+    return key
+
+
+def build(args: argparse.Namespace) -> dict[str, object]:
+    root = args.release_root.resolve(strict=True)
+    if not args.confirm_non_production_build_host:
+        raise ControllerRecoveryArtifactError("non-production build-host confirmation is required")
+    production_markers = (
+        Path("/var/lib/qdev-runner/controller-status.json"),
+        Path("/etc/qdev-runner/broker.env"),
+    )
+    if any(marker.exists() for marker in production_markers):
+        raise ControllerRecoveryArtifactError(
+            "recovery artifact build is forbidden on controller-host"
+        )
+    docker = _tool("docker")
+    trivy = _tool("trivy")
+    syft = _tool("syft")
+    sha = _git_sha(root)
+    policy_digest = candidate_config_digest(root)
+    output = args.output.resolve()
+    output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    tag = f"qdev-controller-recovery:{sha}"
+    archive = output / "controller-image.tar"
+    sbom = output / "controller-sbom.spdx.json"
+    source_scan = output / "controller-source-trivy.json"
+    image_scan = output / "controller-image-trivy.json"
+    scans = output / "controller-security-scans.json"
+    try:
+        _run(
+            [
+                docker,
+                "buildx",
+                "build",
+                "--platform",
+                "linux/amd64",
+                "--pull",
+                "--load",
+                "--file",
+                os.fspath(root / "deploy/Dockerfile.broker"),
+                "--build-arg",
+                f"QDEV_SOURCE_REVISION={sha}",
+                "--build-arg",
+                f"QDEV_POLICY_BUNDLE_DIGEST={policy_digest}",
+                "--tag",
+                tag,
+                os.fspath(root),
+            ]
+        )
+        _run([docker, "image", "save", "--output", os.fspath(archive), tag])
+        _run(
+            [
+                trivy,
+                "filesystem",
+                "--quiet",
+                "--format",
+                "json",
+                "--output",
+                os.fspath(source_scan),
+                "--scanners",
+                "vuln,secret",
+                "--severity",
+                "HIGH,CRITICAL",
+                os.fspath(root),
+            ]
+        )
+        _run(
+            [
+                trivy,
+                "image",
+                "--quiet",
+                "--format",
+                "json",
+                "--output",
+                os.fspath(image_scan),
+                "--scanners",
+                "vuln,secret",
+                "--severity",
+                "HIGH,CRITICAL",
+                "--input",
+                os.fspath(archive),
+            ]
+        )
+        _run([syft, f"docker-archive:{archive}", "-o", f"spdx-json={sbom}"])
+        source_findings = trivy_high_critical_count(_json(source_scan, "source Trivy report"))
+        image_findings = trivy_high_critical_count(_json(image_scan, "image Trivy report"))
+        scans_document = {
+            "schema": "qdev-controller-security-scans-v1",
+            "status": "passed" if source_findings == 0 and image_findings == 0 else "failed",
+            "source_high_critical": source_findings,
+            "image_high_critical": image_findings,
+            "source_report_sha256": _sha256(source_scan),
+            "image_report_sha256": _sha256(image_scan),
+            "scanner_versions": {
+                "trivy": _run([trivy, "--version"]).stdout.decode().splitlines()[0],
+                "syft": _run([syft, "version", "-o", "json"]).stdout.decode().strip(),
+            },
+            "source_sha": sha,
+            "policy_bundle_digest": policy_digest,
+            "build_host": socket.gethostname(),
+            "platform": "linux/amd64",
+        }
+        scans.write_text(
+            json.dumps(scans_document, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        if scans_document["status"] != "passed":
+            raise ControllerRecoveryArtifactError("controller security scans contain findings")
+        return {
+            "status": "passed",
+            "source_sha": sha,
+            "policy_bundle_digest": policy_digest,
+            "archive": os.fspath(archive),
+            "sbom": os.fspath(sbom),
+            "security_scans": os.fspath(scans),
+        }
+    finally:
+        subprocess.run(  # noqa: S603
+            [docker, "image", "rm", "--force", tag],
+            check=False,
+            capture_output=True,
+        )
+
+
+def reconcile(args: argparse.Namespace) -> dict[str, object]:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    run = github_json(
+        f"/repos/belilovsky/qdev-runner-control-plane/actions/runs/{args.run_id}", token=token
+    )
+    jobs = github_json(
+        "/repos/belilovsky/qdev-runner-control-plane/actions/runs/"
+        f"{args.run_id}/attempts/{args.attempt}/jobs?per_page=100",
+        token=token,
+    )
+    matches = [
+        job
+        for job in jobs.get("jobs", [])
+        if isinstance(job, dict) and job.get("id") == args.job_id
+    ]
+    if len(matches) != 1:
+        raise ControllerRecoveryArtifactError("exact GitHub workflow job is unavailable")
+    claim_receipt_path = args.claim_receipt.resolve(strict=True)
+    claim_receipt = _json(claim_receipt_path, "controller claim receipt")
+    admission_nonce = verify_recovery_claim_receipt(
+        claim_receipt,
+        receipt_key=_receipt_key(args.controller_receipt_key.resolve(strict=True)),
+        source_sha=args.source_sha,
+        run_id=args.run_id,
+        job_id=args.job_id,
+        attempt=args.attempt,
+    )
+    identity = reconcile_workflow_identity(
+        run,
+        matches[0],
+        source_sha=args.source_sha,
+        run_id=args.run_id,
+        job_id=args.job_id,
+        attempt=args.attempt,
+        admission_nonce=admission_nonce,
+        idempotency_key=args.idempotency_key,
+    )
+    manifest = reconcile_artifact(
+        args.release_root.resolve(strict=True),
+        args.archive.resolve(strict=True),
+        args.sbom.resolve(strict=True),
+        args.security_scans.resolve(strict=True),
+        args.source_scan.resolve(strict=True),
+        args.image_scan.resolve(strict=True),
+        args.output.resolve(),
+        identity,
+        claim_receipt_path,
+    )
+    return {"status": "passed", "manifest": os.fspath(manifest), "source_sha": args.source_sha}
+
+
+def sign(args: argparse.Namespace) -> dict[str, object]:
+    envelope = sign_activation_envelope(
+        args.unsigned.resolve(strict=True),
+        args.artifact_manifest.resolve(strict=True),
+        args.release_root.resolve(strict=True),
+        args.current_status.resolve(strict=True),
+        args.current_config_root.resolve(strict=True),
+        args.private_key.resolve(strict=True),
+        _receipt_key(args.controller_receipt_key.resolve(strict=True)),
+        args.output.resolve(),
+    )
+    return {
+        "status": "passed",
+        "transaction_id": envelope["transaction_id"],
+        "output": os.fspath(args.output.resolve()),
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser()
+    commands = result.add_subparsers(dest="command", required=True)
+    build_parser = commands.add_parser("build")
+    build_parser.add_argument("--release-root", type=Path, default=Path.cwd())
+    build_parser.add_argument("--output", type=Path, required=True)
+    build_parser.add_argument("--confirm-non-production-build-host", action="store_true")
+    build_parser.set_defaults(handler=build)
+
+    reconcile_parser = commands.add_parser("reconcile")
+    reconcile_parser.add_argument("--release-root", type=Path, required=True)
+    reconcile_parser.add_argument("--archive", type=Path, required=True)
+    reconcile_parser.add_argument("--sbom", type=Path, required=True)
+    reconcile_parser.add_argument("--security-scans", type=Path, required=True)
+    reconcile_parser.add_argument("--source-scan", type=Path, required=True)
+    reconcile_parser.add_argument("--image-scan", type=Path, required=True)
+    reconcile_parser.add_argument("--output", type=Path, required=True)
+    reconcile_parser.add_argument("--source-sha", required=True)
+    reconcile_parser.add_argument("--run-id", type=int, required=True)
+    reconcile_parser.add_argument("--job-id", type=int, required=True)
+    reconcile_parser.add_argument("--attempt", type=int, required=True)
+    reconcile_parser.add_argument("--claim-receipt", type=Path, required=True)
+    reconcile_parser.add_argument("--controller-receipt-key", type=Path, required=True)
+    reconcile_parser.add_argument("--idempotency-key", required=True)
+    reconcile_parser.set_defaults(handler=reconcile)
+
+    sign_parser = commands.add_parser("sign-envelope")
+    sign_parser.add_argument("--unsigned", type=Path, required=True)
+    sign_parser.add_argument("--artifact-manifest", type=Path, required=True)
+    sign_parser.add_argument("--release-root", type=Path, required=True)
+    sign_parser.add_argument("--current-status", type=Path, required=True)
+    sign_parser.add_argument("--current-config-root", type=Path, required=True)
+    sign_parser.add_argument("--private-key", type=Path, required=True)
+    sign_parser.add_argument("--controller-receipt-key", type=Path, required=True)
+    sign_parser.add_argument("--output", type=Path, required=True)
+    sign_parser.set_defaults(handler=sign)
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        receipt = args.handler(args)
+    except ControllerRecoveryArtifactError as error:
+        raise SystemExit(str(error)) from error
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

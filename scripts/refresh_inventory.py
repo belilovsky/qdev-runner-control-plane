@@ -66,9 +66,7 @@ def declared_profiles(full_name: str, ref: str | None = None) -> set[str]:
             base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
         )
     except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
-        raise RuntimeError(
-            f"{full_name}: invalid .github/qdev-runner.yml: {exc}"
-        ) from exc
+        raise RuntimeError(f"{full_name}: invalid .github/qdev-runner.yml: {exc}") from exc
 
     if not isinstance(contract, dict):
         raise RuntimeError(f"{full_name}: runner contract must be a YAML mapping")
@@ -207,8 +205,7 @@ def validate_add_candidate(
     ]
     if mismatches:
         raise RuntimeError(
-            f"{expected_full_name}: repository identity mismatch: "
-            + "; ".join(mismatches)
+            f"{expected_full_name}: repository identity mismatch: " + "; ".join(mismatches)
         )
     if repo.get("isArchived") is not False:
         raise RuntimeError(f"{expected_full_name}: repository is archived")
@@ -247,9 +244,7 @@ def validate_inventory_uniqueness(repositories: list[dict[str, Any]]) -> None:
         repository_ids.add(repository_id)
 
 
-def validate_refreshed_identity(
-    expected: dict[str, Any], refreshed: dict[str, Any]
-) -> None:
+def validate_refreshed_identity(expected: dict[str, Any], refreshed: dict[str, Any]) -> None:
     expected_name = expected.get("nameWithOwner")
     expected_id = expected.get("id")
     if refreshed.get("full_name") != expected_name or refreshed.get("id") != expected_id:
@@ -331,9 +326,7 @@ def main() -> None:
         }
         missing_arguments = [name for name, value in required.items() if value is None]
         if missing_arguments:
-            parser.error(
-                "--add-repository requires " + ", ".join(missing_arguments)
-            )
+            parser.error("--add-repository requires " + ", ".join(missing_arguments))
         full_name = normalise_repository_name(args.add_repository, args.owner)
         if full_name != args.expected_full_name:
             parser.error("--add-repository must match --expected-full-name")
@@ -406,13 +399,10 @@ def main() -> None:
 
     if args.repository:
         existing = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
-        selected_names = {
-            normalise_repository_name(name, args.owner) for name in args.repository
-        }
+        selected_names = {normalise_repository_name(name, args.owner) for name in args.repository}
         existing_repositories = existing.get("repositories")
         if not isinstance(existing_repositories, list) or any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("full_name"), str)
+            not isinstance(item, dict) or not isinstance(item.get("full_name"), str)
             for item in existing_repositories
         ):
             parser.error("existing inventory has no repositories list")
@@ -423,18 +413,14 @@ def main() -> None:
         existing_by_name = {item["full_name"]: item for item in existing_repositories}
         missing = selected_names - existing_by_name.keys()
         if missing:
-            parser.error(
-                "repositories not in existing inventory: " + ", ".join(sorted(missing))
-            )
+            parser.error("repositories not in existing inventory: " + ", ".join(sorted(missing)))
         repo_metadata = [
             {
                 "id": int(existing_by_name[name]["id"]),
                 "nameWithOwner": name,
                 "isArchived": bool(existing_by_name[name].get("archived", False)),
                 "isPrivate": bool(existing_by_name[name].get("private", False)),
-                "defaultBranchRef": {
-                    "name": existing_by_name[name].get("default_branch", "main")
-                },
+                "defaultBranchRef": {"name": existing_by_name[name].get("default_branch", "main")},
             }
             for name in sorted(selected_names)
         ]
@@ -464,9 +450,7 @@ def main() -> None:
             parser.error(str(exc))
         payload = inventory_payload(
             owner=existing.get("owner", args.owner),
-            active_count=int(
-                existing.get("active_repository_count", len(refreshed_merged))
-            ),
+            active_count=int(existing.get("active_repository_count", len(refreshed_merged))),
             repositories=refreshed_merged,
         )
         write_inventory(payload)
@@ -508,9 +492,7 @@ def main() -> None:
             f"inventory cardinality changed: expected {args.expected}, found {len(inspected)}"
         )
     write_inventory(
-        inventory_payload(
-            owner=args.owner, active_count=len(active), repositories=inspected
-        )
+        inventory_payload(owner=args.owner, active_count=len(active), repositories=inspected)
     )
     print(f"inventory_ok repositories={len(inspected)} active={len(active)}")
     inventory_lock.close()

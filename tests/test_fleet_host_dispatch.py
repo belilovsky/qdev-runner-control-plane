@@ -9,12 +9,16 @@ import pytest
 
 import qdev_runner.fleet_host_dispatch as dispatch_module
 from qdev_runner.fleet_bootstrap import (
+    REQUEST_SCHEMA,
     BootstrapOperationStore,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
+    bootstrap_request_fingerprint,
+    bootstrap_request_fingerprints,
 )
 from qdev_runner.fleet_host_dispatch import (
     DISPATCH_REQUEST_SCHEMA,
+    DispatchEnvelope,
     FleetHostDispatcher,
     FleetHostDispatchError,
     FleetHostDispatchSpool,
@@ -85,7 +89,7 @@ def _request(
     action: str = "activate-controller",
 ) -> FleetBootstrapRequest:
     raw: dict[str, Any] = {
-        "schema": "qdev-fleet-bootstrap-request-v1",
+        "schema": REQUEST_SCHEMA,
         "action": action,
         "source_sha": "a" * 40,
         "run_id": run_id,
@@ -94,6 +98,8 @@ def _request(
         "claim_ttl_seconds": 300,
         "controller_revision": "a" * 40,
         "controller_release_digest": "sha256:" + "b" * 64,
+        "controller_image_digest": "sha256:" + "c" * 64,
+        "activation_envelope_digest": "sha256:" + "d" * 64,
         "release_lane": None,
         "worker_name": None,
     }
@@ -101,6 +107,10 @@ def _request(
         raw["release_lane"] = "qdev-release-qmt"
     elif action == "restore-existing-worker":
         raw["worker_name"] = "qdev-platform-ci-187"
+        raw["controller_revision"] = None
+        raw["controller_release_digest"] = None
+        raw["controller_image_digest"] = None
+        raw["activation_envelope_digest"] = None
     return FleetBootstrapRequest.model_validate(raw)
 
 
@@ -188,9 +198,7 @@ def test_missing_bridge_is_access_blocked_then_available_bridge_queues(
         idempotency_key="bridge-online-001",
     )
     assert queued.status == "queued"
-    envelope = json.loads(
-        (incoming / "bridge-online-001.json").read_text(encoding="utf-8")
-    )
+    envelope = json.loads((incoming / "bridge-online-001.json").read_text(encoding="utf-8"))
     assert envelope["schema"] == DISPATCH_REQUEST_SCHEMA
     assert set(envelope) == {
         "schema",
@@ -220,12 +228,15 @@ def test_completed_result_is_durable_and_reused_without_reexecution(
         return "completed", {"rollback_revision": "b" * 40}
 
     monkeypatch.setattr(dispatch_module, "_invoke_bootstrap_adapter", complete_adapter)
-    assert spool.submit(
-        policy=policy,
-        store=store,
-        request=request,
-        idempotency_key=key,
-    ).status == "queued"
+    assert (
+        spool.submit(
+            policy=policy,
+            store=store,
+            request=request,
+            idempotency_key=key,
+        ).status
+        == "queued"
+    )
     dispatched = dispatcher.drain()
     assert len(dispatched) == 1
     assert dispatched[0].status == "completed"
@@ -267,9 +278,7 @@ def test_started_without_result_becomes_unknown_and_never_repeats_mutation(
         calls += 1
         raise RuntimeError("simulated process loss after mutation boundary")
 
-    monkeypatch.setattr(
-        dispatch_module, "_invoke_bootstrap_adapter", crash_after_start
-    )
+    monkeypatch.setattr(dispatch_module, "_invoke_bootstrap_adapter", crash_after_start)
     spool.submit(
         policy=policy,
         store=store,
@@ -286,9 +295,7 @@ def test_started_without_result_becomes_unknown_and_never_repeats_mutation(
     reconciled = dispatcher.drain()
     assert len(reconciled) == 1
     assert reconciled[0].status == "unknown"
-    assert reconciled[0].error_code == (
-        "operation_outcome_unknown_reconciliation_required"
-    )
+    assert reconciled[0].error_code == ("operation_outcome_unknown_reconciliation_required")
     assert calls == 1
     observation = spool.submit(
         policy=policy,
@@ -356,6 +363,33 @@ def test_dispatch_rejects_duplicate_fingerprint_drift(tmp_path: Path) -> None:
         )
 
 
+def test_dispatch_envelope_replays_legacy_single_image_fingerprint(tmp_path: Path) -> None:
+    _policy_path, _lanes_path, policy = _policy_files(tmp_path)
+    request = _request(policy)
+    current = bootstrap_request_fingerprint(request)
+    legacy = next(value for value in bootstrap_request_fingerprints(request) if value != current)
+    raw_request = request.model_dump(mode="json", by_alias=True, exclude_none=False)
+    raw_request["controller_internal_image_digest"] = None
+    payload = json.dumps(
+        {
+            "schema": DISPATCH_REQUEST_SCHEMA,
+            "idempotency_key": "legacy-dispatch-001",
+            "request_fingerprint": legacy,
+            "request": raw_request,
+            "active_jobs": None,
+        },
+        sort_keys=True,
+    ).encode()
+
+    envelope = DispatchEnvelope.parse(payload, expected_key="legacy-dispatch-001")
+    assert envelope.request_fingerprint == legacy
+    reparsed = DispatchEnvelope.parse(
+        json.dumps(envelope.as_dict(), sort_keys=True).encode(),
+        expected_key="legacy-dispatch-001",
+    )
+    assert reparsed.request_fingerprint == legacy
+
+
 def test_root_dispatch_reloads_and_rejects_writable_policy(tmp_path: Path) -> None:
     spool, dispatcher, policy, _incoming, _processing, _results = _bridge(tmp_path)
     key = "unsafe-policy-001"
@@ -407,15 +441,9 @@ def test_root_dispatch_rejects_tampered_controller_runtime_identity(
 
 def test_deployment_exposes_only_spools_and_declares_root_path_unit() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
-    service = (ROOT / "deploy/qdev-fleet-host-dispatch.service").read_text(
-        encoding="utf-8"
-    )
-    path_unit = (ROOT / "deploy/qdev-fleet-host-dispatch.path").read_text(
-        encoding="utf-8"
-    )
-    provision = (ROOT / "scripts/provision_controller.sh").read_text(
-        encoding="utf-8"
-    )
+    service = (ROOT / "deploy/qdev-fleet-host-dispatch.service").read_text(encoding="utf-8")
+    path_unit = (ROOT / "deploy/qdev-fleet-host-dispatch.path").read_text(encoding="utf-8")
+    provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
 
     assert "/usr/local/sbin:/usr/local/sbin" not in compose
     assert "/var/run/docker.sock" not in compose

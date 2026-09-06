@@ -1,8 +1,10 @@
+import fcntl
 import hashlib
 import hmac
 import importlib.util
 import json
 import os
+import stat
 import sys
 import time
 from dataclasses import replace
@@ -309,9 +311,7 @@ def _host_heartbeat(
     )
 
 
-def _native_lane_receipt(
-    lane: object, release: dict[str, str]
-) -> dict[str, Any]:
+def _native_lane_receipt(lane: object, release: dict[str, str]) -> dict[str, Any]:
     return {
         "schema": "qdev-admin-platform-native-receipt-v1",
         "project_id": lane.project_id,
@@ -333,9 +333,7 @@ def _controller_rollback_receipt(
     job: dict[str, Any],
     restored: dict[str, str],
 ) -> dict[str, Any]:
-    failed = {
-        key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")
-    }
+    failed = {key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")}
     return {
         "schema": RELEASE_LANE.ROLLBACK_RECEIPT_SCHEMA,
         "status": "rolled_back",
@@ -351,6 +349,7 @@ def _controller_rollback_receipt(
 
 def _patch_local_security(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(AGENT, "_root_directory", lambda _: None)
+    monkeypatch.setattr(AGENT, "_lock_directory", lambda _: None)
     monkeypatch.setattr(AGENT, "_private", lambda *_, **__: None)
 
 
@@ -394,9 +393,7 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
 def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -408,9 +405,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
 
     changed_receipt = {
         **request.candidate_receipt,
@@ -418,17 +413,11 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
     }
     rebound = request.model_copy(update={"candidate_receipt": changed_receipt})
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="does not bind"):
-        RELEASE_LANE.validate_controller_claim(
-            rebound, lane, signing_key=SECRET, now=now
-        )
+        RELEASE_LANE.validate_controller_claim(rebound, lane, signing_key=SECRET, now=now)
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="expired"):
-        RELEASE_LANE.validate_controller_claim(
-            request, lane, signing_key=SECRET, now=now + 120
-        )
+        RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now + 120)
 
-    job, duplicate = store.admit(
-        request, lane, now=now, lease_ttl_seconds=600
-    )
+    job, duplicate = store.admit(request, lane, now=now, lease_ttl_seconds=600)
     assert duplicate is False
     assert job["lease_expires_at"] == now + 600
     assert job["rollback_anchor"] == anchor
@@ -461,9 +450,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
         now=now + 3,
         nonce=NONCE,
     )
-    RELEASE_LANE.validate_controller_claim(
-        replay, lane, signing_key=SECRET, now=now + 3
-    )
+    RELEASE_LANE.validate_controller_claim(replay, lane, signing_key=SECRET, now=now + 3)
     with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="already consumed"):
         store.admit(replay, lane, now=now + 3, lease_ttl_seconds=600)
 
@@ -471,9 +458,7 @@ def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(
 def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -485,9 +470,7 @@ def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
     job, _ = store.admit(request, lane, now=now, lease_ttl_seconds=60)
     store.next_job(
         lane,
@@ -515,23 +498,25 @@ def test_controller_lease_fence_and_frozen_rollback_anchor_are_fail_closed(
             fence=job["fence"],
             now=now + 2,
         )
-    with pytest.raises(RELEASE_LANE.ReleaseLaneError, match="expired"):
-        store.rollback(
-            lane,
-            job["release_id"],
-            receipt,
-            lease_id=job["lease_id"],
-            fence=job["fence"],
-            now=now + 60,
-        )
+    # Expiry closes new admission/dispatch, but an exact durably dispatched
+    # operation may still report its single terminal rollback during the
+    # bounded recovery window. This prevents an already-mutated host from
+    # becoming permanently stranded when the lease expires mid-operation.
+    recovered = store.rollback(
+        lane,
+        job["release_id"],
+        receipt,
+        lease_id=job["lease_id"],
+        fence=job["fence"],
+        now=now + 60,
+    )
+    assert recovered["status"] == "rolled_back"
 
 
 def test_controller_journal_is_authoritative_after_snapshot_crash(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -543,9 +528,7 @@ def test_controller_journal_is_authoritative_after_snapshot_crash(
         now=now,
     )
     request = _managed_request(lane, candidate, now=now)
-    RELEASE_LANE.validate_controller_claim(
-        request, lane, signing_key=SECRET, now=now
-    )
+    RELEASE_LANE.validate_controller_claim(request, lane, signing_key=SECRET, now=now)
     accepted, _ = store.admit(request, lane, now=now, lease_ttl_seconds=600)
     accepted_snapshot = json.loads(json.dumps(accepted))
     dispatched = store.next_job(
@@ -574,9 +557,7 @@ def test_controller_journal_is_authoritative_after_snapshot_crash(
 def test_controller_initial_heartbeat_establishes_one_measured_anchor(
     tmp_path: Path,
 ) -> None:
-    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane(
-        "qdev-release-total"
-    )
+    lane = ReleaseLanePolicy(ROOT / "config/release-lanes.yml").lane("qdev-release-total")
     store = ReleaseStore(tmp_path / "store")
     now = 2_000_000_000
     anchor = _lane_release(lane, "b")
@@ -796,12 +777,8 @@ def test_agent_requires_native_runtime_evidence_for_release_and_rollback(
     runtime = AGENT._completion_receipt(profile, release, rollback, document)
     AGENT._validate_completion_receipt(runtime, profile, release, rollback)
     rollback_native = _native_receipt(profile, rollback)
-    rolled_back = AGENT._rollback_receipt(
-        profile, RELEASE_ID, release, rollback, rollback_native
-    )
-    AGENT._validate_rollback_receipt(
-        rolled_back, profile, RELEASE_ID, release, rollback
-    )
+    rolled_back = AGENT._rollback_receipt(profile, RELEASE_ID, release, rollback, rollback_native)
+    AGENT._validate_rollback_receipt(rolled_back, profile, RELEASE_ID, release, rollback)
 
     incomplete = {key: value for key, value in document.items() if key != "artifact_provenance"}
     with pytest.raises(AGENT.AgentError, match="runtime receipt"):
@@ -810,9 +787,7 @@ def test_agent_requires_native_runtime_evidence_for_release_and_rollback(
         key: value for key, value in rollback_native.items() if key != "artifact_provenance"
     }
     with pytest.raises(AGENT.AgentError, match="runtime receipt"):
-        AGENT._rollback_receipt(
-            profile, RELEASE_ID, release, rollback, incomplete_rollback
-        )
+        AGENT._rollback_receipt(profile, RELEASE_ID, release, rollback, incomplete_rollback)
 
 
 def test_agent_journal_is_append_only_durable_and_tamper_evident(
@@ -907,9 +882,7 @@ def test_agent_run_once_completes_signed_managed_release_without_name_or_type_er
         assert release is None
         return _native_receipt(profile, running["release"])
 
-    def invoke(
-        _profile: object, action: str, release: dict[str, str]
-    ) -> None:
+    def invoke(_profile: object, action: str, release: dict[str, str]) -> None:
         native_invocations.append((action, release))
         running["release"] = release
 
@@ -980,9 +953,7 @@ def test_agent_release_failure_passes_full_safe_rollback_context(
         restored: dict[str, str],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        captured.update(
-            release_id=release_id, failed=failed, restored=restored, **kwargs
-        )
+        captured.update(release_id=release_id, failed=failed, restored=restored, **kwargs)
         return {}
 
     monkeypatch.setattr(AGENT, "rollback_remote", fake_rollback)
@@ -1042,9 +1013,7 @@ def test_agent_unknown_completion_is_reconciled_without_blind_rollback(
         assert release is None
         return _native_receipt(profile, running["release"])
 
-    def invoke(
-        _profile: object, action: str, release: dict[str, str]
-    ) -> None:
+    def invoke(_profile: object, action: str, release: dict[str, str]) -> None:
         native_invocations.append((action, release))
         running["release"] = release
 
@@ -1117,9 +1086,11 @@ def test_agent_reconciles_pending_operation_before_heartbeat_or_native_mutation(
     monkeypatch.setattr(
         AGENT,
         "native_receipt",
-        lambda _profile, release=None, *, current=False: _native_receipt(profile, candidate)
-        if current
-        else pytest.fail("unexpected target-specific native receipt"),
+        lambda _profile, release=None, *, current=False: (
+            _native_receipt(profile, candidate)
+            if current
+            else pytest.fail("unexpected target-specific native receipt")
+        ),
     )
 
     def unavailable(*_: object, **__: object) -> dict[str, Any]:
@@ -1170,6 +1141,500 @@ def test_agent_rollback_reconciles_controller_before_native_action(
             lease_expires_at=int(time.time()) + 3600,
             rollback_anchor=restored,
         )
+
+
+@pytest.fixture
+def file_apply_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Real native journal/locks; test-only controller and measured-runtime sources."""
+    profile = _test_profile(tmp_path)
+    config = _config(profile)
+    candidate, active, rollback = (_variant(profile, key) for key in ("a", "b", "c"))
+    job = _signed_job(profile, config, candidate, rollback_anchor=active)
+    _patch_local_security(monkeypatch)
+    _provision_agent_state(profile, active, rollback)
+    state: dict[str, Any] = {
+        "profile": profile,
+        "config": config,
+        "job": job,
+        "candidate": candidate,
+        "active": active,
+        "rollback": rollback,
+        "runtime": active,
+        "controller": "dispatched",
+        "completion": None,
+        "reads": 0,
+    }
+
+    def measured_receipt(_profile: object, *, current: bool = False) -> dict[str, Any]:
+        assert current
+        return _native_receipt(profile, state["runtime"])
+
+    def request(
+        _config: object,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
+        assert headers == AGENT._controller_headers(LEASE_ID, FENCE)
+        if method == "GET" and path.endswith(f"/jobs/{RELEASE_ID}"):
+            state["reads"] += 1
+            return 200, AGENT._canonical_bytes(
+                _controller_status(
+                    profile, candidate, state["controller"], runtime_receipt=state["completion"]
+                )
+            )
+        if method == "POST" and path.endswith(f"/jobs/{RELEASE_ID}/complete"):
+            assert payload is not None
+            state["completion"], state["controller"] = payload, "verified"
+            return 200, AGENT._canonical_bytes(payload)
+        raise AssertionError("file apply must not poll, admit or dispatch other native work")
+
+    def no_native_mutation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("transaction callback must not invoke a release or rollback")
+
+    monkeypatch.setattr(AGENT, "native_receipt", measured_receipt)
+    monkeypatch.setattr(AGENT, "request", request)
+    monkeypatch.setattr(AGENT, "invoke_native", no_native_mutation)
+    state["factory"] = AGENT.JournaledFileApplyTransaction(config, profile, job)
+    return state
+
+
+def test_file_apply_native_journal_completes_and_rejects_replay(file_apply_host) -> None:
+    host = file_apply_host
+    with host["factory"](host["job"]["dispatch_claim"]) as guard:
+        assert [item["phase"] for item in AGENT._journal_events(host["profile"])][-2:] == [
+            "dispatch_accepted",
+            "release_started",
+        ]
+        before = host["reads"]
+        guard.assert_current()
+        assert host["reads"] == before + 1
+        host["runtime"] = host["candidate"]
+    assert host["controller"] == "verified"
+    assert AGENT._pending_operation(host["profile"]) is None
+    assert AGENT.read_state(host["profile"].state_path, host["profile"]) == (
+        host["candidate"],
+        host["active"],
+    )
+    with pytest.raises(AGENT.AgentError, match="outside"):
+        guard.assert_current()
+    with (
+        pytest.raises(AGENT.AgentError, match="consumed"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("replay yielded")
+
+
+@pytest.fixture
+def in_process_file_apply(file_apply_host, monkeypatch: pytest.MonkeyPatch):
+    host = file_apply_host
+    calls = []
+
+    def observe(phase):
+        # The real controller journal lock must remain held for both native
+        # observation phases and for the fresh reconciliation observation.
+        with (
+            AGENT._acquire_lock(host["profile"].lock_path) as competing,
+            pytest.raises(BlockingIOError),
+        ):
+            fcntl.flock(competing.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        calls.append(phase)
+        return _native_receipt(host["profile"], host["runtime"])
+
+    def no_dispatcher(*_args, **_kwargs):
+        pytest.fail("in-process observation re-entered native dispatcher")
+
+    monkeypatch.setattr(AGENT, "native_receipt", no_dispatcher)
+    readers = AGENT.FileApplyObservations(
+        before_apply=lambda: observe("prepared"),
+        after_apply=lambda: observe("installed"),
+    )
+    host["factory"] = AGENT.JournaledFileApplyTransaction(
+        host["config"], host["profile"], host["job"], observations=readers
+    )
+    host["observations"], host["observation_calls"] = readers, calls
+    return host
+
+
+def test_file_apply_uses_locked_in_process_readers_through_completion(in_process_file_apply):
+    host = in_process_file_apply
+    with host["factory"](host["job"]["dispatch_claim"]):
+        assert host["observation_calls"] == ["prepared"]
+        host["runtime"] = host["candidate"]
+    assert host["observation_calls"] == ["prepared", "installed", "installed"]
+    assert host["controller"] == "verified"
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("phase", ["prepared", "installed", "reconciliation"])
+@pytest.mark.parametrize("defect", ["source_drift", "unmeasured", "failure"])
+def test_file_apply_in_process_observation_fails_closed(
+    in_process_file_apply,
+    phase: str,
+    defect: str,
+) -> None:
+    host = in_process_file_apply
+    calls = 0
+    original = host["observations"]
+
+    def observe(current_phase):
+        nonlocal calls
+        calls += 1
+        document = (
+            original.before_apply() if current_phase == "prepared" else original.after_apply()
+        )
+        selected = current_phase if calls < 3 else "reconciliation"
+        if selected == phase:
+            if defect == "failure":
+                raise RuntimeError("native reader unavailable")
+            if defect == "source_drift":
+                document["runtime_identity"]["source_sha"] = "9" * 40
+            else:
+                document["runtime_identity"]["measured"] = False
+        return document
+
+    factory = AGENT.JournaledFileApplyTransaction(
+        host["config"],
+        host["profile"],
+        host["job"],
+        observations=AGENT.FileApplyObservations(
+            before_apply=lambda: observe("prepared"),
+            after_apply=lambda: observe("installed"),
+        ),
+    )
+    with (
+        pytest.raises((AGENT.AgentError, RuntimeError)),
+        factory(host["job"]["dispatch_claim"]),
+    ):
+        host["runtime"] = host["candidate"]
+    assert host["controller"] == "dispatched"
+    assert host["completion"] is None
+    pending = AGENT._pending_operation(host["profile"])
+    if phase == "prepared":
+        assert pending is None and host["runtime"] == host["active"]
+    else:
+        assert pending is not None
+        with (
+            pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+            factory(host["job"]["dispatch_claim"]),
+        ):
+            pytest.fail("failed observation permitted a second apply")
+
+
+def test_file_apply_in_process_reconciles_lost_completion_without_second_apply(
+    in_process_file_apply,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = in_process_file_apply
+    original = AGENT._resolve_completion_outcome
+
+    def lost(*_args, **_kwargs):
+        raise AGENT.ControllerOutcomeUnresolved("injected lost completion")
+
+    monkeypatch.setattr(AGENT, "_resolve_completion_outcome", lost)
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="lost completion"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        host["runtime"] = host["candidate"]
+    pending = AGENT._pending_operation(host["profile"])
+    assert pending is not None
+    assert pending["phases"][-1] == "completion_unresolved"
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("lost completion allowed a second apply")
+    monkeypatch.setattr(AGENT, "_resolve_completion_outcome", original)
+    with AGENT._acquire_lock(host["profile"].lock_path) as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = AGENT._recover_pending(
+            host["config"],
+            host["profile"],
+            host["active"],
+            host["rollback"],
+            pending,
+            observe_current=host["observations"].after_apply,
+        )
+    assert result["status"] == "verified"
+    assert host["observation_calls"] == ["prepared", "installed", "installed", "installed"]
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("value", [{"measured": True}, False, "dispatcher", (lambda: {})])
+def test_file_apply_rejects_untyped_observations(file_apply_host, value) -> None:
+    host = file_apply_host
+    with pytest.raises(AGENT.AgentError, match="fixed native adapter"):
+        AGENT.JournaledFileApplyTransaction(
+            host["config"], host["profile"], host["job"], observations=value
+        )
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("field", ["before_apply", "after_apply"])
+def test_file_apply_observations_reject_serialized_receipts(field: str) -> None:
+    arguments = {"before_apply": lambda: {}, "after_apply": lambda: {}}
+    arguments[field] = {"measured": True}
+    with pytest.raises(AGENT.AgentError, match="trusted callables"):
+        AGENT.FileApplyObservations(**arguments)
+
+
+def test_recovery_rejects_serialized_native_observation(file_apply_host):
+    host = file_apply_host
+    with pytest.raises(AGENT.AgentError, match="trusted callable"):
+        AGENT._recover_pending(
+            host["config"],
+            host["profile"],
+            host["active"],
+            host["rollback"],
+            {},
+            observe_current={"measured": True},
+        )
+
+
+def test_file_apply_holds_real_lock_and_immutable_job(file_apply_host) -> None:
+    host = file_apply_host
+    claim = json.loads(AGENT._canonical_bytes(host["job"]["dispatch_claim"]))
+    host["job"]["dispatch_claim"]["attempt"] = 999
+    with host["factory"](claim) as guard:
+        with (
+            pytest.raises(AGENT.AgentError, match="lock is already held"),
+            host["factory"](claim),
+        ):
+            pytest.fail("concurrent transaction entered")
+        guard.assert_current()
+        host["runtime"] = host["candidate"]
+
+
+@pytest.mark.parametrize("change", ["expiry", "fence", "terminal", "transport"])
+def test_file_apply_guard_rechecks_controller_and_lifetime(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    host = file_apply_host
+    with (
+        pytest.raises(AGENT.AgentError),
+        host["factory"](host["job"]["dispatch_claim"]) as guard,
+    ):
+        if change == "expiry":
+            expiry = host["job"]["dispatch_claim"]["expires_at"]
+            monkeypatch.setattr(AGENT.time, "time", lambda: expiry)
+        elif change == "terminal":
+            host["controller"] = "accepted"
+        elif change == "fence":
+            monkeypatch.setattr(AGENT, "request", lambda *_a, **_k: (409, b"{}"))
+        else:
+
+            def lost(*_args, **_kwargs):
+                raise AGENT.ControllerTransportError("test transport unavailable")
+
+            monkeypatch.setattr(AGENT, "request", lost)
+        guard.assert_current()
+        pytest.fail("stale guard permitted a write")
+    assert AGENT._pending_operation(host["profile"])["phases"] == (
+        "dispatch_accepted",
+        "release_started",
+    )
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("interrupted operation repeated")
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["dispatch_accepted", "release_started", "recovery_release_ready", "verified", "completed"],
+)
+@pytest.mark.parametrize("after_write", [False, True])
+def test_file_apply_recovers_each_durable_boundary(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, phase: str, after_write: bool
+) -> None:
+    host = file_apply_host
+    original = AGENT._write_operation
+    writes = []
+
+    def interrupted(profile, current, *args, **kwargs):
+        if current == phase:
+            if after_write:
+                original(profile, current, *args, **kwargs)
+            raise OSError("injected phase boundary failure")
+        return original(profile, current, *args, **kwargs)
+
+    monkeypatch.setattr(AGENT, "_write_operation", interrupted)
+    with (
+        pytest.raises(OSError, match="boundary"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        writes.append("apply")
+        host["runtime"] = host["candidate"]
+    monkeypatch.setattr(AGENT, "_write_operation", original)
+    pending = AGENT._pending_operation(host["profile"])
+    if phase == "dispatch_accepted" and not after_write:
+        # No consume persisted, so a first real attempt remains possible.
+        assert pending is None and not writes
+        with host["factory"](host["job"]["dispatch_claim"]):
+            host["runtime"] = host["candidate"]
+    else:
+        with (
+            pytest.raises(AGENT.AgentError, match="reconciliation|consumed"),
+            host["factory"](host["job"]["dispatch_claim"]),
+        ):
+            pytest.fail("durable operation was applied twice")
+        if pending is not None and writes:
+            active, rollback = AGENT.read_state(host["profile"].state_path, host["profile"])
+            result = AGENT._recover_pending(
+                host["config"], host["profile"], active, rollback, pending
+            )
+            assert result["status"] == "verified"
+            assert AGENT._pending_operation(host["profile"]) is None
+
+
+def test_file_apply_failure_never_suppressed_or_automatically_rolled_back(file_apply_host) -> None:
+    host = file_apply_host
+    with (
+        pytest.raises(RuntimeError, match="injected apply failure"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        raise RuntimeError("injected apply failure")
+    assert host["runtime"] == host["active"]
+    assert AGENT._pending_operation(host["profile"]) is not None
+    assert host["completion"] is None
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_native_lock_rejects_link_substitution(file_apply_host, tmp_path: Path, kind: str) -> None:
+    host = file_apply_host
+    target = tmp_path / "untouched"
+    target.write_bytes(b"unchanged")
+    if kind == "symlink":
+        host["profile"].lock_path.symlink_to(target)
+    else:
+        os.link(target, host["profile"].lock_path)
+    with (
+        pytest.raises((AGENT.AgentError, OSError)),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("linked lock accepted")
+    assert target.read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize(
+    "mode,uid,position,accepted",
+    [
+        (stat.S_IFDIR | 0o755, 0, "leaf", True),
+        (stat.S_IFDIR | 0o1777, 0, "leaf", True),
+        (stat.S_IFDIR | 0o777, 0, "leaf", False),
+        (stat.S_IFDIR | 0o1777, 0, "ancestor", False),
+        (stat.S_IFDIR | 0o755, 501, "leaf", False),
+        (stat.S_IFLNK | 0o755, 0, "ancestor", False),
+    ],
+)
+def test_lock_directory_validates_ancestry_without_breaking_sticky_run_lock(
+    monkeypatch: pytest.MonkeyPatch, mode: int, uid: int, position: str, accepted: bool
+) -> None:
+    target = Path("/run/lock")
+
+    def metadata(path: Path):
+        selected = path == (target if position == "leaf" else target.parent)
+        return os.stat_result(
+            (
+                mode if selected else stat.S_IFDIR | 0o755,
+                1,
+                1,
+                1,
+                uid if selected else 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        )
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    if accepted:
+        AGENT._lock_directory(target)
+    else:
+        with pytest.raises(AGENT.AgentError, match="ancestry"):
+            AGENT._lock_directory(target)
+
+
+@pytest.mark.parametrize("boundary", [1, 2, 3, 4])
+def test_file_apply_fsync_error_never_yields_permission(
+    file_apply_host, monkeypatch: pytest.MonkeyPatch, boundary: int
+) -> None:
+    host = file_apply_host
+    original = os.fsync
+    calls = 0
+
+    def fail_sync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == boundary:
+            raise OSError("injected fsync failure")
+        original(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    with (
+        pytest.raises(AGENT.AgentError, match="journal"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("permission yielded before durable consumption")
+    monkeypatch.setattr(os, "fsync", original)
+    assert host["runtime"] == host["active"]
+    assert AGENT._pending_operation(host["profile"]) is not None
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("uncertain fsync consumption replayed")
+
+
+@pytest.mark.parametrize("phase", ["dispatch_accepted", "release_started", "apply", "completed"])
+def test_file_apply_real_process_death_preserves_nonce_and_releases_lock(
+    file_apply_host, phase: str
+) -> None:
+    host = file_apply_host
+    pid = os.fork()
+    if pid == 0:
+        original = AGENT._write_operation
+
+        def crash_after_write(profile, current, *args, **kwargs):
+            result = original(profile, current, *args, **kwargs)
+            if current == phase:
+                os._exit(91)
+            return result
+
+        AGENT._write_operation = crash_after_write
+        try:
+            with host["factory"](host["job"]["dispatch_claim"]):
+                host["runtime"] = host["candidate"]
+                if phase == "apply":
+                    os._exit(91)
+        except BaseException:
+            os._exit(92)
+        os._exit(93)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    # The dead process releases its flock, but not its persisted nonce. No
+    # Python finally/exception unwinding ran in the child.
+    with (
+        pytest.raises(AGENT.AgentError, match="reconciliation|consumed"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("process death permitted blind apply")
+    if phase == "apply":
+        # Independent native inspection observes that the files switched.
+        host["runtime"] = host["candidate"]
+        pending = AGENT._pending_operation(host["profile"])
+        assert pending is not None
+        result = AGENT._recover_pending(
+            host["config"], host["profile"], host["active"], host["rollback"], pending
+        )
+        assert result["status"] == "verified"
+        assert AGENT._pending_operation(host["profile"]) is None
 
 
 def test_agent_cannot_be_reconfigured_with_host_paths() -> None:

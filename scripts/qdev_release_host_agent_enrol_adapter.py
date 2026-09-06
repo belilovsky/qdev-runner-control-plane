@@ -13,9 +13,13 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY = Path("/etc/qdev-runner/release-host-enrolment-targets.json")
-SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
+STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
+ACTIVATION_STATUS_PATH = Path("/var/lib/qdev-runner/controller-activation/activation-status.json")
+SCHEMA = "qdev-fleet-bootstrap-adapter-result-v2"
+CHILD_SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 ENVELOPE_FIELDS = {"schema", "request", "target"}
 REQUEST_FIELDS = {
@@ -28,9 +32,13 @@ REQUEST_FIELDS = {
     "claim_ttl_seconds",
     "controller_revision",
     "controller_release_digest",
+    "controller_image_digest",
+    "controller_internal_image_digest",
+    "activation_envelope_digest",
     "release_lane",
     "worker_name",
 }
+LEGACY_REQUEST_FIELDS = REQUEST_FIELDS - {"controller_internal_image_digest"}
 TARGET_FIELDS = {
     "release_lane",
     "project_id",
@@ -80,6 +88,21 @@ def _read_private_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _read_root_json(path: Path) -> dict[str, Any]:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise AdapterError("controller_status_permissions_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise AdapterError("controller_status_invalid")
+    return value
+
+
 def _parse() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     payload = sys.stdin.buffer.read(65537)
     if not payload or len(payload) > 65536:
@@ -87,16 +110,18 @@ def _parse() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     envelope = json.loads(payload)
     if not isinstance(envelope, dict) or set(envelope) != ENVELOPE_FIELDS:
         raise AdapterError("request_envelope_invalid")
-    if envelope.get("schema") != "qdev-fleet-bootstrap-adapter-request-v1":
+    if envelope.get("schema") != "qdev-fleet-bootstrap-adapter-request-v2":
         raise AdapterError("request_schema_invalid")
     request = envelope.get("request")
     target = envelope.get("target")
     if (
         not isinstance(request, dict)
-        or set(request) != REQUEST_FIELDS
+        or set(request) not in {frozenset(REQUEST_FIELDS), frozenset(LEGACY_REQUEST_FIELDS)}
         or not isinstance(target, dict)
     ):
         raise AdapterError("request_shape_invalid")
+    request = dict(request)
+    request.setdefault("controller_internal_image_digest", request.get("controller_image_digest"))
     if any(
         isinstance(request.get(name), bool)
         or not isinstance(request.get(name), int)
@@ -105,13 +130,19 @@ def _parse() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     ):
         raise AdapterError("request_integer_invalid")
     if (
-        request.get("schema") != "qdev-fleet-bootstrap-request-v1"
+        request.get("schema") != "qdev-fleet-bootstrap-request-v2"
         or request.get("action") != "enrol-host-agent"
         or not isinstance(request.get("controller_revision"), str)
         or not SHA.fullmatch(request["controller_revision"])
         or request.get("source_sha") != request.get("controller_revision")
         or not isinstance(request.get("controller_release_digest"), str)
         or not DIGEST.fullmatch(request["controller_release_digest"])
+        or not isinstance(request.get("controller_image_digest"), str)
+        or not DIGEST.fullmatch(request["controller_image_digest"])
+        or not isinstance(request.get("controller_internal_image_digest"), str)
+        or not DIGEST.fullmatch(request["controller_internal_image_digest"])
+        or not isinstance(request.get("activation_envelope_digest"), str)
+        or not DIGEST.fullmatch(request["activation_envelope_digest"])
         or request.get("worker_name") is not None
         or not isinstance(request.get("release_lane"), str)
     ):
@@ -135,19 +166,130 @@ def _safe_result(value: object) -> bool:
     return True
 
 
-def _fallback(request: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+def _prefixed_digest(value: object) -> str | None:
+    if isinstance(value, str) and DIGEST.fullmatch(value):
+        return value
+    if isinstance(value, str) and HEX_DIGEST.fullmatch(value):
+        return "sha256:" + value
+    return None
+
+
+def _controller_rollback(request: dict[str, Any]) -> tuple[str, str, str, str, int]:
+    measured = _read_root_json(STATUS_PATH)
+    activation = _read_root_json(ACTIVATION_STATUS_PATH)
+    runtime = measured.get("runtime_identity")
+    previous = activation.get("previous")
+    activation_schema = activation.get("schema")
+    activation_public = _prefixed_digest(
+        activation.get(
+            "image_digest"
+            if activation_schema == "qdev-controller-activation-status-v1"
+            else "public_image_digest"
+        )
+    )
+    activation_internal = (
+        activation_public
+        if activation_schema == "qdev-controller-activation-status-v1"
+        else _prefixed_digest(activation.get("internal_image_digest"))
+    )
+    if (
+        measured.get("schema") != "qdev-controller-release-status-v2"
+        or measured.get("state") != "active"
+        or measured.get("revision") != request["controller_revision"]
+        or measured.get("release_digest") != request["controller_release_digest"]
+        or not isinstance(runtime, dict)
+        or runtime.get("source_revision") != request["controller_revision"]
+        or runtime.get("public_image_id") != request["controller_image_digest"]
+        or runtime.get("internal_image_id") != request["controller_internal_image_digest"]
+        or activation_schema
+        not in {
+            "qdev-controller-activation-status-v1",
+            "qdev-controller-activation-status-v2",
+        }
+        or activation.get("state") != "active"
+        or activation.get("source_sha") != request["controller_revision"]
+        or activation_public != request["controller_image_digest"]
+        or activation_internal != request["controller_internal_image_digest"]
+        or not isinstance(previous, dict)
+        or set(previous)
+        not in {
+            frozenset({"generation", "source_sha", "image_digest", "policy_bundle_digest"}),
+            frozenset(
+                {
+                    "generation",
+                    "source_sha",
+                    "public_image_digest",
+                    "internal_image_digest",
+                    "policy_bundle_digest",
+                }
+            ),
+        }
+        or isinstance(previous.get("generation"), bool)
+        or not isinstance(previous.get("generation"), int)
+        or previous["generation"] < 0
+        or not isinstance(previous.get("source_sha"), str)
+        or not SHA.fullmatch(previous["source_sha"])
+        or _prefixed_digest(previous.get("policy_bundle_digest")) is None
+    ):
+        raise AdapterError("controller_runtime_identity_invalid")
+    previous_public = _prefixed_digest(
+        previous.get("image_digest", previous.get("public_image_digest"))
+    )
+    previous_internal = _prefixed_digest(
+        previous.get("image_digest", previous.get("internal_image_digest"))
+    )
+    previous_policy = _prefixed_digest(previous.get("policy_bundle_digest"))
+    if previous_public is None or previous_internal is None or previous_policy is None:
+        raise AdapterError("controller_runtime_identity_invalid")
+    return (
+        str(previous["source_sha"]),
+        previous_public,
+        previous_internal,
+        previous_policy,
+        int(previous["generation"]),
+    )
+
+
+def _response(
+    request: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    status: str,
+    rollback: tuple[str, str, str, str, int],
+    result: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "schema": SCHEMA,
-        "status": "access_blocked",
+        "status": status,
         "action": "enrol-host-agent",
         "controller_revision": request["controller_revision"],
         "controller_release_digest": request["controller_release_digest"],
+        "controller_image_digest": request["controller_image_digest"],
+        "controller_internal_image_digest": request["controller_internal_image_digest"],
+        "activation_envelope_digest": request["activation_envelope_digest"],
         "release_lane": target["release_lane"],
         "host_agent_mtls_identity": target["host_agent_mtls_identity"],
-        "rollback_source_sha": request["controller_revision"],
-        "rollback_artifact_digest": request["controller_release_digest"],
-        "result": {"error_code": "target_unregistered"},
+        "rollback_source_sha": rollback[0],
+        "rollback_artifact_digest": rollback[1],
+        "rollback_internal_artifact_digest": rollback[2],
+        "rollback_policy_digest": rollback[3],
+        "rollback_generation": rollback[4],
+        "result": result,
     }
+
+
+def _fallback(
+    request: dict[str, Any],
+    target: dict[str, Any],
+    rollback: tuple[str, str, str, str, int],
+) -> dict[str, Any]:
+    return _response(
+        request,
+        target,
+        status="access_blocked",
+        rollback=rollback,
+        result={"error_code": "target_unregistered"},
+    )
 
 
 def _registered_adapter(target: dict[str, Any]) -> Path | None:
@@ -199,7 +341,7 @@ def _validate_child(raw: object, request: dict[str, Any], target: dict[str, Any]
     if not isinstance(raw, dict) or set(raw) != expected:
         raise AdapterError("child_response_invalid")
     if (
-        raw.get("schema") != SCHEMA
+        raw.get("schema") != CHILD_SCHEMA
         or raw.get("status") not in {"completed", "already_completed", "access_blocked", "failed"}
         or raw.get("action") != "enrol-host-agent"
         or raw.get("controller_revision") != request["controller_revision"]
@@ -220,13 +362,26 @@ def main() -> int:
     if os.geteuid() != 0:
         raise AdapterError("root_identity_required")
     envelope, request, target = _parse()
+    rollback = _controller_rollback(request)
     adapter = _registered_adapter(target)
     if adapter is None:
-        print(json.dumps(_fallback(request, target), sort_keys=True, separators=(",", ":")))
+        print(
+            json.dumps(_fallback(request, target, rollback), sort_keys=True, separators=(",", ":"))
+        )
         return 0
+    child_request = dict(request)
+    child_request["schema"] = "qdev-fleet-bootstrap-request-v1"
+    child_request.pop("controller_image_digest")
+    child_request.pop("controller_internal_image_digest")
+    child_request.pop("activation_envelope_digest")
+    child_envelope = {
+        "schema": "qdev-fleet-bootstrap-adapter-request-v1",
+        "request": child_request,
+        "target": target,
+    }
     completed = subprocess.run(
         [str(adapter)],
-        input=json.dumps(envelope, sort_keys=True, separators=(",", ":")),
+        input=json.dumps(child_envelope, sort_keys=True, separators=(",", ":")),
         text=True,
         capture_output=True,
         check=False,
@@ -240,7 +395,14 @@ def main() -> int:
     )
     if completed.returncode != 0:
         raise AdapterError("child_adapter_failed")
-    response = _validate_child(json.loads(completed.stdout), request, target)
+    child = _validate_child(json.loads(completed.stdout), request, target)
+    response = _response(
+        request,
+        target,
+        status=str(child["status"]),
+        rollback=rollback,
+        result=dict(child["result"]),
+    )
     print(json.dumps(response, sort_keys=True, separators=(",", ":")))
     return 0
 

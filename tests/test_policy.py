@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from qdev_runner.policy import Policy, PolicyError
 
@@ -18,10 +19,20 @@ def add_repository_disk_override(
     profiles.write_text(
         "repository_admission_disk_mb:\n"
         f"  {repository}:\n"
-        f"    {profile}: {disk_mb}\n"
-        + profiles.read_text(encoding="utf-8"),
+        f"    {profile}: {disk_mb}\n" + profiles.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+
+
+def add_repository_constraints(
+    profiles: Path,
+    *,
+    repository: str,
+    constraints: dict[str, object],
+) -> None:
+    document = yaml.safe_load(profiles.read_text(encoding="utf-8"))
+    document["repository_admission_constraints"] = {repository: constraints}
+    profiles.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
 def test_profile_requires_complete_labels(policy_files: tuple[Path, Path]) -> None:
@@ -136,6 +147,124 @@ def test_repository_profile_disk_override_rejects_disallowed_profile(
         Policy(inventory, profiles)
 
 
+def test_repository_constraints_enforce_disk_floor_and_concurrency_ceiling(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    add_repository_constraints(
+        profiles,
+        repository="belilovsky/private-repo",
+        constraints={"min_disk_free_gib": 35, "max_concurrency": 1},
+    )
+    policy = Policy(inventory, profiles)
+
+    policy.authorize_worker_resources(
+        "belilovsky/private-repo",
+        disk_free_gib=35,
+        concurrency=1,
+    )
+    with pytest.raises(PolicyError, match="at least 35 GiB"):
+        policy.authorize_worker_resources(
+            "belilovsky/private-repo",
+            disk_free_gib=34.999,
+            concurrency=1,
+        )
+    with pytest.raises(PolicyError, match="concurrency at most 1"):
+        policy.authorize_worker_resources(
+            "belilovsky/private-repo",
+            disk_free_gib=35,
+            concurrency=2,
+        )
+
+
+@pytest.mark.parametrize(
+    ("disk_free_gib", "concurrency", "message"),
+    [
+        (None, 1, "at least 35 GiB"),
+        (True, 1, "at least 35 GiB"),
+        (35, None, "concurrency at most 1"),
+        (35, True, "concurrency at most 1"),
+    ],
+)
+def test_repository_constraints_fail_closed_on_missing_or_malformed_observation(
+    policy_files: tuple[Path, Path],
+    disk_free_gib: object,
+    concurrency: object,
+    message: str,
+) -> None:
+    inventory, profiles = policy_files
+    add_repository_constraints(
+        profiles,
+        repository="belilovsky/private-repo",
+        constraints={"min_disk_free_gib": 35, "max_concurrency": 1},
+    )
+    policy = Policy(inventory, profiles)
+
+    with pytest.raises(PolicyError, match=message):
+        policy.authorize_worker_resources(
+            "belilovsky/private-repo",
+            disk_free_gib=disk_free_gib,
+            concurrency=concurrency,
+        )
+
+
+def test_repository_constraints_reject_foreign_repository_configuration(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    add_repository_constraints(
+        profiles,
+        repository="foreign-owner/foreign-repo",
+        constraints={"min_disk_free_gib": 35, "max_concurrency": 1},
+    )
+
+    with pytest.raises(PolicyError, match="not in the active allowlist"):
+        Policy(inventory, profiles)
+
+
+def test_repository_constraints_do_not_leak_to_another_allowed_repository(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    add_repository_constraints(
+        profiles,
+        repository="belilovsky/private-repo",
+        constraints={"min_disk_free_gib": 35, "max_concurrency": 1},
+    )
+    policy = Policy(inventory, profiles)
+
+    policy.authorize_worker_resources(
+        "belilovsky/public-repo",
+        disk_free_gib=None,
+        concurrency=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        {},
+        {"min_disk_free_gib": 0},
+        {"min_disk_free_gib": float("inf")},
+        {"max_concurrency": 0},
+        {"max_concurrency": True},
+        {"unexpected": 1},
+    ],
+)
+def test_repository_constraints_reject_invalid_policy_values(
+    policy_files: tuple[Path, Path], constraints: dict[str, object]
+) -> None:
+    inventory, profiles = policy_files
+    add_repository_constraints(
+        profiles,
+        repository="belilovsky/private-repo",
+        constraints=constraints,
+    )
+
+    with pytest.raises(PolicyError):
+        Policy(inventory, profiles)
+
+
 @pytest.mark.parametrize("disk_mb", [4096, 8192, 10240])
 def test_qdevrun_ordinary_admission_is_explicit_and_bounded(
     policy_files: tuple[Path, Path], disk_mb: int
@@ -150,9 +279,7 @@ def test_qdevrun_ordinary_admission_is_explicit_and_bounded(
         profiles, repository="belilovsky/qdev-run-site", profile="qdev-ci", disk_mb=disk_mb
     )
     policy = Policy(inventory, profiles)
-    assert policy.repository_profile_disk_mb == {
-        ("belilovsky/qdev-run-site", "qdev-ci"): disk_mb
-    }
+    assert policy.repository_profile_disk_mb == {("belilovsky/qdev-run-site", "qdev-ci"): disk_mb}
     assert policy.profiles == before.profiles
     assert policy.repositories == before.repositories
 
@@ -189,9 +316,7 @@ def test_source_config_bounds_qazknowledge_fifo_head_admission() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
-    assert policy.repository_profile_disk_mb[
-        ("belilovsky/qazknowledge", "qdev-ci")
-    ] == 4096
+    assert policy.repository_profile_disk_mb[("belilovsky/qazknowledge", "qdev-ci")] == 4096
     assert policy.profiles["qdev-ci"].disk_mb == 12288
 
 

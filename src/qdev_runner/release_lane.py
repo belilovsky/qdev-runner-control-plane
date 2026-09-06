@@ -17,26 +17,82 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+if TYPE_CHECKING:
+    from .github import GitHubAppClient
+
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
-_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
+# Readiness component names include the conventional two-character `db`
+# marker used by the QGeo health contract. Keep the stricter segment rule for
+# registry/lane identifiers while allowing that valid readiness component.
+_READINESS_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{1,127}$")
+# OCI repositories may be nested (for example ``belilovsky/qazgeo``), but
+# every component is still constrained to the registry's portable lowercase
+# grammar.  Keeping the grammar here (rather than splitting on ``@`` in
+# callers) also makes traversal and empty-component attempts fail closed.
+_ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}(?:/[a-z0-9][a-z0-9._-]{0,127})*$")
 _CANONICAL_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,38}/[a-z0-9][a-z0-9_.-]{0,99}$")
-_ARTIFACT_PREFIX = re.compile(
-    r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
-)
+_ARTIFACT_PREFIX = re.compile(r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$")
 _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
-_CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
+# GitHub workflow names are human-readable and the QGeo workflow uses an
+# en-dash (``CI – QazGeo``).  Keep the value bounded and control-character
+# free while allowing the Unicode punctuation that GitHub exposes verbatim.
+_CI_SCOPE_VALUE = re.compile(r"^[\w][\w .:/\-\u2013]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
+_CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
+_QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
+_QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
+_QGEO_ARTIFACT_PROVENANCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "artifact_digest",
+        "qazstack_source_sha",
+        "qazstack_version",
+        "qazstack_source_manifest_sha256",
+        "avds_source_sha",
+        "avds_artifact_sha256",
+    }
+)
+_QGEO_RUNTIME_PROVENANCE_FIELDS = _QGEO_ARTIFACT_PROVENANCE_FIELDS - {
+    "status",
+    "source_sha",
+    "artifact_digest",
+}
+_QGEO_CI_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "run_ids", "job_set_digest", "release_evidence_sha256"}
+)
+_QGEO_ARTIFACT_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "artifact_digest", "artifact_ref"}
+)
+_QGEO_STATIC_EVIDENCE_FIELDS = frozenset({"status", "source_sha", "digest"})
+_QGEO_SBOM_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "digest", "format", "artifact_digest"}
+)
+_QGEO_SECURITY_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "source_scan_digest", "image_scan_digest", "artifact_digest"}
+)
+_QGEO_PREFLIGHT_EVIDENCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "release_lane",
+        "placement",
+        "heartbeat_digest",
+        "heartbeat_received_at",
+    }
+)
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -52,6 +108,7 @@ _CONTROLLER_CLAIM_CLOCK_SKEW_SECONDS = 30
 _DISPATCH_CLAIM_MAX_TTL_SECONDS = 300
 _RELEASE_LEASE_DEFAULT_TTL_SECONDS = 3600
 _RELEASE_LEASE_MAX_TTL_SECONDS = 86400
+_TERMINAL_RECOVERY_GRACE_SECONDS = 86400
 LEGACY_COMPATIBILITY_LANES = frozenset(
     {
         "qdev-release-qaz-tours",
@@ -65,7 +122,6 @@ LEGACY_COMPATIBILITY_LANES = frozenset(
     }
 )
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
-QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
 
 
 class ReleaseLaneError(RuntimeError):
@@ -122,6 +178,8 @@ class ReleaseLane:
     runtime_endpoints: tuple[str, ...]
     rollback_reference: str
     required_readiness: tuple[str, ...]
+    client_certificate_sha256: str | None = None
+    host_agent_certificate_sha256: str | None = None
 
 
 class ReleaseLanePolicy:
@@ -161,11 +219,12 @@ class ReleaseLanePolicy:
                 "rollback_reference",
                 "required_readiness",
             }
+            optional = {"client_certificate_sha256", "host_agent_certificate_sha256"}
             # A v2 policy may retain a pre-existing lane whose source binding
             # has not yet been verified. Treat only the exact legacy shape as
             # compatibility data; new Admin Platform lanes must be complete v2
             # records and cannot silently lose their bindings.
-            is_legacy_entry = set(raw) == legacy_expected
+            is_legacy_entry = set(raw) - optional == legacy_expected
             expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
             if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
                 if name not in LEGACY_COMPATIBILITY_LANES:
@@ -173,7 +232,11 @@ class ReleaseLanePolicy:
                         "legacy release lane is not an explicit compatibility lane"
                     )
                 expected = legacy_expected
-            if set(raw) != expected:
+            # Certificate fingerprints are an optional additive enrollment
+            # binding.  They may accompany either the complete v2 shape or an
+            # explicitly allowlisted legacy lane, but no other fields are
+            # accepted.
+            if set(raw) - expected - optional or not expected <= set(raw):
                 raise ReleaseLaneError("release lane fields are invalid")
             try:
                 minimum_free_gib = float(raw["minimum_free_gib"])
@@ -187,11 +250,20 @@ class ReleaseLanePolicy:
                 raw["host_agent_mtls_identity"],
                 raw["artifact_repository"],
             )
+            certificate_values: dict[str, str | None] = {}
+            for field in optional:
+                value = raw.get(field)
+                if value is not None:
+                    if not isinstance(value, str) or _CERTIFICATE_SHA256.fullmatch(value) is None:
+                        raise ReleaseLaneError("release lane certificate binding is invalid")
+                    certificate_values[field] = value
+                else:
+                    certificate_values[field] = None
             if (
                 not all(isinstance(value, str) and value for value in values)
                 or minimum_free_gib < 1
                 or not 30 <= heartbeat_ttl_seconds <= 900
-                or not _ARTIFACT_REPOSITORY.fullmatch(str(raw["artifact_repository"]))
+                or not _is_artifact_repository(raw["artifact_repository"])
             ):
                 raise ReleaseLaneError("release lane values are invalid")
             if schema_version == "qdev-release-lanes-v1" or is_legacy_entry:
@@ -225,7 +297,7 @@ class ReleaseLanePolicy:
                     or not raw_readiness
                     or len(raw_readiness) != len(set(raw_readiness))
                     or not all(
-                        isinstance(item, str) and _SEGMENT.fullmatch(item)
+                        isinstance(item, str) and _READINESS_SEGMENT.fullmatch(item)
                         for item in raw_readiness
                     )
                 ):
@@ -256,6 +328,8 @@ class ReleaseLanePolicy:
                 runtime_endpoints=runtime_endpoints,
                 rollback_reference=rollback_reference,
                 required_readiness=required_readiness,
+                client_certificate_sha256=certificate_values["client_certificate_sha256"],
+                host_agent_certificate_sha256=certificate_values["host_agent_certificate_sha256"],
             )
         self._lanes = lanes
 
@@ -293,10 +367,85 @@ def _is_lane_artifact_ref(value: object, digest: str, lane: ReleaseLane) -> bool
     return value == f"{lane.artifact_ref_prefix}@{digest}"
 
 
+def _is_immutable_artifact_ref(value: object) -> bool:
+    if not isinstance(value, str) or value.count("@") != 1 or len(value) > 512:
+        return False
+    name, digest = value.split("@", 1)
+    if (
+        not name
+        or not _is_digest(digest)
+        or name != name.lower()
+        or "\\" in name
+        or any(character.isspace() for character in name)
+    ):
+        return False
+    parts = name.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        return False
+    component = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+    if any(component.fullmatch(part) is None for part in parts[1:]):
+        return False
+    if len(parts) == 1:
+        return component.fullmatch(parts[0]) is not None
+    return re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", parts[0]) is not None
+
+
+def _validate_qgeo_dependency_identity(
+    value: object,
+    *,
+    runtime_identity: dict[str, Any],
+    source_sha: str,
+    artifact_ref: str,
+) -> None:
+    services = {"db", "postgis", "martin", "photon", "redis", "app"}
+    fields = {
+        "artifact_ref",
+        "source_revision",
+        "container_id",
+        "config_image",
+        "image_id",
+        "image_repo_digests",
+    }
+    if not isinstance(value, dict) or set(value) != services:
+        raise ReleaseLaneError("QGeo dependency identity set is invalid")
+    for service in services:
+        identity = value.get(service)
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != fields
+            or not _is_immutable_artifact_ref(identity.get("artifact_ref"))
+            or identity.get("config_image") != identity.get("artifact_ref")
+            or not isinstance(identity.get("container_id"), str)
+            or not identity["container_id"]
+            or not isinstance(identity.get("image_id"), str)
+            or not identity["image_id"].startswith("sha256:")
+            or not isinstance(identity.get("image_repo_digests"), list)
+            or identity["artifact_ref"] not in identity["image_repo_digests"]
+            or any(not isinstance(item, str) for item in identity["image_repo_digests"])
+            or (
+                identity.get("source_revision") is not None
+                and not _is_sha(identity.get("source_revision"))
+            )
+        ):
+            raise ReleaseLaneError(f"QGeo dependency identity for {service} is invalid")
+    if value["postgis"] != value["db"]:
+        raise ReleaseLaneError("QGeo PostGIS identity does not match its database image")
+    app = value["app"]
+    if (
+        app.get("artifact_ref") != artifact_ref
+        or app.get("source_revision") != source_sha
+        or app.get("container_id") != runtime_identity.get("container_id")
+        or app.get("config_image") != runtime_identity.get("config_image")
+        or app.get("image_id") != runtime_identity.get("image_id")
+        or app.get("image_repo_digests") != runtime_identity.get("image_repo_digests")
+    ):
+        raise ReleaseLaneError("QGeo app dependency identity does not match runtime identity")
+
+
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -321,6 +470,179 @@ def _dispatch_key(value: str | bytes | None) -> bytes:
     if not 32 <= len(raw) <= 4096:
         raise ReleaseLaneError("managed host dispatch key length is invalid")
     return raw
+
+
+def _is_artifact_repository(value: object) -> bool:
+    """Validate a repository path, keeping registry hosts out of the field.
+
+    The registry is configured separately by ``artifact_ref_prefix``.  A
+    dotted first component is therefore a registry host (for example
+    ``registry.ci.qdev.run/...``), not an OCI repository namespace, and must be
+    rejected even though it is syntactically valid to an OCI client.
+    """
+    if not isinstance(value, str) or _ARTIFACT_REPOSITORY.fullmatch(value) is None:
+        return False
+    first = value.split("/", 1)[0]
+    return "." not in first
+
+
+def canonical_json_sha256(value: object) -> str:
+    """Return a stable sha256 digest for one JSON-compatible value."""
+
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def qgeo_candidate_evidence_digest(evidence: object) -> str:
+    """Bind the complete QGeo evidence envelope into its controller claim."""
+
+    if not isinstance(evidence, dict):
+        raise ReleaseLaneError("managed candidate evidence is incomplete")
+    return f"sha256:{canonical_json_sha256(evidence)}"
+
+
+def qgeo_artifact_provenance_from_evidence(evidence: object) -> dict[str, str]:
+    """Project the exact candidate-bound provenance a QGeo host must prove.
+
+    The QazStack source is intentionally dynamic: the controller accepts no
+    repository-pinned version or path.  Instead, each candidate receipt binds
+    the source revision and deterministic directory manifest that the signed
+    host profile must independently reproduce.
+    """
+
+    provenance = evidence.get("provenance") if isinstance(evidence, dict) else None
+    if not isinstance(provenance, dict) or set(provenance) != _QGEO_ARTIFACT_PROVENANCE_FIELDS:
+        raise ReleaseLaneError("managed candidate provenance evidence is invalid")
+    if (
+        provenance.get("status") != "passed"
+        or not _is_sha(provenance.get("source_sha"))
+        or not _is_digest(provenance.get("artifact_digest"))
+        or not _is_sha(provenance.get("qazstack_source_sha"))
+        or not isinstance(provenance.get("qazstack_version"), str)
+        or not provenance["qazstack_version"].strip()
+        or len(provenance["qazstack_version"]) > 64
+        or not _is_digest(provenance.get("qazstack_source_manifest_sha256"))
+        or not _is_sha(provenance.get("avds_source_sha"))
+        or not isinstance(provenance.get("avds_artifact_sha256"), str)
+        or _HEX64.fullmatch(provenance["avds_artifact_sha256"]) is None
+    ):
+        raise ReleaseLaneError("managed candidate provenance evidence is invalid")
+    return {field: str(provenance[field]) for field in sorted(_QGEO_RUNTIME_PROVENANCE_FIELDS)}
+
+
+def _validate_qgeo_candidate_evidence(
+    evidence: object,
+    *,
+    source_sha: str,
+    artifact_digest: str,
+    artifact_ref: str,
+    release_lane: str,
+    placement: str,
+) -> None:
+    """Validate the source-bound evidence envelope required by QGeo.
+
+    The candidate receipt is supplied by a caller, so the controller must not
+    trust a top-level ``status`` field alone.  Every release stage is bound to
+    the same source tuple and the CI run set is left for the managed ledger to
+    reconcile against terminal provider receipts.
+    """
+    required = {"ci", "artifact", "static", "sbom", "provenance", "security", "preflight"}
+    if not isinstance(evidence, dict) or set(evidence) != required:
+        raise ReleaseLaneError("managed candidate evidence is incomplete")
+
+    ci = evidence["ci"]
+    if (
+        not isinstance(ci, dict)
+        or set(ci) != _QGEO_CI_EVIDENCE_FIELDS
+        or ci.get("status") != "passed"
+        or ci.get("source_sha") != source_sha
+        or not isinstance(ci.get("run_ids"), list)
+        or not ci["run_ids"]
+        or any(
+            not isinstance(run_id, str) or not re.fullmatch(r"[1-9][0-9]{0,31}", run_id)
+            for run_id in ci["run_ids"]
+        )
+        or len(set(ci["run_ids"])) != len(ci["run_ids"])
+        or not isinstance(ci.get("job_set_digest"), str)
+        or _HEX64.fullmatch(ci["job_set_digest"]) is None
+        or not isinstance(ci.get("release_evidence_sha256"), str)
+        or _HEX64.fullmatch(ci["release_evidence_sha256"]) is None
+    ):
+        raise ReleaseLaneError("managed candidate CI evidence is invalid")
+
+    artifact = evidence["artifact"]
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != _QGEO_ARTIFACT_EVIDENCE_FIELDS
+        or artifact.get("status") != "passed"
+        or artifact.get("source_sha") != source_sha
+        or artifact.get("artifact_digest") != artifact_digest
+        or artifact.get("artifact_ref") != artifact_ref
+    ):
+        raise ReleaseLaneError("managed candidate artifact evidence does not bind candidate")
+
+    static = evidence["static"]
+    if (
+        not isinstance(static, dict)
+        or set(static) != _QGEO_STATIC_EVIDENCE_FIELDS
+        or static.get("status") != "passed"
+        or static.get("source_sha") != source_sha
+        or not _is_digest(static.get("digest"))
+    ):
+        raise ReleaseLaneError("managed candidate static evidence is invalid")
+
+    sbom = evidence["sbom"]
+    if (
+        not isinstance(sbom, dict)
+        or set(sbom) != _QGEO_SBOM_EVIDENCE_FIELDS
+        or sbom.get("status") != "passed"
+        or sbom.get("source_sha") != source_sha
+        or not _is_digest(sbom.get("digest"))
+        or sbom.get("format") != "SPDX-2.3"
+        or sbom.get("artifact_digest") != artifact_digest
+    ):
+        raise ReleaseLaneError("managed candidate SBOM evidence is invalid")
+
+    provenance = evidence["provenance"]
+    runtime_provenance = qgeo_artifact_provenance_from_evidence(evidence)
+    if (
+        provenance.get("source_sha") != source_sha
+        or provenance.get("artifact_digest") != artifact_digest
+        or not runtime_provenance
+    ):
+        raise ReleaseLaneError("managed candidate provenance evidence is invalid")
+
+    security = evidence["security"]
+    if (
+        not isinstance(security, dict)
+        or set(security) != _QGEO_SECURITY_EVIDENCE_FIELDS
+        or security.get("status") != "passed"
+        or security.get("source_sha") != source_sha
+        or not _is_digest(security.get("source_scan_digest"))
+        or not _is_digest(security.get("image_scan_digest"))
+        or security.get("artifact_digest") != artifact_digest
+    ):
+        raise ReleaseLaneError("managed candidate security evidence is invalid")
+
+    preflight = evidence["preflight"]
+    if (
+        not isinstance(preflight, dict)
+        or set(preflight) != _QGEO_PREFLIGHT_EVIDENCE_FIELDS
+        or preflight.get("status") != "passed"
+        or preflight.get("source_sha") != source_sha
+        or preflight.get("release_lane") != release_lane
+        or preflight.get("placement") != placement
+        or not _is_digest(preflight.get("heartbeat_digest"))
+        or not isinstance(preflight.get("heartbeat_received_at"), (int, float))
+        or isinstance(preflight.get("heartbeat_received_at"), bool)
+        or float(preflight["heartbeat_received_at"]) <= 0
+    ):
+        raise ReleaseLaneError("managed candidate preflight evidence is invalid")
 
 
 def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
@@ -358,6 +680,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         "job_id",
         "attempt",
         "runner_profile",
+        "evidence",
         "release_version",
         "migration_receipt_digest",
         "contract_digest",
@@ -418,6 +741,15 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
                 raise ReleaseLaneError("candidate CI scope value is invalid")
         if receipt.get("runner_profile") not in _RUNNER_PROFILES:
             raise ReleaseLaneError("candidate runner profile is not allowlisted")
+    if lane.project_id == "qazgeo":
+        _validate_qgeo_candidate_evidence(
+            receipt.get("evidence"),
+            source_sha=request.source_sha,
+            artifact_digest=request.artifact_digest,
+            artifact_ref=request.artifact_ref,
+            release_lane=lane.name,
+            placement=lane.placement,
+        )
     qmt_fields = {"release_version", "migration_receipt_digest", "contract_digest"}
     if lane.project_id == "kaztilshi":
         if not qmt_fields.issubset(receipt):
@@ -435,7 +767,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
 
 
 def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]:
-    """Return metadata-only candidate evidence covered by the host dispatch claim."""
+    """Return immutable candidate evidence covered by the host dispatch claim."""
     receipt = job.get("candidate_receipt")
     if not isinstance(receipt, dict):
         raise ReleaseLaneError("release job has no candidate receipt")
@@ -443,7 +775,11 @@ def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]
         "schema": "qdev-release-candidate-evidence-v1",
         "candidate_receipt_sha256": hashlib.sha256(_canonical_bytes(receipt)).hexdigest(),
     }
-    if lane.project_id == "kaztilshi":
+    if lane.project_id == "qazgeo":
+        evidence["artifact_provenance"] = qgeo_artifact_provenance_from_evidence(
+            receipt.get("evidence")
+        )
+    elif lane.project_id == "kaztilshi":
         evidence = {
             "schema": QMT_CANDIDATE_EVIDENCE_SCHEMA,
             "candidate_receipt_sha256": evidence["candidate_receipt_sha256"],
@@ -499,7 +835,7 @@ def controller_claim_payload(
         "attempt": receipt.get("attempt"),
         "runner_profile": receipt.get("runner_profile"),
     }
-    return {
+    payload: dict[str, Any] = {
         "schema": CONTROLLER_CLAIM_SCHEMA,
         "release_lane": lane.name,
         "project_id": lane.project_id,
@@ -512,6 +848,11 @@ def controller_claim_payload(
         "expires_at": expires_at,
         "nonce": nonce,
     }
+    if lane.project_id == "qazgeo":
+        payload["candidate_evidence_digest"] = qgeo_candidate_evidence_digest(
+            receipt.get("evidence")
+        )
+    return payload
 
 
 def validate_controller_claim(
@@ -572,8 +913,7 @@ def validate_controller_claim(
         )
         or scope.get("runner_profile") not in _RUNNER_PROFILES
         or any(
-            not isinstance(scope.get(field), str)
-            or not _CI_SCOPE_VALUE.fullmatch(scope[field])
+            not isinstance(scope.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(scope[field])
             for field in ("workflow", "job")
         )
     ):
@@ -663,8 +1003,7 @@ def host_dispatch_claim_payload(
         )
         or claim["runner_profile"] not in _RUNNER_PROFILES
         or any(
-            not isinstance(claim.get(field), str)
-            or not _CI_SCOPE_VALUE.fullmatch(claim[field])
+            not isinstance(claim.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(claim[field])
             for field in ("workflow", "job")
         )
         or not isinstance(artifact_digest, str)
@@ -677,8 +1016,7 @@ def host_dispatch_claim_payload(
         or isinstance(claim["lease_expires_at"], bool)
         or expires_at > claim["lease_expires_at"]
         or not isinstance(claim["rollback_anchor"], dict)
-        or set(claim["rollback_anchor"])
-        != {"source_sha", "artifact_digest", "artifact_ref"}
+        or set(claim["rollback_anchor"]) != {"source_sha", "artifact_digest", "artifact_ref"}
         or not _is_sha(claim["rollback_anchor"].get("source_sha"))
         or not _is_digest(claim["rollback_anchor"].get("artifact_digest"))
         or not _is_lane_artifact_ref(
@@ -692,9 +1030,7 @@ def host_dispatch_claim_payload(
     return claim
 
 
-def sign_host_dispatch_claim(
-    claim: dict[str, Any], *, signing_key: str | bytes | None
-) -> str:
+def sign_host_dispatch_claim(claim: dict[str, Any], *, signing_key: str | bytes | None) -> str:
     """Sign a dispatch claim with a key supplied only by fixed controller config."""
     return hmac.new(_dispatch_key(signing_key), _canonical_bytes(claim), hashlib.sha256).hexdigest()
 
@@ -724,9 +1060,7 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         and rollback.get("verified") is True
         and _is_sha(rollback.get("source_sha"))
         and _is_digest(rollback.get("artifact_digest"))
-        and _is_lane_artifact_ref(
-            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
-        )
+        and _is_lane_artifact_ref(rollback.get("artifact_ref"), rollback["artifact_digest"], lane)
     )
     if not active_valid or not rollback_valid:
         raise ReleaseLaneError("host-agent rollback proof is invalid")
@@ -739,10 +1073,59 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         rollback.get("artifact_digest"),
         rollback.get("artifact_ref"),
     )
-    if not request.bootstrap and same_tuple:
+    qgeo_recovery_anchor = (
+        lane.project_id == "qazgeo"
+        and active.get("source_sha") == _QGEO_RECOVERY_SHA
+        and active.get("artifact_digest") == _QGEO_RECOVERY_DIGEST
+    )
+    if not request.bootstrap and same_tuple and not qgeo_recovery_anchor:
         raise ReleaseLaneError("host-agent rollback must be a distinct immutable tuple")
     if request.bootstrap and not same_tuple:
         raise ReleaseLaneError("bootstrap heartbeat must use the current release as its anchor")
+
+
+def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None:
+    if not isinstance(provenance, dict):
+        raise ReleaseLaneError("runtime artifact provenance is invalid")
+    if lane.project_id == "qazgeo":
+        if set(provenance) != _QGEO_RUNTIME_PROVENANCE_FIELDS:
+            raise ReleaseLaneError("runtime QGeo artifact provenance fields are invalid")
+        if (
+            not isinstance(provenance.get("qazstack_source_manifest_sha256"), str)
+            or not _DIGEST.fullmatch(provenance["qazstack_source_manifest_sha256"])
+            or not _is_sha(provenance.get("qazstack_source_sha"))
+            or not isinstance(provenance.get("qazstack_version"), str)
+            or not provenance["qazstack_version"].strip()
+            or len(provenance["qazstack_version"]) > 64
+            or not isinstance(provenance.get("avds_artifact_sha256"), str)
+            or not _HEX64.fullmatch(provenance["avds_artifact_sha256"])
+            or not _is_sha(provenance.get("avds_source_sha"))
+        ):
+            raise ReleaseLaneError("runtime QGeo artifact provenance is invalid")
+        return
+    if lane.project_id == "kaztilshi":
+        expected = {
+            "candidate_receipt_sha256",
+            "migration_receipt_digest",
+            "contract_digest",
+        }
+        if set(provenance) != expected:
+            raise ReleaseLaneError("QMT artifact provenance is incomplete")
+        if not _HEX64.fullmatch(str(provenance.get("candidate_receipt_sha256", ""))):
+            raise ReleaseLaneError("QMT candidate receipt binding is invalid")
+        if not _is_digest(provenance.get("migration_receipt_digest")):
+            raise ReleaseLaneError("QMT migration receipt binding is invalid")
+        if not _HEX64.fullmatch(str(provenance.get("contract_digest", ""))):
+            raise ReleaseLaneError("QMT contract binding is invalid")
+        return
+    expected = {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}
+    if set(provenance) != expected:
+        raise ReleaseLaneError("runtime artifact provenance is invalid")
+    if any(
+        not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(provenance[field])
+        for field in ("qak_wheel_sha256", "avds_artifact_sha256")
+    ) or not _is_sha(provenance.get("avds_source_sha")):
+        raise ReleaseLaneError("runtime artifact provenance is invalid")
 
 
 def validate_runtime_receipt(
@@ -767,9 +1150,13 @@ def validate_runtime_receipt(
         "readiness",
         "rollback",
     }
-    if not expected.issubset(receipt) or set(receipt) - (
-        expected | {"runtime_identity", "dependency_identity", "artifact_provenance"}
-    ):
+    optional_evidence = {
+        "runtime_identity",
+        "dependency_identity",
+        "artifact_provenance",
+        "static_bundle",
+    }
+    if not expected.issubset(receipt) or set(receipt) - (expected | optional_evidence):
         raise ReleaseLaneError("runtime receipt fields are invalid")
     if (
         receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
@@ -786,34 +1173,68 @@ def validate_runtime_receipt(
     evidence_fields = {"runtime_identity", "dependency_identity", "artifact_provenance"}
     if lane.canonical_repository is not None and not evidence_fields.issubset(receipt):
         raise ReleaseLaneError("runtime identity evidence is required for managed release lanes")
+    if lane.project_id == "qazgeo" and "static_bundle" not in receipt:
+        raise ReleaseLaneError("runtime static bundle evidence is required for QGeo")
     if evidence_fields.intersection(receipt):
         if not evidence_fields.issubset(receipt):
             raise ReleaseLaneError("runtime identity evidence is incomplete")
         runtime_identity = receipt["runtime_identity"]
+        runtime_fields = {"source_sha", "artifact_digest", "artifact_ref", "measured"}
+        if lane.project_id == "qazgeo":
+            runtime_fields |= {"container_id", "config_image", "image_id", "image_repo_digests"}
         if (
             not isinstance(runtime_identity, dict)
-            or set(runtime_identity)
-            != {"source_sha", "artifact_digest", "artifact_ref", "measured"}
+            or set(runtime_identity) != runtime_fields
             or runtime_identity.get("source_sha") != source_sha
             or runtime_identity.get("artifact_digest") != artifact_digest
             or runtime_identity.get("artifact_ref") != artifact_ref
             or runtime_identity.get("measured") is not True
         ):
             raise ReleaseLaneError("runtime receipt does not contain measured identity")
+        if lane.project_id == "qazgeo" and (
+            not isinstance(runtime_identity.get("container_id"), str)
+            or not runtime_identity["container_id"]
+            or runtime_identity.get("config_image") != artifact_ref
+            or not isinstance(runtime_identity.get("image_id"), str)
+            or not runtime_identity["image_id"].startswith("sha256:")
+            or not isinstance(runtime_identity.get("image_repo_digests"), list)
+            or artifact_ref not in runtime_identity["image_repo_digests"]
+            or any(not isinstance(value, str) for value in runtime_identity["image_repo_digests"])
+        ):
+            raise ReleaseLaneError("runtime QGeo image identity is incomplete")
         dependency_identity = receipt["dependency_identity"]
-        if not isinstance(dependency_identity, dict) or not dependency_identity or any(
-            not isinstance(value, str) or not value.strip()
-            for value in dependency_identity.values()
+        if lane.project_id == "qazgeo":
+            _validate_qgeo_dependency_identity(
+                dependency_identity,
+                runtime_identity=runtime_identity,
+                source_sha=source_sha,
+                artifact_ref=artifact_ref,
+            )
+        elif (
+            not isinstance(dependency_identity, dict)
+            or not dependency_identity
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in dependency_identity.values()
+            )
         ):
             raise ReleaseLaneError("runtime dependency identity is invalid")
-        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+        _validate_runtime_provenance(receipt, lane, installed_only=True)
+    if "static_bundle" in receipt:
+        static_bundle = receipt["static_bundle"]
+        if (
+            not isinstance(static_bundle, dict)
+            or not _is_digest(static_bundle.get("digest"))
+            or not isinstance(static_bundle.get("manifest"), str)
+            or not static_bundle["manifest"].strip()
+            or "\x00" in static_bundle["manifest"]
+            or any(part == ".." for part in static_bundle["manifest"].split("/"))
+        ):
+            raise ReleaseLaneError("runtime static bundle evidence is invalid")
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     rollback_tuple = (
-        {
-            key: rollback.get(key)
-            for key in ("source_sha", "artifact_digest", "artifact_ref")
-        }
+        {key: rollback.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}
         if isinstance(rollback, dict)
         else None
     )
@@ -879,48 +1300,75 @@ def validate_native_runtime_receipt(
         if not evidence.issubset(receipt):
             raise ReleaseLaneError("native runtime evidence is incomplete")
         runtime_identity = receipt["runtime_identity"]
+        runtime_fields = {"source_sha", "artifact_digest", "artifact_ref", "measured"}
+        if lane.project_id == "qazgeo":
+            runtime_fields |= {"container_id", "config_image", "image_id", "image_repo_digests"}
         if (
             not isinstance(runtime_identity, dict)
-            or set(runtime_identity)
-            != {"source_sha", "artifact_digest", "artifact_ref", "measured"}
+            or set(runtime_identity) != runtime_fields
             or runtime_identity.get("measured") is not True
             or runtime_identity.get("source_sha") != source_sha
             or runtime_identity.get("artifact_digest") != artifact_digest
             or runtime_identity.get("artifact_ref") != artifact_ref
         ):
             raise ReleaseLaneError("native runtime identity is not measured")
+        if lane.project_id == "qazgeo" and (
+            not isinstance(runtime_identity.get("container_id"), str)
+            or not runtime_identity["container_id"]
+            or runtime_identity.get("config_image") != artifact_ref
+            or not isinstance(runtime_identity.get("image_id"), str)
+            or not runtime_identity["image_id"].startswith("sha256:")
+            or not isinstance(runtime_identity.get("image_repo_digests"), list)
+            or artifact_ref not in runtime_identity["image_repo_digests"]
+            or any(not isinstance(value, str) for value in runtime_identity["image_repo_digests"])
+        ):
+            raise ReleaseLaneError("native QGeo image identity is incomplete")
         dependencies = receipt["dependency_identity"]
-        if not isinstance(dependencies, dict) or not dependencies or any(
-            not isinstance(value, str) or not value.strip() for value in dependencies.values()
+        if lane.project_id == "qazgeo":
+            _validate_qgeo_dependency_identity(
+                dependencies,
+                runtime_identity=runtime_identity,
+                source_sha=source_sha,
+                artifact_ref=artifact_ref,
+            )
+        elif (
+            not isinstance(dependencies, dict)
+            or not dependencies
+            or any(
+                not isinstance(value, str) or not value.strip() for value in dependencies.values()
+            )
         ):
             raise ReleaseLaneError("native dependency identity is incomplete")
-        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+        _validate_runtime_provenance(receipt, lane)
 
 
-def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None:
-    if lane.project_id == "kaztilshi":
-        expected = {
-            "candidate_receipt_sha256",
-            "migration_receipt_digest",
-            "contract_digest",
-        }
-        if not isinstance(provenance, dict) or set(provenance) != expected:
-            raise ReleaseLaneError("QMT artifact provenance is incomplete")
-        if not _HEX64.fullmatch(str(provenance.get("candidate_receipt_sha256", ""))):
-            raise ReleaseLaneError("QMT candidate receipt binding is invalid")
-        if not _is_digest(provenance.get("migration_receipt_digest")):
-            raise ReleaseLaneError("QMT migration receipt binding is invalid")
-        if not _HEX64.fullmatch(str(provenance.get("contract_digest", ""))):
-            raise ReleaseLaneError("QMT contract binding is invalid")
+def _validate_runtime_provenance(
+    receipt: dict[str, Any],
+    lane: ReleaseLane,
+    *,
+    installed_only: bool = False,
+) -> None:
+    if lane.project_id == "id-qdev-run":
+        from qdev_runner.idp_file_runtime import (
+            ADAPTER,
+            ARTIFACT_PREFIX,
+            REPOSITORY,
+            IdPObservationError,
+            validate_runtime_evidence,
+        )
+
+        if (lane.canonical_repository, lane.native_host_adapter, lane.artifact_ref_prefix) != (
+            REPOSITORY,
+            ADAPTER,
+            ARTIFACT_PREFIX,
+        ):
+            raise ReleaseLaneError("IdP native adapter scope is invalid")
+        try:
+            validate_runtime_evidence(receipt, installed_only=installed_only)
+        except IdPObservationError:
+            raise ReleaseLaneError("IdP runtime provenance is invalid") from None
         return
-    expected = {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}
-    if not isinstance(provenance, dict) or set(provenance) != expected:
-        raise ReleaseLaneError("runtime artifact provenance is invalid")
-    if any(
-        not isinstance(provenance.get(field), str) or not _HEX64.fullmatch(provenance[field])
-        for field in ("qak_wheel_sha256", "avds_artifact_sha256")
-    ) or not _is_sha(provenance.get("avds_source_sha")):
-        raise ReleaseLaneError("runtime artifact provenance is invalid")
+    _validate_artifact_provenance(receipt["artifact_provenance"], lane)
 
 
 class ReleaseStore:
@@ -993,9 +1441,7 @@ class ReleaseStore:
         if path.is_symlink():
             raise ReleaseLaneError("release operation journal must not be a symlink")
         if not path.exists() and legacy.exists():
-            raise ReleaseLaneError(
-                "legacy replaceable release journal requires explicit migration"
-            )
+            raise ReleaseLaneError("legacy replaceable release journal requires explicit migration")
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
@@ -1084,9 +1530,7 @@ class ReleaseStore:
         event: dict[str, Any] = {
             "schema": OPERATION_JOURNAL_SCHEMA,
             "journal_seq": journal_seq,
-            "previous_event_sha256": (
-                events[-1]["event_sha256"] if events else _JOURNAL_GENESIS
-            ),
+            "previous_event_sha256": (events[-1]["event_sha256"] if events else _JOURNAL_GENESIS),
             "release_lane": lane.name,
             "project_id": lane.project_id,
             "placement": lane.placement,
@@ -1201,10 +1645,7 @@ class ReleaseStore:
         request = self._heartbeat_request(record)
         validate_host_heartbeat(request, lane)
         received_at = record.get("received_at")
-        if (
-            not isinstance(received_at, (int, float))
-            or isinstance(received_at, bool)
-        ):
+        if not isinstance(received_at, (int, float)) or isinstance(received_at, bool):
             raise ReleaseLaneError("persisted host-agent heartbeat timestamp is invalid")
         current = time.time() if now is None else now
         age = current - float(received_at)
@@ -1227,6 +1668,64 @@ class ReleaseStore:
             or expires_at <= int(time.time() if now is None else now)
         ):
             raise ReleaseLaneError("managed release lease is expired or invalid")
+
+    @staticmethod
+    def _ensure_terminal_lease(
+        job: dict[str, Any], lane: ReleaseLane, *, now: float | None = None
+    ) -> None:
+        """Allow an already-dispatched operation to report one terminal outcome.
+
+        A lease expiry closes admission and dispatch, but it must not strand a
+        host after the immutable runtime mutation has begun.  Recovery is
+        therefore limited to the exact durable dispatch claim, fence and
+        rollback anchor for a bounded grace period.  An accepted-but-never-
+        dispatched request cannot use this path.
+        """
+
+        if lane.canonical_repository is None:
+            return
+        current = int(time.time() if now is None else now)
+        expires_at = job.get("lease_expires_at")
+        if not isinstance(expires_at, int) or isinstance(expires_at, bool) or expires_at <= 0:
+            raise ReleaseLaneError("managed release lease is expired or invalid")
+        if expires_at > current:
+            return
+        if current > expires_at + _TERMINAL_RECOVERY_GRACE_SECONDS:
+            raise ReleaseLaneError("managed release terminal recovery grace has expired")
+        if job.get("status") != "dispatched" or job.get("operation_phase") not in {
+            "dispatched",
+            "dispatch_reissued",
+        }:
+            raise ReleaseLaneError("expired managed release was not durably dispatched")
+        claim = job.get("dispatch_claim")
+        signature = job.get("dispatch_claim_signature")
+        if (
+            not isinstance(claim, dict)
+            or not isinstance(signature, str)
+            or not _HEX64.fullmatch(signature)
+        ):
+            raise ReleaseLaneError("expired managed release dispatch proof is unavailable")
+        claim_issued_at = claim.get("issued_at")
+        claim_expires_at = claim.get("expires_at")
+        claim_nonce = claim.get("nonce")
+        if (
+            not isinstance(claim_issued_at, int)
+            or isinstance(claim_issued_at, bool)
+            or not isinstance(claim_expires_at, int)
+            or isinstance(claim_expires_at, bool)
+            or not isinstance(claim_nonce, str)
+        ):
+            raise ReleaseLaneError("expired managed release dispatch proof is invalid")
+        expected = host_dispatch_claim_payload(
+            job,
+            lane,
+            host_identity=lane.host_agent_mtls_identity,
+            issued_at=claim_issued_at,
+            expires_at=claim_expires_at,
+            nonce=claim_nonce,
+        )
+        if claim != expected:
+            raise ReleaseLaneError("expired managed release dispatch proof is not exact")
 
     @staticmethod
     def _managed_claim_metadata(
@@ -1325,9 +1824,7 @@ class ReleaseStore:
             self._write(self._agent_path(lane.name), record)
         return record
 
-    def fresh_agent(
-        self, lane: ReleaseLane, *, now: float | None = None
-    ) -> dict[str, Any] | None:
+    def fresh_agent(self, lane: ReleaseLane, *, now: float | None = None) -> dict[str, Any] | None:
         with self._lock(lane.name):
             return self._fresh_agent_unlocked(lane, now=now)
 
@@ -1366,32 +1863,45 @@ class ReleaseStore:
                     raise ReleaseLaneError("managed release host-agent heartbeat is stale")
                 if float(agent.get("capacity_free_gib", -1)) < lane.minimum_free_gib:
                     raise ReleaseLaneError("managed release host-agent capacity is insufficient")
-                rollback_anchor = {
-                    key: agent["active_release"][key] for key in tuple_fields
-                }
-                if rollback_anchor == {
-                    key: getattr(request, key) for key in tuple_fields
-                }:
+                rollback_anchor = {key: agent["active_release"][key] for key in tuple_fields}
+                if rollback_anchor == {key: getattr(request, key) for key in tuple_fields}:
                     raise ReleaseLaneError("managed candidate must differ from rollback anchor")
             if existing is not None:
-                if all(
+                same_tuple = all(
                     existing.get(name) == getattr(request, name) for name in tuple_fields
-                ) and existing.get("candidate_receipt") == request.candidate_receipt and (
-                    lane.canonical_repository is None
-                    or (
-                        existing.get("controller_claim_nonce") == claim_nonce
-                        and existing.get("controller_claim_sha256") == claim_sha256
-                    )
-                ):
+                )
+                if same_tuple:
+                    if existing.get("candidate_receipt") != request.candidate_receipt:
+                        raise ReleaseLaneError(
+                            "release request has different candidate evidence for the same tuple"
+                        )
+                    if lane.canonical_repository is not None and (
+                        existing.get("controller_claim_nonce") != claim_nonce
+                        or existing.get("controller_claim_sha256") != claim_sha256
+                    ):
+                        raise ReleaseLaneError(
+                            "release request has different controller claim for active tuple"
+                        )
                     return existing, True
                 raise ReleaseLaneError("release lane already has an active immutable tuple")
-            if claim_nonce is not None and self._claim_nonce_used_unlocked(
-                lane, nonce=claim_nonce
-            ):
-                raise ReleaseLaneError("controller-signed claim nonce was already consumed")
             current = self._job_unlocked(lane)
             if current is not None and current.get("status") == "verified":
+                if all(current.get(name) == getattr(request, name) for name in tuple_fields):
+                    if current.get("candidate_receipt") != request.candidate_receipt:
+                        raise ReleaseLaneError(
+                            "release request has different candidate evidence for the same tuple"
+                        )
+                    if lane.canonical_repository is not None and (
+                        current.get("controller_claim_nonce") != claim_nonce
+                        or current.get("controller_claim_sha256") != claim_sha256
+                    ):
+                        raise ReleaseLaneError(
+                            "verified release claim does not match idempotent request"
+                        )
+                    return current, True
                 self._write(self._previous_path(lane.name), current)
+            if claim_nonce is not None and self._claim_nonce_used_unlocked(lane, nonce=claim_nonce):
+                raise ReleaseLaneError("controller-signed claim nonce was already consumed")
             job = {
                 "release_id": secrets.token_urlsafe(18),
                 "lease_id": secrets.token_urlsafe(18),
@@ -1468,9 +1978,7 @@ class ReleaseStore:
             current_claim = job.get("dispatch_claim")
             current_signature = job.get("dispatch_claim_signature")
             if current_claim is not None or current_signature is not None:
-                if not isinstance(current_claim, dict) or not isinstance(
-                    current_signature, str
-                ):
+                if not isinstance(current_claim, dict) or not isinstance(current_signature, str):
                     raise ReleaseLaneError("persisted host dispatch claim is invalid")
                 current_issued_at = current_claim.get("issued_at")
                 current_expires_at = current_claim.get("expires_at")
@@ -1502,9 +2010,7 @@ class ReleaseStore:
                     return job
             elif job["status"] == "dispatched":
                 raise ReleaseLaneError("dispatched managed job has no signed host claim")
-            dispatch_expires_at = min(
-                issued_at + claim_ttl_seconds, int(job["lease_expires_at"])
-            )
+            dispatch_expires_at = min(issued_at + claim_ttl_seconds, int(job["lease_expires_at"]))
             if dispatch_expires_at <= issued_at:
                 raise ReleaseLaneError("managed release lease cannot cover a dispatch claim")
             claim = host_dispatch_claim_payload(
@@ -1536,6 +2042,265 @@ class ReleaseStore:
             self._write(self._job_path(lane.name), job)
             return job
 
+    def idp_dispatch_inputs(
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        *,
+        lease_id: str | None,
+        fence: str | None,
+        signing_key: str | bytes,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Read an existing signed dispatch, without admission or TTL renewal.
+
+        Called only after the private handler authenticates the configured host.
+        A stale lookup snapshot may be repaired from the existing durable journal;
+        this operation never appends a new event or contacts the provider.
+        """
+        from .idp_file_issuer import check_storage
+        from .idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
+
+        if (
+            lane.project_id,
+            lane.canonical_repository,
+            lane.native_host_adapter,
+            lane.artifact_ref_prefix,
+        ) != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX):
+            raise ReleaseLaneError("lane is not the fixed IdP file adapter")
+        current = time.time() if now is None else now
+        check_storage(self.root, lane)
+        with self._lock(lane.name):
+            check_storage(self.root, lane)
+            job = self._job_unlocked(lane)
+            if (
+                job is None
+                or job.get("release_id") != release_id
+                or job.get("status") != "dispatched"
+                or not lease_id
+                or job.get("lease_id") != lease_id
+                or not fence
+                or job.get("fence") != fence
+            ):
+                raise ReleaseLaneError("IdP dispatch is not current")
+            self._ensure_live_lease(job, lane, now=current)
+            claim = job.get("dispatch_claim")
+            signature = job.get("dispatch_claim_signature")
+            if (
+                not isinstance(claim, dict)
+                or not isinstance(signature, str)
+                or not _HEX64.fullmatch(signature)
+                or type(claim.get("issued_at")) is not int
+                or type(claim.get("expires_at")) is not int
+                or not isinstance(claim.get("nonce"), str)
+                or claim["issued_at"] > current + _CONTROLLER_CLAIM_CLOCK_SKEW_SECONDS
+                or claim["expires_at"] <= current
+            ):
+                raise ReleaseLaneError("IdP dispatch claim is not live")
+            candidate = job.get("candidate_receipt")
+            validate_candidate(
+                ReleaseAdmissionRequest.model_validate(
+                    {
+                        "schema": REQUEST_SCHEMA,
+                        "release_lane": lane.name,
+                        "project_id": lane.project_id,
+                        "placement": lane.placement,
+                        "source_sha": job.get("source_sha"),
+                        "artifact_digest": job.get("artifact_digest"),
+                        "artifact_ref": job.get("artifact_ref"),
+                        "candidate_receipt": candidate,
+                    }
+                ),
+                lane,
+            )
+            if (
+                not isinstance(candidate, dict)
+                or candidate.get("workflow") != "quality.yml"
+                or candidate.get("job") != "static-contracts"
+                or candidate.get("runner_profile") != "qdev-ci-docker"
+                or candidate.get("artifact_type") != "http-archive"
+                or job["artifact_digest"] != f"sha256:{candidate.get('archive_sha256')}"
+            ):
+                raise ReleaseLaneError("IdP candidate does not bind the required CI")
+            expected = host_dispatch_claim_payload(
+                job,
+                lane,
+                host_identity=lane.host_agent_mtls_identity,
+                issued_at=claim["issued_at"],
+                expires_at=claim["expires_at"],
+                nonce=claim["nonce"],
+            )
+            if claim != expected or not hmac.compare_digest(
+                signature,
+                sign_host_dispatch_claim(expected, signing_key=signing_key),
+            ):
+                raise ReleaseLaneError("IdP dispatch signature or binding is invalid")
+            return {
+                "schema": "qdev-controller-idp-dispatch-inputs-v1",
+                "status": "authenticated_inputs",
+                "acceptance": "not_run",
+                "job": {
+                    "schema": "qdev-release-host-agent-job-v1",
+                    "release_lane": lane.name,
+                    "project_id": lane.project_id,
+                    "placement": lane.placement,
+                    **{
+                        key: job[key]
+                        for key in (
+                            "release_id",
+                            "source_sha",
+                            "artifact_digest",
+                            "artifact_ref",
+                            "lease_id",
+                            "fence",
+                            "lease_expires_at",
+                            "rollback_anchor",
+                            "dispatch_claim",
+                            "dispatch_claim_signature",
+                        )
+                    },
+                    "candidate_evidence": claim["candidate_evidence"],
+                },
+                "candidate_receipt": candidate,
+            }
+
+    def authorize_idp_file_apply(
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        raw_native: bytes,
+        *,
+        lease_id: str | None,
+        fence: str | None,
+        signing_key: str | bytes,
+        github: GitHubAppClient,
+        artifact_root: Path,
+        clock: Callable[[], float] = time.time,
+    ) -> dict[str, Any]:
+        """Authorize only a current dispatch; never admit/reissue/consume it.
+
+        The private handler authenticates the fixed release-host identity before
+        entering here. No caller can choose a collector, key or candidate. Do
+        not hold the lane lock across provider I/O: revocation must remain live.
+        """
+        from datetime import datetime
+
+        from .file_apply_authorization import authorization_payload, canonical_bytes
+        from .idp_file_evidence import observe_idp_ci
+        from .idp_file_issuer import (
+            check_storage,
+            parse_native,
+            previous_observation,
+            verify_native_dispatch,
+        )
+
+        native = parse_native(raw_native, lane)
+
+        def current() -> dict[str, Any]:
+            check_storage(self.root, lane)
+            job = self._job_unlocked(lane)
+            if (
+                job is None
+                or job.get("release_id") != release_id
+                or job.get("status") != "dispatched"
+                or not lease_id
+                or not fence
+                or job.get("lease_id") != lease_id
+                or job.get("fence") != fence
+            ):
+                raise ReleaseLaneError("IdP release dispatch or fence is not current")
+            self._ensure_live_lease(job, lane, now=clock())
+            if job.get("idp_file_transaction") not in (None, native.get("transaction")):
+                raise ReleaseLaneError("IdP dispatch is bound to another native transaction")
+            return job
+
+        check_storage(self.root, lane)
+        with self._lock(lane.name):
+            job = current()
+            prior = previous_observation(
+                self._operation_events_unlocked(lane),
+                lane,
+                job["rollback_anchor"],
+            )
+            binding_bytes = verify_native_dispatch(
+                native,
+                job,
+                lane,
+                signing_key=signing_key,
+                now=clock(),
+                previous=prior,
+            )
+            frozen_job = canonical_bytes(job)
+
+        ci = observe_idp_ci(
+            binding_bytes,
+            github=github,
+            artifact_root=artifact_root,
+            clock=clock,
+        )
+
+        with self._lock(lane.name):
+            job = current()
+            if canonical_bytes(job) != frozen_job:
+                raise ReleaseLaneError("IdP dispatch changed during provider observation")
+            verified_at = clock()
+            if not (
+                datetime.fromisoformat(ci["observed_at"]).timestamp()
+                <= verified_at
+                < datetime.fromisoformat(ci["expires_at"]).timestamp()
+            ):
+                raise ReleaseLaneError("IdP provider observation expired before authorization")
+            verify_native_dispatch(
+                native,
+                job,
+                lane,
+                signing_key=signing_key,
+                now=verified_at,
+                previous=prior,
+            )
+            envelope = authorization_payload(binding_bytes, job["dispatch_claim"])
+            signature = sign_host_dispatch_claim(envelope, signing_key=signing_key)
+            observation = {
+                "schema": "qdev-controller-idp-file-authorization-observation-v1",
+                "observed_at": verified_at,
+                "expires_at": job["dispatch_claim"]["expires_at"],
+                "release_lane": lane.name,
+                "host_identity": lane.host_agent_mtls_identity,
+                "native_origin": "configured_release_host_mtls",
+                "native_observation": native,
+                "native_observation_sha256": hashlib.sha256(raw_native).hexdigest(),
+                "prior_observation_sha256": (
+                    None if prior is None else hashlib.sha256(canonical_bytes(prior)).hexdigest()
+                ),
+                "ci": ci,
+                "authorization": envelope,
+                "authorization_signature": signature,
+                "acceptance": "not_run",
+            }
+            # The existing journal is the durable boundary, including a lost
+            # HTTP response or snapshot write. Retry records a separate fresh
+            # observation; it cannot overwrite history or extend dispatch TTL.
+            job["idp_file_transaction"] = native["transaction"]
+            event = self._append_operation_unlocked(
+                lane,
+                job,
+                "idp_file_authorized",
+                recorded_at=verified_at,
+                idp_file_authorization=observation,
+            )
+            self._write(self._job_path(lane.name), job)
+            return {
+                "schema": "qdev-controller-idp-file-authorization-receipt-v1",
+                "authorization": envelope,
+                "authorization_signature": signature,
+                "dispatch_claim": job["dispatch_claim"],
+                "dispatch_claim_signature": job["dispatch_claim_signature"],
+                "candidate_receipt": job["candidate_receipt"],
+                "journal_seq": event["journal_seq"],
+                "journal_event_sha256": event["event_sha256"],
+                "acceptance": "not_run",
+            }
+
     def complete(
         self,
         lane: ReleaseLane,
@@ -1564,7 +2329,7 @@ class ReleaseStore:
                 raise ReleaseLaneError("release job was already completed with another receipt")
             if job.get("status") not in {"accepted", "dispatched"}:
                 raise ReleaseLaneError("release job is not active")
-            self._ensure_live_lease(job, lane, now=now)
+            self._ensure_terminal_lease(job, lane, now=now)
             validate_runtime_receipt(
                 receipt,
                 lane=lane,
@@ -1573,6 +2338,23 @@ class ReleaseStore:
                 artifact_ref=str(job["artifact_ref"]),
                 rollback_anchor=job.get("rollback_anchor"),
             )
+            if lane.project_id == "qazgeo":
+                candidate_evidence = job.get("candidate_receipt", {}).get("evidence", {})
+                expected_static = (
+                    candidate_evidence.get("static", {}).get("digest")
+                    if isinstance(candidate_evidence, dict)
+                    else None
+                )
+                actual_static = receipt.get("static_bundle", {}).get("digest")
+                if not isinstance(expected_static, str) or actual_static != expected_static:
+                    raise ReleaseLaneError(
+                        "runtime static bundle does not match candidate evidence"
+                    )
+                expected_provenance = qgeo_artifact_provenance_from_evidence(candidate_evidence)
+                if receipt.get("artifact_provenance") != expected_provenance:
+                    raise ReleaseLaneError(
+                        "runtime artifact provenance does not match candidate evidence"
+                    )
             job["status"] = "verified"
             job["verified_at"] = time.time() if now is None else now
             job["runtime_receipt"] = receipt
@@ -1615,7 +2397,7 @@ class ReleaseStore:
                 raise ReleaseLaneError("release rollback already has another receipt")
             if job.get("status") not in {"accepted", "dispatched"}:
                 raise ReleaseLaneError("release job cannot be rolled back")
-            self._ensure_live_lease(job, lane, now=now)
+            self._ensure_terminal_lease(job, lane, now=now)
             required_receipt = {
                 "schema",
                 "status",
@@ -1651,8 +2433,7 @@ class ReleaseStore:
                 raise ReleaseLaneError("rollback receipt does not bind failed release")
             restored = receipt["restored_release"]
             _release_tuple = {
-                key: restored.get(key)
-                for key in ("source_sha", "artifact_digest", "artifact_ref")
+                key: restored.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")
             }
             if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(
                 _release_tuple["artifact_digest"]

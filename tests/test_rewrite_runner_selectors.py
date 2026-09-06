@@ -21,7 +21,7 @@ def test_rewrites_hosted_and_existing_qdev_selectors() -> None:
         browser_jobs=[],
         convert_jobs=[],
     )
-    assert "qdev-ci, \"qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint\"" in rewritten
+    assert 'qdev-ci, "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint"' in rewritten
     assert "qdev-ci-docker" in rewritten
     assert "ubuntu-latest" not in rewritten
 
@@ -60,6 +60,6 @@ def test_matrix_job_gets_strategy_index_in_runner_lease() -> None:
     )
 
     assert (
-        'qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint-'
-        '${{ strategy.job-index }}' in rewritten
+        "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-lint-"
+        "${{ strategy.job-index }}" in rewritten
     )

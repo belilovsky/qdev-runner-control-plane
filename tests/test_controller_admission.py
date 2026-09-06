@@ -293,12 +293,8 @@ def test_cli_sign_and_verify(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     receipt = tmp_path / "receipt.json"
     current = datetime.now(UTC).replace(microsecond=0)
     current_payload = _payload()
-    current_payload["issued_at"] = (current - timedelta(minutes=1)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-    current_payload["expires_at"] = (current + timedelta(minutes=10)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    current_payload["issued_at"] = (current - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    current_payload["expires_at"] = (current + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload.write_text(json.dumps(current_payload), encoding="utf-8")
 
     assert (
@@ -315,33 +311,36 @@ def test_cli_sign_and_verify(tmp_path: Path, capsys: pytest.CaptureFixture[str])
         )
         == 0
     )
-    assert main(
-        [
-            "verify",
-            "--receipt",
-            str(receipt),
-            "--public-key",
-            str(public),
-            "--repository-id",
-            "1357887516",
-            "--repository",
-            "belilovsky/qazcoop",
-            "--protected-ref",
-            "refs/heads/codex/qazcoop-mvp",
-            "--functional-source-sha",
-            SOURCE_SHA,
-            "--controller-revision",
-            CONTROLLER_SHA,
-            "--workflow-run-id",
-            "33949265063",
-            "--workflow-run-attempt",
-            "2",
-            "--require-job",
-            "reuse-first=qdev-ci:101",
-            "--require-job",
-            "postgres-migrations=qdev-ci-docker:102",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "verify",
+                "--receipt",
+                str(receipt),
+                "--public-key",
+                str(public),
+                "--repository-id",
+                "1357887516",
+                "--repository",
+                "belilovsky/qazcoop",
+                "--protected-ref",
+                "refs/heads/codex/qazcoop-mvp",
+                "--functional-source-sha",
+                SOURCE_SHA,
+                "--controller-revision",
+                CONTROLLER_SHA,
+                "--workflow-run-id",
+                "33949265063",
+                "--workflow-run-attempt",
+                "2",
+                "--require-job",
+                "reuse-first=qdev-ci:101",
+                "--require-job",
+                "postgres-migrations=qdev-ci-docker:102",
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr()
     assert "controller admission rejected" not in output.err
     assert '"state":"verified"' in output.out
@@ -543,9 +542,7 @@ def test_cli_requires_complete_consumption_arguments(
 ) -> None:
     private, public = _keys(tmp_path)
     payload = _payload()
-    payload["issued_at"] = (datetime.now(UTC) - timedelta(minutes=1)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    payload["issued_at"] = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload["expires_at"] = (datetime.now(UTC) + timedelta(minutes=10)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -574,9 +571,7 @@ def test_cli_rejects_partial_evidence_binding(
 ) -> None:
     private, public = _keys(tmp_path)
     payload = _payload()
-    payload["issued_at"] = (datetime.now(UTC) - timedelta(minutes=1)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    payload["issued_at"] = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload["expires_at"] = (datetime.now(UTC) + timedelta(minutes=10)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )

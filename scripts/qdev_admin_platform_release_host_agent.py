@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one compiled QDev Admin Platform release lane through mTLS.
 
-This agent deliberately knows four and only four product lanes.  It never
+This agent deliberately knows only compiled product lanes.  It never
 accepts a host path, registry, public URL, deploy command, or rollback command
 from a release request or its configuration file.  Product-owned root
 dispatchers own the native deploy details; they receive an immutable tuple and
@@ -19,15 +19,19 @@ import hmac
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TextIO
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -37,6 +41,10 @@ _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _HOST_IDENTITY = re.compile(r"^qdev-host-agent:[a-z0-9][a-z0-9-]{2,127}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_IDP_AUTHORIZATION_PATH = re.compile(
+    r"^/internal/v1/release-hosts/[a-z0-9][a-z0-9-]{2,127}/jobs/"
+    r"[A-Za-z0-9_-]{16,128}/idp-file-authorization$"
+)
 _QMT_VERSION = re.compile(r"^4\.4\.[0-9]+$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 STATE_SCHEMA = "qdev-release-host-state-v1"
@@ -178,6 +186,50 @@ PROFILES = {
     ),
 }
 
+# IdP is deliberately NOT a generic polling profile. Its verified native
+# dispatcher acquires the global IdP lock BEFORE the host journal lock; the
+# polling run_once path has the reverse order and automatic rollback semantics.
+# Compiled scope is not enrollment or authority: the controller must separately
+# configure this exact lane/identity and issue its own signed live dispatch.
+IDP_PROFILE = Profile(
+    name="idp",
+    lane="qdev-release-idp",
+    project_id="id-qdev-run",
+    repository="belilovsky/id-qdev-run",
+    placement="srv1380923",
+    artifact_prefix="qdev/idp-release",
+    adapter="idp-file-v1",
+    minimum_free_gib=1,
+    state_path=_STATE_ROOT / "idp.json",
+    lock_path=_LOCK_ROOT / "qdev-admin-platform-idp.lock",
+    # Never invoked by the one-shot code-only bridge.
+    release_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+    rollback_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+    receipt_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+)
+IDP_CONFIG_PATH = Path("/etc/qdev-release-agents/idp.env")
+
+
+def _idp_lane():
+    from qdev_runner.release_lane import ReleaseLane
+
+    return ReleaseLane(
+        name=IDP_PROFILE.lane,
+        project_id=IDP_PROFILE.project_id,
+        placement=IDP_PROFILE.placement,
+        client_mtls_identity="qdev-release-client:id-qdev-run",
+        host_agent_mtls_identity=f"qdev-host-agent:{IDP_PROFILE.placement}",
+        minimum_free_gib=IDP_PROFILE.minimum_free_gib,
+        heartbeat_ttl_seconds=90,
+        artifact_repository="idp-release",
+        canonical_repository=IDP_PROFILE.repository,
+        artifact_ref_prefix=IDP_PROFILE.artifact_prefix,
+        native_host_adapter=IDP_PROFILE.adapter,
+        runtime_endpoints=("https://id.qdev.run/healthz",),
+        rollback_reference="retained-native-snapshot",
+        required_readiness=tuple(IDP_PROFILE.readiness),
+    )
+
 
 @dataclass(frozen=True)
 class Config:
@@ -210,14 +262,21 @@ def _root_directory(path: Path) -> None:
         raise AgentError(f"directory must be root-owned and non-writable: {path}")
 
 
-def load_config(path: Path) -> Config:
-    _private(path)
+def load_config(path: Path, *, private_reader: Callable[[Path], bytes] | None = None) -> Config:
+    def read_private(selected: Path) -> bytes:
+        if not selected.is_absolute():
+            raise AgentError("host configuration paths must be absolute")
+        if private_reader is not None:
+            return private_reader(selected)
+        _private(selected)
+        return selected.read_bytes()
+
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_private(path).decode("utf-8").splitlines():
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or not value:
+        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or not value or key in values:
             raise AgentError("admin-platform host-agent configuration has an invalid line")
         values[key] = value
     expected = {
@@ -234,6 +293,9 @@ def load_config(path: Path) -> Config:
     if (
         parsed.scheme != "https"
         or parsed.hostname != "worker.ci.qdev.run"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
@@ -245,9 +307,8 @@ def load_config(path: Path) -> Config:
     dispatch_secret_path = Path(values["QDEV_RELEASE_DISPATCH_SECRET_FILE"])
     if not dispatch_secret_path.is_absolute():
         raise AgentError("host dispatch secret path must be absolute")
-    _private(dispatch_secret_path)
     try:
-        dispatch_secret = dispatch_secret_path.read_bytes().strip()
+        dispatch_secret = read_private(dispatch_secret_path).strip()
     except OSError as error:
         raise AgentError("host dispatch secret is unavailable") from error
     if not 32 <= len(dispatch_secret) <= 4096:
@@ -261,7 +322,7 @@ def load_config(path: Path) -> Config:
         dispatch_secret=dispatch_secret,
     )
     for credential in (config.client_cert, config.client_key, config.controller_ca):
-        _private(credential)
+        read_private(credential)
     return config
 
 
@@ -369,10 +430,21 @@ def request(
     config: Config,
     method: str,
     path: str,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, Any] | bytes | None = None,
     *,
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
+    # Only the fixed IdP collector may send native canonical bytes (including
+    # their terminal LF). Re-serializing these as the legacy JSON transport
+    # would change the exact observation authenticated by the controller.
+    if isinstance(payload, bytes) and (
+        method != "POST"
+        or not _IDP_AUTHORIZATION_PATH.fullmatch(path)
+        or not 0 < len(payload) <= 2 * 1024 * 1024
+        or not payload.endswith(b"\n")
+        or set(headers or ()) != {"X-QDev-Release-Lease", "X-QDev-Release-Fence"}
+    ):
+        raise AgentError("raw controller payload requires the fixed IdP authorization endpoint")
     if headers is not None:
         allowed_headers = {"X-QDev-Release-Lease", "X-QDev-Release-Fence"}
         if set(headers) - allowed_headers:
@@ -412,7 +484,11 @@ def request(
     body = None
     if payload is not None:
         command[2:2] = ["--header", "content-type: application/json", "--data-binary", "@-"]
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        body = (
+            payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
     try:
         response = _run(command, payload=body)
     except AgentError as error:
@@ -421,9 +497,7 @@ def request(
     try:
         return int(raw_status), raw_body
     except ValueError as error:
-        raise ControllerTransportError(
-            "controller response did not expose HTTP status"
-        ) from error
+        raise ControllerTransportError("controller response did not expose HTTP status") from error
 
 
 def _ensure_dispatcher(path: Path) -> None:
@@ -484,10 +558,7 @@ def native_receipt(
     ):
         raise AgentError("native receipt does not bind the requested release tuple")
     measured_release = _release(
-        {
-            field: document.get(field)
-            for field in ("source_sha", "artifact_digest", "artifact_ref")
-        },
+        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
     if release is not None and measured_release != release:
@@ -586,9 +657,9 @@ def heartbeat(
 
 
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
 
 
 def _validated_job(
@@ -699,15 +770,18 @@ def _validated_job(
     nonce = claim.get("nonce")
     if not isinstance(nonce, str) or not _NONCE.fullmatch(nonce):
         raise AgentError("controller host dispatch nonce is invalid")
-    if any(
-        not isinstance(claim.get(field), int)
-        or isinstance(claim.get(field), bool)
-        or claim[field] <= 0
-        for field in ("run_id", "job_id", "attempt")
-    ) or claim.get("runner_profile") not in _RUNNER_PROFILES or any(
-        not isinstance(claim.get(field), str)
-        or not _CI_SCOPE_VALUE.fullmatch(claim[field])
-        for field in ("workflow", "job")
+    if (
+        any(
+            not isinstance(claim.get(field), int)
+            or isinstance(claim.get(field), bool)
+            or claim[field] <= 0
+            for field in ("run_id", "job_id", "attempt")
+        )
+        or claim.get("runner_profile") not in _RUNNER_PROFILES
+        or any(
+            not isinstance(claim.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(claim[field])
+            for field in ("workflow", "job")
+        )
     ):
         raise AgentError("controller host dispatch CI identity is invalid")
     rollback_anchor = _release(document.get("rollback_anchor"), profile)
@@ -768,9 +842,7 @@ def validate_job(
     now: float | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Validate one signed, short-lived controller dispatch for this fixed host."""
-    release_id, release, _, _, nonce, _, _, _ = _validated_job(
-        document, profile, config, now=now
-    )
+    release_id, release, _, _, nonce, _, _, _ = _validated_job(document, profile, config, now=now)
     if _dispatch_nonce_seen(profile, nonce):
         raise AgentError("controller host dispatch claim was already consumed")
     return release_id, release
@@ -865,9 +937,7 @@ def _write_journal(
         "release_lane": profile.lane,
         "placement": profile.placement,
         "journal_seq": len(events) + 1,
-        "previous_event_sha256": (
-            events[-1]["event_sha256"] if events else _JOURNAL_GENESIS
-        ),
+        "previous_event_sha256": (events[-1]["event_sha256"] if events else _JOURNAL_GENESIS),
         "phase": phase,
         "recorded_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
@@ -916,7 +986,26 @@ def _runtime_evidence(
         not isinstance(value, str) or not value.strip() for value in dependencies.values()
     ):
         raise AgentError("native dependency identity is incomplete")
-    if profile.name == "qmt":
+    if profile.project_id == "id-qdev-run":
+        from qdev_runner.idp_file_runtime import (
+            ADAPTER,
+            ARTIFACT_PREFIX,
+            REPOSITORY,
+            IdPObservationError,
+            validate_runtime_evidence,
+        )
+
+        if (profile.repository, profile.adapter, profile.artifact_prefix) != (
+            REPOSITORY,
+            ADAPTER,
+            ARTIFACT_PREFIX,
+        ):
+            raise AgentError("native IdP adapter scope is invalid")
+        try:
+            validate_runtime_evidence(document)
+        except IdPObservationError:
+            raise AgentError("native IdP runtime provenance is invalid") from None
+    elif profile.name == "qmt":
         qmt_version = dependencies.get("qmt_version")
         if not isinstance(qmt_version, str) or not _QMT_VERSION.fullmatch(qmt_version):
             raise AgentError("native QMT dependency identity is invalid")
@@ -1005,10 +1094,7 @@ def _validate_native_runtime(
 
 def _native_release(document: dict[str, Any], profile: Profile) -> dict[str, str]:
     release = _release(
-        {
-            field: document.get(field)
-            for field in ("source_sha", "artifact_digest", "artifact_ref")
-        },
+        {field: document.get(field) for field in ("source_sha", "artifact_digest", "artifact_ref")},
         profile,
     )
     _validate_native_runtime(document, profile, release)
@@ -1081,8 +1167,7 @@ def _validate_completion_receipt(
     rollback_raw = receipt.get("rollback")
     if (
         not isinstance(rollback_raw, dict)
-        or set(rollback_raw)
-        != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
+        or set(rollback_raw) != {"verified", "source_sha", "artifact_digest", "artifact_ref"}
         or rollback_raw.get("verified") is not True
     ):
         raise AgentError("controller runtime receipt rollback anchor is invalid")
@@ -1093,9 +1178,7 @@ def _validate_completion_receipt(
         },
         profile,
     )
-    if measured_rollback == release or (
-        rollback is not None and measured_rollback != rollback
-    ):
+    if measured_rollback == release or (rollback is not None and measured_rollback != rollback):
         raise AgentError("controller runtime receipt rollback anchor does not match")
     _runtime_evidence(receipt, profile, release)
     return receipt
@@ -1155,9 +1238,7 @@ def _validate_rollback_receipt(
     ):
         raise AgentError("controller rollback receipt does not bind the managed operation")
     measured_restored = _release(receipt.get("restored_release"), profile)
-    if measured_restored == candidate or (
-        restored is not None and measured_restored != restored
-    ):
+    if measured_restored == candidate or (restored is not None and measured_restored != restored):
         raise AgentError("controller rollback receipt restored tuple does not match")
     native = receipt.get("native_receipt")
     if not isinstance(native, dict):
@@ -1288,16 +1369,15 @@ def _controller_status(
         raise AgentError("controller release outcome identity is invalid")
     controller_state = document.get("status")
     if controller_state in {"accepted", "dispatched"}:
-        if document.get("runtime_receipt") is not None or document.get(
-            "rollback_receipt"
-        ) is not None:
+        if (
+            document.get("runtime_receipt") is not None
+            or document.get("rollback_receipt") is not None
+        ):
             raise AgentError("active controller release has a terminal receipt")
     elif controller_state == "verified":
         if document.get("rollback_receipt") is not None:
             raise AgentError("verified controller release has a rollback receipt")
-        _validate_completion_receipt(
-            document.get("runtime_receipt"), profile, candidate, restored
-        )
+        _validate_completion_receipt(document.get("runtime_receipt"), profile, candidate, restored)
     elif controller_state == "rolled_back":
         if document.get("runtime_receipt") is not None:
             raise AgentError("rolled-back controller release has a runtime receipt")
@@ -1363,20 +1443,14 @@ def _resolve_completion_outcome(
         ) from error
     if state["status"] == "verified":
         if state["runtime_receipt"] != receipt:
-            raise ControllerOutcomeUnresolved(
-                "controller verified a different runtime receipt"
-            )
+            raise ControllerOutcomeUnresolved("controller verified a different runtime receipt")
         return
     if state["status"] == "rolled_back":
-        raise ControllerOutcomeUnresolved(
-            "controller already records the operation as rolled back"
-        )
+        raise ControllerOutcomeUnresolved("controller already records the operation as rolled back")
     submission_error: AgentError | None = None
     try:
         _ensure_live_lease(lease_expires_at)
-        _submit_completion(
-            config, profile, release_id, lease_id, fence, receipt
-        )
+        _submit_completion(config, profile, release_id, lease_id, fence, receipt)
         return
     except AgentError as error:
         submission_error = error
@@ -1407,9 +1481,7 @@ def _resolve_completion_outcome(
         ) from submission_error
     try:
         _ensure_live_lease(lease_expires_at)
-        _submit_completion(
-            config, profile, release_id, lease_id, fence, receipt
-        )
+        _submit_completion(config, profile, release_id, lease_id, fence, receipt)
         return
     except AgentError as retry_error:
         try:
@@ -1461,14 +1533,10 @@ def _resolve_rollback_outcome(
         ) from error
     if state["status"] == "rolled_back":
         if state["rollback_receipt"] != receipt:
-            raise ControllerOutcomeUnresolved(
-                "controller recorded a different rollback receipt"
-            )
+            raise ControllerOutcomeUnresolved("controller recorded a different rollback receipt")
         return
     if state["status"] == "verified":
-        raise ControllerOutcomeUnresolved(
-            "controller already records the candidate as verified"
-        )
+        raise ControllerOutcomeUnresolved("controller already records the candidate as verified")
     submission_error: AgentError | None = None
     try:
         _ensure_live_lease(lease_expires_at)
@@ -1488,9 +1556,7 @@ def _resolve_rollback_outcome(
             restored=restored,
         )
     except (AgentError, ControllerTransportError) as error:
-        raise ControllerOutcomeUnresolved(
-            "controller rollback outcome remains unknown"
-        ) from error
+        raise ControllerOutcomeUnresolved("controller rollback outcome remains unknown") from error
     if state["status"] == "rolled_back" and state["rollback_receipt"] == receipt:
         return
     if state["status"] not in {"accepted", "dispatched"}:
@@ -1596,7 +1662,11 @@ def _write_operation(
     )
 
 
-def _pending_operation(profile: Profile) -> dict[str, Any] | None:
+def _pending_operation(
+    profile: Profile,
+    *,
+    include_completed: bool = False,
+) -> dict[str, Any] | None:
     events = [event for event in _journal_events(profile) if "release_id" in event]
     if not events:
         return None
@@ -1604,7 +1674,9 @@ def _pending_operation(profile: Profile) -> dict[str, Any] | None:
     if not isinstance(release_id, str) or not _LEASE.fullmatch(release_id):
         raise AgentError("host operation journal release id is invalid")
     operation = [event for event in events if event.get("release_id") == release_id]
-    if operation[-1].get("phase") in {"completed", "rolled_back"}:
+    if operation[-1].get("phase") == "rolled_back" or (
+        operation[-1].get("phase") == "completed" and not include_completed
+    ):
         return None
     supported_phases = {
         "dispatch_accepted",
@@ -1620,6 +1692,8 @@ def _pending_operation(profile: Profile) -> dict[str, Any] | None:
         "recovery_rollback_ready",
         "recovery_unresolved",
     }
+    if include_completed:
+        supported_phases.add("completed")
     if any(event.get("phase") not in supported_phases for event in operation):
         raise AgentError("host operation journal phase is invalid")
     identity: dict[str, str] = {}
@@ -1707,8 +1781,12 @@ def _recover_pending(
     active: dict[str, str],
     rollback: dict[str, str],
     pending: dict[str, Any],
+    *,
+    observe_current: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reconcile one durable operation without repeating a native mutation."""
+    if observe_current is not None and not callable(observe_current):
+        raise AgentError("native recovery observation must be a trusted callable")
     release_id = pending.get("release_id")
     lease_id = pending.get("lease_id")
     fence = pending.get("fence")
@@ -1752,12 +1830,12 @@ def _recover_pending(
     verified_state = active == candidate and rollback == previous_release
     if not before_state and not verified_state:
         reason = "local state does not match either durable operation boundary"
-        _record_recovery_unresolved(
-            profile, release_id, lease_id, fence, context, reason
-        )
+        _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
         raise ControllerOutcomeUnresolved(reason)
 
-    current_native = native_receipt(profile, current=True)
+    current_native = (
+        native_receipt(profile, current=True) if observe_current is None else observe_current()
+    )
     current_release = _native_release(current_native, profile)
     try:
         state = _controller_status(
@@ -1771,9 +1849,7 @@ def _recover_pending(
         )
     except AgentError as error:
         reason = "controller outcome is unavailable during recovery"
-        _record_recovery_unresolved(
-            profile, release_id, lease_id, fence, context, reason
-        )
+        _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
         raise ControllerOutcomeUnresolved(reason) from error
 
     if state["status"] == "verified":
@@ -1781,16 +1857,21 @@ def _recover_pending(
         assert isinstance(measured_receipt, dict)
         if runtime_receipt is not None and runtime_receipt != measured_receipt:
             reason = "controller and durable runtime receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         if current_release != candidate:
             reason = "controller is verified but the candidate is not running"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
+        if profile.adapter == "idp-file-v1":
+            _idp_reobserved_completion(
+                measured_receipt,
+                _completion_receipt(profile, candidate, previous_release, current_native),
+            )
+        if phases[-1] == "completed":
+            if not verified_state or runtime_receipt is None:
+                raise ControllerOutcomeUnresolved("completed operation state is inconsistent")
+            return {"status": "verified", "recovered": True, "release_id": release_id}
         verified_context = _operation_context(
             profile,
             candidate,
@@ -1836,15 +1917,11 @@ def _recover_pending(
         assert isinstance(measured_receipt, dict)
         if rollback_receipt is not None and rollback_receipt != measured_receipt:
             reason = "controller and durable rollback receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         if current_release != previous_release:
             reason = "controller is rolled back but the rollback anchor is not running"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         rolled_back_context = _operation_context(
             profile,
@@ -1876,6 +1953,8 @@ def _recover_pending(
         return {"status": "rolled_back", "recovered": True, "release_id": release_id}
 
     if current_release == candidate:
+        if phases[-1] == "completed":
+            raise ControllerOutcomeUnresolved("completed operation is not controller-verified")
         rollback_intent = any(
             phase
             in {
@@ -1888,18 +1967,14 @@ def _recover_pending(
         )
         if rollback_intent:
             reason = "candidate is still running after durable rollback intent"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
-        measured_receipt = _completion_receipt(
-            profile, candidate, previous_release, current_native
-        )
+        measured_receipt = _completion_receipt(profile, candidate, previous_release, current_native)
+        if runtime_receipt is not None and profile.adapter == "idp-file-v1":
+            measured_receipt = _idp_reobserved_completion(runtime_receipt, measured_receipt)
         if runtime_receipt is not None and runtime_receipt != measured_receipt:
             reason = "fresh and durable runtime receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         verified_context = _operation_context(
             profile,
@@ -1974,18 +2049,14 @@ def _recover_pending(
     if current_release == previous_release:
         if any(phase in {"verified", "verified_state_write_failed"} for phase in phases):
             reason = "verified journal state conflicts with active controller state"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         measured_receipt = _rollback_receipt(
             profile, release_id, candidate, previous_release, current_native
         )
         if rollback_receipt is not None and rollback_receipt != measured_receipt:
             reason = "fresh and durable rollback receipts disagree"
-            _record_recovery_unresolved(
-                profile, release_id, lease_id, fence, context, reason
-            )
+            _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         rolled_back_context = _operation_context(
             profile,
@@ -2077,9 +2148,7 @@ def rollback_remote(
             restored=restored,
         )
     except (AgentError, ControllerTransportError) as error:
-        raise ControllerOutcomeUnresolved(
-            "controller state is unknown before rollback"
-        ) from error
+        raise ControllerOutcomeUnresolved("controller state is unknown before rollback") from error
     if state["status"] == "verified":
         raise ControllerOutcomeUnresolved(
             "controller already verified the candidate; rollback is not safe"
@@ -2126,9 +2195,7 @@ def rollback_remote(
         raise ControllerOutcomeUnresolved(
             "native release is neither the candidate nor the verified rollback anchor"
         )
-    receipt = _rollback_receipt(
-        profile, release_id, candidate, restored, restored_native
-    )
+    receipt = _rollback_receipt(profile, release_id, candidate, restored, restored_native)
     context = _operation_context(
         profile,
         candidate,
@@ -2139,9 +2206,7 @@ def rollback_remote(
         rollback_anchor,
         rollback_receipt=receipt,
     )
-    _write_operation(
-        profile, "rollback_ready", release_id, lease_id, fence, context
-    )
+    _write_operation(profile, "rollback_ready", release_id, lease_id, fence, context)
     try:
         _resolve_rollback_outcome(
             config,
@@ -2164,17 +2229,912 @@ def rollback_remote(
             context,
         )
         raise
-    _write_operation(
-        profile, "rolled_back", release_id, lease_id, fence, context
-    )
+    _write_operation(profile, "rolled_back", release_id, lease_id, fence, context)
     return receipt
 
 
+def _lock_directory(path: Path) -> None:
+    if not path.is_absolute() or ".." in path.parts:
+        raise AgentError("release lock directory must be absolute")
+    for directory in reversed((path, *path.parents)):
+        meta = directory.lstat()
+        # /run/lock may legitimately be root-owned 01777. Sticky protection
+        # applies only to this final directory; all ancestors remain immutable
+        # to non-root users. Leaf ownership is separately checked before use.
+        sticky_leaf = directory == path and bool(meta.st_mode & stat.S_ISVTX)
+        if (
+            not stat.S_ISDIR(meta.st_mode)
+            or meta.st_uid != 0
+            or (stat.S_IMODE(meta.st_mode) & 0o022 and not sticky_leaf)
+        ):
+            raise AgentError("release lock directory has unsafe ancestry")
+
+
 def _acquire_lock(path: Path) -> TextIO:
-    _root_directory(path.parent)
-    if path.exists():
+    _lock_directory(path.parent)
+    _private(path, required=False)
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        opened, named = os.fstat(descriptor), path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise AgentError("release lock must be one unchanged regular file")
         _private(path)
-    return path.open("a+", encoding="utf-8")
+        stream = os.fdopen(descriptor, "r+", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return stream
+
+
+class JournaledFileApplyGuard:
+    """Live host guard; usable only while the native operation lock is held."""
+
+    def __init__(self, check: Callable[[], None]) -> None:
+        self._check = check
+        self._active = True
+
+    def assert_current(self) -> None:
+        if not self._active:
+            raise AgentError("file apply guard is outside its native transaction")
+        self._check()
+
+    def close(self) -> None:
+        self._active = False
+
+
+@dataclass(frozen=True)
+class FileApplyObservations:
+    """Fixed-adapter readers, never serialized claims or supplied receipt flags.
+
+    The IdP adapter must use its already-locked native reader. Re-entering its
+    CLI/dispatch here would attempt to acquire the same global lock again.
+    Every result still passes the compiled profile's exact runtime validator.
+    """
+
+    before_apply: Callable[[], dict[str, Any]]
+    after_apply: Callable[[], dict[str, Any]]
+
+    def __post_init__(self) -> None:
+        if not callable(self.before_apply) or not callable(self.after_apply):
+            raise AgentError("file apply observations must be trusted callables")
+
+
+def _idp_previous_observation(profile, anchor):
+    """Read a prior accepted observation from the existing protected journal.
+
+    Never search arbitrary receipts or infer an artifact from the installed
+    manifest. Only a durable verified native completion can supply this anchor.
+    The transaction later rechecks state and this record under the host lock.
+    """
+    from qdev_runner.idp_file_runtime import validate_runtime_evidence
+
+    for event in reversed(_journal_events(profile)):
+        if event.get("phase") != "verified" or event.get("candidate_release") != anchor:
+            continue
+        receipt = _validate_completion_receipt(
+            event.get("runtime_receipt"),
+            profile,
+            anchor,
+            event.get("previous_release"),
+        )
+        validate_runtime_evidence(receipt, installed_only=True)
+        return json.loads(_canonical_bytes(receipt["artifact_provenance"]["observation"]))
+    raise AgentError("previous IdP release has no accepted native journal observation")
+
+
+def _validate_idp_file_scope(config, profile, lane):
+    from qdev_runner.idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
+
+    if (
+        (profile.project_id, profile.repository, profile.adapter, profile.artifact_prefix)
+        != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+        or (
+            lane.project_id,
+            lane.canonical_repository,
+            lane.native_host_adapter,
+            lane.artifact_ref_prefix,
+        )
+        != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+        or profile.lane != lane.name
+        or profile.placement != lane.placement
+        or config.host_identity != lane.host_agent_mtls_identity
+        or profile.readiness != {key: "ok" for key in lane.required_readiness}
+    ):
+        raise AgentError("IdP file adapter requires its fixed native lane and identity")
+
+
+def _idp_authorization_response(raw, job):
+    """Strict bounded transport envelope; signatures are verified by the bridge."""
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate")
+            value[key] = item
+        return value
+
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= 2 * 1024 * 1024:
+            raise ValueError("size")
+        value = json.loads(raw, object_pairs_hook=unique)
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {
+                "schema",
+                "authorization",
+                "authorization_signature",
+                "dispatch_claim",
+                "dispatch_claim_signature",
+                "candidate_receipt",
+                "journal_seq",
+                "journal_event_sha256",
+                "acceptance",
+            }
+            or value["schema"] != "qdev-controller-idp-file-authorization-receipt-v1"
+            or value["acceptance"] != "not_run"
+            or value["dispatch_claim"] != job["dispatch_claim"]
+            or value["dispatch_claim_signature"] != job["dispatch_claim_signature"]
+            or type(value["journal_seq"]) is not int
+            or value["journal_seq"] <= 0
+            or not isinstance(value["journal_event_sha256"], str)
+            or not _HEX64.fullmatch(value["journal_event_sha256"])
+            or not isinstance(value["authorization"], dict)
+            or not isinstance(value["authorization_signature"], str)
+            or not isinstance(value["candidate_receipt"], dict)
+        ):
+            raise ValueError("envelope")
+        return value
+    except (ValueError, TypeError, KeyError, RecursionError):
+        # Never include an untrusted response, exception body or native evidence.
+        raise AgentError("invalid controller IdP authorization response") from None
+
+
+class ControllerIssuedIdPFileApplyAdapter:
+    """Fixed in-process collector/issuer bridge, not an installed enrollment.
+
+    Verified native dispatch holds its global lock across collection, network
+    issuance and application. The host lock is released during provider checks;
+    the existing durable transaction rechecks everything before consuming the
+    dispatch. No retries, renewed lease, native CLI or caller-selected key/path.
+    """
+
+    def __init__(self, config, profile, lane, job):
+        _validate_idp_file_scope(config, profile, lane)
+        _validated_job(job, profile, config)
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+
+    def __call__(self, reader):
+        from qdev_runner.file_apply_authorization import canonical_bytes, parse_binding
+        from qdev_runner.idp_file_issuer import parse_native
+        from qdev_runner.idp_file_runtime import native_receipt
+
+        if not callable(getattr(reader, "observe_prepared", None)) or not callable(
+            getattr(reader, "observe_installed", None)
+        ):
+            raise AgentError("locked native IdP observation reader required")
+        config, profile, lane = self._config, self._profile, self._lane
+        job = json.loads(self._job)
+
+        @contextmanager
+        def authorize(binding):
+            scope = parse_binding(binding, now=time.time())
+            with _acquire_lock(profile.lock_path) as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise AgentError("release lock is already held") from error
+                if _pending_operation(profile) is not None:
+                    raise ControllerOutcomeUnresolved(
+                        "pending native operation requires reconciliation"
+                    )
+                release_id, candidate, lease, fence, nonce, _, anchor, _ = _validated_job(
+                    job, profile, config
+                )
+                if _dispatch_nonce_seen(profile, nonce):
+                    raise AgentError("controller host dispatch claim was already consumed")
+                active, _ = read_state(profile.state_path, profile, allow_bootstrap=True)
+                if active != anchor:
+                    raise AgentError("IdP runtime anchor differs from current host state")
+                previous = (
+                    None
+                    if anchor["artifact_digest"] == f"sha256:{scope.snapshot_sha256}"
+                    else _idp_previous_observation(profile, anchor)
+                )
+                raw = canonical_bytes(reader.observe_prepared())
+                native = parse_native(raw, lane)
+                prepared = native_receipt(
+                    native,
+                    installed=False,
+                    expected_binding=binding,
+                    now=time.time(),
+                    previous_observation=previous,
+                )
+                _validate_native_runtime(prepared, profile, active)
+                current = _controller_status(
+                    config, profile, release_id, candidate, lease, fence, restored=active
+                )
+                if current["status"] != "dispatched":
+                    raise AgentError("file apply requires the current dispatched controller job")
+            status, body = request(
+                config,
+                "POST",
+                f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}"
+                "/idp-file-authorization",
+                raw,
+                headers=_controller_headers(lease, fence),
+            )
+            if status != 200:
+                raise ControllerTransportError("controller IdP authorization was not confirmed")
+            response = _idp_authorization_response(body, job)
+            adapter = IdPFileApplyAdapter(
+                config,
+                profile,
+                lane,
+                job,
+                response["authorization"],
+                response["authorization_signature"],
+                candidate_receipt=response["candidate_receipt"],
+            )
+            with adapter(reader)(binding) as guard:
+                yield guard
+
+        return authorize
+
+
+def _idp_reobserved_completion(retained, fresh):
+    from qdev_runner.idp_file_runtime import IdPObservationError, same_installed_release
+
+    try:
+        if not same_installed_release(retained, fresh):
+            raise IdPObservationError("changed installed evidence")
+    except IdPObservationError:
+        raise ControllerOutcomeUnresolved(
+            "fresh IdP evidence differs from retained completion"
+        ) from None
+    # Preserve original evidence; a later observation cannot rewrite history.
+    return retained
+
+
+def retain_controller_idp_inputs(config, profile, lane, job, archive, *, transaction):
+    """Authenticate full candidate intake using the existing private transport.
+
+    The installed owner supplies the archive fetched by the native CI artifact
+    path, never a caller-selected downloader. This boundary does not load helpers,
+    stage native state, poll jobs/next, renew claims or authorize file application.
+    Restarts after publication use invoke_retained_idp, not this network intake.
+    """
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate")
+            result[key] = value
+        return result
+
+    try:
+        _validate_idp_file_scope(config, profile, lane)
+        # Freeze caller input before network I/O; only already-signed jobs enter.
+        job = json.loads(_canonical_bytes(job))
+        release_id, _, lease, fence, _, _, _, _ = _validated_job(job, profile, config)
+        status, body = request(
+            config,
+            "GET",
+            f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/idp-inputs?"
+            + urlencode({"release_lane": lane.name}),
+            headers=_controller_headers(lease, fence),
+        )
+        if status != 200 or not isinstance(body, bytes) or not 0 < len(body) <= 1024 * 1024:
+            raise ValueError("transport")
+        value = json.loads(body, object_pairs_hook=unique)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "status", "job", "candidate_receipt", "acceptance"}
+            or value["schema"] != "qdev-controller-idp-dispatch-inputs-v1"
+            or value["status"] != "authenticated_inputs"
+            or value["acceptance"] != "not_run"
+            or _canonical_bytes(value["job"]) != _canonical_bytes(job)
+            or not isinstance(value["candidate_receipt"], dict)
+        ):
+            raise ValueError("envelope")
+        invocation = IdPNativeInvocation(config, profile, lane, job, value["candidate_receipt"])
+        # A live read is not a live apply permit; expiry is rechecked after I/O.
+        invocation._verified_job(live=True)
+        return invocation.retain(archive, transaction=transaction)
+    except Exception:
+        raise AgentError("IdP controller input intake requires verified-state inspection") from None
+
+
+class IdPNativeInvocation:
+    """Fixed code-only bridge from a signed job and published archive to native.
+
+    The installed owner supplies controller config/profile/lane and its retained
+    job/candidate. No request selects target, state root, executable or key. An
+    expired signature authenticates historical bytes ONLY for inspect/reconcile/
+    observe; apply separately requires a live dispatch, native global lock and
+    fresh controller/provider authorization. No retry or artifact rebuild here.
+    """
+
+    STATE_ROOT = Path("/var/lib/qdev-idp/releases")
+    TARGET = Path("/opt/id.qdev.run")
+
+    def __init__(self, config, profile, lane, job, candidate_receipt):
+        _validate_idp_file_scope(config, profile, lane)
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+        self._candidate = _canonical_bytes(candidate_receipt)
+
+    def _verified_job(self, *, live):
+        from qdev_runner.release_lane import (
+            REQUEST_SCHEMA,
+            ReleaseAdmissionRequest,
+            candidate_evidence,
+            validate_candidate,
+        )
+
+        job, candidate = json.loads(self._job), json.loads(self._candidate)
+        if not isinstance(job, dict) or not isinstance(candidate, dict):
+            raise AgentError("invalid retained IdP job or candidate")
+        claim = job.get("dispatch_claim")
+        if not isinstance(claim, dict):
+            raise AgentError("invalid retained IdP dispatch")
+        # Historical time is not a renewed permit. Recovery is confined to the
+        # exact already-staged native binding and cannot call apply or rollback.
+        at = None if live else claim.get("issued_at")
+        if not live and type(at) is not int:
+            raise AgentError("historical IdP dispatch has no authenticated issue time")
+        _validated_job(job, self._profile, self._config, now=at)
+        request_document = ReleaseAdmissionRequest(
+            schema=REQUEST_SCHEMA,
+            release_lane=self._lane.name,
+            project_id=self._lane.project_id,
+            placement=self._lane.placement,
+            **{key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")},
+            candidate_receipt=candidate,
+        )
+        validate_candidate(request_document, self._lane)
+        claim = job["dispatch_claim"]
+        if (
+            candidate_evidence({"candidate_receipt": candidate}, self._lane)
+            != job["candidate_evidence"]
+            or any(
+                candidate.get(key) != claim[key]
+                for key in (
+                    "repository",
+                    "workflow",
+                    "job",
+                    "run_id",
+                    "job_id",
+                    "attempt",
+                    "runner_profile",
+                )
+            )
+            or candidate.get("workflow") != "quality.yml"
+            or candidate.get("job") != "static-contracts"
+            or candidate.get("runner_profile") != "qdev-ci-docker"
+            or candidate.get("artifact_type") != "http-archive"
+            or job["artifact_digest"] != f"sha256:{candidate.get('archive_sha256')}"
+        ):
+            raise AgentError("IdP native artifact does not bind the signed candidate")
+        return job, candidate
+
+    def retain(self, archive, *, transaction):
+        """Persist verified inputs, not an admission or a deployment result.
+
+        An exact already-published retry may finish durability after expiry.
+        First publication requires a live dispatch; neither path loads code.
+        """
+        from qdev_runner import idp_retained_dispatch as storage
+        from qdev_runner.idp_native_bundle import verify_native_archive
+
+        try:
+            storage.transaction_name(transaction)
+            job, candidate = self._verified_job(live=False)
+            verify_native_archive(
+                archive,
+                source_sha=job["source_sha"],
+                archive_sha256=candidate["archive_sha256"],
+                bundle_sha256=candidate["payload_sha256"],
+            )
+            # Immutable storage checks exact equality on any existing result.
+            # A missing publication must not turn an expired job into new work.
+            if storage.read(transaction) is None:
+                self._verified_job(live=True)
+            storage.retain(transaction, job, candidate, archive)
+        except Exception:
+            raise AgentError("IdP input retention requires verified-state inspection") from None
+        return {
+            "schema": storage.SCHEMA,
+            "transaction": transaction,
+            "status": "retained",
+            "source_sha": job["source_sha"],
+            "artifact_digest": job["artifact_digest"],
+        }
+
+    def invoke(self, archive, *, action, transaction, ci="none"):
+        from qdev_runner.idp_native_bundle import verify_native_archive
+
+        if (
+            action not in {"apply", "inspect", "reconcile", "observe"}
+            or not isinstance(transaction, str)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{7,79}", transaction)
+            or not isinstance(ci, str)
+            or not (ci == "none" or re.fullmatch(r"ci-[0-9a-f]{16}\.json", ci))
+            or (action == "apply" and ci == "none")
+        ):
+            raise AgentError("invalid fixed IdP native operation")
+        job, candidate = self._verified_job(live=action == "apply")
+        bundle = verify_native_archive(
+            archive,
+            source_sha=job["source_sha"],
+            archive_sha256=candidate["archive_sha256"],
+            bundle_sha256=candidate["payload_sha256"],
+        )
+        # Loading can be expensive. Recheck live expiry before executing code;
+        # the locked bridge rechecks again after actual CI/network observations.
+        self._verified_job(live=action == "apply")
+        native, helpers = bundle.load()
+        args = SimpleNamespace(
+            action=action,
+            source_sha=job["source_sha"],
+            expected_previous=job["rollback_anchor"]["source_sha"],
+            bundle_digest=bundle.bundle_sha256,
+            manifest_digest=bundle.manifest_sha256,
+            ci=ci,
+        )
+        adapter = (
+            ControllerIssuedIdPFileApplyAdapter(self._config, self._profile, self._lane, job)
+            if action == "apply"
+            else None
+        )
+        recovery = (
+            {
+                "controller_recovery": lambda reader: self._reconcile_controller(
+                    reader,
+                    bundle,
+                    transaction,
+                )
+            }
+            if action == "reconcile"
+            else {}
+        )
+        try:
+            result = native.dispatch(
+                self.STATE_ROOT,
+                self.STATE_ROOT / transaction,
+                self.TARGET,
+                args,
+                helpers,
+                controller_adapter=adapter,
+                **recovery,
+            )
+            native.contract.validate_native_response(
+                _canonical_bytes(result),
+                action=action,
+                transaction=transaction,
+                source_sha=args.source_sha,
+                expected_previous=args.expected_previous,
+                bundle_sha256=args.bundle_digest,
+                manifest_sha256=args.manifest_digest,
+            )
+        except Exception:
+            # No raw native output/exception or automatic second invocation.
+            # The caller must inspect/reconcile the retained native+host journals.
+            raise AgentError("IdP native outcome requires retained-state inspection") from None
+        return result
+
+    def _reconcile_controller(self, reader, bundle, transaction):
+        """Native lock precedes host lock; recover only this retained signed job."""
+        from qdev_runner.file_apply_authorization import verify_dispatch_binding
+        from qdev_runner.idp_file_runtime import installed_binding, native_receipt, timestamp
+
+        if not callable(getattr(reader, "observe_installed", None)):
+            raise AgentError("locked installed IdP reader required")
+        job, candidate = self._verified_job(live=False)
+        profile, config, lane = self._profile, self._config, self._lane
+        with _acquire_lock(profile.lock_path) as locked:
+            fcntl.flock(locked.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            pending = _pending_operation(profile, include_completed=True)
+            claim = job["dispatch_claim"]
+            expected = {
+                "release_id": job["release_id"],
+                "lease_id": job["lease_id"],
+                "fence": job["fence"],
+                "dispatch_nonce": claim["nonce"],
+                "lease_expires_at": job["lease_expires_at"],
+                "rollback_anchor": job["rollback_anchor"],
+                "previous_release": job["rollback_anchor"],
+                "candidate_release": {
+                    key: job[key] for key in ("source_sha", "artifact_digest", "artifact_ref")
+                },
+            }
+            if pending is None or any(pending.get(k) != v for k, v in expected.items()):
+                raise AgentError("IdP recovery does not match the retained host operation")
+            observation = reader.observe_installed()
+            raw_binding = installed_binding(observation)
+            binding = json.loads(raw_binding)
+            if (
+                binding["transaction"] != transaction
+                or binding["bundle_sha256"] != bundle.bundle_sha256
+                or binding["manifest_sha256"] != bundle.manifest_sha256
+            ):
+                raise AgentError("IdP recovery observation belongs to another native bundle")
+            previous = None
+            if job["rollback_anchor"]["artifact_digest"] != f"sha256:{binding['snapshot_sha256']}":
+                previous = _idp_previous_observation(profile, job["rollback_anchor"])
+            # Verify signature/CI/archives at the actual cutover time, not now.
+            # This is historical authentication and never authorizes installation.
+            verify_dispatch_binding(
+                raw_binding,
+                lane=lane,
+                claim=claim,
+                candidate=candidate,
+                signature=job["dispatch_claim_signature"],
+                signing_key=config.dispatch_secret,
+                now=timestamp(observation["events"][6]["observed_at"]),
+                previous_observation=previous,
+            )
+            current = native_receipt(
+                observation,
+                installed=True,
+                expected_binding=raw_binding,
+                now=time.time(),
+                previous_observation=previous,
+            )
+            active, rollback = read_state(profile.state_path, profile, allow_bootstrap=False)
+            result = _recover_pending(
+                config,
+                profile,
+                active,
+                rollback,
+                pending,
+                observe_current=lambda: current,
+            )
+            if result.get("status") != "verified":
+                raise ControllerOutcomeUnresolved("IdP controller recovery is not verified")
+            return result
+
+
+def invoke_retained_idp(config, profile, lane, *, transaction, action, ci="none"):
+    """Installed-code entrypoint; never execute an unverified staged helper.
+
+    Intake has its own short lock, released before native-global/host-journal
+    locking. Missing publication is inspectable, but is NOT native acceptance.
+    Signature, full candidate and both archive bindings are rechecked on every
+    invocation, including historical inspect/reconcile after a process restart.
+    """
+    from qdev_runner import idp_retained_dispatch as storage
+
+    try:
+        _validate_idp_file_scope(config, profile, lane)
+        storage.transaction_name(transaction)
+        if action not in {"apply", "inspect", "reconcile", "observe"}:
+            raise AgentError("invalid retained IdP action")
+        retained = storage.read(transaction)
+        if retained is None:
+            if action != "inspect" or ci != "none":
+                raise AgentError("IdP inputs have not been published")
+            return {
+                "schema": storage.SCHEMA,
+                "transaction": transaction,
+                "status": "inputs_not_published",
+            }
+        metadata, archive = retained
+        invocation = IdPNativeInvocation(
+            config,
+            profile,
+            lane,
+            metadata["job"],
+            metadata["candidate"],
+        )
+        return invocation.invoke(archive, action=action, transaction=transaction, ci=ci)
+    except Exception:
+        raise AgentError("retained IdP operation requires verified-state inspection") from None
+
+
+def _require_idp_host() -> None:
+    if os.geteuid() != 0 or socket.gethostname() != IDP_PROFILE.placement:
+        raise AgentError("IdP execution requires the fixed root host")
+
+
+def run_idp_once(*, transaction: str, action: str, ci: str = "none"):
+    """One fixed installed-host entrypoint, not a poller or an enrollment tool.
+
+    Native CI intake supplies artifact.tar.gz and the existing signed controller
+    job in the private native stage. Retention owns its short publication lock;
+    invocation takes native-global then host-journal locks. Nothing here takes
+    an outer host lock, requests jobs/next, retries apply or triggers rollback.
+    """
+    from qdev_runner import idp_retained_dispatch as storage
+    from qdev_runner.idp_file_issuer import private_bytes
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate")
+            result[key] = value
+        return result
+
+    try:
+        _require_idp_host()
+        storage.transaction_name(transaction)
+        if (
+            action not in {"intake", "apply", "inspect", "reconcile", "observe"}
+            or (ci != "none" and not re.fullmatch(r"ci-[0-9a-f]{16}\.json", ci))
+            or (action == "apply" and ci == "none")
+            or (action == "intake" and ci != "none")
+        ):
+            raise AgentError("invalid one-shot IdP operation")
+        config = load_config(
+            IDP_CONFIG_PATH,
+            private_reader=lambda path: private_bytes(path, limit=65536),
+        )
+        lane = _idp_lane()
+        _validate_idp_file_scope(config, IDP_PROFILE, lane)
+        if action != "intake":
+            return invoke_retained_idp(
+                config,
+                IDP_PROFILE,
+                lane,
+                transaction=transaction,
+                action=action,
+                ci=ci,
+            )
+
+        stage = IdPNativeInvocation.STATE_ROOT / transaction
+        job = json.loads(
+            private_bytes(stage / "controller-job.json", limit=storage.MAX_METADATA),
+            object_pairs_hook=unique,
+        )
+        existing = storage.read(transaction)
+        if existing is None:
+            # Reject unsigned or expired input before reading the large archive
+            # or contacting the controller. No helper code has been loaded.
+            _validated_job(job, IDP_PROFILE, config)
+        elif _canonical_bytes(job) != _canonical_bytes(existing[0]["job"]):
+            raise AgentError("IdP transaction already has different inputs")
+        archive = private_bytes(stage / "artifact.tar.gz", limit=storage.MAX_ARCHIVE)
+        if existing is not None:
+            metadata, retained_archive = existing
+            if archive != retained_archive:
+                raise AgentError("IdP transaction already has a different archive")
+            # Finish an interrupted durable publication without a fresh network
+            # request or treating a historical signature as a live apply permit.
+            return IdPNativeInvocation(
+                config,
+                IDP_PROFILE,
+                lane,
+                job,
+                metadata["candidate"],
+            ).retain(archive, transaction=transaction)
+        return retain_controller_idp_inputs(
+            config,
+            IDP_PROFILE,
+            lane,
+            job,
+            archive,
+            transaction=transaction,
+        )
+    except Exception:
+        raise AgentError("IdP one-shot operation requires verified-state inspection") from None
+
+
+def idp_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Run one fixed enrolled IdP host operation")
+    parser.add_argument("action", choices=("intake", "apply", "inspect", "reconcile", "observe"))
+    parser.add_argument("--transaction", required=True)
+    parser.add_argument("--ci", default="none")
+    args = parser.parse_args(argv)
+    try:
+        result = run_idp_once(transaction=args.transaction, action=args.action, ci=args.ci)
+    except Exception:
+        # Never render raw transport/provider, filesystem, or credential errors.
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "reason": "IdP operation requires verified-state inspection",
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+class IdPFileApplyAdapter:
+    """Code-only factory for verified native dispatch, not an enrollment/CLI.
+
+    The installed owner supplies the fixed lane/profile/config and independently
+    signed job/envelope. No executable/profile/key comes from IdP or JSON. A
+    bundle-verified native dispatch calls this factory under its global lock.
+    Every read then occurs under the host journal lock, without reentering IdP.
+    """
+
+    def __init__(self, config, profile, lane, job, authorization, signature, *, candidate_receipt):
+        _validate_idp_file_scope(config, profile, lane)
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+        self._candidate = _canonical_bytes(candidate_receipt)
+        self._authorization, self._signature = _canonical_bytes(authorization), signature
+
+    def __call__(self, reader):
+        from qdev_runner.file_apply_authorization import FileApplyBridge, parse_binding
+        from qdev_runner.idp_file_runtime import native_receipt
+
+        # This is a trusted in-process capability, not an object accepted over an
+        # API. Native dispatch itself fences its PID/thread/active-pointer lifetime.
+        if not callable(getattr(reader, "observe_prepared", None)) or not callable(
+            getattr(reader, "observe_installed", None)
+        ):
+            raise AgentError("locked native IdP observation reader required")
+        job = json.loads(self._job)
+
+        @contextmanager
+        def authorize(binding):
+            if not isinstance(binding, bytes):
+                raise AgentError("immutable native IdP binding required")
+            scope = parse_binding(binding, now=time.time())
+            anchor = job["dispatch_claim"]["rollback_anchor"]
+            previous = None
+            if anchor["artifact_digest"] != f"sha256:{scope.snapshot_sha256}":
+                previous = _idp_previous_observation(self._profile, anchor)
+
+            def observe(installed):
+                # Invoked only under the host lock. A concurrent change between
+                # loading the bridge and acquiring that lock fails closed.
+                if (
+                    previous is not None
+                    and _idp_previous_observation(self._profile, anchor) != previous
+                ):
+                    raise AgentError("previous IdP native observation changed")
+                return native_receipt(
+                    reader.observe_installed() if installed else reader.observe_prepared(),
+                    installed=installed,
+                    expected_binding=binding,
+                    now=time.time(),
+                    previous_observation=previous,
+                )
+
+            observations = FileApplyObservations(
+                before_apply=lambda: observe(False),
+                after_apply=lambda: observe(True),
+            )
+            bridge = FileApplyBridge(
+                lane=self._lane,
+                dispatch_claim=job["dispatch_claim"],
+                candidate_receipt=json.loads(self._candidate),
+                dispatch_signature=job["dispatch_claim_signature"],
+                authorization=json.loads(self._authorization),
+                authorization_signature=self._signature,
+                signing_key=self._config.dispatch_secret,
+                dispatch_transaction=JournaledFileApplyTransaction(
+                    self._config,
+                    self._profile,
+                    job,
+                    observations=observations,
+                ),
+                clock=time.time,
+                previous_observation=previous,
+            )
+            with bridge(binding) as guard:
+                yield guard
+
+        return authorize
+
+
+class JournaledFileApplyTransaction:
+    """In-process bridge factory using the existing host operation journal.
+
+    Not a CLI, issuer or enrollment. The installed adapter supplies the compiled
+    profile/config and signed job; FileApplyBridge separately verifies the full
+    candidate and file binding. The IdP global lock is acquired BEFORE this host
+    lock. No native release/rollback dispatcher is invoked from this context.
+    Unknown outcomes remain pending for explicit native reconciliation.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        profile: Profile,
+        job: dict[str, Any],
+        *,
+        observations: FileApplyObservations | None = None,
+    ) -> None:
+        if observations is not None and type(observations) is not FileApplyObservations:
+            raise AgentError("file apply observations must come from the fixed native adapter")
+        self._config, self._profile = config, profile
+        self._job = _canonical_bytes(job)
+        self._observations = observations
+
+    @contextmanager
+    def __call__(self, claim: dict[str, Any]) -> Iterator[JournaledFileApplyGuard]:
+        config, profile = self._config, self._profile
+        job = json.loads(self._job)
+        observations = self._observations
+        before_apply = (
+            (lambda: native_receipt(profile, current=True))
+            if observations is None
+            else observations.before_apply
+        )
+        after_apply = (
+            (lambda: native_receipt(profile, current=True))
+            if observations is None
+            else observations.after_apply
+        )
+        if claim != job.get("dispatch_claim"):
+            raise AgentError("file apply claim differs from the native signed job")
+        with _acquire_lock(profile.lock_path) as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise AgentError("release lock is already held") from error
+            if _pending_operation(profile) is not None:
+                raise ControllerOutcomeUnresolved(
+                    "pending native operation requires reconciliation"
+                )
+            (
+                release_id,
+                candidate,
+                lease_id,
+                fence,
+                nonce,
+                lease_expires_at,
+                rollback_anchor,
+                _,
+            ) = _validated_job(job, profile, config)
+            if _dispatch_nonce_seen(profile, nonce):
+                raise AgentError("controller host dispatch claim was already consumed")
+            active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
+            context = _operation_context(
+                profile, candidate, active, rollback, nonce, lease_expires_at, rollback_anchor
+            )
+            _validate_native_runtime(before_apply(), profile, active)
+
+            def check() -> None:
+                # The signed lifetime is never renewed locally. The authenticated
+                # status read rejects changed fencing and terminal controller work.
+                _validated_job(job, profile, config)
+                state = _controller_status(
+                    config, profile, release_id, candidate, lease_id, fence, restored=active
+                )
+                if state["status"] != "dispatched":
+                    raise AgentError("file apply requires the current dispatched controller job")
+
+            guard = JournaledFileApplyGuard(check)
+            try:
+                guard.assert_current()
+                _write_operation(profile, "dispatch_accepted", release_id, lease_id, fence, context)
+                _write_operation(profile, "release_started", release_id, lease_id, fence, context)
+                guard.assert_current()
+                yield guard
+                guard.assert_current()
+                _validate_native_runtime(after_apply(), profile, candidate)
+                # Reuse durable completion and restart handling, including lost
+                # controller responses and state-file writes, without a second DB.
+                pending = _pending_operation(profile)
+                if pending is None:
+                    raise AgentError("file apply lost its durable native operation")
+                result = _recover_pending(
+                    config, profile, active, rollback, pending, observe_current=after_apply
+                )
+                if result["status"] != "verified":
+                    raise AgentError("file apply native completion was not verified")
+            finally:
+                # A failure, process death or lost response never resets a nonce or
+                # labels an unknown operation successful; persisted phases survive.
+                guard.close()
 
 
 def run_once(config: Config, profile: Profile) -> dict[str, Any]:
@@ -2232,9 +3192,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 "capacity_free_gib": beat["capacity_free_gib"],
                 **active,
             }
-        active, rollback = read_state(
-            profile.state_path, profile, allow_bootstrap=True
-        )
+        active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
         pending = _pending_operation(profile)
         if pending is not None:
             return _recover_pending(config, profile, active, rollback, pending)
@@ -2309,9 +3267,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             _validate_native_runtime(candidate_native, profile, candidate)
             if profile.name == "qmt" and (
                 candidate_native.get("dependency_identity")
-                != {
-                    "qmt_version": candidate_evidence["release_version"]
-                }
+                != {"qmt_version": candidate_evidence["release_version"]}
                 or candidate_native.get("artifact_provenance")
                 != {
                     key: candidate_evidence[key]
@@ -2323,9 +3279,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 }
             ):
                 raise AgentError("native QMT receipt does not bind candidate evidence")
-            runtime_receipt = _completion_receipt(
-                profile, candidate, active, candidate_native
-            )
+            runtime_receipt = _completion_receipt(profile, candidate, active, candidate_native)
             context = _operation_context(
                 profile,
                 candidate,
@@ -2425,12 +3379,15 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["idp"]:
+        return idp_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=sorted(PROFILES), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--once", action="store_true", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if os.geteuid() != 0:
         raise SystemExit("admin-platform release host agent must run as root")
     try:

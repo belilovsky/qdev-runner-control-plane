@@ -144,27 +144,21 @@ def _require_active_runtime_lineage(
     if active_candidate.source_sha == active_runtime_source_sha:
         return
     if entry.get("status") not in {"candidate", "ci_queued", "ci_passed"}:
-        raise ControllerCandidateError(
-            "durable controller candidate has entered deployment"
-        )
+        raise ControllerCandidateError("durable controller candidate has entered deployment")
 
     results = cast(list[dict[str, Any]], entry.get("results", []))
     if any(
-        result.get("release_id") == active_candidate.release_id
-        and result.get("lane") == "deploy"
+        result.get("release_id") == active_candidate.release_id and result.get("lane") == "deploy"
         for result in results
         if isinstance(result, dict)
     ):
-        raise ControllerCandidateError(
-            "durable controller candidate has deploy evidence"
-        )
+        raise ControllerCandidateError("durable controller candidate has deploy evidence")
 
     attempts = cast(list[dict[str, Any]], entry.get("attempts", []))
     runtime_attempts = [
         attempt
         for attempt in attempts
-        if isinstance(attempt, dict)
-        and attempt.get("source_sha") == active_runtime_source_sha
+        if isinstance(attempt, dict) and attempt.get("source_sha") == active_runtime_source_sha
     ]
     if not runtime_attempts or any(
         attempt.get("terminal_state") not in {"blocked", "rolled_back"}
@@ -175,9 +169,7 @@ def _require_active_runtime_lineage(
         raise ControllerCandidateError(
             "active runtime is not an unambiguous terminal controller attempt"
         )
-    runtime_release_ids = {
-        cast(str, attempt["release_id"]) for attempt in runtime_attempts
-    }
+    runtime_release_ids = {cast(str, attempt["release_id"]) for attempt in runtime_attempts}
     source_proven_release_ids = {
         cast(str, result["release_id"])
         for result in results
@@ -243,10 +235,7 @@ def prepare_controller_candidate(
     program_status = program.get("status") if isinstance(program, dict) else None
 
     if active_candidate.source_sha == source_sha:
-        if (
-            active_candidate.repository != REPOSITORY
-            or active_candidate.reference != REFERENCE
-        ):
+        if active_candidate.repository != REPOSITORY or active_candidate.reference != REFERENCE:
             raise ControllerCandidateError(
                 "matching controller source has invalid repository or reference"
             )

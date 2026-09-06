@@ -70,11 +70,9 @@ def rewrite(
         else:
             profile = "qdev-ci"
         job_label = current_job.lower().replace("_", "-")
-        matrix_label = (
-            "-${{ strategy.job-index }}" if current_job in matrix else ""
-        )
+        matrix_label = "-${{ strategy.job-index }}" if current_job in matrix else ""
         replacement = (
-            f'{selector.group("indent")}runs-on: [self-hosted, Linux, X64, {profile}, '
+            f"{selector.group('indent')}runs-on: [self-hosted, Linux, X64, {profile}, "
             f'"qdev-job-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-'
             f'{job_label}{matrix_label}"]\n'
         )

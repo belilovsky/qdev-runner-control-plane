@@ -99,9 +99,7 @@ class AdminPlatformStateStore:
 
         with self._lock():
             template = self._load_pristine_template(template_path)
-            receipt_document, source = self._evidence(
-                source_receipt, evidence_type="lane_result"
-            )
+            receipt_document, source = self._evidence(source_receipt, evidence_type="lane_result")
             if candidate.repository != template["entries"]["controller"]["repository"]:
                 raise AdminPlatformStateError(
                     "candidate repository does not match controller template"
@@ -113,9 +111,7 @@ class AdminPlatformStateStore:
                 stage="controller",
             )
             if source["lane"] != "source" or source["outcome"] != "passed":
-                raise AdminPlatformStateError(
-                    "initialization requires passing source evidence"
-                )
+                raise AdminPlatformStateError("initialization requires passing source evidence")
 
             previous_raw: bytes
             document: dict[str, Any]
@@ -126,9 +122,7 @@ class AdminPlatformStateStore:
                 previous_raw = b""
                 document = template
             except OSError as error:
-                raise AdminPlatformStateError(
-                    "durable admin platform ledger is unsafe"
-                ) from error
+                raise AdminPlatformStateError("durable admin platform ledger is unsafe") from error
             else:
                 schema = self._schema_from_raw(previous_raw)
                 if schema == "qdev-admin-platform-ledger-v3":
@@ -164,8 +158,7 @@ class AdminPlatformStateStore:
                     self._validate_legacy_raw(previous_raw)
                     migration_archive_uri = self._archive_legacy_state(
                         previous_raw,
-                        migration_archive_root
-                        or self.path.parent / "ledger-migrations",
+                        migration_archive_root or self.path.parent / "ledger-migrations",
                     )
                     document = template
                 else:
@@ -257,9 +250,7 @@ class AdminPlatformStateStore:
                 or entry["attempts"]
                 or entry["results"]
             ):
-                raise AdminPlatformStateError(
-                    "admin platform bootstrap successor is not pristine"
-                )
+                raise AdminPlatformStateError("admin platform bootstrap successor is not pristine")
 
     @staticmethod
     def _bind_pristine_controller(
@@ -303,9 +294,7 @@ class AdminPlatformStateStore:
 
     @staticmethod
     def _source_is_passed(document: dict[str, Any], release_id: str) -> bool:
-        results = cast(
-            list[dict[str, Any]], document["entries"]["controller"]["results"]
-        )
+        results = cast(list[dict[str, Any]], document["entries"]["controller"]["results"])
         return any(
             result["release_id"] == release_id
             and result["lane"] == "source"
@@ -334,9 +323,7 @@ class AdminPlatformStateStore:
     def _validate_legacy_raw(self, raw: bytes) -> None:
         directory = os.open(
             self.path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         temporary_name = f".{self.path.name}.legacy-validate.{secrets.token_hex(8)}"
         temporary_path = self.path.parent / temporary_name
@@ -357,9 +344,7 @@ class AdminPlatformStateStore:
             descriptor = None
             LegacyAdminPlatformLedger(temporary_path)
         except (LegacyAdminPlatformLedgerError, OSError) as error:
-            raise AdminPlatformStateError(
-                "legacy admin platform ledger is invalid"
-            ) from error
+            raise AdminPlatformStateError("legacy admin platform ledger is invalid") from error
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -373,9 +358,7 @@ class AdminPlatformStateStore:
         try:
             directory = os.open(
                 root,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
         except OSError as error:
             raise AdminPlatformStateError(
@@ -384,18 +367,14 @@ class AdminPlatformStateStore:
         try:
             metadata = os.fstat(directory)
             if not stat.S_ISDIR(metadata.st_mode):
-                raise AdminPlatformStateError(
-                    "legacy admin platform archive root is unsafe"
-                )
+                raise AdminPlatformStateError("legacy admin platform archive root is unsafe")
             os.fchmod(directory, 0o700)
             filename = f"{self.path.name}.{checksum}.legacy.yml"
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
             try:
                 descriptor = os.open(filename, flags, 0o600, dir_fd=directory)
             except FileExistsError as error:
-                existing = self._read_regular_file_at(
-                    directory, filename, _MAX_LEDGER_BYTES
-                )
+                existing = self._read_regular_file_at(directory, filename, _MAX_LEDGER_BYTES)
                 if existing != raw:
                     raise AdminPlatformStateError(
                         "immutable legacy ledger archive collision"
@@ -531,15 +510,11 @@ class AdminPlatformStateStore:
             if previous_attempt["terminal_state"] is not None:
                 raise AdminPlatformStateError("active attempt is already terminal")
 
-            result_document, result = self._evidence(
-                result_receipt, evidence_type="lane_result"
-            )
+            result_document, result = self._evidence(result_receipt, evidence_type="lane_result")
             terminal_document, terminal = self._evidence(
                 terminal_receipt, evidence_type="attempt_terminal"
             )
-            source_document, source = self._evidence(
-                source_receipt, evidence_type="lane_result"
-            )
+            source_document, source = self._evidence(source_receipt, evidence_type="lane_result")
             self._require_active_tuple(document, result)
             self._require_active_tuple(document, terminal)
             self._require_candidate_source(document, candidate, source)
@@ -558,9 +533,7 @@ class AdminPlatformStateStore:
                 )
             if candidate.repository != entry["repository"]:
                 raise AdminPlatformStateError("candidate repository does not match active stage")
-            if any(
-                attempt["release_id"] == candidate.release_id for attempt in entry["attempts"]
-            ):
+            if any(attempt["release_id"] == candidate.release_id for attempt in entry["attempts"]):
                 raise AdminPlatformStateError("candidate release id was already used")
 
             transaction_id, transaction_receipts = self._transaction_receipts(
@@ -640,15 +613,11 @@ class AdminPlatformStateStore:
             if candidate.repository != entry["repository"]:
                 raise AdminPlatformStateError("candidate repository does not match active stage")
 
-            receipt_document, source = self._evidence(
-                source_receipt, evidence_type="lane_result"
-            )
+            receipt_document, source = self._evidence(source_receipt, evidence_type="lane_result")
             self._require_candidate_source(document, candidate, source)
             if source["lane"] != "source" or source["outcome"] != "passed":
                 raise AdminPlatformStateError("restart requires passing source evidence")
-            if any(
-                attempt["release_id"] == candidate.release_id for attempt in entry["attempts"]
-            ):
+            if any(attempt["release_id"] == candidate.release_id for attempt in entry["attempts"]):
                 raise AdminPlatformStateError("candidate release id was already used")
 
             transaction_id, transaction_receipts = self._transaction_receipts(
@@ -887,8 +856,7 @@ class AdminPlatformStateStore:
         observed_at = payload.get("observed_at")
         try:
             canonical_observed_at = (
-                isinstance(observed_at, str)
-                and format_utc(parse_utc(observed_at)) == observed_at
+                isinstance(observed_at, str) and format_utc(parse_utc(observed_at)) == observed_at
             )
         except (TypeError, ValueError):
             canonical_observed_at = False
@@ -970,9 +938,11 @@ class AdminPlatformStateStore:
         if len(raw) > _MAX_RECEIPT_BYTES:
             raise AdminPlatformStateError("admin platform receipt is too large")
         receipt_id = receipt.get("receipt_id")
-        if not isinstance(receipt_id, str) or not all(
-            character in "0123456789abcdef" for character in receipt_id
-        ) or len(receipt_id) != 64:
+        if (
+            not isinstance(receipt_id, str)
+            or not all(character in "0123456789abcdef" for character in receipt_id)
+            or len(receipt_id) != 64
+        ):
             raise AdminPlatformStateError("admin platform receipt id is invalid")
         self.receipt_root.mkdir(parents=True, exist_ok=True)
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -982,9 +952,7 @@ class AdminPlatformStateStore:
                 directory_flags | getattr(os, "O_NOFOLLOW", 0),
             )
         except OSError as error:
-            raise AdminPlatformStateError(
-                "admin platform receipt root is unavailable"
-            ) from error
+            raise AdminPlatformStateError("admin platform receipt root is unavailable") from error
         metadata = os.fstat(directory)
         if not stat.S_ISDIR(metadata.st_mode):
             os.close(directory)
@@ -997,9 +965,7 @@ class AdminPlatformStateStore:
             try:
                 descriptor = os.open(filename, flags, 0o600, dir_fd=directory)
             except FileExistsError as error:
-                existing = self._read_regular_file_at(
-                    directory, filename, _MAX_RECEIPT_BYTES
-                )
+                existing = self._read_regular_file_at(directory, filename, _MAX_RECEIPT_BYTES)
                 if existing != raw:
                     raise AdminPlatformStateError("immutable receipt id collision") from error
             else:
@@ -1021,8 +987,7 @@ class AdminPlatformStateStore:
     @staticmethod
     def _receipt_raw(receipt: Mapping[str, Any]) -> bytes:
         raw = (
-            json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            + "\n"
+            json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
         ).encode("utf-8")
         if len(raw) > _MAX_RECEIPT_BYTES:
             raise AdminPlatformStateError("admin platform receipt is too large")
@@ -1091,8 +1056,7 @@ class AdminPlatformStateStore:
             "previous_ledger_sha256": hashlib.sha256(previous_raw).hexdigest(),
             "target_ledger_sha256": target_ledger_sha256,
             "receipts": [
-                {"receipt_uri": uri, "receipt_sha256": checksum}
-                for uri, checksum, _ in receipts
+                {"receipt_uri": uri, "receipt_sha256": checksum} for uri, checksum, _ in receipts
             ],
         }
         binding = self._signed_receipt(payload, ledger_bound=True)
@@ -1156,19 +1120,23 @@ class AdminPlatformStateStore:
                 )
                 try:
                     for uri, _, raw in receipts:
-                        if self._read_regular_file_at(
-                            existing_fd,
-                            uri.rsplit("/", 1)[1],
-                            _MAX_RECEIPT_BYTES,
-                        ) != raw:
-                            raise AdminPlatformStateError(
-                                "immutable receipt transaction collision"
+                        if (
+                            self._read_regular_file_at(
+                                existing_fd,
+                                uri.rsplit("/", 1)[1],
+                                _MAX_RECEIPT_BYTES,
                             )
-                    if self._read_regular_file_at(
-                        existing_fd,
-                        "ledger-binding.json",
-                        _MAX_RECEIPT_BYTES,
-                    ) != binding_raw:
+                            != raw
+                        ):
+                            raise AdminPlatformStateError("immutable receipt transaction collision")
+                    if (
+                        self._read_regular_file_at(
+                            existing_fd,
+                            "ledger-binding.json",
+                            _MAX_RECEIPT_BYTES,
+                        )
+                        != binding_raw
+                    ):
                         raise AdminPlatformStateError(
                             "immutable receipt transaction binding collision"
                         )
@@ -1304,9 +1272,7 @@ class AdminPlatformStateStore:
             if not entry.startswith(prefix) or not entry.endswith(suffix):
                 continue
             nonce = entry[len(prefix) : -len(suffix)]
-            if len(nonce) != 16 or any(
-                character not in "0123456789abcdef" for character in nonce
-            ):
+            if len(nonce) != 16 or any(character not in "0123456789abcdef" for character in nonce):
                 continue
             cls._remove_temporary_transaction(root_fd, entry, allowed_filenames)
 
@@ -1374,9 +1340,7 @@ class AdminPlatformStateStore:
         digest = payload_digest(payload)
         unsigned: dict[str, Any] = {
             "schema": (
-                "qdev-controller-receipt-v3"
-                if ledger_bound
-                else "qdev-controller-receipt-v2"
+                "qdev-controller-receipt-v3" if ledger_bound else "qdev-controller-receipt-v2"
             ),
             "receipt_id": digest,
             "payload": dict(payload),
@@ -1462,9 +1426,7 @@ class AdminPlatformStateStore:
             raise AdminPlatformStateError("admin platform ledger is too large")
         directory = os.open(
             self.path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         temporary_name = f".{self.path.name}.{secrets.token_hex(8)}.tmp"
         temporary_path = self.path.parent / temporary_name

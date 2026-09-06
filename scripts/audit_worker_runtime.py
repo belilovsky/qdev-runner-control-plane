@@ -65,9 +65,11 @@ def required_images(values: dict[str, str]) -> list[tuple[str, str]]:
         ).split(",")
         if profile.strip()
     }
+    if not profiles or profiles.difference(PROFILE_IMAGES):
+        raise ValueError("worker profiles must be a non-empty set of supported profiles")
     keys: list[str] = []
     for profile in sorted(profiles):
-        keys.extend(PROFILE_IMAGES.get(profile, ()))
+        keys.extend(PROFILE_IMAGES[profile])
     return [(key, values.get(key, "")) for key in dict.fromkeys(keys)]
 
 
@@ -104,7 +106,12 @@ def evaluate(
 
     engine = values.get("QDEV_CONTAINER_ENGINE", "docker")
     images = []
-    for key, reference in required_images(values):
+    try:
+        configured_images = required_images(values)
+    except ValueError:
+        errors.append("invalid_worker_profiles")
+        configured_images = []
+    for key, reference in configured_images:
         if not reference:
             errors.append(f"image_reference_missing:{key}")
             continue
@@ -124,15 +131,17 @@ def evaluate(
             errors.append(f"image_missing:{key}")
 
     image_release: dict[str, Any] = {"status": "not_checked"}
-    if image_release_manifest is not None:
+    if image_release_manifest is not None and configured_images:
         try:
-            released_references, manifest_digest = load_image_release(image_release_manifest)
+            released_references, manifest_digest = load_image_release(
+                image_release_manifest, strict_evidence=True
+            )
         except RunnerImageReleaseError:
             errors.append("image_release_manifest_invalid")
             image_release = {"status": "invalid"}
         else:
             checked_keys: list[str] = []
-            for key, reference in required_images(values):
+            for key, reference in configured_images:
                 if not reference:
                     errors.append(f"image_release_reference_missing:{key}")
                     continue
