@@ -3,6 +3,12 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
+  # The controller's qdev-ci workflow installs its small Python verification
+  # environment and runs the hosted policy/test suite without building OCI
+  # images. The measured checkout plus environment is below 1 GiB; reserve
+  # 4 GiB while retaining the worker's independent running free-space floor.
+  belilovsky/qdev-runner-control-plane:
+    qdev-ci: 4096
   # QDEV's qdev-ci lane only checks its runner contract and environment.
   # The ~20.4 MiB checkout has no build or package-install workload here.
   # 4 GiB conservatively covers checkout and the pinned Actions/Python setup
@@ -16,6 +22,13 @@ repository_admission_disk_mb:
   # or build artifacts. Reserve 4 GiB for that bounded lane while retaining the
   # worker's independent 4.5 GiB running floor and all controller checks.
   belilovsky/qazposter:
+    qdev-ci: 4096
+  # QazKnowledge's exact FIFO-head workflow has a 1.9 MiB source tree and one
+  # pinned development dependency (jsonschema). It checks JSON, compiles Python
+  # sources and runs the repository's deterministic unit/foundation tests; it
+  # does not build an image or launch services. Reserve 4 GiB for this exact
+  # repository/profile while retaining the worker's independent 4.5 GiB floor.
+  belilovsky/qazknowledge:
     qdev-ci: 4096
   # Platform Portal's required qdev-runner-contract job is a bounded
   # dependency-free policy check: checkout, pinned Python 3.12 and one local

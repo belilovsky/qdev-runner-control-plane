@@ -29,6 +29,15 @@ _SHA256 = re.compile(r"^[0-9a-f]{40}$")
 _CERT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
+_FIFO_SKIP_REASONS = frozenset(
+    {
+        "active-admin-platform-controller-priority",
+        "admin-platform-candidate-not-active",
+        "admin-platform-candidate-tuple-not-admitted",
+        "managed-production-candidate-not-active",
+        "managed-production-candidate-tuple-not-admitted",
+    }
+)
 
 
 class ClaimScopeError(ValueError):
@@ -46,6 +55,18 @@ class ScopedJob:
 
 
 @dataclass(frozen=True)
+class ScopedFifoSkip:
+    job_id: int
+    profile: str
+    repository: str
+    run_id: int
+    attempt: int
+    exact_sha: str
+    managed_registry_entry: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class ClaimScope:
     scope_id: str
     worker_name: str
@@ -59,6 +80,7 @@ class ClaimScope:
     host: str | None = None
     runner: str | None = None
     correlation_id: str | None = None
+    fifo_skipped: tuple[ScopedFifoSkip, ...] = ()
 
     def permits(
         self,
@@ -93,6 +115,29 @@ class ClaimScope:
             self.worker_certificate_sha256
             and _CERT_SHA256.fullmatch(normalized)
             and secrets.compare_digest(self.worker_certificate_sha256, normalized)
+        )
+
+    def skips(
+        self,
+        job_id: int,
+        repository: str,
+        head_sha: str,
+        profile: str,
+        *,
+        run_id: int | None = None,
+        attempt: int | None = None,
+    ) -> bool:
+        """Allow FIFO bypass only for an exact controller-signed stale tuple."""
+        if self.schema != SCHEMA_V2:
+            return False
+        return any(
+            item.job_id == job_id
+            and item.repository == repository
+            and item.run_id == run_id
+            and item.attempt == attempt
+            and item.exact_sha == head_sha
+            and item.profile == profile
+            for item in self.fifo_skipped
         )
 
 
@@ -145,6 +190,42 @@ def _parse_v2_job(raw: object) -> ScopedJob:
     return ScopedJob(job_id, profile, repository, run_id, attempt, exact_sha)
 
 
+def _parse_v2_fifo_skip(raw: object) -> ScopedFifoSkip:
+    if not isinstance(raw, dict):
+        raise ClaimScopeError("claim scope fifo skip must be an object")
+    job_id = _positive_int(raw.get("job_id"), "fifo skip job_id")
+    repository = _required_string(raw.get("repository"), "fifo skip repository")
+    run_id = _positive_int(raw.get("run_id"), "fifo skip run_id")
+    attempt = _positive_int(raw.get("attempt"), "fifo skip attempt")
+    exact_sha = _required_string(raw.get("exact_sha"), "fifo skip exact_sha")
+    if not _SHA256.fullmatch(exact_sha):
+        raise ClaimScopeError("claim scope fifo skip exact_sha must be a lowercase Git SHA")
+    profile = _required_string(raw.get("profile"), "fifo skip profile")
+    if profile not in PORTFOLIO_PROFILES:
+        raise ClaimScopeError("claim scope fifo skip profile is not supported")
+    managed_registry_entry_raw = raw.get("managed_registry_entry")
+    managed_registry_entry = (
+        None
+        if managed_registry_entry_raw is None
+        else _required_string(managed_registry_entry_raw, "fifo skip managed_registry_entry")
+    )
+    if managed_registry_entry is not None and not _SCOPE_ID.fullmatch(managed_registry_entry):
+        raise ClaimScopeError("claim scope fifo skip managed_registry_entry is unsafe")
+    reason = _required_string(raw.get("reason"), "fifo skip reason")
+    if reason not in _FIFO_SKIP_REASONS:
+        raise ClaimScopeError("claim scope fifo skip reason is not supported")
+    return ScopedFifoSkip(
+        job_id=job_id,
+        profile=profile,
+        repository=repository,
+        run_id=run_id,
+        attempt=attempt,
+        exact_sha=exact_sha,
+        managed_registry_entry=managed_registry_entry,
+        reason=reason,
+    )
+
+
 def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
     if not isinstance(raw, dict):
         raise ClaimScopeError("claim scope entry must be an object")
@@ -169,6 +250,10 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
         runner = _required_string(raw.get("runner"), "runner")
         correlation_id = _required_string(raw.get("correlation_id"), "correlation_id")
         v2_jobs = [_parse_v2_job(item) for item in jobs_raw]
+        fifo_skipped_raw = raw.get("fifo_skipped", [])
+        if not isinstance(fifo_skipped_raw, list) or len(fifo_skipped_raw) > 512:
+            raise ClaimScopeError("claim scope fifo_skipped must be a bounded list")
+        fifo_skipped = [_parse_v2_fifo_skip(item) for item in fifo_skipped_raw]
         if len({item.job_id for item in v2_jobs}) != len(v2_jobs):
             raise ClaimScopeError("claim scope job IDs must be unique")
         immutable_tuples = {
@@ -177,6 +262,14 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
         }
         if len(immutable_tuples) != len(v2_jobs):
             raise ClaimScopeError("claim scope immutable job tuples must be unique")
+        skipped_tuples = {
+            (item.repository, item.run_id, item.job_id, item.attempt, item.exact_sha, item.profile)
+            for item in fifo_skipped
+        }
+        if len(skipped_tuples) != len(fifo_skipped):
+            raise ClaimScopeError("claim scope fifo skip tuples must be unique")
+        if immutable_tuples & skipped_tuples:
+            raise ClaimScopeError("claim scope jobs and fifo skips must not overlap")
         first = v2_jobs[0]
         assert first.repository is not None and first.exact_sha is not None
         return ClaimScope(
@@ -192,6 +285,7 @@ def _parse_scope(raw: object, *, schema: str) -> ClaimScope:
             host=host,
             runner=runner,
             correlation_id=correlation_id,
+            fifo_skipped=tuple(fifo_skipped),
         )
 
     repository = _required_string(raw.get("repository"), "repository")
@@ -284,6 +378,19 @@ def _scope_entry(scope: ClaimScope) -> dict[str, object]:
                         "profile": item.profile,
                     }
                     for item in scope.jobs
+                ],
+                "fifo_skipped": [
+                    {
+                        "job_id": item.job_id,
+                        "repository": item.repository,
+                        "run_id": item.run_id,
+                        "attempt": item.attempt,
+                        "exact_sha": item.exact_sha,
+                        "profile": item.profile,
+                        "managed_registry_entry": item.managed_registry_entry,
+                        "reason": item.reason,
+                    }
+                    for item in scope.fifo_skipped
                 ],
             }
         )

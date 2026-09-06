@@ -336,6 +336,92 @@ def test_admin_platform_evidence_receipt_binds_exact_lane_or_terminal_state(
         )
 
 
+def _fleet_bootstrap_operation_payload(
+    *,
+    status: str,
+    operation_status: str,
+    error_code: str | None,
+    result: dict[str, object] | None,
+) -> dict[str, object]:
+    return {
+        "kind": "fleet-bootstrap-operation",
+        "observed_at": "2026-09-05T08:00:00Z",
+        "execution": {
+            "schema": "qdev-fleet-bootstrap-execution-receipt-v1",
+            "status": status,
+            "operation_status": operation_status,
+            "action": "activate-controller",
+            "idempotency_key": "controller-activation-001",
+            "request_fingerprint": "a" * 64,
+            "controller_revision": "b" * 40,
+            "controller_release_digest": "sha256:" + "c" * 64,
+            "release_lane": None,
+            "host_agent_mtls_identity": None,
+            "error_code": error_code,
+            "result": result,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "operation_status", "error_code", "result"),
+    (
+        ("queued", "pending", None, None),
+        ("completed", "completed", None, {"adapter_status": "completed"}),
+        ("access_blocked", "pending", "host_dispatch_unavailable", None),
+        ("failed", "pending", "controller_activation_failed", None),
+        (
+            "unknown",
+            "unknown",
+            "operation_outcome_unknown_reconciliation_required",
+            None,
+        ),
+    ),
+)
+def test_fleet_bootstrap_operation_receipt_accepts_dispatch_lifecycle_states(
+    status: str,
+    operation_status: str,
+    error_code: str | None,
+    result: dict[str, object] | None,
+) -> None:
+    payload = _fleet_bootstrap_operation_payload(
+        status=status,
+        operation_status=operation_status,
+        error_code=error_code,
+        result=result,
+    )
+
+    assert validate_controller_receipt_payload(payload) == payload
+
+
+@pytest.mark.parametrize(
+    ("status", "operation_status", "error_code", "result"),
+    (
+        ("queued", "pending", "queued_with_error", None),
+        ("queued", "completed", None, None),
+        ("completed", "completed", None, None),
+        ("completed", "pending", None, {"adapter_status": "completed"}),
+        ("unknown", "pending", "operation_outcome_unknown_reconciliation_required", None),
+        ("unknown", "unknown", "other_error", None),
+    ),
+)
+def test_fleet_bootstrap_operation_receipt_rejects_mixed_dispatch_states(
+    status: str,
+    operation_status: str,
+    error_code: str | None,
+    result: dict[str, object] | None,
+) -> None:
+    payload = _fleet_bootstrap_operation_payload(
+        status=status,
+        operation_status=operation_status,
+        error_code=error_code,
+        result=result,
+    )
+
+    with pytest.raises(ValueError, match="fleet bootstrap operation payload"):
+        validate_controller_receipt_payload(payload)
+
+
 def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
     payload = {
         "kind": "fifo-claim-scope-issued",
@@ -352,6 +438,7 @@ def test_fifo_receipt_rejects_unclassified_skip_rows() -> None:
                 "job_id": 41,
                 "repository": "belilovsky/qazposter",
                 "run_id": 84000000041,
+                "attempt": 1,
                 "head_sha": "a" * 40,
                 "profile": "qdev-ci-docker",
                 "managed_registry_entry": "qazposter",
@@ -384,6 +471,7 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
                 "job_id": 41,
                 "repository": "belilovsky/qazposter",
                 "run_id": 84000000041,
+                "attempt": 1,
                 "head_sha": "a" * 40,
                 "profile": "qdev-ci-docker",
                 "managed_registry_entry": "qazposter",
@@ -398,6 +486,17 @@ def test_fifo_receipt_rejects_unhashable_skip_reason() -> None:
     }
     with pytest.raises(ValueError, match="fifo skip item"):
         validate_controller_receipt_payload(payload)
+
+
+def test_fifo_receipt_schema_binds_provider_attempt() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[1] / "docs/schemas/qdev-controller-receipt-v2.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    fifo_skip = schema["$defs"]["fifo_skipped"]["items"]
+
+    assert "attempt" in fifo_skip["required"]
+    assert fifo_skip["properties"]["attempt"] == {"type": "integer", "minimum": 1}
 
 
 def _unknown_fleet_recovery_payload() -> dict[str, object]:

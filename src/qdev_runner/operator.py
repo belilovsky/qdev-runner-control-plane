@@ -66,6 +66,13 @@ def _sha256_hex(value: str, *, field: str) -> str:
     return normalized
 
 
+def _git_revision(value: str, *, field: str) -> str:
+    normalized = value.lower()
+    if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
+        raise ValueError(f"invalid {field}")
+    return normalized
+
+
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -288,6 +295,17 @@ def build_parser() -> argparse.ArgumentParser:
     recover_stale.add_argument("--owner", required=True)
     recover_stale.add_argument("--reason", required=True)
 
+    commands.add_parser(
+        "failed-audit", help="Read signed failed-worker-job candidates without mutation"
+    )
+    recover_failed = commands.add_parser(
+        "recover-failed",
+        help="Reconcile one failed worker job with GitHub before releasing it",
+    )
+    recover_failed.add_argument("job_id", type=int)
+    recover_failed.add_argument("--owner", required=True)
+    recover_failed.add_argument("--reason", required=True)
+
     claim_scope = commands.add_parser(
         "claim-scope",
         help="Issue one FIFO-bound claim scope for an enrolled worker",
@@ -320,6 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
         recovery_command = commands.add_parser(command_name, help=command_help)
         recovery_command.add_argument("--operation-id", required=True)
         recovery_command.add_argument("--request-fingerprint", required=True)
+        if command_name == "recovery-accept":
+            recovery_command.add_argument("--canary-head-sha")
 
     activate_controller = commands.add_parser(
         "activate-controller",
@@ -409,6 +429,25 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "reason": arguments.reason,
             },
         )
+    if arguments.command == "failed-audit":
+        return controller_request(
+            settings,
+            method="GET",
+            path="/internal/v1/operations/jobs/failed-worker-exit",
+        )
+    if arguments.command == "recover-failed":
+        return controller_request(
+            settings,
+            method="POST",
+            path=(
+                f"/internal/v1/operations/jobs/{arguments.job_id}"
+                "/recover-failed-worker-exit"
+            ),
+            body={
+                "owner": arguments.owner,
+                "reason": arguments.reason,
+            },
+        )
     if arguments.command == "claim-scope":
         worker = _worker_name(arguments.worker)
         scope_id = _scope_id(arguments.scope_id)
@@ -461,6 +500,11 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             "request_fingerprint": request_fingerprint,
             "provenance": _fresh_recovery_provenance(settings),
         }
+        if action == "accept" and arguments.canary_head_sha is not None:
+            action_body["canary_head_sha"] = _git_revision(
+                arguments.canary_head_sha,
+                field="canary head SHA",
+            )
         response = recovery_request(
             settings,
             method="POST",

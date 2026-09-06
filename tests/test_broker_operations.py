@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.broker import create_app
+from qdev_runner.fleet_host_dispatch import FleetHostDispatchSpool
 from qdev_runner.models import QueuedJob
 from qdev_runner.operations import OperationStore
 from qdev_runner.operator import verify_controller_receipt
@@ -37,9 +39,9 @@ OPERATOR_HEADERS = {
     "X-QDev-Operator-Token": OPERATOR_TOKEN,
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
-_FLEET_BOOTSTRAP_POLICY = (
-    Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
-)
+_FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
+
+
 def _fleet_bootstrap_activation() -> dict[str, str]:
     return {
         "controller_revision": "a" * 40,
@@ -48,9 +50,7 @@ def _fleet_bootstrap_activation() -> dict[str, str]:
 
 
 def _initialized_admin_platform_ledger(tmp_path: Path) -> tuple[Path, Path]:
-    template_path = (
-        Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
-    )
+    template_path = Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml"
     template = yaml.safe_load(template_path.read_text(encoding="utf-8"))
     candidate = AdminPlatformCandidate(**template["active_candidate"])
     state_root = tmp_path / "admin-platform-state"
@@ -87,7 +87,12 @@ def _initialized_admin_platform_ledger(tmp_path: Path) -> tuple[Path, Path]:
     return ledger_path, receipt_root
 
 
-def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
+def _app(
+    tmp_path: Path,
+    github: Any | None = None,
+    *,
+    managed_release_ledger_path: Path | None = None,
+) -> TestClient:
     inventory = tmp_path / "repos.json"
     inventory.write_text(
         json.dumps(
@@ -125,6 +130,22 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "default_branch": "main",
                         "profiles": ["qdev-ci-docker"],
                     },
+                    {
+                        "id": 5,
+                        "full_name": "belilovsky/qdev-runner-control-plane",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
+                    {
+                        "id": 6,
+                        "full_name": "belilovsky/qazgeo",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
                 ]
             }
         ),
@@ -139,6 +160,8 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                     "belilovsky/qazlake": {"qdev-ci-docker": 12288},
                     "belilovsky/example": {"qdev-ci-docker": 15360},
                     "belilovsky/qazposter": {"qdev-ci-docker": 15360},
+                    "belilovsky/qdev-runner-control-plane": {"qdev-ci-docker": 15360},
+                    "belilovsky/qazgeo": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
                     "qdev-ci-docker": {
@@ -200,17 +223,13 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         encoding="utf-8",
     )
     fleet_bootstrap_policy = tmp_path / "fleet-bootstrap.yml"
-    fleet_bootstrap_document = yaml.safe_load(
-        _FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8")
-    )
+    fleet_bootstrap_document = yaml.safe_load(_FLEET_BOOTSTRAP_POLICY.read_text(encoding="utf-8"))
     fleet_bootstrap_document["enrolment"] = {"lanes": ["qdev-release-qmt"]}
     fleet_bootstrap_policy.write_text(
         yaml.safe_dump(fleet_bootstrap_document, sort_keys=False),
         encoding="utf-8",
     )
-    admin_platform_ledger, admin_platform_receipts = (
-        _initialized_admin_platform_ledger(tmp_path)
-    )
+    admin_platform_ledger, admin_platform_receipts = _initialized_admin_platform_ledger(tmp_path)
     settings = BrokerSettings(
         app_id="1",
         app_private_key_path=tmp_path / "app.pem",
@@ -233,6 +252,8 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         fleet_host_dispatch_request_root=tmp_path / "fleet-host-dispatch" / "incoming",
         fleet_host_dispatch_result_root=tmp_path / "fleet-host-dispatch" / "results",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
+        managed_release_ledger_path=managed_release_ledger_path
+        or Path(__file__).parents[1] / "config" / "managed-release-ledger.yml",
         admin_platform_ledger_path=admin_platform_ledger,
         admin_platform_receipt_root=admin_platform_receipts,
         release_jobs_root=tmp_path / "release-jobs",
@@ -246,6 +267,27 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         github=github or object(),  # type: ignore[arg-type]
     )
     return TestClient(app)
+
+
+def _managed_release_ledger(
+    tmp_path: Path,
+    *,
+    source_sha: str,
+    run_id: int,
+    run_attempt: int = 1,
+    status: str = "ci_queued",
+) -> Path:
+    template_path = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
+    document = yaml.safe_load(template_path.read_text(encoding="utf-8"))
+    entry = document["entries"]["qazgeo"]
+    entry["source_sha"] = source_sha
+    entry["status"] = status
+    entry["ci_runs"] = [
+        {"run_id": str(run_id), "run_attempt": str(run_attempt), "state": "queued"}
+    ]
+    path = tmp_path / "managed-release-ledger.yml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
 
 
 def _release_heartbeat() -> dict[str, Any]:
@@ -463,9 +505,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
                         "canonical_repository": "belilovsky/qaz-tours",
                         "artifact_ref_prefix": "registry.ci.qdev.run/qaz-tours",
                         "native_host_adapter": "legacy-qaz-tours-v1",
-                        "runtime_endpoints": [
-                            "https://qaza.tours/.well-known/release.json"
-                        ],
+                        "runtime_endpoints": ["https://qaza.tours/.well-known/release.json"],
                         "rollback_reference": "qdev-release-host-state-v1",
                         "required_readiness": ["qazgeo"],
                     }
@@ -503,9 +543,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
             "runner_profile": "qdev-ci-docker",
         }
     )
-    lane = ReleaseLanePolicy(settings.release_lanes_path).lane(
-        "qdev-release-qaz-tours"
-    )
+    lane = ReleaseLanePolicy(settings.release_lanes_path).lane("qdev-release-qaz-tours")
     admission_now = int(time.time())
     candidate = ReleaseAdmissionRequest.model_validate(request)
     controller_claim = controller_claim_payload(
@@ -527,9 +565,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
         hashlib.sha256,
     ).hexdigest()
     release_store = client.app.state.release_store
-    release_store.admit(
-        ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now
-    )
+    release_store.admit(ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now)
 
     next_path = "/internal/v1/release-hosts/vps-hostinger-186/jobs/next"
     blocked = client.get(next_path, headers=host_headers)
@@ -585,17 +621,16 @@ def test_managed_next_job_is_bound_to_private_host_key_and_mtls_identity(
     assert claim["lease_expires_at"] == job["lease_expires_at"]
     assert claim["rollback_anchor"] == job["rollback_anchor"]
     assert claim["candidate_evidence"] == job["candidate_evidence"]
-    assert claim["candidate_evidence"]["schema"] == (
-        "qdev-release-candidate-evidence-v1"
-    )
+    assert claim["candidate_evidence"]["schema"] == ("qdev-release-candidate-evidence-v1")
     assert len(claim["candidate_evidence"]["candidate_receipt_sha256"]) == 64
     assert claim["expires_at"] - claim["issued_at"] == 120
-    canonical = json.dumps(
-        claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    assert job["dispatch_claim_signature"] == hmac.new(
-        signing_key.encode("utf-8"), canonical, hashlib.sha256
-    ).hexdigest()
+    canonical = json.dumps(claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    assert (
+        job["dispatch_claim_signature"]
+        == hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    )
     assert signing_key not in response.text
 
 
@@ -694,6 +729,16 @@ def _seed_stale_running_job(client: TestClient) -> float:
     return created_at
 
 
+def _seed_failed_worker_job(client: TestClient) -> float:
+    created_at = _seed_stale_running_job(client)
+    store: Store = client.app.state.store
+    assert store.fail_if_active(
+        42,
+        f"worker={WORKER_NAME} exit=143 capacity override expired",
+    ) is True
+    return created_at
+
+
 def _heartbeat(
     client: TestClient,
     *,
@@ -749,6 +794,7 @@ def _seed_pending_job(
     *,
     repository: str = "belilovsky/example",
     head_sha: str = "a" * 40,
+    profile: str = "qdev-ci-docker",
 ) -> None:
     store: Store = client.app.state.store
     assert (
@@ -760,7 +806,7 @@ def _seed_pending_job(
                 repository=repository,
                 repository_id=1,
                 installation_id=2,
-                labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+                labels=("self-hosted", "Linux", "X64", profile),
                 head_sha=head_sha,
                 head_branch="main",
                 payload={"workflow_job": {"run_attempt": 1}},
@@ -929,7 +975,7 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
 
 
 def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = _app(tmp_path)
     activation = _fleet_bootstrap_activation()
@@ -980,9 +1026,35 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     assert activation_execution["error_code"] == "host_dispatch_unavailable"
     assert activation_execution["release_lane"] is None
     assert activation_execution["host_agent_mtls_identity"] is None
-    assert not (
-        tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json"
-    ).exists()
+    assert not (tmp_path / "fleet-bootstrap-receipts" / "controller-activation-001.json").exists()
+
+    incoming = tmp_path / "fleet-host-dispatch" / "incoming"
+    results = tmp_path / "fleet-host-dispatch" / "results"
+    incoming.mkdir(parents=True)
+    results.mkdir()
+    incoming.chmod(0o700)
+    results.chmod(0o750)
+    monkeypatch.setattr(
+        "qdev_runner.broker.FleetHostDispatchSpool",
+        lambda request_root, result_root: FleetHostDispatchSpool(
+            request_root,
+            result_root,
+            result_uid=os.geteuid(),
+        ),
+    )
+    queued_body = activation_body | {"idempotency_key": "controller-activation-queued-001"}
+    queued_response = client.post(
+        activation_path,
+        json=queued_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert queued_response.status_code == 200
+    queued_receipt = verify_controller_receipt(queued_response.json(), receipt_key=RECEIPT_KEY)
+    queued_execution = queued_receipt["payload"]["execution"]
+    assert queued_execution["status"] == "queued"
+    assert queued_execution["operation_status"] == "pending"
+    assert queued_execution["error_code"] is None
+    assert (incoming / "controller-activation-queued-001.json").is_file()
 
     enrolment_path = "/internal/v1/operations/fleet-bootstrap/enrol-host-agent"
     enrolment_body = {
@@ -1005,14 +1077,12 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     )
     enrolment_execution = enrolment_receipt["payload"]["execution"]
     assert enrolment_execution["action"] == "enrol-host-agent"
-    assert enrolment_execution["status"] == "access_blocked"
+    assert enrolment_execution["status"] == "queued"
     assert enrolment_execution["operation_status"] == "pending"
-    assert enrolment_execution["error_code"] == "host_dispatch_unavailable"
+    assert enrolment_execution["error_code"] is None
     assert enrolment_execution["release_lane"] == "qdev-release-qmt"
     assert enrolment_execution["host_agent_mtls_identity"] == "qdev-host-agent:srv138jump"
-    assert not (
-        tmp_path / "fleet-bootstrap-receipts" / "host-enrolment-001.json"
-    ).exists()
+    assert (incoming / "host-enrolment-001.json").is_file()
 
     mismatched = client.post(
         activation_path,
@@ -1204,9 +1274,9 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
         headers=OPERATOR_HEADERS,
     )
     assert cancelled.status_code == 200
-    cancelled_payload = verify_controller_receipt(
-        cancelled.json(), receipt_key=RECEIPT_KEY
-    )["payload"]
+    cancelled_payload = verify_controller_receipt(cancelled.json(), receipt_key=RECEIPT_KEY)[
+        "payload"
+    ]
     assert cancelled_payload["operation"]["operation_id"] == operation["operation_id"]
     assert cancelled_payload["operation"]["status"] == "cancelled"
 
@@ -1250,6 +1320,33 @@ def test_durable_queue_audit_is_signed_and_reports_profile_heads(tmp_path: Path)
             "created_at": payload["profile_heads"][0]["created_at"],
         }
     ]
+
+
+def test_durable_queue_audit_omits_superseded_managed_production_head(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha="5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea",
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    response = client.get(
+        "/internal/v1/operations/jobs/pending",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["pending"] == 2
+    assert payload["unclassified"] == []
+    assert len(payload["profile_heads"]) == 1
+    assert payload["profile_heads"][0]["job_id"] == 42
+    assert payload["profile_heads"][0]["repository"] == "belilovsky/example"
 
 
 def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: Path) -> None:
@@ -1326,7 +1423,7 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
 
 
 def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Path) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, FakeGitHub())
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
     stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
     _seed_pending_job(
@@ -1361,6 +1458,7 @@ def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Pat
             "job_id": 41,
             "repository": "belilovsky/qazposter",
             "run_id": 84000000041,
+            "attempt": 1,
             "head_sha": stale_sha,
             "profile": "qdev-ci-docker",
             "managed_registry_entry": "qazposter",
@@ -1368,6 +1466,22 @@ def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Pat
         }
     ]
     assert payload["immutable_tuple"]["job_id"] == 42
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
 
 
 def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: Path) -> None:
@@ -1399,6 +1513,503 @@ def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: 
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "admin platform candidate is not active"
+
+
+def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-after-superseded-managed-row",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
+        }
+    ]
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha="5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea",
+    )
+    request = {
+        "job_id": 41,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "superseded-managed-row-direct",
+        "duration_seconds": 900,
+    }
+
+    response = client.post(
+        "/internal/v1/operations/jobs/41/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "managed production candidate tuple is not admitted"
+
+
+def test_managed_production_wrong_attempt_is_fail_closed_but_does_not_block_fifo(
+    tmp_path: Path,
+) -> None:
+    exact_sha = "9" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=exact_sha,
+        run_id=84000000041,
+        run_attempt=2,
+    )
+    client = _app(
+        tmp_path,
+        FakeGitHub(),
+        managed_release_ledger_path=ledger_path,
+    )
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "unlisted-managed-production-run",
+        repository="belilovsky/qazgeo",
+        head_sha=exact_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    direct = client.post(
+        "/internal/v1/operations/jobs/41/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 41,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "unlisted-managed-run-direct",
+            "duration_seconds": 900,
+        },
+    )
+    assert direct.status_code == 409
+    assert direct.json()["detail"] == "managed production CI run is not admitted"
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-after-unlisted-managed-run",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": exact_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
+        }
+    ]
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_managed_production_fifo_skip_is_rechecked_when_ledger_reactivates(
+    tmp_path: Path,
+) -> None:
+    active_sha = "9" * 40
+    stale_sha = "8" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=stale_sha,
+        run_id=84000000041,
+    )
+    client = _app(tmp_path, managed_release_ledger_path=ledger_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "temporarily-stale-managed-row",
+        repository="belilovsky/qazgeo",
+        head_sha=active_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-before-managed-reactivation",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    _managed_release_ledger(
+        tmp_path,
+        source_sha=active_sha,
+        run_id=84000000041,
+    )
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 204
+    assert client.app.state.store.job_status(41) == "pending"
+    assert client.app.state.store.job_status(42) == "pending"
+
+
+def test_managed_production_fifo_skip_is_rechecked_inside_claim_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_sha = "9" * 40
+    stale_sha = "8" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=stale_sha,
+        run_id=84000000041,
+    )
+    client = _app(tmp_path, managed_release_ledger_path=ledger_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "managed-row-reactivated-at-claim-boundary",
+        repository="belilovsky/qazgeo",
+        head_sha=active_sha,
+    )
+    _seed_pending_job(client, 42, "later-admissible-row")
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-race-at-durable-claim",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    store: Store = client.app.state.store
+    original_claim = store.claim
+
+    def reactivate_then_claim(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        _managed_release_ledger(
+            tmp_path,
+            source_sha=active_sha,
+            run_id=84000000041,
+        )
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(store, "claim", reactivate_then_claim)
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+
+    assert claimed.status_code == 204
+    assert store.job_status(41) == "pending"
+    assert store.job_status(42) == "pending"
+
+
+def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "active-controller-prerequisite",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["managed_registry_entry"] is None
+    assert payload["admission_ledger"] == "admin-platform"
+    assert payload["admin_platform_ledger_entry"] == "controller"
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/example",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": None,
+            "reason": "active-admin-platform-controller-priority",
+        }
+    ]
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
+    tmp_path: Path,
+) -> None:
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    client = _app(
+        tmp_path,
+        FakeGitHub(head_sha=controller_sha, job_run_id=84000000042),
+    )
+    scope_id = "admin-platform-controller-candidate"
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id=scope_id,
+        profiles=["qdev-ci-docker"],
+    )
+    _seed_pending_job(client, 41, "stale-capacity-candidate")
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+    operation = client.app.state.operations.create_capacity_override(
+        worker_name=WORKER_NAME,
+        repository="belilovsky/example",
+        head_sha="a" * 40,
+        profiles=("qdev-ci-docker",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=94.0,
+        owner="admin-platform",
+        reason="retain measured capacity while advancing exact signed scope",
+        duration_seconds=300,
+        registered_profiles=("qdev-ci-docker",),
+    )
+    store: Store = client.app.state.store
+    worker = store.health()["workers"][0]
+    detail = json.loads(worker["detail_json"])
+    detail["capacity_directive_id"] = operation.operation_id
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
+        )
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": scope_id,
+            "host": WORKER_NAME,
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "active-controller-prerequisite",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    claim = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "claim_scope_id": scope_id,
+            "profiles": ["qdev-ci-docker"],
+            "disk_free_gib": 20.0,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": operation.operation_id,
+            "capacity_repository": "belilovsky/example",
+            "capacity_head_sha": "a" * 40,
+        },
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == 42
+    assert claim.json()["repository"] == "belilovsky/qdev-runner-control-plane"
+    assert store.job_status(41) == "pending"
+
+
+def test_non_active_controller_sha_cannot_bypass_profile_fifo(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    _seed_pending_job(
+        client,
+        42,
+        "non-active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha="f" * 40,
+    )
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "non-active-controller-candidate",
+        "duration_seconds": 900,
+    }
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "job is not the FIFO head for its profile"
 
 
 def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path: Path) -> None:
@@ -1437,6 +2048,96 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
     assert payload["idempotent"] is False
     assert payload["rolled_over_terminal_scope"] is True
     assert [item["job_id"] for item in payload["claim_scope"]["jobs"]] == [42, 43]
+
+
+def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identity(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000043))
+    profiles = ["qdev-ci-docker", "qdev-ci-browser"]
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id="srv1879763-primary",
+        profiles=profiles,
+    )
+    _seed_pending_job(client, 42, "docker-before-browser")
+    _seed_pending_job(client, 43, "browser-head", profile="qdev-ci-browser")
+    base_request = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "duration_seconds": 900,
+    }
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=base_request
+        | {"job_id": 42, "correlation_id": "cross-profile-rollover"},
+    )
+    assert issued.status_code == 200
+    client.app.state.store.set_status(42, "completed", "success")
+    rollover = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=base_request
+        | {"job_id": 43, "correlation_id": "cross-profile-rollover"},
+    )
+    assert rollover.status_code == 200
+
+    # Reproduce the live constrained-capacity state only after the v2 scope
+    # has retained tuples from both profiles.  The directive below admits the
+    # browser subset while the durable worker registration remains unchanged.
+    _heartbeat(
+        client,
+        admitted=False,
+        scope_id="srv1879763-primary",
+        profiles=profiles,
+    )
+
+    operation = client.app.state.operations.create_capacity_override(
+        worker_name=WORKER_NAME,
+        repository="belilovsky/example",
+        head_sha="a" * 40,
+        profiles=("qdev-ci-browser",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=94.0,
+        owner="test-owner",
+        reason="admit the exact browser FIFO tuple",
+        duration_seconds=300,
+        registered_profiles=tuple(profiles),
+    )
+    worker = client.app.state.store.health()["workers"][0]
+    detail = json.loads(worker["detail_json"])
+    detail["capacity_directive_id"] = operation.operation_id
+    with client.app.state.store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
+        )
+
+    claim = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "claim_scope_id": "srv1879763-primary",
+            "profiles": ["qdev-ci-browser"],
+            "disk_free_gib": 100.0,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": operation.operation_id,
+            "capacity_repository": "belilovsky/example",
+            "capacity_head_sha": "a" * 40,
+        },
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == 43
+    assert claim.json()["profile"]["name"] == "qdev-ci-browser"
 
 
 def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_path: Path) -> None:
@@ -1730,10 +2431,13 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "capacity override target is not the durable FIFO head"
-    assert client.app.state.operations.active(
-        WORKER_NAME,
-        registered_profiles=("qdev-ci", "qdev-ci-docker"),
-    ) is None
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
 
 
 def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
@@ -1773,21 +2477,168 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
     )
 
     assert response.status_code == 200
-    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)[
-        "payload"
-    ]
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
     assert payload["immutable_tuple"]["job_id"] == 42
     assert payload["fifo_skipped"] == [
         {
             "job_id": 41,
             "repository": "belilovsky/qazposter",
             "run_id": 84000000041,
+            "attempt": 1,
             "head_sha": stale_sha,
             "profile": "qdev-ci-docker",
             "managed_registry_entry": "qazposter",
             "reason": "admin-platform-candidate-not-active",
         }
     ]
+
+
+def test_capacity_override_skips_superseded_managed_production_fifo_rows(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(
+        client,
+        42,
+        "first-admissible-row",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazlake",
+            "head_sha": "b" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "admissible head after superseded managed-production row",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
+        }
+    ]
+
+
+def test_capacity_override_prioritizes_exact_active_controller_candidate(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    template = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    controller_sha = template["active_candidate"]["source_sha"]
+    _seed_pending_job(
+        client,
+        42,
+        "active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha=controller_sha,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qdev-runner-control-plane",
+            "head_sha": controller_sha,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "admin-platform",
+            "reason": "restore exact controller prerequisite admission",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/example",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": "a" * 40,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": None,
+            "reason": "active-admin-platform-controller-priority",
+        }
+    ]
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_capacity_override_does_not_prioritize_non_active_controller_sha(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    _seed_pending_job(client, 41, "unrelated-earlier-row")
+    _seed_pending_job(
+        client,
+        42,
+        "non-active-controller-candidate",
+        repository="belilovsky/qdev-runner-control-plane",
+        head_sha="f" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qdev-runner-control-plane",
+            "head_sha": "f" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "admin-platform",
+            "reason": "must remain ledger bound",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "capacity override target is not the durable FIFO head"
+    )
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
@@ -1917,3 +2768,86 @@ def test_stale_provider_completed_job_is_closed_not_requeued(tmp_path: Path) -> 
     assert job is not None
     assert job["status"] == "completed"
     assert job["result"] == "success"
+
+
+def test_failed_worker_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    _seed_failed_worker_job(client)
+
+    response = client.get(
+        "/internal/v1/operations/jobs/failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    candidate = receipt["payload"]["candidates"][0]
+    assert candidate["job_id"] == 42
+    assert candidate["run_id"] == 84
+    assert candidate["exact_sha"] == "a" * 40
+    assert candidate["state"] == "failed"
+    assert client.app.state.store.job_status(42) == "failed"
+
+
+def test_failed_worker_job_is_released_only_when_provider_is_queued(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    created_at = _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "provider remains queued after local worker exit",
+        },
+    )
+
+    assert response.status_code == 200
+    receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+    assert receipt["payload"]["action"] == "released-preserving-fifo"
+    assert receipt["payload"]["fifo_preserved"] is True
+    job = client.app.state.store.job(42)
+    assert job is not None
+    assert job["status"] == "pending"
+    assert job["completed_at"] is None
+    assert float(job["created_at"]) == created_at
+
+
+def test_failed_worker_job_is_not_released_while_provider_is_active(tmp_path: Path) -> None:
+    client = _app(tmp_path, FakeGitHub(job_status="in_progress"))
+    _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "provider state must win",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "provider reports the job is still in progress"
+    assert client.app.state.store.job_status(42) == "failed"
+
+
+def test_failed_worker_job_with_provider_tuple_mismatch_is_not_released(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub(head_sha="b" * 40))
+    _seed_failed_worker_job(client)
+
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "immutable provider tuple must match",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "provider immutable tuple does not match the failed job"
+    )
+    assert client.app.state.store.job_status(42) == "failed"

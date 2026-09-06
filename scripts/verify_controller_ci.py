@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
-    if lane not in {"local", "hosted", "self-hosted", "controller-recovery"}:
+    if lane not in {"local", "hosted", "managed", "controller-recovery"}:
         raise ValueError("unknown execution lane")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("exact checkout SHA is required")
@@ -33,6 +33,18 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
     runner_environment = "github-hosted" if lane == "hosted" else "self-hosted"
     if environment.get("RUNNER_ENVIRONMENT") != runner_environment:
         raise ValueError("runner environment does not match requested execution lane")
+    if lane == "managed":
+        if environment.get("QDEV_MANAGED_CI") != "true" or not expected:
+            raise ValueError("managed CI requires an exact controller-bound checkout")
+        if not environment.get("RUNNER_NAME"):
+            raise ValueError("managed CI requires an enrolled ephemeral runner")
+        event = environment.get("GITHUB_EVENT_NAME")
+        if event not in {"push", "workflow_dispatch", "pull_request"}:
+            raise ValueError("managed CI received an untrusted event")
+        owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
+        expected_repository = f"{owner}/qdev-runner-control-plane"
+        if not owner or environment.get("GITHUB_REPOSITORY") != expected_repository:
+            raise ValueError("managed CI is bound to the controller repository")
     if lane == "controller-recovery":
         owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
         if not owner or environment.get("GITHUB_ACTOR") != owner:
@@ -57,7 +69,7 @@ def commands(python: str) -> list[list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--lane", choices=("local", "hosted", "self-hosted", "controller-recovery"), required=True
+        "--lane", choices=("local", "hosted", "managed", "controller-recovery"), required=True
     )
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):

@@ -440,13 +440,15 @@ def validate_envelope(
     ):
         raise AgentError("signed command request nonce is invalid")
     provider_id = command.get("provider_runner_id")
-    if not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0:
-        raise AgentError("signed command provider runner id is invalid")
-    if (
-        profile.expected_provider_runner_id is not None
-        and provider_id != profile.expected_provider_runner_id
+    if profile.recovery_action == "restore_saved_configuration":
+        if not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0:
+            raise AgentError("signed command provider runner id is invalid")
+        if provider_id != profile.expected_provider_runner_id:
+            raise AgentError("signed command provider runner id does not match saved identity")
+    elif provider_id is not None and (
+        not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0
     ):
-        raise AgentError("signed command provider runner id does not match saved identity")
+        raise AgentError("signed command provider runner id is invalid")
     if command["expected_agent_certificate_sha256"] != _certificate_sha256(config.client_cert):
         raise AgentError("signed command is bound to another host-agent certificate")
     issued_at = _parse_time(command.get("issued_at"), "issued_at")
@@ -666,6 +668,26 @@ def _recover_platform(
     }
 
 
+def _archive_link_stays_within_root(member: tarfile.TarInfo) -> bool:
+    """Return whether a tar link resolves lexically inside the extraction root."""
+
+    link = PurePosixPath(member.linkname)
+    if link.is_absolute():
+        return False
+    base = PurePosixPath(member.name).parent if member.issym() else PurePosixPath()
+    depth = 0
+    for part in (*base.parts, *link.parts):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        else:
+            depth += 1
+    return True
+
+
 def _safe_archive(archive: Path) -> None:
     try:
         with tarfile.open(archive, mode="r:gz") as bundle:
@@ -673,10 +695,10 @@ def _safe_archive(archive: Path) -> None:
                 path = PurePosixPath(member.name)
                 if path.is_absolute() or ".." in path.parts or member.isdev():
                     raise AgentError("runner archive contains an unsafe member")
-                if member.issym() or member.islnk():
-                    link = PurePosixPath(member.linkname)
-                    if link.is_absolute() or ".." in link.parts:
-                        raise AgentError("runner archive contains an unsafe link")
+                if (member.issym() or member.islnk()) and not _archive_link_stays_within_root(
+                    member
+                ):
+                    raise AgentError("runner archive contains an unsafe link")
     except (OSError, tarfile.TarError) as error:
         raise AgentError("runner archive cannot be inspected") from error
 

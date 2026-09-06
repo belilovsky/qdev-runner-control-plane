@@ -262,6 +262,21 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         violations.append(violation(contract_path, 1, "missing-recovery-workflows"))
     if recovery_workflows and not allow_hosted:
         violations.append(violation(contract_path, 1, "recovery-workflows-requires-v2"))
+    primary_self_hosted_workflows: set[str] = set()
+    primary_value = contract.get("primary_self_hosted_workflows")
+    if primary_value is not None:
+        if isinstance(primary_value, list) and all(
+            isinstance(value, str) for value in primary_value
+        ):
+            primary_self_hosted_workflows = set(primary_value)
+        else:
+            violations.append(
+                violation(contract_path, 1, "invalid-primary-self-hosted-workflows")
+            )
+    if primary_self_hosted_workflows and not allow_hosted:
+        violations.append(
+            violation(contract_path, 1, "primary-self-hosted-workflows-requires-v2")
+        )
     if release_registry_workflows and not allow_hosted:
         violations.append(violation(contract_path, 1, "release-registry-requires-v2"))
     for workflow_name in sorted(release_registry_workflows):
@@ -278,6 +293,16 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
             violations.append(
                 violation(contract_path, 1, "invalid-recovery-workflow", workflow_name)
+            )
+    for workflow_name in sorted(primary_self_hosted_workflows):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
+            violations.append(
+                violation(
+                    contract_path,
+                    1,
+                    "invalid-primary-self-hosted-workflow",
+                    workflow_name,
+                )
             )
     if not allowed_profiles or not allowed_profiles <= QDEV_PROFILES:
         violations.append(
@@ -316,6 +341,15 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         violations.append(
             violation(contract_path, 1, "recovery-workflow-missing", workflow_name)
         )
+    for workflow_name in sorted(primary_self_hosted_workflows - available_workflows):
+        violations.append(
+            violation(
+                contract_path,
+                1,
+                "primary-self-hosted-workflow-missing",
+                workflow_name,
+            )
+        )
     if smoke_path not in paths:
         violations.append(violation(smoke_path, 1, "missing-runner-smoke"))
     for path in paths:
@@ -331,6 +365,9 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         )
         allow_ghcr = allow_hosted and Path(path).name in release_registry_workflows
         is_recovery_workflow = allow_hosted and Path(path).name in recovery_workflows
+        is_primary_self_hosted_workflow = (
+            allow_hosted and Path(path).name in primary_self_hosted_workflows
+        )
         if is_recovery_workflow and not is_manual_only_workflow(triggers):
             violations.append(violation(path, 1, "recovery-workflow-not-manual-only"))
         if allow_ghcr and pull_request_triggered:
@@ -392,7 +429,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 if isinstance(runner, str) and "${{" in runner and not profiles:
                     violations.append(violation(path, 1, "dynamic-runner-selector", str(job_name)))
                 if profiles:
-                    if allow_hosted and not is_recovery_workflow:
+                    if (
+                        allow_hosted
+                        and not is_recovery_workflow
+                        and not is_primary_self_hosted_workflow
+                    ):
                         violations.append(
                             violation(path, 1, "self-hosted-runner-outside-recovery", str(job_name))
                         )

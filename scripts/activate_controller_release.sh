@@ -258,6 +258,8 @@ required=(
 if [[ "$rollback_mode" != true ]]; then
   required+=(
     config/controller-capacity.json
+    scripts/controller_capacity_gate.py
+    scripts/validate_controller_image_binding.py
     src/qdev_runner/durable_state.py
     src/qdev_runner/controller_candidate.py
     scripts/bootstrap_admin_platform_ledger_v3.py
@@ -272,6 +274,9 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
+    scripts/qdev_fixed_worker_recovery_dispatch.py
+    scripts/qdev_recovery_host_enrol_adapter.py
+    scripts/qdev_recovery_host_apply.py
     scripts/qdev_runner_recovery_host_agent.py
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
@@ -395,7 +400,7 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94}"
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
@@ -423,19 +428,24 @@ if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
-  [[ "$max_disk_used_pct" != 94 ]] || [[ "$min_free_gib" != 8 ]] ||
+  [[ "$max_disk_used_pct" != 96 ]] || [[ "$min_free_gib" != 8 ]] ||
     [[ "$min_memory_gib" != 4 ]] || [[ "$max_load_per_cpu" != 2 ]]
 }; then
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
   exit 64
 fi
-awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
-  -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
-  -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if (used > max_used || free < (min_free_gib * 1048576) ||
-        mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
-  }' || {
+python3 "$script_root/scripts/controller_capacity_gate.py" \
+  --capacity-config "$release/config/controller-capacity.json" \
+  --disk-used-pct "$disk_used" \
+  --disk-free-kib "$disk_free_kib" \
+  --memory-kib "$memory_kib" \
+  --cpu-count "$cpu_count" \
+  --load-15 "$load_15" \
+  --max-disk-used-pct "$max_disk_used_pct" \
+  --min-free-gib "$min_free_gib" \
+  --min-memory-gib "$min_memory_gib" \
+  --max-load-per-cpu "$max_load_per_cpu" \
+  --no-build "$no_build" || {
     printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
       "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
     exit 75
@@ -978,10 +988,6 @@ if not isinstance(dependency_identity, dict) or set(dependency_identity) != {
     raise SystemExit("previous controller dependency identity is invalid")
 if runtime_identity.get("source_revision") != receipt["revision"]:
     raise SystemExit("previous controller source binding is invalid")
-if runtime_identity.get("public_image_id") != public_image_id or runtime_identity.get(
-    "internal_image_id"
-) != internal_image_id:
-    raise SystemExit("previous controller image binding is invalid")
 measured = [
     runtime_identity.get("source_digest"),
     runtime_identity.get("public_image_id"),
@@ -993,14 +999,48 @@ measured = [
 if any(not isinstance(value, str) or not digest.fullmatch(value) for value in measured):
     raise SystemExit("previous controller measurements are invalid")
 if dependency_identity["public_installed_digest"] != dependency_identity["internal_installed_digest"]:
-    raise SystemExit("previous controller dependency binding is invalid")'
+    raise SystemExit("previous controller dependency binding is invalid")
+print(runtime_identity["public_image_id"])
+print(runtime_identity["internal_image_id"])'
+
+validate_controller_image_binding() {
+  local expected_image_id="$1"
+  local runtime_image_id="$2"
+  local container_name="$3"
+  local platform_manifest
+  if [[ "$expected_image_id" == "$runtime_image_id" ]]; then
+    return 0
+  fi
+  platform_manifest="$(
+    docker inspect "$container_name" \
+      --format '{{index .Config.Labels "com.docker.compose.image"}}'
+  )" || return 1
+  python3 "$script_root/scripts/validate_controller_image_binding.py" \
+    --expected-index "$expected_image_id" \
+    --runtime-index "$runtime_image_id" \
+    --platform-manifest "$platform_manifest"
+}
 
 validate_previous_release_status() {
   local public_image_id="$1"
   local internal_image_id="$2"
+  local validation_output
+  local -a expected_images
   [[ "$release_status_was_present" == true ]] || return 0
-  python3 -c "$previous_status_validation_program" \
-    "$release_status_backup" "$public_image_id" "$internal_image_id"
+  validation_output="$(
+    python3 -c "$previous_status_validation_program" \
+      "$release_status_backup" "$public_image_id" "$internal_image_id"
+  )" || return 1
+  [[ -n "$validation_output" ]] || return 0
+  mapfile -t expected_images <<< "$validation_output"
+  if [[ "${#expected_images[@]}" -ne 2 ]]; then
+    printf 'previous controller image identity is incomplete\n' >&2
+    return 1
+  fi
+  validate_controller_image_binding \
+    "${expected_images[0]}" "$public_image_id" qdev-runner-broker-public || return 1
+  validate_controller_image_binding \
+    "${expected_images[1]}" "$internal_image_id" qdev-runner-broker-internal
 }
 
 write_rollback_anchor() {
@@ -1140,6 +1180,15 @@ install_fleet_host_dispatch() {
   install -o root -g root -m 0755 -- \
     "$script_root/scripts/qdev_fleet_worker_recovery_adapter.py" \
     /usr/local/sbin/qdev-fleet-worker-recovery
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_fixed_worker_recovery_dispatch.py" \
+    /usr/local/sbin/qdev-fixed-worker-recovery-dispatch
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_recovery_host_enrol_adapter.py" \
+    /usr/local/sbin/qdev-recovery-host-enrol
+  install -o root -g root -m 0755 -- \
+    "$release/scripts/provision_worker_recovery_bindings.py" \
+    /usr/local/sbin/qdev-worker-recovery-bindings-provision
   install -o root -g root -m 0755 -- \
     "$script_root/scripts/provision_fleet_host_dispatch_state.py" \
     /usr/local/sbin/qdev-fleet-host-dispatch-state-provision

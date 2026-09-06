@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-SCHEMA = "qdev-managed-release-ledger-v1"
+SCHEMA = "qdev-managed-release-ledger-v2"
 STATUSES = frozenset(
     {"candidate", "ci_queued", "ci_passed", "deploying", "live_accepted", "rolled_back", "blocked"}
 )
@@ -112,13 +112,47 @@ class ManagedReleaseLedger:
             ],
         }
 
-    def validate_admission(self, entry_id: str, exact_sha: str) -> ManagedReleaseLedgerEntry:
+    def validate_admission(
+        self, entry_id: str, exact_sha: str, *, run_id: int, run_attempt: int
+    ) -> ManagedReleaseLedgerEntry:
         entry = self._by_entry_id.get(entry_id)
         if entry is None:
             raise ManagedReleaseLedgerError("managed production candidate is not registered")
         if entry.status not in ACTIVE_STATUSES or entry.source_sha != exact_sha:
             raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
+        if not any(
+            item["run_id"] == str(run_id)
+            and item["run_attempt"] == str(run_attempt)
+            and item["state"] in {"queued", "in_progress"}
+            for item in entry.ci_runs
+        ):
+            raise ManagedReleaseLedgerError("managed production CI run is not admitted")
         return entry
+
+    def classify_admission(
+        self, entry_id: str, exact_sha: str, *, run_id: int, run_attempt: int
+    ) -> tuple[bool, str | None]:
+        """Observe whether a queued managed-production tuple remains admissible.
+
+        Direct claims continue to use :meth:`validate_admission` and fail
+        closed. This observational form exists only for FIFO scans, where a
+        retired or superseded production candidate must remain recorded but
+        must not indefinitely hold an unrelated profile queue.
+        """
+
+        entry = self._by_entry_id.get(entry_id)
+        if entry is None or entry.status not in ACTIVE_STATUSES:
+            return False, "managed-production-candidate-not-active"
+        if entry.source_sha != exact_sha:
+            return False, "managed-production-candidate-tuple-not-admitted"
+        if not any(
+            item["run_id"] == str(run_id)
+            and item["run_attempt"] == str(run_attempt)
+            and item["state"] in {"queued", "in_progress"}
+            for item in entry.ci_runs
+        ):
+            return False, "managed-production-candidate-tuple-not-admitted"
+        return True, None
 
     @staticmethod
     def _validate_stage(value: Any) -> None:
@@ -134,17 +168,26 @@ class ManagedReleaseLedger:
         if not isinstance(value, list) or not value:
             raise ManagedReleaseLedgerError("managed release CI runs are invalid")
         result: list[dict[str, str]] = []
-        run_ids: set[str] = set()
+        run_tuples: set[tuple[str, str]] = set()
         for item in value:
             if (
                 not isinstance(item, dict)
-                or set(item) != {"run_id", "state"}
+                or set(item) != {"run_id", "run_attempt", "state"}
                 or not isinstance(item["run_id"], str)
                 or not item["run_id"].isdigit()
+                or not isinstance(item["run_attempt"], str)
+                or not item["run_attempt"].isdigit()
+                or int(item["run_attempt"]) < 1
                 or item["state"] not in {"queued", "in_progress", "terminal"}
-                or item["run_id"] in run_ids
+                or (item["run_id"], item["run_attempt"]) in run_tuples
             ):
                 raise ManagedReleaseLedgerError("managed release CI run state is invalid")
-            run_ids.add(item["run_id"])
-            result.append({"run_id": item["run_id"], "state": item["state"]})
+            run_tuples.add((item["run_id"], item["run_attempt"]))
+            result.append(
+                {
+                    "run_id": item["run_id"],
+                    "run_attempt": item["run_attempt"],
+                    "state": item["state"],
+                }
+            )
         return tuple(result)

@@ -14,6 +14,15 @@ def _load_recovery_binding_provisioner():
     return module
 
 
+def _load_controller_capacity_gate():
+    path = ROOT / "scripts/controller_capacity_gate.py"
+    spec = importlib.util.spec_from_file_location("controller_capacity_gate", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
@@ -26,13 +35,22 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "mv -Tf" in script
     assert "rollback" in script
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
-    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96" in script
     assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
     assert (
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
         in script
     )
-    assert "min_free_gib * 1048576" in script
+    assert 'python3 "$script_root/scripts/controller_capacity_gate.py"' in script
+    capacity = json.loads(
+        (ROOT / "config/controller-capacity.json").read_text(encoding="utf-8")
+    )
+    assert capacity["max_disk_used_pct"] == 96
+    assert capacity["min_free_gib"] == 8
+    assert capacity["root_available_bytes"] >= (
+        capacity["minimum_operational_reserve_bytes"]
+        + capacity["estimated_peak_incremental_bytes"]
+    )
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script
@@ -68,11 +86,15 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qazposter.service" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
+
     assert "scripts/prepare_controller_candidate.py" in script
     assert "src/qdev_runner/controller_candidate.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
+    assert "scripts/qdev_fixed_worker_recovery_dispatch.py" in script
+    assert "scripts/qdev_recovery_host_enrol_adapter.py" in script
+    assert "scripts/qdev_recovery_host_apply.py" in script
     assert "src/qdev_runner/durable_state.py" in script
     assert "scripts/qdev_runner_recovery_host_agent.py" in script
     assert "scripts/install_qdev_runner_recovery_host_agent.sh" in script
@@ -83,6 +105,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "/usr/local/sbin/qdev-controller-activate" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
+    assert "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch" in script
+    assert "/usr/local/sbin/qdev-recovery-host-enrol" in script
+    assert "/usr/local/sbin/qdev-worker-recovery-bindings-provision" in script
+    assert '"$release/scripts/provision_worker_recovery_bindings.py"' in script
     assert "/usr/local/sbin/qdev-fleet-host-dispatch-state-provision" in script
     assert "deploy/qdev-fleet-host-dispatch.service" in script
     assert "deploy/qdev-fleet-host-dispatch.path" in script
@@ -131,6 +157,46 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "operator mTLS identity is not usable" in script
 
 
+def test_controller_activation_capacity_gate_has_independent_absolute_boundaries() -> None:
+    helper = _load_controller_capacity_gate()
+    gib = 1024**3
+    common = {
+        "memory_kib": 8 * gib // 1024,
+        "cpu_count": 4,
+        "load_15": 1.0,
+        "max_disk_used_pct": 96,
+        "min_free_gib": 8,
+        "min_memory_gib": 4,
+        "max_load_per_cpu": 2,
+        "estimated_peak_incremental_bytes": gib,
+    }
+
+    assert helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=9 * gib // 1024,
+        no_build=False,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=7 * gib // 1024,
+        no_build=True,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=97,
+        disk_free_kib=9 * gib // 1024,
+        no_build=False,
+        **common,
+    )
+    assert not helper.capacity_allowed(
+        disk_used_pct=96,
+        disk_free_kib=(9 * gib // 1024) - 1,
+        no_build=False,
+        **common,
+    )
+
+
 def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     script = (ROOT / "scripts/provision_operator_identity.sh").read_text(encoding="utf-8")
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
@@ -155,9 +221,7 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
 def test_controller_provisions_root_owned_admission_signer() -> None:
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
-    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(
-        encoding="utf-8"
-    )
+    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(encoding="utf-8")
 
     assert "/etc/qdev-runner/admission" in provisioning
     assert "/run/qdev-controller" in provisioning
@@ -186,9 +250,9 @@ def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
     assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
         "if ! install_qazcoop_release_guard; then"
     )
-    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split(
-        "\n}\n", 1
-    )[0]
+    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split("\n}\n", 1)[
+        0
+    ]
     assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
     assert "currently deployed product remains available" in guard_function
 
@@ -204,6 +268,9 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "write_release_status()" in script
     assert "restore_release_status()" in script
     assert "validate_previous_release_status()" in script
+    assert "validate_controller_image_binding()" in script
+    assert "scripts/validate_controller_image_binding.py" in script
+    assert "com.docker.compose.image" in script
     assert "controller_release_receipt=active" in script
     assert "qdev-controller-release-status-v2" in script
     assert "runtime_identity" in script
@@ -290,6 +357,7 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     forward_required = activation.split(forward_marker, 1)[1].split("\n  )", 1)[0]
     for modern_path in (
         "config/controller-capacity.json",
+        "scripts/validate_controller_image_binding.py",
         "scripts/bootstrap_admin_platform_ledger_v3.py",
         "scripts/prepare_controller_candidate.py",
         "scripts/dispatch_fleet_bootstrap.py",
@@ -314,15 +382,15 @@ def test_historical_controller_rollback_does_not_require_or_replace_admission_wr
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
     base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
-    forward_required = script.split(
-        'if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1
-    )[1].split("\n  )", 1)[0]
+    forward_required = script.split('if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1)[
+        1
+    ].split("\n  )", 1)[0]
     assert "qdev_controller_admission_host.sh" not in base_required
     assert "scripts/qdev_controller_admission_host.sh" in forward_required
     assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
     assert (
         'if [[ "$rollback_mode" != true ]]; then\n'
-        '  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller'
+        "  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller"
     ) in script
 
 
@@ -336,9 +404,7 @@ def test_controller_compose_project_is_namespaced() -> None:
 
 def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
     provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
-    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(
-        encoding="utf-8"
-    )
+    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(encoding="utf-8")
 
     assert "qdev-worker-recovery-bindings-provision" in provision
     assert "recovery-controller.env" in helper
@@ -368,6 +434,59 @@ def test_recovery_binding_provisioner_accepts_active_prefixed_release_digest(
         "revision": "a" * 40,
         "release_digest": "b" * 64,
     }
+
+
+def test_installed_recovery_binding_provisioner_resolves_active_release(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    install_root = tmp_path / "usr" / "local"
+    script = install_root / "sbin" / "qdev-worker-recovery-bindings-provision"
+    script.parent.mkdir(parents=True)
+    script.write_text("installed helper", encoding="utf-8")
+    controller_root = tmp_path / "opt" / "qdev-runner-control-plane"
+    release = controller_root / "releases" / ("a" * 40)
+    (release / "src" / "qdev_runner").mkdir(parents=True)
+    (release / "scripts").mkdir()
+    (release / "src" / "qdev_runner" / "worker_recovery.py").write_text(
+        "POLICY_DIGEST = 'fixture'\n", encoding="utf-8"
+    )
+    (release / "scripts" / "install_qdev_runner_recovery_host_agent.sh").write_text(
+        "#!/bin/sh\n", encoding="utf-8"
+    )
+    active = controller_root / "current"
+    active.symlink_to(release)
+
+    assert helper._resolve_source_root(script, active) == release
+
+
+def test_installed_recovery_binding_provisioner_rejects_mutable_release(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    script = tmp_path / "usr" / "local" / "sbin" / "helper"
+    script.parent.mkdir(parents=True)
+    script.write_text("installed helper", encoding="utf-8")
+    controller_root = tmp_path / "opt" / "qdev-runner-control-plane"
+    release = controller_root / "releases" / ("b" * 40)
+    (release / "src" / "qdev_runner").mkdir(parents=True)
+    (release / "scripts").mkdir()
+    (release / "src" / "qdev_runner" / "worker_recovery.py").write_text(
+        "POLICY_DIGEST = 'fixture'\n", encoding="utf-8"
+    )
+    (release / "scripts" / "install_qdev_runner_recovery_host_agent.sh").write_text(
+        "#!/bin/sh\n", encoding="utf-8"
+    )
+    release.chmod(0o777)
+    active = controller_root / "current"
+    active.symlink_to(release)
+
+    try:
+        helper._resolve_source_root(script, active)
+    except helper.ProvisionError as error:
+        assert str(error) == "active controller source tree is unsafe"
+    else:
+        raise AssertionError("mutable release was accepted")
 
 
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:

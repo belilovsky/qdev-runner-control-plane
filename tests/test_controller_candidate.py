@@ -23,6 +23,7 @@ from qdev_runner.controller_candidate import (
     REFERENCE,
     REPOSITORY,
     ControllerCandidateError,
+    _require_active_runtime_lineage,
     prepare_controller_candidate,
 )
 from qdev_runner.operations import OperationStore, parse_utc
@@ -157,6 +158,146 @@ def test_prepare_controller_candidate_is_transactional_and_idempotent(
     assert replay["receipt_uris"] == []
     assert replay["ledger_sha256"] == digest
     assert len(list(receipts.rglob("*.json"))) == receipt_count
+
+
+def test_prepare_controller_candidate_retries_a_consumed_source_idempotently(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+    prepare_controller_candidate(
+        source_sha=INTERMEDIATE_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    retry_id = f"controller-v3-{NEXT_SHA}:retry-1"
+    assert result["status"] == "completed"
+    assert result["candidate"]["release_id"] == retry_id
+    digest, snapshot = state.current()
+    assert snapshot["active_candidate"]["release_id"] == retry_id
+    receipt_count = len(list(receipts.rglob("*.json")))
+
+    replay = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert replay["status"] == "already_completed"
+    assert replay["candidate"]["release_id"] == retry_id
+    assert replay["ledger_sha256"] == digest
+    assert len(list(receipts.rglob("*.json"))) == receipt_count
+
+
+def test_prepare_controller_candidate_advances_retry_sequence(tmp_path: Path) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    for source_sha in (NEXT_SHA, INTERMEDIATE_SHA, NEXT_SHA, LATER_SHA):
+        prepare_controller_candidate(
+            source_sha=source_sha,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    result = prepare_controller_candidate(
+        source_sha=NEXT_SHA,
+        expected_current_source_sha=CURRENT_SHA,
+        receipt_key=RECEIPT_KEY,
+        ledger_path=ledger,
+        receipt_root=receipts,
+        signer_state_root=signer_root,
+    )
+
+    assert result["candidate"]["release_id"] == (
+        f"controller-v3-{NEXT_SHA}:retry-2"
+    )
+    _, snapshot = state.current()
+    assert snapshot["active_candidate"] == result["candidate"]
+
+
+def test_prepare_controller_candidate_accepts_repeated_terminal_runtime_attempts(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    for source_sha in (INTERMEDIATE_SHA, NEXT_SHA, CURRENT_SHA, LATER_SHA):
+        result = prepare_controller_candidate(
+            source_sha=source_sha,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    assert result["candidate"]["source_sha"] == LATER_SHA
+    _, snapshot = state.current()
+    entry = snapshot["entries"][0]
+    runtime_attempts = [
+        attempt
+        for attempt in entry["attempts"]
+        if attempt["source_sha"] == CURRENT_SHA
+    ]
+    assert [attempt["terminal_state"] for attempt in runtime_attempts] == [
+        "blocked",
+        "blocked",
+    ]
+    assert all(
+        any(
+            result["release_id"] == attempt["release_id"]
+            and result["lane"] == "source"
+            and result["outcome"] == "passed"
+            for result in entry["results"]
+        )
+        for attempt in runtime_attempts
+    )
+
+
+def test_prepare_controller_candidate_rejects_matching_source_on_wrong_ref(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    before, _ = state.current()
+
+    with pytest.raises(
+        ControllerCandidateError,
+        match="matching controller source has invalid repository or reference",
+    ):
+        prepare_controller_candidate(
+            source_sha=CURRENT_SHA,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    after, _ = state.current()
+    assert after == before
 
 
 def test_prepare_controller_candidate_resumes_after_terminal_transition(
@@ -702,6 +843,105 @@ def test_prepare_controller_candidate_fails_closed_without_mutation(
     assert ledger.read_bytes() == before_raw
     assert before_digest == after_digest == hashlib.sha256(before_raw).hexdigest()
     assert sorted(path.name for path in receipts.rglob("*.json")) == before_receipts
+
+
+def test_active_runtime_lineage_accepts_terminal_retries_for_same_source() -> None:
+    active_candidate = AdminPlatformCandidate(
+        release_id=f"controller-v3-{NEXT_SHA}",
+        repository=REPOSITORY,
+        source_sha=NEXT_SHA,
+        reference=REFERENCE,
+    )
+    release_ids = [
+        f"controller-v3-{CURRENT_SHA}",
+        f"controller-v3-{CURRENT_SHA}:retry-1",
+    ]
+    entry = {
+        "status": "candidate",
+        "attempts": [
+            {
+                "release_id": release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": f"2026-09-05T00:00:0{index}Z",
+                "terminal_state": "blocked",
+            }
+            for index, release_id in enumerate(release_ids, start=1)
+        ],
+        "results": [
+            {"release_id": release_id, "lane": "source", "outcome": "passed"}
+            for release_id in release_ids
+        ],
+    }
+
+    _require_active_runtime_lineage(
+        entry,
+        active_candidate=active_candidate,
+        active_runtime_source_sha=CURRENT_SHA,
+    )
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "include_retry_source_evidence", "error"),
+    [
+        (
+            None,
+            True,
+            "active runtime is not an unambiguous terminal controller attempt",
+        ),
+        (
+            "blocked",
+            False,
+            "active runtime controller attempt has no passing source evidence",
+        ),
+    ],
+)
+def test_active_runtime_lineage_rejects_unsafe_retry(
+    terminal_state: str | None,
+    include_retry_source_evidence: bool,
+    error: str,
+) -> None:
+    active_candidate = AdminPlatformCandidate(
+        release_id=f"controller-v3-{NEXT_SHA}",
+        repository=REPOSITORY,
+        source_sha=NEXT_SHA,
+        reference=REFERENCE,
+    )
+    base_release_id = f"controller-v3-{CURRENT_SHA}"
+    retry_release_id = f"{base_release_id}:retry-1"
+    results = [
+        {"release_id": base_release_id, "lane": "source", "outcome": "passed"}
+    ]
+    if include_retry_source_evidence:
+        results.append(
+            {"release_id": retry_release_id, "lane": "source", "outcome": "passed"}
+        )
+    entry = {
+        "status": "candidate",
+        "attempts": [
+            {
+                "release_id": base_release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": "2026-09-05T00:00:01Z",
+                "terminal_state": "blocked",
+            },
+            {
+                "release_id": retry_release_id,
+                "source_sha": CURRENT_SHA,
+                "finished_at": (
+                    "2026-09-05T00:00:02Z" if terminal_state is not None else None
+                ),
+                "terminal_state": terminal_state,
+            },
+        ],
+        "results": results,
+    }
+
+    with pytest.raises(ControllerCandidateError, match=error):
+        _require_active_runtime_lineage(
+            entry,
+            active_candidate=active_candidate,
+            active_runtime_source_sha=CURRENT_SHA,
+        )
 
 
 def test_prepare_controller_candidate_supersedes_non_deployed_durable_candidate(

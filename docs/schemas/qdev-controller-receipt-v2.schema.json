@@ -1,22 +1,597 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object", "additionalProperties": false,
-  "required": ["schema", "receipt_id", "payload", "digest", "enforcement", "signature"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receipt_id",
+    "payload",
+    "digest",
+    "enforcement",
+    "signature"
+  ],
   "properties": {
-    "schema": {"const": "qdev-controller-receipt-v2"},
-    "receipt_id": {"$ref": "#/$defs/digest"}, "digest": {"$ref": "#/$defs/digest"},
-    "enforcement": {"const": "enforced"}, "signature": {"$ref": "#/$defs/digest"},
-    "payload": {"oneOf": [
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "controller_release"], "properties": {"kind": {"const": "controller-release-audit"}, "observed_at": {"$ref": "#/$defs/time"}, "controller_release": {"type": "object"}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "controller_release", "managed_registry", "admin_platform_ledger", "active_candidate", "admission"], "properties": {"kind": {"const": "admin-platform-audit"}, "observed_at": {"$ref": "#/$defs/time"}, "controller_release": {"type": "object"}, "managed_registry": {"type": "object"}, "admin_platform_ledger": {"type": "object"}, "active_candidate": {"type": "string", "minLength": 1}, "admission": {"type": "object"}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "workers", "pending"], "properties": {"kind": {"const": "worker-audit"}, "observed_at": {"$ref": "#/$defs/time"}, "workers": {"type": "array", "maxItems": 512, "items": {"type": "object"}}, "pending": {"type": "integer", "minimum": 0}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "pending", "profile_heads", "unclassified"], "properties": {"kind": {"const": "durable-queue-audit"}, "observed_at": {"$ref": "#/$defs/time"}, "pending": {"type": "integer", "minimum": 0}, "profile_heads": {"type": "array", "maxItems": 512, "items": {"$ref": "#/$defs/queue_head"}}, "unclassified": {"type": "array", "maxItems": 512, "items": {"type": "integer", "minimum": 1}}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "operator_session", "mtls_identity", "idempotent", "claim_scope", "immutable_tuple", "fifo_skipped", "managed_registry_entry", "admission_ledger", "admin_platform_ledger_entry", "managed_release_ledger_entry", "worker"], "properties": {"kind": {"const": "fifo-claim-scope-issued"}, "operator_session": {"const": "verified"}, "mtls_identity": {"type": "string", "minLength": 1, "maxLength": 256}, "idempotent": {"const": true}, "claim_scope": {"type": "object"}, "immutable_tuple": {"type": "object"}, "fifo_skipped": {"$ref": "#/$defs/fifo_skipped"}, "managed_registry_entry": {"type": ["string", "null"]}, "admission_ledger": {"type": ["string", "null"], "enum": ["admin-platform", "managed-production", null]}, "admin_platform_ledger_entry": {"type": ["string", "null"]}, "managed_release_ledger_entry": {"type": ["string", "null"]}, "worker": {"type": "object"}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "operator_session", "mtls_identity", "idempotent", "replaced_expired_scope", "rolled_over_terminal_scope", "rebound_legacy_scope", "claim_scope", "immutable_tuple", "fifo_skipped", "managed_registry_entry", "admission_ledger", "admin_platform_ledger_entry", "managed_release_ledger_entry", "worker"], "properties": {"kind": {"const": "fifo-claim-scope-issued"}, "operator_session": {"const": "verified"}, "mtls_identity": {"type": "string", "minLength": 1, "maxLength": 256}, "idempotent": {"const": false}, "replaced_expired_scope": {"type": "boolean"}, "rolled_over_terminal_scope": {"type": "boolean"}, "rebound_legacy_scope": {"type": "boolean"}, "claim_scope": {"type": "object"}, "immutable_tuple": {"type": "object"}, "fifo_skipped": {"$ref": "#/$defs/fifo_skipped"}, "managed_registry_entry": {"type": ["string", "null"]}, "admission_ledger": {"type": ["string", "null"], "enum": ["admin-platform", "managed-production", null]}, "admin_platform_ledger_entry": {"type": ["string", "null"]}, "managed_release_ledger_entry": {"type": ["string", "null"]}, "worker": {"type": "object"}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "worker_audit", "operation", "required_free_gib", "immutable_tuple", "fifo_skipped"], "properties": {"kind": {"const": "capacity-override-created"}, "observed_at": {"$ref": "#/$defs/time"}, "worker_audit": {"type": "object"}, "operation": {"type": "object"}, "required_free_gib": {"type": "number", "minimum": 0}, "immutable_tuple": {"allOf": [{"$ref": "#/$defs/queue_head"}, {"properties": {"attempt": {"type": "integer", "minimum": 1}}}]}, "fifo_skipped": {"$ref": "#/$defs/fifo_skipped"}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "worker_audit", "operation"], "properties": {"kind": {"const": "capacity-override-cancelled"}, "observed_at": {"$ref": "#/$defs/time"}, "worker_audit": {"type": "object"}, "operation": {"type": ["object", "null"]}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "worker_timeout_seconds", "provider_reconciliation_required", "candidates"], "properties": {"kind": {"const": "stale-job-audit"}, "observed_at": {"$ref": "#/$defs/time"}, "worker_timeout_seconds": {"type": "integer", "minimum": 300, "maximum": 3600}, "provider_reconciliation_required": {"const": true}, "candidates": {"type": "array", "maxItems": 512, "items": {"type": "object"}}}},
-      {"type": "object", "additionalProperties": false, "required": ["kind", "observed_at", "owner", "reason", "immutable_job", "provider", "action", "fifo_preserved"], "properties": {"kind": {"const": "stale-job-recovery"}, "observed_at": {"$ref": "#/$defs/time"}, "owner": {"type": "string", "minLength": 1, "maxLength": 200}, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}, "immutable_job": {"type": "object"}, "provider": {"type": "object"}, "action": {"type": "string", "minLength": 1, "maxLength": 128}, "fifo_preserved": {"const": true}}}
-    ]}
-  }, "$defs": {"digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "time": {"type": "string", "format": "date-time", "maxLength": 64}, "queue_head": {"type": "object", "additionalProperties": false, "required": ["repository", "run_id", "job_id", "attempt", "exact_sha", "profile", "state", "created_at"], "properties": {"repository": {"type": "string", "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"}, "run_id": {"type": "integer", "minimum": 1}, "job_id": {"type": "integer", "minimum": 1}, "attempt": {"type": ["integer", "null"], "minimum": 1}, "exact_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "profile": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "state": {"const": "pending"}, "created_at": {"type": "number", "exclusiveMinimum": 0}}}, "fifo_skipped": {"type": "array", "maxItems": 512, "items": {"type": "object", "additionalProperties": false, "required": ["job_id", "repository", "run_id", "head_sha", "profile", "managed_registry_entry", "reason"], "properties": {"job_id": {"type": "integer", "minimum": 1}, "repository": {"type": "string", "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"}, "run_id": {"type": "integer", "minimum": 1}, "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "profile": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "managed_registry_entry": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}, "reason": {"enum": ["admin-platform-candidate-not-active", "admin-platform-candidate-tuple-not-admitted"]}}}}}
+    "schema": {
+      "const": "qdev-controller-receipt-v2"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "enforcement": {
+      "const": "enforced"
+    },
+    "signature": {
+      "$ref": "#/$defs/digest"
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "controller_release"
+          ],
+          "properties": {
+            "kind": {
+              "const": "controller-release-audit"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "controller_release": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "controller_release",
+            "managed_registry",
+            "admin_platform_ledger",
+            "active_candidate",
+            "admission"
+          ],
+          "properties": {
+            "kind": {
+              "const": "admin-platform-audit"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "controller_release": {
+              "type": "object"
+            },
+            "managed_registry": {
+              "type": "object"
+            },
+            "admin_platform_ledger": {
+              "type": "object"
+            },
+            "active_candidate": {
+              "type": "string",
+              "minLength": 1
+            },
+            "admission": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "workers",
+            "pending"
+          ],
+          "properties": {
+            "kind": {
+              "const": "worker-audit"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "workers": {
+              "type": "array",
+              "maxItems": 512,
+              "items": {
+                "type": "object"
+              }
+            },
+            "pending": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "pending",
+            "profile_heads",
+            "unclassified"
+          ],
+          "properties": {
+            "kind": {
+              "const": "durable-queue-audit"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "pending": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "profile_heads": {
+              "type": "array",
+              "maxItems": 512,
+              "items": {
+                "$ref": "#/$defs/queue_head"
+              }
+            },
+            "unclassified": {
+              "type": "array",
+              "maxItems": 512,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operator_session",
+            "mtls_identity",
+            "idempotent",
+            "claim_scope",
+            "immutable_tuple",
+            "fifo_skipped",
+            "managed_registry_entry",
+            "admission_ledger",
+            "admin_platform_ledger_entry",
+            "managed_release_ledger_entry",
+            "worker"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fifo-claim-scope-issued"
+            },
+            "operator_session": {
+              "const": "verified"
+            },
+            "mtls_identity": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "idempotent": {
+              "const": true
+            },
+            "claim_scope": {
+              "type": "object"
+            },
+            "immutable_tuple": {
+              "type": "object"
+            },
+            "fifo_skipped": {
+              "$ref": "#/$defs/fifo_skipped"
+            },
+            "managed_registry_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "admission_ledger": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "admin-platform",
+                "managed-production",
+                null
+              ]
+            },
+            "admin_platform_ledger_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed_release_ledger_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operator_session",
+            "mtls_identity",
+            "idempotent",
+            "replaced_expired_scope",
+            "rolled_over_terminal_scope",
+            "rebound_legacy_scope",
+            "claim_scope",
+            "immutable_tuple",
+            "fifo_skipped",
+            "managed_registry_entry",
+            "admission_ledger",
+            "admin_platform_ledger_entry",
+            "managed_release_ledger_entry",
+            "worker"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fifo-claim-scope-issued"
+            },
+            "operator_session": {
+              "const": "verified"
+            },
+            "mtls_identity": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "idempotent": {
+              "const": false
+            },
+            "replaced_expired_scope": {
+              "type": "boolean"
+            },
+            "rolled_over_terminal_scope": {
+              "type": "boolean"
+            },
+            "rebound_legacy_scope": {
+              "type": "boolean"
+            },
+            "claim_scope": {
+              "type": "object"
+            },
+            "immutable_tuple": {
+              "type": "object"
+            },
+            "fifo_skipped": {
+              "$ref": "#/$defs/fifo_skipped"
+            },
+            "managed_registry_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "admission_ledger": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "admin-platform",
+                "managed-production",
+                null
+              ]
+            },
+            "admin_platform_ledger_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed_release_ledger_entry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "worker": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "worker_audit",
+            "operation",
+            "required_free_gib",
+            "immutable_tuple",
+            "fifo_skipped"
+          ],
+          "properties": {
+            "kind": {
+              "const": "capacity-override-created"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "worker_audit": {
+              "type": "object"
+            },
+            "operation": {
+              "type": "object"
+            },
+            "required_free_gib": {
+              "type": "number",
+              "minimum": 0
+            },
+            "immutable_tuple": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/queue_head"
+                },
+                {
+                  "properties": {
+                    "attempt": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "fifo_skipped": {
+              "$ref": "#/$defs/fifo_skipped"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "worker_audit",
+            "operation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "capacity-override-cancelled"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "worker_audit": {
+              "type": "object"
+            },
+            "operation": {
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "worker_timeout_seconds",
+            "provider_reconciliation_required",
+            "candidates"
+          ],
+          "properties": {
+            "kind": {
+              "const": "stale-job-audit"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "worker_timeout_seconds": {
+              "type": "integer",
+              "minimum": 300,
+              "maximum": 3600
+            },
+            "provider_reconciliation_required": {
+              "const": true
+            },
+            "candidates": {
+              "type": "array",
+              "maxItems": 512,
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "observed_at",
+            "owner",
+            "reason",
+            "immutable_job",
+            "provider",
+            "action",
+            "fifo_preserved"
+          ],
+          "properties": {
+            "kind": {
+              "const": "stale-job-recovery"
+            },
+            "observed_at": {
+              "$ref": "#/$defs/time"
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "immutable_job": {
+              "type": "object"
+            },
+            "provider": {
+              "type": "object"
+            },
+            "action": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "fifo_preserved": {
+              "const": true
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "queue_head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "run_id",
+        "job_id",
+        "attempt",
+        "exact_sha",
+        "profile",
+        "state",
+        "created_at"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attempt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "exact_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "profile": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "state": {
+          "const": "pending"
+        },
+        "created_at": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "fifo_skipped": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "repository",
+          "run_id",
+          "attempt",
+          "head_sha",
+          "profile",
+          "managed_registry_entry",
+          "reason"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "repository": {
+            "type": "string",
+            "pattern": "^[a-z0-9_.-]+/[a-z0-9_.-]+$"
+          },
+          "run_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "head_sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "profile": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "managed_registry_entry": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "reason": {
+            "enum": [
+              "active-admin-platform-controller-priority",
+              "admin-platform-candidate-not-active",
+              "admin-platform-candidate-tuple-not-admitted",
+              "managed-production-candidate-not-active",
+              "managed-production-candidate-tuple-not-admitted"
+            ]
+          }
+        }
+      }
+    }
+  }
 }

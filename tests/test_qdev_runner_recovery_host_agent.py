@@ -45,12 +45,12 @@ def _config(tmp_path: Path) -> Any:
         expected_controller_release_digest=HEX_DIGEST,
         expected_policy_digest=DIGEST,
         expected_agent_release_digest="sha256:" + "d" * 64,
-        expected_interface_version="qdev-worker-recovery-v1",
+        expected_interface_version="qdev-worker-recovery-v2",
         expected_interface_digest="e" * 64,
     )
 
 
-def _command(profile: Any, config: Any) -> dict[str, Any]:
+def _command(profile: Any, config: Any, *, provider_runner_id: int | None = None) -> dict[str, Any]:
     command: dict[str, Any] = {
         "schema": "qdev-runner-recovery-agent-command-v1",
         "operation_id": "1" * 64,
@@ -58,7 +58,11 @@ def _command(profile: Any, config: Any) -> dict[str, Any]:
         "target_id": profile.target_id,
         "worker_name": profile.worker_name,
         "repository": profile.repository,
-        "provider_runner_id": profile.expected_provider_runner_id or 279,
+        "provider_runner_id": (
+            profile.expected_provider_runner_id
+            if profile.expected_provider_runner_id is not None
+            else (279 if provider_runner_id is None else provider_runner_id)
+        ),
         "labels": list(profile.labels),
         "recovery_action": profile.recovery_action,
         "operator_certificate_sha256": "3" * 64,
@@ -114,6 +118,31 @@ def test_signed_command_is_bound_to_one_compiled_target(
         AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW)
 
 
+def test_replacement_target_accepts_absent_provider_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = AGENT.PROFILES["qazstack"]
+    config = _config(tmp_path)
+    command = _command(profile, config)
+    command["provider_runner_id"] = None
+    monkeypatch.setattr(AGENT, "_certificate_sha256", lambda _path: "4" * 64)
+
+    assert AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW) == command
+
+
+def test_saved_configuration_target_rejects_absent_provider_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = AGENT.PROFILES["platform"]
+    config = _config(tmp_path)
+    command = _command(profile, config)
+    command["provider_runner_id"] = None
+    monkeypatch.setattr(AGENT, "_certificate_sha256", lambda _path: "4" * 64)
+
+    with pytest.raises(AGENT.AgentError, match="provider runner id is invalid"):
+        AGENT.validate_envelope(_envelope(command, config), profile, config, now=NOW)
+
+
 def test_signed_command_rejects_extra_fields_and_expired_validity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -146,6 +175,21 @@ def test_archive_validation_rejects_traversing_links(tmp_path: Path) -> None:
 
     with pytest.raises(AGENT.AgentError, match="unsafe link"):
         AGENT._safe_archive(archive)
+
+
+def test_archive_validation_accepts_relative_link_that_stays_inside_root(tmp_path: Path) -> None:
+    archive = tmp_path / "runner.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        regular = tarfile.TarInfo("externals/node24/lib/node_modules/npm/bin/npm-cli.js")
+        payload = b"runner"
+        regular.size = len(payload)
+        bundle.addfile(regular, io.BytesIO(payload))
+        link = tarfile.TarInfo("externals/node24/bin/npm")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../lib/node_modules/npm/bin/npm-cli.js"
+        bundle.addfile(link)
+
+    AGENT._safe_archive(archive)
 
 
 def test_qazstack_partial_registration_is_ambiguous(

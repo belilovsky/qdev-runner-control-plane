@@ -37,4 +37,7 @@ jobs:
       - name: Install verification dependencies
         run: python -m pip install -e '.[dev]'
       - name: Full controller verification
-        run: python scripts/verify_controller_ci.py --lane self-hosted
+        env:
+          QDEV_EXPECTED_SHA: ${{ github.sha }}
+          QDEV_MANAGED_CI: "true"
+        run: python scripts/verify_controller_ci.py --lane managed

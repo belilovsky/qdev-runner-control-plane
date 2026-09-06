@@ -29,6 +29,9 @@ def _load(name: str) -> ModuleType:
 ACTIVATION = _load("qdev_controller_activation_adapter")
 ENROLMENT = _load("qdev_release_host_agent_enrol_adapter")
 RECOVERY = _load("qdev_fleet_worker_recovery_adapter")
+FIXED_RECOVERY = _load("qdev_fixed_worker_recovery_dispatch")
+HOST_ENROL = _load("qdev_recovery_host_enrol_adapter")
+HOST_APPLY = _load("qdev_recovery_host_apply")
 PROVISION = _load("provision_fleet_host_dispatch_state")
 PREPARE = _load("prepare_controller_candidate")
 
@@ -385,8 +388,265 @@ def test_dispatch_state_provisioning_is_private_and_idempotent(
     mapping = json.loads(PROVISION.KEY_MAP.read_text(encoding="utf-8"))
     assert set(mapping) == set(PROVISION.HOST_IDENTITIES)
     assert all(Path(value).parent == secret_root for value in mapping.values())
-    for registry in (PROVISION.ENROLMENT_REGISTRY, PROVISION.RECOVERY_REGISTRY):
-        assert json.loads(registry.read_text(encoding="utf-8"))["targets"] == {}
+    assert json.loads(PROVISION.ENROLMENT_REGISTRY.read_text(encoding="utf-8"))["targets"] == {}
+    assert (
+        json.loads(PROVISION.RECOVERY_REGISTRY.read_text(encoding="utf-8"))["targets"]
+        == PROVISION.RECOVERY_TARGETS
+    )
+
+
+def test_dispatch_state_rejects_conflicting_or_unknown_recovery_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "recovery.json"
+    monkeypatch.setattr(PROVISION, "RECOVERY_REGISTRY", registry)
+    monkeypatch.setattr(PROVISION, "_private_regular", lambda _path: None)
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-fleet-worker-recovery-targets-v1",
+                "targets": {"unknown": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PROVISION.ProvisionError, match="unknown target"):
+        PROVISION._reconcile_recovery_registry()
+
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-fleet-worker-recovery-targets-v1",
+                "targets": {next(iter(PROVISION.RECOVERY_TARGETS)): {"adapter_path": "wrong"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PROVISION.ProvisionError, match="conflicts with policy"):
+        PROVISION._reconcile_recovery_registry()
+
+
+def test_fixed_worker_dispatch_is_allowlisted_and_uses_exact_ssh_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _recovery_target()
+    request = _request("restore-existing-worker")
+    request["worker_name"] = target["worker_name"]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": target,
+        "active_jobs": 0,
+    }
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    assert FIXED_RECOVERY._parse()[1]["host"] == "187.55.228.239"
+
+    injected = {**envelope, "target": {**target, "host": "example.invalid"}}
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(injected).encode())),
+    )
+    with pytest.raises(FIXED_RECOVERY.DispatchError, match="target_identity_mismatch"):
+        FIXED_RECOVERY._parse()
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(
+        FIXED_RECOVERY,
+        "_enrol",
+        lambda _target_id, _expected: {
+            "schema": "qdev-recovery-host-enrol-result-v1",
+            "status": "completed",
+            "profile": "platform",
+            "controller_revision": SHA,
+            "controller_release_digest": DIGEST,
+            "agent_release_digest": "sha256:" + "c" * 64,
+            "agent_certificate_sha256": "d" * 64,
+            "rollback_agent_release_digest": "none",
+            "receipt_digest": "sha256:" + "e" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+
+    def completed(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        calls.append(command)
+        assert kwargs["stdin"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["stdout"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["stderr"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["check"] is False
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(FIXED_RECOVERY.subprocess, "run", completed)
+    assert FIXED_RECOVERY.main() == 0
+    assert calls == [
+        [
+            "/usr/bin/ssh",
+            "-F",
+            "/dev/null",
+            "-i",
+            "/etc/qdev-runner/worker-recovery-dispatch/id_ed25519",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "UserKnownHostsFile=/etc/qdev-runner/worker-recovery-dispatch/known_hosts",
+            "-o",
+            "ConnectTimeout=15",
+            "root@187.55.228.239",
+            "/usr/bin/systemctl",
+            "start",
+            "qdev-runner-recovery-platform.service",
+        ]
+    ]
+
+
+def test_fixed_worker_dispatch_sanitizes_ssh_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _recovery_target()
+    request = _request("restore-existing-worker")
+    request["worker_name"] = target["worker_name"]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": target,
+        "active_jobs": 0,
+    }
+    monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(
+        FIXED_RECOVERY,
+        "_enrol",
+        lambda _target_id, _expected: {
+            "schema": "qdev-recovery-host-enrol-result-v1",
+            "status": "already_completed",
+            "profile": "platform",
+            "controller_revision": SHA,
+            "controller_release_digest": DIGEST,
+            "agent_release_digest": "sha256:" + "c" * 64,
+            "agent_certificate_sha256": "d" * 64,
+            "rollback_agent_release_digest": "none",
+            "receipt_digest": "sha256:" + "e" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=255, stderr="private diagnostic must not escape"
+        ),
+    )
+    assert FIXED_RECOVERY.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "access_blocked"
+    assert result["result"]["error_code"] == "fixed_host_dispatch_failed"
+    assert "private diagnostic" not in json.dumps(result)
+
+
+def test_fixed_worker_dispatch_fails_closed_before_service_start_when_enrol_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _recovery_target()
+    request = _request("restore-existing-worker")
+    request["worker_name"] = target["worker_name"]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": target,
+        "active_jobs": 0,
+    }
+    monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY,
+        "_enrol",
+        lambda *_args: (_ for _ in ()).throw(FIXED_RECOVERY.DispatchError("host_enrol_failed")),
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("service must not start"),
+    )
+
+    assert FIXED_RECOVERY.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "access_blocked"
+    assert result["result"] == {
+        "dispatch_binding": "controller-fixed-ssh-v1",
+        "error_code": "host_enrol_failed",
+        "native_status": "not_started",
+        "recovery_service_unit": "qdev-runner-recovery-platform.service",
+    }
+
+
+def test_host_enrol_response_is_exact_and_private_values_are_not_returned() -> None:
+    expected = {
+        "profile": "platform",
+        "controller_revision": SHA,
+        "controller_release_digest": DIGEST,
+        "agent_release_digest": "sha256:" + "c" * 64,
+        "agent_certificate_sha256": "d" * 64,
+    }
+    public = {
+        "schema": "qdev-recovery-host-enrol-result-v1",
+        "status": "completed",
+        **expected,
+        "rollback_agent_release_digest": "none",
+    }
+    assert HOST_ENROL._validate_response(json.dumps(public).encode(), expected) == public
+
+    with pytest.raises(HOST_ENROL.EnrolError, match="host_response_invalid"):
+        HOST_ENROL._validate_response(
+            json.dumps({**public, "private_key": "must-not-escape"}).encode(), expected
+        )
+
+
+def test_host_apply_manifest_binds_all_and_only_release_payloads() -> None:
+    files = {name: f"payload:{name}".encode() for name in HOST_APPLY.PAYLOAD_FILES}
+    manifest = {
+        "schema": HOST_APPLY.BUNDLE_SCHEMA,
+        "profile": "qazstack",
+        "controller_revision": SHA,
+        "controller_release_digest": DIGEST,
+        "policy_digest": "sha256:" + "c" * 64,
+        "agent_release_digest": "sha256:" + "d" * 64,
+        "interface_version": "qdev-worker-recovery-v2",
+        "interface_digest": "e" * 64,
+        "expected_agent_certificate_sha256": "f" * 64,
+        "files": {name: f"sha256:{HOST_APPLY._sha256(payload)}" for name, payload in files.items()},
+    }
+    HOST_APPLY._validate_manifest(manifest, files, "qazstack")
+
+    tampered = dict(files)
+    tampered["payload/platform.env"] += b"\nchanged"
+    with pytest.raises(HOST_APPLY.ApplyError, match="bundle_digest_mismatch"):
+        HOST_APPLY._validate_manifest(manifest, tampered, "qazstack")
+
+    with pytest.raises(HOST_APPLY.ApplyError, match="bundle_manifest_invalid"):
+        HOST_APPLY._validate_manifest({**manifest, "unexpected": True}, files, "qazstack")
 
 
 def test_dispatch_state_rejects_a_symlinked_private_root(tmp_path: Path) -> None:
@@ -417,6 +677,9 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         "qdev_controller_activation_adapter.py",
         "qdev_release_host_agent_enrol_adapter.py",
         "qdev_fleet_worker_recovery_adapter.py",
+        "qdev_fixed_worker_recovery_dispatch.py",
+        "qdev_recovery_host_enrol_adapter.py",
+        "qdev_recovery_host_apply.py",
     ):
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source

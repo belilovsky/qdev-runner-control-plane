@@ -306,6 +306,45 @@ class GitHubAppClient:
                 active_job_ids.add(job_id)
         return tuple(sorted(active_job_ids))
 
+    def runner_name_active_jobs(
+        self,
+        installation_id: int,
+        repository: str,
+        runner_name: str,
+    ) -> tuple[int, ...]:
+        """Enumerate non-completed jobs that still name an absent runner."""
+
+        token = self.installation_token(installation_id)
+        run_ids: set[int] = set()
+        for status in ("queued", "in_progress"):
+            for run in self._paginated_collection(
+                path=f"/repos/{repository}/actions/runs",
+                token=token,
+                key="workflow_runs",
+                description="active workflow runs",
+                params={"status": status},
+            ):
+                run_id = run.get("id")
+                if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+                    raise GitHubError("active workflow runs response is malformed")
+                run_ids.add(run_id)
+        active_job_ids: set[int] = set()
+        for run_id in sorted(run_ids):
+            for job in self._paginated_collection(
+                path=f"/repos/{repository}/actions/runs/{run_id}/jobs",
+                token=token,
+                key="jobs",
+                description="workflow jobs",
+                params={"filter": "latest"},
+            ):
+                if job.get("runner_name") != runner_name or job.get("status") == "completed":
+                    continue
+                job_id = job.get("id")
+                if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+                    raise GitHubError("workflow jobs response is malformed")
+                active_job_ids.add(job_id)
+        return tuple(sorted(active_job_ids))
+
     def observe_repository_runner(
         self,
         repository: str,
@@ -513,6 +552,7 @@ class GitHubAppClient:
                 f"JIT configuration failed: {response.status_code} {response.text[:300]}"
             )
         return str(response.json()["encoded_jit_config"])
+
     def rerun_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, Any]:
         """Ask GitHub to rerun one already-registered test job.
 

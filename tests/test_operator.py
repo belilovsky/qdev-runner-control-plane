@@ -118,6 +118,40 @@ def test_capacity_override_sends_exact_source_binding(
     }
 
 
+def test_failed_worker_recovery_uses_provider_reconciled_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured["settings"] = settings
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    result = operator.run(
+        [
+            "recover-failed",
+            "42",
+            "--owner",
+            "portfolio-ci",
+            "--reason",
+            "provider remains queued",
+        ]
+    )
+
+    assert result == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == (
+        "/internal/v1/operations/jobs/42/recover-failed-worker-exit"
+    )
+    assert captured["body"] == {
+        "owner": "portfolio-ci",
+        "reason": "provider remains queued",
+    }
+
+
 def test_capacity_override_cancel_requires_exact_operation_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,6 +271,58 @@ def test_recovery_prepare_uses_live_bindings_and_typed_endpoint(
         "policy_digest": "sha256:" + "3" * 64,
         "agent_release_digest": "sha256:" + "4" * 64,
     }
+
+
+def test_recovery_accept_binds_owner_supplied_exact_canary_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    monkeypatch.setattr(
+        operator,
+        "_fresh_recovery_provenance",
+        lambda settings: {"schema": "qdev-runner-recovery-provenance-v1"},
+    )
+
+    def fake_request(
+        settings: operator.OperatorSettings, **kwargs: Any
+    ) -> operator.RecoveryOperationResponse:
+        captured.update(kwargs)
+        return operator.RecoveryOperationResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-operation-v1",
+                "operation_id": "5" * 64,
+                "request_fingerprint": "6" * 64,
+                "target_id": "qdev-platform-ci-187",
+                "worker_name": "qdev-platform-ci-187",
+                "repository": "belilovsky/platform-portal",
+                "provider_runner_id": 187,
+                "state": "pending_canary",
+                "native_outcome": "completed",
+                "controller_revision": "1" * 40,
+                "controller_release_digest": "2" * 64,
+                "policy_digest": "sha256:" + "3" * 64,
+                "agent_release_digest": "sha256:" + "4" * 64,
+                "idempotent_replay": False,
+            }
+        )
+
+    monkeypatch.setattr(operator, "recovery_request", fake_request)
+    result = operator.run(
+        [
+            "recovery-accept",
+            "--operation-id",
+            "5" * 64,
+            "--request-fingerprint",
+            "6" * 64,
+            "--canary-head-sha",
+            "7" * 40,
+        ]
+    )
+
+    assert result["state"] == "pending_canary"
+    assert captured["path"] == "/internal/v1/operations/worker-recovery/accept"
+    assert captured["body"]["canary_head_sha"] == "7" * 40
 
 
 def test_retired_recovery_command_is_not_exposed() -> None:
