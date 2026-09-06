@@ -585,7 +585,9 @@
             "enum": [
               "active-admin-platform-controller-priority",
               "admin-platform-candidate-not-active",
-              "admin-platform-candidate-tuple-not-admitted"
+              "admin-platform-candidate-tuple-not-admitted",
+              "managed-production-candidate-not-active",
+              "managed-production-candidate-tuple-not-admitted"
             ]
           }
         }
