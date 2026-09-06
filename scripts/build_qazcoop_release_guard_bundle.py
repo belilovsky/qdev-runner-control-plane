@@ -172,7 +172,7 @@ def build_bundle(
             f"guard_root=/usr/local/lib/qazcoop-release-guard/{revision}\n"
             "export QAZCOOP_GUARD_LAUNCHER=/usr/local/sbin/qdev-controller-verify-admission\n"
             "export QAZCOOP_GUARD_HOOK=/opt/qazcoop.git/hooks/update\n"
-            "exec /usr/bin/python3 -I -c 'import runpy,sys; "
+            "exec /usr/bin/python3 -I -B -c 'import runpy,sys; "
             "sys.path.insert(0,sys.argv.pop(1)); "
             "runpy.run_module(\"qdev_runner.qazcoop_release_guard\",run_name=\"__main__\")' "
             "\"$guard_root/lib\" \"$@\"\n",

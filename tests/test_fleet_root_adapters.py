@@ -29,6 +29,7 @@ def _load(name: str) -> ModuleType:
 ACTIVATION = _load("qdev_controller_activation_adapter")
 ENROLMENT = _load("qdev_release_host_agent_enrol_adapter")
 RECOVERY = _load("qdev_fleet_worker_recovery_adapter")
+FIXED_RECOVERY = _load("qdev_fixed_worker_recovery_dispatch")
 PROVISION = _load("provision_fleet_host_dispatch_state")
 PREPARE = _load("prepare_controller_candidate")
 
@@ -385,8 +386,149 @@ def test_dispatch_state_provisioning_is_private_and_idempotent(
     mapping = json.loads(PROVISION.KEY_MAP.read_text(encoding="utf-8"))
     assert set(mapping) == set(PROVISION.HOST_IDENTITIES)
     assert all(Path(value).parent == secret_root for value in mapping.values())
-    for registry in (PROVISION.ENROLMENT_REGISTRY, PROVISION.RECOVERY_REGISTRY):
-        assert json.loads(registry.read_text(encoding="utf-8"))["targets"] == {}
+    assert json.loads(PROVISION.ENROLMENT_REGISTRY.read_text(encoding="utf-8"))["targets"] == {}
+    assert (
+        json.loads(PROVISION.RECOVERY_REGISTRY.read_text(encoding="utf-8"))["targets"]
+        == PROVISION.RECOVERY_TARGETS
+    )
+
+
+def test_dispatch_state_rejects_conflicting_or_unknown_recovery_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "recovery.json"
+    monkeypatch.setattr(PROVISION, "RECOVERY_REGISTRY", registry)
+    monkeypatch.setattr(PROVISION, "_private_regular", lambda _path: None)
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-fleet-worker-recovery-targets-v1",
+                "targets": {"unknown": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PROVISION.ProvisionError, match="unknown target"):
+        PROVISION._reconcile_recovery_registry()
+
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-fleet-worker-recovery-targets-v1",
+                "targets": {
+                    next(iter(PROVISION.RECOVERY_TARGETS)): {"adapter_path": "wrong"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PROVISION.ProvisionError, match="conflicts with policy"):
+        PROVISION._reconcile_recovery_registry()
+
+
+def test_fixed_worker_dispatch_is_allowlisted_and_uses_exact_ssh_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _recovery_target()
+    request = _request("restore-existing-worker")
+    request["worker_name"] = target["worker_name"]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": target,
+        "active_jobs": 0,
+    }
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    assert FIXED_RECOVERY._parse()[1]["host"] == "187.55.228.239"
+
+    injected = {**envelope, "target": {**target, "host": "example.invalid"}}
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(injected).encode())),
+    )
+    with pytest.raises(FIXED_RECOVERY.DispatchError, match="target_identity_mismatch"):
+        FIXED_RECOVERY._parse()
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+
+    def completed(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        calls.append(command)
+        assert kwargs["stdin"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["stdout"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["stderr"] is FIXED_RECOVERY.subprocess.DEVNULL
+        assert kwargs["check"] is False
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(FIXED_RECOVERY.subprocess, "run", completed)
+    assert FIXED_RECOVERY.main() == 0
+    assert calls == [
+        [
+            "/usr/bin/ssh",
+            "-F",
+            "/dev/null",
+            "-i",
+            "/etc/qdev-runner/worker-recovery-dispatch/id_ed25519",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "UserKnownHostsFile=/etc/qdev-runner/worker-recovery-dispatch/known_hosts",
+            "-o",
+            "ConnectTimeout=15",
+            "root@187.55.228.239",
+            "/usr/bin/systemctl",
+            "start",
+            "qdev-runner-recovery-platform.service",
+        ]
+    ]
+
+
+def test_fixed_worker_dispatch_sanitizes_ssh_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _recovery_target()
+    request = _request("restore-existing-worker")
+    request["worker_name"] = target["worker_name"]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": target,
+        "active_jobs": 0,
+    }
+    monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(
+        FIXED_RECOVERY.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(
+        FIXED_RECOVERY.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=255, stderr="private diagnostic must not escape"
+        ),
+    )
+    assert FIXED_RECOVERY.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "access_blocked"
+    assert result["result"]["error_code"] == "fixed_host_dispatch_failed"
+    assert "private diagnostic" not in json.dumps(result)
 
 
 def test_dispatch_state_rejects_a_symlinked_private_root(tmp_path: Path) -> None:
@@ -417,6 +559,7 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         "qdev_controller_activation_adapter.py",
         "qdev_release_host_agent_enrol_adapter.py",
         "qdev_fleet_worker_recovery_adapter.py",
+        "qdev_fixed_worker_recovery_dispatch.py",
     ):
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source
