@@ -624,6 +624,40 @@ def test_host_enrol_response_is_exact_and_private_values_are_not_returned() -> N
         )
 
 
+def test_recovery_host_enrol_accepts_public_read_only_release_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    releases = tmp_path / "releases"
+    release = releases / SHA
+    release.mkdir(parents=True)
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+    status = tmp_path / "controller-release.json"
+    status.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v2",
+                "state": "active",
+                "revision": SHA,
+                "release_digest": DIGEST,
+            }
+        ),
+        encoding="utf-8",
+    )
+    status.chmod(0o644)
+    monkeypatch.setattr(HOST_ENROL, "ACTIVE", current)
+    monkeypatch.setattr(HOST_ENROL, "STATUS", status)
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+
+    assert HOST_ENROL._active_release() == (release, SHA, DIGEST)
+
+
 def test_host_apply_manifest_binds_all_and_only_release_payloads() -> None:
     files = {name: f"payload:{name}".encode() for name in HOST_APPLY.PAYLOAD_FILES}
     manifest = {
