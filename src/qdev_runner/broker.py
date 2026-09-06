@@ -570,6 +570,14 @@ def create_app(
             jwks_url=settings.github_actions_oidc_jwks_url,
         )
     )
+
+    def require_github_client() -> GitHubAppClient:
+        """Return the provider client for routes that need GitHub authority."""
+
+        if github is None:
+            raise HTTPException(status_code=503, detail="GitHub integration unavailable")
+        return github
+
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
     artifact_token_key = settings.artifact_token_key
     if settings.surface == "test" and artifact_token_key is None:
@@ -786,7 +794,7 @@ def create_app(
                 "correlation_id": intent["correlation_id"],
             }
             try:
-                runs = github.workflow_runs(
+                runs = require_github_client().workflow_runs(
                     int(intent["installation_id"]),
                     str(intent["repository"]),
                     workflow=str(intent["workflow"]),
@@ -878,7 +886,7 @@ def create_app(
                 items.append(item)
                 continue
             try:
-                runs = github.workflow_runs(
+                runs = require_github_client().workflow_runs(
                     int(source_job["installation_id"]),
                     str(attempt["repository"]),
                     workflow=workflow_path or None,
@@ -959,7 +967,7 @@ def create_app(
         """
 
         try:
-            remote = github.workflow_job(
+            remote = require_github_client().workflow_job(
                 int(job["installation_id"]), str(job["repository"]), int(job["job_id"])
             )
         except GitHubError as error:
@@ -1194,7 +1202,7 @@ def create_app(
                     inputs = dict(inputs or {})
                     inputs["qdev_correlation_id"] = correlation_id
                 provider_call_started = True
-                response = github.dispatch_workflow(
+                response = require_github_client().dispatch_workflow(
                     int(due["installation_id"]), repository, workflow, ref, inputs
                 )
             except GitHubError as error:
@@ -4667,7 +4675,7 @@ def create_app(
                     "provider_job_id": row.get("provider_job_id"),
                 }
             try:
-                provider_result = github.rerun_job(
+                provider_result = require_github_client().rerun_job(
                     int(job["installation_id"]), str(job["repository"]), job_id
                 )
             except GitHubError as error:
