@@ -58,6 +58,8 @@ from .models import (
     RecoveryPrepareRequest,
     RecoveryReconcileRequest,
     RecoveryStatusRequest,
+    RecoverySupersedeRequest,
+    RecoverySupersessionResponse,
 )
 from .operations import (
     DISK_ONLY_BLOCKERS,
@@ -785,10 +787,7 @@ def create_app(
                 # not be silently bypassed by this observational filter.
                 profile_queue.append(queued)
                 continue
-            if (
-                queued_managed is not None
-                and queued_managed.admission_ledger == "admin-platform"
-            ):
+            if queued_managed is not None and queued_managed.admission_ledger == "admin-platform":
                 if queued_admin_platform_ledger is None:
                     try:
                         queued_admin_platform_ledger = admin_platform_ledger()
@@ -908,10 +907,7 @@ def create_app(
                     status_code=503,
                     detail="managed registry changed during FIFO claim",
                 ) from error
-            if (
-                managed_entry is None
-                or managed_entry.entry_id != item.managed_registry_entry
-            ):
+            if managed_entry is None or managed_entry.entry_id != item.managed_registry_entry:
                 continue
             if managed_entry.admission_ledger == "admin-platform":
                 admitted, _ = admin_platform_ledger().classify_admission(
@@ -1655,6 +1651,28 @@ def create_app(
         )
         return execute_worker_recovery(
             lambda: worker_recovery.status(
+                request,
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/supersede-stale",
+        response_model=RecoverySupersessionResponse,
+    )
+    def supersede_stale_worker_recovery(
+        request: RecoverySupersedeRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoverySupersessionResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.supersede_stale(
                 request,
                 operator_certificate_sha256=certificate,
             )
@@ -2567,9 +2585,7 @@ def create_app(
         for profile_name in policy.profiles:
             profile_queue, _ = admissible_profile_queue(profile_name)
             candidates, _ = durable_profile_heads(profile_queue, policy)
-            profile_heads.extend(
-                item for item in candidates if item["profile"] == profile_name
-            )
+            profile_heads.extend(item for item in candidates if item["profile"] == profile_name)
         _, unclassified = durable_profile_heads(pending_jobs, policy)
         return operation_store.receipt(
             {
@@ -2744,9 +2760,7 @@ def create_app(
         try:
             github_client = require_github()
             remote_job = github_client.workflow_job(installation_id, repository, job_id)
-            remote_run = github_client.workflow_run(
-                installation_id, repository, int(row["run_id"])
-            )
+            remote_run = github_client.workflow_run(installation_id, repository, int(row["run_id"]))
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),

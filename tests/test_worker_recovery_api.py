@@ -377,6 +377,104 @@ def test_prepare_is_provider_observed_and_exactly_idempotent(
     assert replay.json() == operation | {"idempotent_replay": True}
     assert harness.github.observation_calls == 1
 
+    fresh_replay_body = body | {"provenance": _provenance(nonce="nonce-prepare-replay")}
+    fresh_replay = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=fresh_replay_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert fresh_replay.status_code == 200
+    assert fresh_replay.json() == operation | {"idempotent_replay": True}
+    assert harness.github.observation_calls == 1
+
+
+def test_operator_can_supersede_one_stale_exact_recovery_fence(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    now = time.time()
+    proof = Store.issue_worker_provider_idle_proof(
+        key=RECEIPT_KEY,
+        worker_name="qdev-platform-ci-187",
+        repository="belilovsky/platform-portal",
+        labels=("self-hosted", "Linux", "X64", "qdev-platform-ci"),
+        provider_runner_id=278,
+        provider_status="offline",
+        provider_busy=False,
+        active_jobs=0,
+        provider_observation={
+            "schema": "qdev-worker-provider-observation-v1",
+            "repository": "belilovsky/platform-portal",
+            "runners": {
+                "total_count": 1,
+                "items": [
+                    {
+                        "id": 278,
+                        "name": "qdev-platform-ci-187",
+                        "status": "offline",
+                        "busy": False,
+                        "labels": ["self-hosted", "Linux", "X64", "qdev-platform-ci"],
+                    }
+                ],
+            },
+            "active_target_jobs": {"total_count": 0, "items": []},
+        },
+        observed_at=now,
+    )
+    stale = harness.client.app.state.store.begin_worker_recovery(
+        worker_name="qdev-platform-ci-187",
+        idempotency_key="recovery-stale-api-0001",
+        fingerprint="6" * 64,
+        repository="belilovsky/platform-portal",
+        labels=("self-hosted", "Linux", "X64", "qdev-platform-ci"),
+        provider_idle_proof=proof,
+        provider_proof_key=RECEIPT_KEY,
+        recovery_action="restore_saved_configuration",
+        operator_certificate_sha256=OPERATOR_CERTIFICATE,
+        expected_agent_certificate_sha256="7" * 64,
+        interface_version=INTERFACE_VERSION,
+        interface_digest="8" * 64,
+        controller_revision="7" * 40,
+        controller_release_digest="6" * 64,
+        policy_digest="sha256:" + "5" * 64,
+        agent_release_digest="sha256:" + "4" * 64,
+        controller_receipt_id="3" * 64,
+        controller_observed_at=now,
+        request_nonce="nonce-stale-api-0001",
+        requested_at=now,
+    )
+    body = {
+        "schema": "qdev-runner-recovery-supersede-v1",
+        "operation_id": stale["operation_id"],
+        "request_fingerprint": stale["request_fingerprint"],
+        "reason": "Release the obsolete fence after the controller upgrade.",
+        "provenance": _provenance(nonce="nonce-supersede-api-0001"),
+    }
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/supersede-stale",
+        json=body,
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["operation_id"] == stale["operation_id"]
+    assert result["prior_state"] == "prepared"
+    assert result["provider_runner_id"] == 278
+    assert result["controller_revision"] == CONTROLLER_REVISION
+    assert result["idempotent_replay"] is False
+    assert harness.github.observation_calls == 1
+
+    replay = harness.client.post(
+        "/internal/v1/operations/worker-recovery/supersede-stale",
+        json=body | {"provenance": _provenance(nonce="nonce-supersede-api-replay")},
+        headers=OPERATOR_HEADERS,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == result | {"idempotent_replay": True}
+    assert harness.github.observation_calls == 1
+
 
 def test_exact_online_idle_saved_platform_runner_prepares_without_restart(
     tmp_path: Path, policy_files: tuple[Path, Path]
@@ -436,9 +534,7 @@ def test_online_replacement_runner_is_not_admitted_as_absent(
 
     response = harness.client.post(
         "/internal/v1/operations/worker-recovery/prepare",
-        json=_prepare_body(
-            "qdev-qazstack-01", idempotency_key="recovery-qazstack-online"
-        ),
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-online"),
         headers=OPERATOR_HEADERS,
     )
 
@@ -844,9 +940,7 @@ def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     assert failed.status_code == 409
     assert failed.json()["detail"] == "worker recovery request rejected"
     assert harness.github.dispatch_calls == 0
-    assert harness.client.app.state.store.worker_recovery_canary(
-        prepared["operation_id"]
-    ) is None
+    assert harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"]) is None
 
     accept_body["canary_head_sha"] = "5" * 40
     pending = harness.client.post(
