@@ -239,7 +239,12 @@ If another release has changed the runtime, the stale transaction stops without
 changing the current release. The controller-owned rollback helper remains able
 to restore a previously staged revision under the same lock.
 
-Activation requires at least 30 GiB free disk, less than 85% disk use, at
+The lock is a regular root-owned file with group `9020` and mode `0640`.
+Activation and candidate preparation take its exclusive lock as root; only the
+internal broker receives a read-only bind mount and takes a shared lock while it
+binds a recovery operation to the active controller release.
+
+Activation requires at least 8 GiB free disk, no more than 96% disk use, at
 least 4 GiB available RAM, and load-15 no greater than twice the CPU count. It
 atomically changes `current`, refreshes the repository inventory and runner
 profiles, and recreates only `broker-public` and `broker-internal`. The prior

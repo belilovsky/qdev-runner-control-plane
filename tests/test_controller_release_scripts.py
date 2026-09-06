@@ -214,8 +214,14 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/admin-platform-state" in provisioning
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
     assert "touch /run/lock/qdev-controller-release.lock" in provisioning
-    assert "chown root:root /run/lock/qdev-controller-release.lock" in provisioning
-    assert "chmod 0644 /run/lock/qdev-controller-release.lock" in provisioning
+    assert "chown root:9020 /run/lock/qdev-controller-release.lock" in provisioning
+    assert "chmod 0640 /run/lock/qdev-controller-release.lock" in provisioning
+
+    candidate = (ROOT / "scripts/prepare_controller_candidate.py").read_text(
+        encoding="utf-8"
+    )
+    assert "os.fchown(descriptor, 0, RUNTIME_GID)" in candidate
+    assert "os.fchmod(descriptor, 0o640)" in candidate
 
 
 def test_controller_provisions_root_owned_admission_signer() -> None:

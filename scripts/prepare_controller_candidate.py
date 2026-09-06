@@ -116,14 +116,18 @@ def _active_runtime_source_sha() -> str:
 def _release_lock() -> Iterator[None]:
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(RELEASE_LOCK_PATH, flags, 0o600)
+        descriptor = os.open(RELEASE_LOCK_PATH, flags, 0o640)
     except OSError as exc:
         raise ControllerCandidateError("controller release lock is unavailable") from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
             raise ControllerCandidateError("controller release lock is unsafe")
-        os.fchmod(descriptor, 0o600)
+        # Activation owns the exclusive lock as root, while the unprivileged
+        # internal broker needs read access to take a shared lock around the
+        # release binding check and the corresponding store transaction.
+        os.fchown(descriptor, 0, RUNTIME_GID)
+        os.fchmod(descriptor, 0o640)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
