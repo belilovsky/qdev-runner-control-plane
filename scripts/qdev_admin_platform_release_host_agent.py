@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one compiled QDev Admin Platform release lane through mTLS.
 
-This agent deliberately knows four and only four product lanes.  It never
+This agent deliberately knows only compiled product lanes.  It never
 accepts a host path, registry, public URL, deploy command, or rollback command
 from a release request or its configuration file.  Product-owned root
 dispatchers own the native deploy details; they receive an immutable tuple and
@@ -19,6 +19,7 @@ import hmac
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -185,6 +186,43 @@ PROFILES = {
     ),
 }
 
+# IdP is deliberately NOT a generic polling profile. Its verified native
+# dispatcher acquires the global IdP lock BEFORE the host journal lock; the
+# polling run_once path has the reverse order and automatic rollback semantics.
+# Compiled scope is not enrollment or authority: the controller must separately
+# configure this exact lane/identity and issue its own signed live dispatch.
+IDP_PROFILE = Profile(
+    name="idp", lane="qdev-release-idp", project_id="id-qdev-run",
+    repository="belilovsky/id-qdev-run", placement="srv1380923",
+    artifact_prefix="qdev/idp-release", adapter="idp-file-v1",
+    minimum_free_gib=1,
+    state_path=_STATE_ROOT / "idp.json",
+    lock_path=_LOCK_ROOT / "qdev-admin-platform-idp.lock",
+    # Never invoked by the one-shot code-only bridge.
+    release_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+    rollback_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+    receipt_dispatcher=Path("/usr/local/sbin/qdev-admin-platform-release-host-agent"),
+)
+IDP_CONFIG_PATH = Path("/etc/qdev-release-agents/idp.env")
+
+
+def _idp_lane():
+    from qdev_runner.release_lane import ReleaseLane
+
+    return ReleaseLane(
+        name=IDP_PROFILE.lane, project_id=IDP_PROFILE.project_id,
+        placement=IDP_PROFILE.placement,
+        client_mtls_identity="qdev-release-client:id-qdev-run",
+        host_agent_mtls_identity=f"qdev-host-agent:{IDP_PROFILE.placement}",
+        minimum_free_gib=IDP_PROFILE.minimum_free_gib, heartbeat_ttl_seconds=90,
+        artifact_repository="idp-release", canonical_repository=IDP_PROFILE.repository,
+        artifact_ref_prefix=IDP_PROFILE.artifact_prefix,
+        native_host_adapter=IDP_PROFILE.adapter,
+        runtime_endpoints=("https://id.qdev.run/healthz",),
+        rollback_reference="retained-native-snapshot",
+        required_readiness=tuple(IDP_PROFILE.readiness),
+    )
+
 
 @dataclass(frozen=True)
 class Config:
@@ -217,14 +255,24 @@ def _root_directory(path: Path) -> None:
         raise AgentError(f"directory must be root-owned and non-writable: {path}")
 
 
-def load_config(path: Path) -> Config:
-    _private(path)
+def load_config(path: Path, *, private_reader: Callable[[Path], bytes] | None = None) -> Config:
+    def read_private(selected: Path) -> bytes:
+        if not selected.is_absolute():
+            raise AgentError("host configuration paths must be absolute")
+        if private_reader is not None:
+            return private_reader(selected)
+        _private(selected)
+        return selected.read_bytes()
+
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_private(path).decode("utf-8").splitlines():
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or not value:
+        if (
+            not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key)
+            or not value or key in values
+        ):
             raise AgentError("admin-platform host-agent configuration has an invalid line")
         values[key] = value
     expected = {
@@ -241,6 +289,8 @@ def load_config(path: Path) -> Config:
     if (
         parsed.scheme != "https"
         or parsed.hostname != "worker.ci.qdev.run"
+        or parsed.username is not None or parsed.password is not None
+        or parsed.port not in {None, 443}
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
@@ -252,9 +302,8 @@ def load_config(path: Path) -> Config:
     dispatch_secret_path = Path(values["QDEV_RELEASE_DISPATCH_SECRET_FILE"])
     if not dispatch_secret_path.is_absolute():
         raise AgentError("host dispatch secret path must be absolute")
-    _private(dispatch_secret_path)
     try:
-        dispatch_secret = dispatch_secret_path.read_bytes().strip()
+        dispatch_secret = read_private(dispatch_secret_path).strip()
     except OSError as error:
         raise AgentError("host dispatch secret is unavailable") from error
     if not 32 <= len(dispatch_secret) <= 4096:
@@ -268,7 +317,7 @@ def load_config(path: Path) -> Config:
         dispatch_secret=dispatch_secret,
     )
     for credential in (config.client_cert, config.client_key, config.controller_ca):
-        _private(credential)
+        read_private(credential)
     return config
 
 
@@ -2735,6 +2784,97 @@ def invoke_retained_idp(config, profile, lane, *, transaction, action, ci="none"
         raise AgentError("retained IdP operation requires verified-state inspection") from None
 
 
+def _require_idp_host() -> None:
+    if os.geteuid() != 0 or socket.gethostname() != IDP_PROFILE.placement:
+        raise AgentError("IdP execution requires the fixed root host")
+
+
+def run_idp_once(*, transaction: str, action: str, ci: str = "none"):
+    """One fixed installed-host entrypoint, not a poller or an enrollment tool.
+
+    Native CI intake supplies artifact.tar.gz and the existing signed controller
+    job in the private native stage. Retention owns its short publication lock;
+    invocation takes native-global then host-journal locks. Nothing here takes
+    an outer host lock, requests jobs/next, retries apply or triggers rollback.
+    """
+    from qdev_runner import idp_retained_dispatch as storage
+    from qdev_runner.idp_file_issuer import private_bytes
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate")
+            result[key] = value
+        return result
+
+    try:
+        _require_idp_host()
+        storage.transaction_name(transaction)
+        if (
+            action not in {"intake", "apply", "inspect", "reconcile", "observe"}
+            or (ci != "none" and not re.fullmatch(r"ci-[0-9a-f]{16}\.json", ci))
+            or (action == "apply" and ci == "none")
+            or (action == "intake" and ci != "none")
+        ):
+            raise AgentError("invalid one-shot IdP operation")
+        config = load_config(
+            IDP_CONFIG_PATH, private_reader=lambda path: private_bytes(path, limit=65536),
+        )
+        lane = _idp_lane()
+        _validate_idp_file_scope(config, IDP_PROFILE, lane)
+        if action != "intake":
+            return invoke_retained_idp(
+                config, IDP_PROFILE, lane, transaction=transaction, action=action, ci=ci,
+            )
+
+        stage = IdPNativeInvocation.STATE_ROOT / transaction
+        job = json.loads(
+            private_bytes(stage / "controller-job.json", limit=storage.MAX_METADATA),
+            object_pairs_hook=unique,
+        )
+        existing = storage.read(transaction)
+        if existing is None:
+            # Reject unsigned or expired input before reading the large archive
+            # or contacting the controller. No helper code has been loaded.
+            _validated_job(job, IDP_PROFILE, config)
+        elif _canonical_bytes(job) != _canonical_bytes(existing[0]["job"]):
+            raise AgentError("IdP transaction already has different inputs")
+        archive = private_bytes(stage / "artifact.tar.gz", limit=storage.MAX_ARCHIVE)
+        if existing is not None:
+            metadata, retained_archive = existing
+            if archive != retained_archive:
+                raise AgentError("IdP transaction already has a different archive")
+            # Finish an interrupted durable publication without a fresh network
+            # request or treating a historical signature as a live apply permit.
+            return IdPNativeInvocation(
+                config, IDP_PROFILE, lane, job, metadata["candidate"],
+            ).retain(archive, transaction=transaction)
+        return retain_controller_idp_inputs(
+            config, IDP_PROFILE, lane, job, archive, transaction=transaction,
+        )
+    except Exception:
+        raise AgentError("IdP one-shot operation requires verified-state inspection") from None
+
+
+def idp_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Run one fixed enrolled IdP host operation")
+    parser.add_argument("action", choices=("intake", "apply", "inspect", "reconcile", "observe"))
+    parser.add_argument("--transaction", required=True)
+    parser.add_argument("--ci", default="none")
+    args = parser.parse_args(argv)
+    try:
+        result = run_idp_once(transaction=args.transaction, action=args.action, ci=args.ci)
+    except Exception:
+        # Never render raw transport/provider, filesystem, or credential errors.
+        print(json.dumps({
+            "status": "blocked", "reason": "IdP operation requires verified-state inspection",
+        }, sort_keys=True), file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 class IdPFileApplyAdapter:
     """Code-only factory for verified native dispatch, not an enrollment/CLI.
 
@@ -3161,12 +3301,15 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["idp"]:
+        return idp_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=sorted(PROFILES), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--once", action="store_true", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if os.geteuid() != 0:
         raise SystemExit("admin-platform release host agent must run as root")
     try:
