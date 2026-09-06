@@ -51,6 +51,7 @@ from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
 from .models import (
     QueuedJob,
+    RecoveryAbortRequest,
     RecoveryAcceptRequest,
     RecoveryAgentClaimRequest,
     RecoveryBindingsResponse,
@@ -1655,6 +1656,28 @@ def create_app(
         )
         return execute_worker_recovery(
             lambda: worker_recovery.status(
+                request,
+                operator_certificate_sha256=certificate,
+            )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/abort",
+        response_model=RecoveryOperationResponse,
+    )
+    def abort_worker_recovery(
+        request: RecoveryAbortRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.abort(
                 request,
                 operator_certificate_sha256=certificate,
             )

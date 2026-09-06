@@ -433,6 +433,7 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
     assert "worker_recovery_acceptances" in tables
     assert "worker_recovery_canaries" in tables
     assert "worker_recovery_canary_events" in tables
+    assert "worker_recovery_aborts" in tables
     assert {
         "provider_observation_json",
         "provider_reconciliation_digest",
@@ -473,6 +474,48 @@ def test_offline_worker_can_be_fenced_only_with_signed_provider_and_durable_idle
     lookup = store.worker_recovery(admitted["operation_id"])
     assert lookup is not None
     assert lookup["state"] == "prepared"
+
+
+def test_worker_recovery_abort_receipt_is_append_only_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    admitted = store.begin_worker_recovery(**_begin_arguments())
+    abort_arguments: dict[str, Any] = {
+        "operation_id": admitted["operation_id"],
+        "request_fingerprint": admitted["request_fingerprint"],
+        "operator_certificate_sha256": admitted["operator_certificate_sha256"],
+        "abort_controller_revision": "6" * 40,
+        "abort_controller_release_digest": "7" * 64,
+        "policy_digest": POLICY_DIGEST,
+        "agent_release_digest": AGENT_RELEASE_DIGEST,
+        "provider_idle_proof": _provider_proof(observed_at=time.time()),
+        "provider_proof_key": PROOF_KEY,
+        "reason": "Release the never-invoked operation after a controller upgrade.",
+    }
+
+    aborted = store.abort_worker_recovery(**abort_arguments)
+
+    assert aborted["state"] == "released"
+    assert aborted["abort_idempotent_replay"] is False
+    receipt_digest = aborted["abort_receipt_digest"]
+    with store.connect() as connection:
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            connection.execute(
+                "UPDATE worker_recovery_aborts SET reason='changed' "
+                "WHERE operation_id=?",
+                (admitted["operation_id"],),
+            )
+        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+            connection.execute(
+                "DELETE FROM worker_recovery_aborts WHERE operation_id=?",
+                (admitted["operation_id"],),
+            )
+
+    replayed = store.abort_worker_recovery(**abort_arguments)
+    assert replayed["state"] == "released"
+    assert replayed["abort_idempotent_replay"] is True
+    assert replayed["abort_receipt_digest"] == receipt_digest
 
 
 def test_offline_recovery_rejects_provider_work_and_durable_claims(tmp_path: Path) -> None:

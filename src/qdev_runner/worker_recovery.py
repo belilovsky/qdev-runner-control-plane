@@ -13,6 +13,7 @@ from typing import Any, NoReturn, cast
 from .claim_scope import ClaimScopeError, load_claim_scopes
 from .github import GitHubAppClient
 from .models import (
+    RecoveryAbortRequest,
     RecoveryAcceptRequest,
     RecoveryAgentClaimRequest,
     RecoveryAgentCommand,
@@ -323,54 +324,12 @@ class WorkerRecoveryController:
 
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
-        try:
-            allowed_initial_status = (
-                ("offline", "online")
-                if target.action == "restore_saved_configuration"
-                else "offline"
-            )
-            runners, observed, provider_observation = self._observe_runner(
-                target,
-                expected_labels=target.labels,
-                status=allowed_initial_status,
-                require_idle=True,
-            )
-            provider_runner_id: int | None = int(observed["id"])
-            if (
-                target.expected_provider_runner_id is not None
-                and provider_runner_id != target.expected_provider_runner_id
-            ):
-                raise WorkerRecoveryError(
-                    "provider runner id does not match the fixed recovery target"
-                )
-            provider_observed_at = float(observed["observed_at"])
-        except WorkerRecoveryError as error:
-            if target.action != "replace_existing_registration":
-                raise
-            installation_id = self.github.repository_installation_id(target.repository)
-            runners = sorted(
-                (
-                    _runner_record(raw)
-                    for raw in self.github.repository_runners(installation_id, target.repository)
-                ),
-                key=lambda runner: int(runner["id"]),
-            )
-            if any(runner["name"] == target.worker_name for runner in runners):
-                raise error
-            active_jobs = self.github.runner_name_active_jobs(
-                installation_id, target.repository, target.worker_name
-            )
-            if active_jobs:
-                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
-            provider_runner_id = None
-            provider_observed_at = time.time()
-            provider_observation = {
-                "schema": "qdev-worker-provider-absence-observation-v1",
-                "repository": target.repository,
-                "worker_name": target.worker_name,
-                "runners": {"total_count": len(runners), "items": runners},
-                "active_target_jobs": {"total_count": 0, "items": []},
-            }
+        (
+            provider_runner_id,
+            provider_status,
+            provider_observed_at,
+            provider_observation,
+        ) = self._observe_initial_target(target)
         proof_key = self._receipt_key()
         proof = self.store.issue_worker_provider_idle_proof(
             key=proof_key,
@@ -378,9 +337,7 @@ class WorkerRecoveryController:
             repository=target.repository,
             labels=target.labels,
             provider_runner_id=provider_runner_id,
-            provider_status=(
-                None if provider_runner_id is None else cast(str, observed["status"])
-            ),
+            provider_status=provider_status,
             provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
@@ -428,9 +385,64 @@ class WorkerRecoveryController:
         release = self._configuration()
         self._validate_provenance(request.provenance, release=release)
         row = self._operation(request.operation_id, request.request_fingerprint)
-        self._require_current_row(row, release=release)
         self._require_operation_operator(row, operator_certificate_sha256)
+        if row.get("abort_receipt_digest") is not None:
+            self._require_abortable_row(row)
+        else:
+            self._require_current_row(row, release=release)
         return self._project(row, idempotent_replay=False)
+
+    def abort(
+        self,
+        request: RecoveryAbortRequest,
+        *,
+        operator_certificate_sha256: str,
+    ) -> RecoveryOperationResponse:
+        """Release only a never-invoked prepared fence after fresh provider proof."""
+
+        release = self._configuration()
+        self._validate_provenance(request.provenance, release=release)
+        row = self._operation(request.operation_id, request.request_fingerprint)
+        self._require_operation_operator(row, operator_certificate_sha256)
+        self._require_abortable_row(row)
+        if row.get("abort_receipt_digest") is not None:
+            return self._project(row, idempotent_replay=True)
+
+        target = self._target_from_row(row)
+        self._require_no_claim_scope(target.worker_name)
+        (
+            provider_runner_id,
+            provider_status,
+            provider_observed_at,
+            provider_observation,
+        ) = self._observe_initial_target(target)
+        proof_key = self._receipt_key()
+        proof = self.store.issue_worker_provider_idle_proof(
+            key=proof_key,
+            worker_name=target.worker_name,
+            repository=target.repository,
+            labels=target.labels,
+            provider_runner_id=provider_runner_id,
+            provider_status=provider_status,
+            provider_busy=None if provider_runner_id is None else False,
+            active_jobs=0,
+            provider_observation=provider_observation,
+            observed_at=provider_observed_at,
+        )
+        aborted = self.store.abort_worker_recovery(
+            operation_id=request.operation_id,
+            request_fingerprint=request.request_fingerprint,
+            operator_certificate_sha256=str(row["operator_certificate_sha256"]),
+            abort_controller_revision=cast(str, release["revision"]),
+            abort_controller_release_digest=cast(str, release["release_digest"]),
+            policy_digest=self._policy_digest(),
+            agent_release_digest=self._agent_release_digest(),
+            provider_idle_proof=proof,
+            provider_proof_key=proof_key,
+            reason=request.reason,
+            proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
+        )
+        return self._project(aborted, idempotent_replay=False)
 
     def claim(
         self,
@@ -446,6 +458,10 @@ class WorkerRecoveryController:
             else self.store.prepared_worker_recovery(target.worker_name)
         )
         if row is None:
+            return None
+        # A controller-owned abort releases a stale fence without granting the
+        # host any mutation authority, including after a controller upgrade.
+        if row["state"] == "released":
             return None
         self._require_row_binding(
             row,
@@ -1016,6 +1032,68 @@ class WorkerRecoveryController:
             }
         return runners, observed, provider_observation
 
+    def _observe_initial_target(
+        self, target: RecoveryTarget
+    ) -> tuple[int | None, str | None, float, dict[str, Any]]:
+        """Observe one fixed recovery target, including an authoritative absence."""
+
+        try:
+            allowed_initial_status = (
+                ("offline", "online")
+                if target.action == "restore_saved_configuration"
+                else "offline"
+            )
+            _, observed, provider_observation = self._observe_runner(
+                target,
+                expected_labels=target.labels,
+                status=allowed_initial_status,
+                require_idle=True,
+            )
+            provider_runner_id = int(observed["id"])
+            if (
+                target.expected_provider_runner_id is not None
+                and provider_runner_id != target.expected_provider_runner_id
+            ):
+                raise WorkerRecoveryError(
+                    "provider runner id does not match the fixed recovery target"
+                )
+            return (
+                provider_runner_id,
+                cast(str, observed["status"]),
+                float(observed["observed_at"]),
+                provider_observation,
+            )
+        except WorkerRecoveryError as error:
+            if target.action != "replace_existing_registration":
+                raise
+            installation_id = self.github.repository_installation_id(target.repository)
+            runners = sorted(
+                (
+                    _runner_record(raw)
+                    for raw in self.github.repository_runners(installation_id, target.repository)
+                ),
+                key=lambda runner: int(runner["id"]),
+            )
+            if any(runner["name"] == target.worker_name for runner in runners):
+                raise error
+            active_jobs = self.github.runner_name_active_jobs(
+                installation_id, target.repository, target.worker_name
+            )
+            if active_jobs:
+                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
+            return (
+                None,
+                None,
+                time.time(),
+                {
+                    "schema": "qdev-worker-provider-absence-observation-v1",
+                    "repository": target.repository,
+                    "worker_name": target.worker_name,
+                    "runners": {"total_count": len(runners), "items": runners},
+                    "active_target_jobs": {"total_count": 0, "items": []},
+                },
+            )
+
     def _command_envelope(self, row: dict[str, Any], *, target: RecoveryTarget) -> dict[str, Any]:
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=self.settings.recovery_command_ttl_seconds)
@@ -1097,7 +1175,9 @@ class WorkerRecoveryController:
         target = self._target_from_row(row)
         state = str(row["state"])
         native_outcome = row.get("native_outcome")
-        if state == "completed":
+        if row.get("abort_receipt_digest") is not None:
+            projected = "aborted"
+        elif state == "completed":
             canary = self.store.worker_recovery_canary(str(row["operation_id"]))
             if canary is None:
                 projected = "awaiting_acceptance"
@@ -1197,6 +1277,50 @@ class WorkerRecoveryController:
             operator_certificate=str(row["operator_certificate_sha256"]),
             release=release,
         )
+
+    def _require_abortable_row(self, row: dict[str, Any]) -> None:
+        """Validate the immutable authority of a never-invoked operation."""
+
+        target = self._target_from_row(row)
+        try:
+            labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("recovery operation binding is invalid") from error
+        abort_receipt = row.get("abort_receipt_digest")
+        if (
+            row.get("worker_name") != target.worker_name
+            or row.get("repository") != target.repository
+            or labels != target.labels
+            or row.get("recovery_action") != target.action
+            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
+            or row.get("interface_version") != INTERFACE_VERSION
+            or row.get("interface_digest") != INTERFACE_DIGEST
+            or row.get("policy_digest") != self._policy_digest()
+            or row.get("agent_release_digest") != self._agent_release_digest()
+            or not isinstance(row.get("controller_revision"), str)
+            or not _GIT_REVISION.fullmatch(str(row["controller_revision"]))
+            or not isinstance(row.get("controller_release_digest"), str)
+            or not _SHA256_HEX.fullmatch(str(row["controller_release_digest"]))
+            or row.get("invoked_at") is not None
+            or row.get("native_outcome") is not None
+            or row.get("native_outcome_digest") is not None
+            or row.get("native_finalized_at") is not None
+            or row.get("acceptance_proof_digest") is not None
+            or row.get("canary_run_id") is not None
+            or (
+                abort_receipt is None
+                and row.get("state") != "prepared"
+            )
+            or (
+                abort_receipt is not None
+                and (
+                    row.get("state") != "released"
+                    or not isinstance(abort_receipt, str)
+                    or not _SHA256_DIGEST.fullmatch(abort_receipt)
+                )
+            )
+        ):
+            raise WorkerRecoveryError("recovery operation cannot be aborted")
 
     def _require_acceptance_row(
         self, row: dict[str, Any], *, release: dict[str, Any]

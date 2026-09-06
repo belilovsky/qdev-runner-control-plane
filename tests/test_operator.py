@@ -325,6 +325,61 @@ def test_recovery_accept_binds_owner_supplied_exact_canary_sha(
     assert captured["body"]["canary_head_sha"] == "7" * 40
 
 
+def test_recovery_abort_binds_exact_operation_and_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    monkeypatch.setattr(
+        operator,
+        "_fresh_recovery_provenance",
+        lambda settings: {"schema": "qdev-runner-recovery-provenance-v1"},
+    )
+
+    def fake_request(
+        settings: operator.OperatorSettings, **kwargs: Any
+    ) -> operator.RecoveryOperationResponse:
+        captured.update(kwargs)
+        return operator.RecoveryOperationResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-operation-v1",
+                "operation_id": "5" * 64,
+                "request_fingerprint": "6" * 64,
+                "target_id": "qdev-qazstack-01",
+                "worker_name": "qdev-qazstack-01",
+                "repository": "belilovsky/qazstack",
+                "provider_runner_id": None,
+                "state": "aborted",
+                "native_outcome": None,
+                "controller_revision": "1" * 40,
+                "controller_release_digest": "2" * 64,
+                "policy_digest": "sha256:" + "3" * 64,
+                "agent_release_digest": "sha256:" + "4" * 64,
+                "idempotent_replay": False,
+            }
+        )
+
+    monkeypatch.setattr(operator, "recovery_request", fake_request)
+    reason = "Release the never-invoked stale QazStack recovery fence."
+    result = operator.run(
+        [
+            "recovery-abort",
+            "--operation-id",
+            "5" * 64,
+            "--request-fingerprint",
+            "6" * 64,
+            "--reason",
+            reason,
+        ]
+    )
+
+    assert result["state"] == "aborted"
+    assert captured["path"] == "/internal/v1/operations/worker-recovery/abort"
+    assert captured["body"]["operation_id"] == "5" * 64
+    assert captured["body"]["request_fingerprint"] == "6" * 64
+    assert captured["body"]["reason"] == reason
+
+
 def test_retired_recovery_command_is_not_exposed() -> None:
     with pytest.raises(SystemExit):
         operator.build_parser().parse_args(["recover-existing-worker"])

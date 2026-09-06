@@ -333,11 +333,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     for command_name, command_help in (
         ("recovery-status", "Read one exact controller-owned recovery transaction"),
+        ("recovery-abort", "Release one never-invoked stale recovery transaction"),
         ("recovery-accept", "Run provider and canary acceptance for one transaction"),
     ):
         recovery_command = commands.add_parser(command_name, help=command_help)
         recovery_command.add_argument("--operation-id", required=True)
         recovery_command.add_argument("--request-fingerprint", required=True)
+        if command_name == "recovery-abort":
+            recovery_command.add_argument("--reason", required=True)
         if command_name == "recovery-accept":
             recovery_command.add_argument("--canary-head-sha")
 
@@ -487,7 +490,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             response_model=RecoveryOperationResponse,
         )
         return response.model_dump(mode="json", by_alias=True)
-    if arguments.command in {"recovery-status", "recovery-accept"}:
+    if arguments.command in {"recovery-status", "recovery-abort", "recovery-accept"}:
         operation_id = _sha256_hex(arguments.operation_id, field="operation ID")
         request_fingerprint = _sha256_hex(
             arguments.request_fingerprint,
@@ -505,6 +508,8 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 arguments.canary_head_sha,
                 field="canary head SHA",
             )
+        if action == "abort":
+            action_body["reason"] = arguments.reason
         response = recovery_request(
             settings,
             method="POST",
