@@ -3,34 +3,31 @@ from pathlib import Path
 from qdev_runner.policy import Policy
 
 
-def test_qazposter_contract_admission_is_repository_scoped() -> None:
+def test_qazposter_contract_admission_uses_bounded_qdev_ci_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
-    assert policy.repository_profile_disk_mb[
-        ("belilovsky/qazposter", "qdev-ci")
-    ] == 4 * 1024
-    assert policy.profiles["qdev-ci"].disk_mb == 12 * 1024
+    assert ("belilovsky/qazposter", "qdev-ci") not in policy.repository_profile_disk_mb
+    assert policy.profiles["qdev-ci"].disk_mb == 4 * 1024
 
 
-def test_controller_verification_admission_is_repository_scoped() -> None:
+def test_controller_verification_admission_uses_bounded_qdev_ci_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
-    assert policy.repository_profile_disk_mb[
-        ("belilovsky/qdev-runner-control-plane", "qdev-ci")
-    ] == 4 * 1024
-    assert policy.profiles["qdev-ci"].disk_mb == 12 * 1024
+    assert (
+        "belilovsky/qdev-runner-control-plane",
+        "qdev-ci",
+    ) not in policy.repository_profile_disk_mb
+    assert policy.profiles["qdev-ci"].disk_mb == 4 * 1024
 
 
-def test_platform_portal_contract_admission_is_repository_scoped() -> None:
+def test_platform_portal_contract_admission_uses_bounded_qdev_ci_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
-    assert policy.repository_profile_disk_mb[
-        ("belilovsky/platform-portal", "qdev-ci")
-    ] == 4 * 1024
-    assert policy.profiles["qdev-ci"].disk_mb == 12 * 1024
+    assert ("belilovsky/platform-portal", "qdev-ci") not in policy.repository_profile_disk_mb
+    assert policy.profiles["qdev-ci"].disk_mb == 4 * 1024
 
 
 def test_qazcompute_docker_admission_is_repository_scoped() -> None:

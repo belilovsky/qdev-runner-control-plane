@@ -19,6 +19,6 @@ trusted_events:
 resources:
   cpu: 1
   memory_mb: 3072
-  disk_mb: 12288
+  disk_mb: 4096
 artifact_policy: qdev-artifact-v1
 release_runner: null
