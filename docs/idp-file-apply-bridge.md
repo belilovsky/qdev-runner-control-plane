@@ -333,6 +333,37 @@ The native active pointer is finalized only after host/controller recovery retur
 Tests exercise both baseline and subsequent releases with real local locks and
 journals; their runtime/provider inputs remain synthetic, not production proof.
 
+## Retained archive and restart entrypoint
+
+The code-only `IdPNativeInvocation.retain` verifies the signed job, complete
+candidate and actual published outer archive (including inner bundle and all
+components) before retaining them beneath `/var/lib/qdev-idp/dispatches`.
+`qdev-oidc` secrets, operator credentials and browser sessions are not inputs.
+Retention status is `retained`, never admission, deployment or acceptance.
+First publication requires a live signed dispatch; an exact immutable replay
+can finish a failed directory sync after expiry, without renewing authority.
+
+`idp_retained_dispatch` traverses root-owned no-follow descriptors, requires
+private directories 0700 and files 0600 with one link, and uses a nonblocking
+intake lock. Complete archive and metadata writes are fsynced before one atomic
+directory rename publishes the set; the parent is then fsynced. Interrupted
+temporary sets remain private and are never executable publications. Existing
+final sets cannot be overwritten or silently repaired; conflicting job,
+candidate or archive bytes are rejected. No automatic cleanup removes history.
+
+`invoke_retained_idp` is the fixed restart entrypoint for installed code, not a
+new CLI, enrollment or polling service. It re-authenticates all retained bindings
+before loading verified helpers. Intake never holds its lock over native-global
+or host-journal locks. An `inspect` before completed publication returns the
+distinct `inputs_not_published` storage status without helper execution; it is
+not a successful native inspection or acceptance. Reconcile uses the existing
+native/controller journals, not another apply. Missing or corrupt inputs and
+unknown outcomes fail closed with redacted errors, without automatic retries.
+Tests cover complete replay, concurrent intake, every fsync boundary, before/
+after each write and rename, mode/owner/link violations, restart tampering,
+expiry, lock ordering and missing initial publication. All use synthetic
+artifacts and authority; they do not prove production enrollment or execution.
+
 ## Still required before enrollment or production use
 
 1. Release and enroll the implemented fixed issuer through the existing controller
@@ -342,8 +373,9 @@ journals; their runtime/provider inputs remain synthetic, not production proof.
 2. Install the fixed IdP invocation through the native verified-helper/global-lock
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
    and the explicit installed inspect/recovery entrypoint. The code-only invocation,
-   factory and typed observations above are implemented, but the polling owner must
-   still retain and supply the published outer archive and authenticated job.
+   factory, immutable retention and restart entrypoint above are implemented,
+   but the polling owner must still acquire the full authenticated job/candidate
+   and published archive and call those fixed entrypoints.
    Native reconciliation is now connected to its existing pending host journal
    in the code-only invocation; the installed polling owner must use it. They are
    not an installed executable integration.

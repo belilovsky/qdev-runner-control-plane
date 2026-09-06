@@ -2511,6 +2511,35 @@ class IdPNativeInvocation:
             raise AgentError("IdP native artifact does not bind the signed candidate")
         return job, candidate
 
+    def retain(self, archive, *, transaction):
+        """Persist verified inputs, not an admission or a deployment result.
+
+        An exact already-published retry may finish durability after expiry.
+        First publication requires a live dispatch; neither path loads code.
+        """
+        from qdev_runner import idp_retained_dispatch as storage
+        from qdev_runner.idp_native_bundle import verify_native_archive
+
+        try:
+            storage.transaction_name(transaction)
+            job, candidate = self._verified_job(live=False)
+            verify_native_archive(
+                archive, source_sha=job["source_sha"],
+                archive_sha256=candidate["archive_sha256"],
+                bundle_sha256=candidate["payload_sha256"],
+            )
+            # Immutable storage checks exact equality on any existing result.
+            # A missing publication must not turn an expired job into new work.
+            if storage.read(transaction) is None:
+                self._verified_job(live=True)
+            storage.retain(transaction, job, candidate, archive)
+        except Exception:
+            raise AgentError("IdP input retention requires verified-state inspection") from None
+        return {
+            "schema": storage.SCHEMA, "transaction": transaction, "status": "retained",
+            "source_sha": job["source_sha"], "artifact_digest": job["artifact_digest"],
+        }
+
     def invoke(self, archive, *, action, transaction, ci="none"):
         from qdev_runner.idp_native_bundle import verify_native_archive
 
@@ -2625,6 +2654,38 @@ class IdPNativeInvocation:
             if result.get("status") != "verified":
                 raise ControllerOutcomeUnresolved("IdP controller recovery is not verified")
             return result
+
+
+def invoke_retained_idp(config, profile, lane, *, transaction, action, ci="none"):
+    """Installed-code entrypoint; never execute an unverified staged helper.
+
+    Intake has its own short lock, released before native-global/host-journal
+    locking. Missing publication is inspectable, but is NOT native acceptance.
+    Signature, full candidate and both archive bindings are rechecked on every
+    invocation, including historical inspect/reconcile after a process restart.
+    """
+    from qdev_runner import idp_retained_dispatch as storage
+
+    try:
+        _validate_idp_file_scope(config, profile, lane)
+        storage.transaction_name(transaction)
+        if action not in {"apply", "inspect", "reconcile", "observe"}:
+            raise AgentError("invalid retained IdP action")
+        retained = storage.read(transaction)
+        if retained is None:
+            if action != "inspect" or ci != "none":
+                raise AgentError("IdP inputs have not been published")
+            return {
+                "schema": storage.SCHEMA, "transaction": transaction,
+                "status": "inputs_not_published",
+            }
+        metadata, archive = retained
+        invocation = IdPNativeInvocation(
+            config, profile, lane, metadata["job"], metadata["candidate"],
+        )
+        return invocation.invoke(archive, action=action, transaction=transaction, ci=ci)
+    except Exception:
+        raise AgentError("retained IdP operation requires verified-state inspection") from None
 
 
 class IdPFileApplyAdapter:
