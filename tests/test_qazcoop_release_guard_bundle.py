@@ -90,6 +90,18 @@ def test_builder_exports_exact_bundle_with_signed_key_canary(tmp_path: Path) -> 
     assert set(manifest["files"]) == set(installer.EXPECTED_FILES)
 
 
+def test_guard_launcher_cannot_mutate_immutable_version_with_bytecode(
+    tmp_path: Path,
+) -> None:
+    bundle, installer = _bundle(tmp_path)
+    launcher = (bundle / installer.EXPECTED_FILES["qdev-controller-verify-admission"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "exec /usr/bin/python3 -I -B -c" in launcher
+    assert "PYTHONDONTWRITEBYTECODE=0" not in launcher
+
+
 def test_bundle_validation_rejects_unmanifested_python(tmp_path: Path) -> None:
     bundle, installer = _bundle(tmp_path)
     (bundle / "lib/sitecustomize.py").write_text("raise RuntimeError\n", encoding="utf-8")
