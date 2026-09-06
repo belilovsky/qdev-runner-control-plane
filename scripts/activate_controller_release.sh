@@ -253,7 +253,8 @@ required=(
   deploy/qdev-release-qaz-events.service \
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qmt.compose.yml \
-  deploy/Dockerfile.broker
+  deploy/Dockerfile.broker \
+  scripts/validate_controller_image_binding.py
 )
 if [[ "$rollback_mode" != true ]]; then
   required+=(
@@ -978,10 +979,6 @@ if not isinstance(dependency_identity, dict) or set(dependency_identity) != {
     raise SystemExit("previous controller dependency identity is invalid")
 if runtime_identity.get("source_revision") != receipt["revision"]:
     raise SystemExit("previous controller source binding is invalid")
-if runtime_identity.get("public_image_id") != public_image_id or runtime_identity.get(
-    "internal_image_id"
-) != internal_image_id:
-    raise SystemExit("previous controller image binding is invalid")
 measured = [
     runtime_identity.get("source_digest"),
     runtime_identity.get("public_image_id"),
@@ -993,14 +990,48 @@ measured = [
 if any(not isinstance(value, str) or not digest.fullmatch(value) for value in measured):
     raise SystemExit("previous controller measurements are invalid")
 if dependency_identity["public_installed_digest"] != dependency_identity["internal_installed_digest"]:
-    raise SystemExit("previous controller dependency binding is invalid")'
+    raise SystemExit("previous controller dependency binding is invalid")
+print(runtime_identity["public_image_id"])
+print(runtime_identity["internal_image_id"])'
+
+validate_controller_image_binding() {
+  local expected_image_id="$1"
+  local runtime_image_id="$2"
+  local container_name="$3"
+  local platform_manifest
+  if [[ "$expected_image_id" == "$runtime_image_id" ]]; then
+    return 0
+  fi
+  platform_manifest="$(
+    docker inspect "$container_name" \
+      --format '{{index .Config.Labels "com.docker.compose.image"}}'
+  )" || return 1
+  python3 "$script_root/scripts/validate_controller_image_binding.py" \
+    --expected-index "$expected_image_id" \
+    --runtime-index "$runtime_image_id" \
+    --platform-manifest "$platform_manifest"
+}
 
 validate_previous_release_status() {
   local public_image_id="$1"
   local internal_image_id="$2"
+  local validation_output
+  local -a expected_images
   [[ "$release_status_was_present" == true ]] || return 0
-  python3 -c "$previous_status_validation_program" \
-    "$release_status_backup" "$public_image_id" "$internal_image_id"
+  validation_output="$(
+    python3 -c "$previous_status_validation_program" \
+      "$release_status_backup" "$public_image_id" "$internal_image_id"
+  )" || return 1
+  [[ -n "$validation_output" ]] || return 0
+  mapfile -t expected_images <<< "$validation_output"
+  if [[ "${#expected_images[@]}" -ne 2 ]]; then
+    printf 'previous controller image identity is incomplete\n' >&2
+    return 1
+  fi
+  validate_controller_image_binding \
+    "${expected_images[0]}" "$public_image_id" qdev-runner-broker-public || return 1
+  validate_controller_image_binding \
+    "${expected_images[1]}" "$internal_image_id" qdev-runner-broker-internal
 }
 
 write_rollback_anchor() {
