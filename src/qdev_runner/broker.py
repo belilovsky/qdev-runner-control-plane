@@ -832,7 +832,9 @@ def create_app(
                             detail=f"managed release ledger unavailable: {exc}",
                         ) from exc
                 admitted, reason = queued_managed_release_ledger.classify_admission(
-                    queued_managed.entry_id, str(queued["head_sha"])
+                    queued_managed.entry_id,
+                    str(queued["head_sha"]),
+                    run_id=int(queued["run_id"]),
                 )
                 if not admitted:
                     assert reason is not None
@@ -1830,7 +1832,9 @@ def create_app(
                     admin_platform_ledger_entry = managed_entry.entry_id
                 else:
                     managed_release_ledger().validate_admission(
-                        managed_entry.entry_id, str(candidate["head_sha"])
+                        managed_entry.entry_id,
+                        str(candidate["head_sha"]),
+                        run_id=int(candidate["run_id"]),
                     )
                     managed_release_ledger_entry = managed_entry.entry_id
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
@@ -1955,7 +1959,9 @@ def create_app(
                                 detail=f"managed release ledger unavailable: {exc}",
                             ) from exc
                     admitted, reason = queued_managed_release_ledger.classify_admission(
-                        queued_managed.entry_id, str(queued["head_sha"])
+                        queued_managed.entry_id,
+                        str(queued["head_sha"]),
+                        run_id=int(queued["run_id"]),
                     )
                     if not admitted:
                         assert reason is not None
@@ -2349,7 +2355,9 @@ def create_app(
                             detail=f"managed release ledger unavailable: {exc}",
                         ) from exc
                 admitted, reason = queued_managed_release_ledger.classify_admission(
-                    queued_managed.entry_id, str(queued["head_sha"])
+                    queued_managed.entry_id,
+                    str(queued["head_sha"]),
+                    run_id=int(queued["run_id"]),
                 )
                 if not admitted:
                     assert reason is not None

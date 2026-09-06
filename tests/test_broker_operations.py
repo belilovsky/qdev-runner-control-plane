@@ -87,7 +87,12 @@ def _initialized_admin_platform_ledger(tmp_path: Path) -> tuple[Path, Path]:
     return ledger_path, receipt_root
 
 
-def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
+def _app(
+    tmp_path: Path,
+    github: Any | None = None,
+    *,
+    managed_release_ledger_path: Path | None = None,
+) -> TestClient:
     inventory = tmp_path / "repos.json"
     inventory.write_text(
         json.dumps(
@@ -247,9 +252,8 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         fleet_host_dispatch_request_root=tmp_path / "fleet-host-dispatch" / "incoming",
         fleet_host_dispatch_result_root=tmp_path / "fleet-host-dispatch" / "results",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
-        managed_release_ledger_path=(
-            Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
-        ),
+        managed_release_ledger_path=managed_release_ledger_path
+        or Path(__file__).parents[1] / "config" / "managed-release-ledger.yml",
         admin_platform_ledger_path=admin_platform_ledger,
         admin_platform_receipt_root=admin_platform_receipts,
         release_jobs_root=tmp_path / "release-jobs",
@@ -263,6 +267,24 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         github=github or object(),  # type: ignore[arg-type]
     )
     return TestClient(app)
+
+
+def _managed_release_ledger(
+    tmp_path: Path,
+    *,
+    source_sha: str,
+    run_id: int,
+    status: str = "ci_queued",
+) -> Path:
+    template_path = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
+    document = yaml.safe_load(template_path.read_text(encoding="utf-8"))
+    entry = document["entries"]["qazgeo"]
+    entry["source_sha"] = source_sha
+    entry["status"] = status
+    entry["ci_runs"] = [{"run_id": str(run_id), "state": "queued"}]
+    path = tmp_path / "managed-release-ledger.yml"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return path
 
 
 def _release_heartbeat() -> dict[str, Any]:
@@ -1587,6 +1609,155 @@ def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
 
     assert response.status_code == 409
     assert response.json()["detail"] == "managed production candidate tuple is not admitted"
+
+
+def test_managed_production_unknown_run_is_fail_closed_but_does_not_block_fifo(
+    tmp_path: Path,
+) -> None:
+    exact_sha = "9" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=exact_sha,
+        run_id=84000000999,
+    )
+    client = _app(
+        tmp_path,
+        FakeGitHub(),
+        managed_release_ledger_path=ledger_path,
+    )
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "unlisted-managed-production-run",
+        repository="belilovsky/qazgeo",
+        head_sha=exact_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    direct = client.post(
+        "/internal/v1/operations/jobs/41/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 41,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "unlisted-managed-run-direct",
+            "duration_seconds": 900,
+        },
+    )
+    assert direct.status_code == 409
+    assert direct.json()["detail"] == "managed production CI run is not admitted"
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-after-unlisted-managed-run",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": exact_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
+        }
+    ]
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_managed_production_fifo_skip_is_rechecked_when_ledger_reactivates(
+    tmp_path: Path,
+) -> None:
+    active_sha = "9" * 40
+    stale_sha = "8" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=stale_sha,
+        run_id=84000000041,
+    )
+    client = _app(tmp_path, managed_release_ledger_path=ledger_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "temporarily-stale-managed-row",
+        repository="belilovsky/qazgeo",
+        head_sha=active_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-before-managed-reactivation",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    _managed_release_ledger(
+        tmp_path,
+        source_sha=active_sha,
+        run_id=84000000041,
+    )
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 204
+    assert client.app.state.store.job_status(41) == "pending"
+    assert client.app.state.store.job_status(42) == "pending"
 
 
 def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(
