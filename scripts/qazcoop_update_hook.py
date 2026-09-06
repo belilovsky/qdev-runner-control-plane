@@ -17,6 +17,7 @@ PAYLOAD_PATH = "docs/acceptance/release-receipt.v3.payload.json"
 VERIFIER = Path("/usr/local/sbin/qdev-controller-verify-admission")
 ZERO = "0" * 40
 SHA = re.compile(r"^[0-9a-f]{40}$")
+RELEASABLE = frozenset({"release_ready", "released"})
 
 
 class GuardError(ValueError):
@@ -97,8 +98,14 @@ def validate_update(repository: Path, reference: str, old: str, new: str) -> Non
     payload = object_at(repository, new, PAYLOAD_PATH)
     candidate_source = candidate["functional_source_sha"]
     payload_source = payload.get("functional_source_sha")
-    if candidate_source != payload_source:
-        raise GuardError("release lock and evidence source differ")
+    status = payload.get("status")
+    if not isinstance(status, str):
+        raise GuardError("release evidence status is invalid")
+    if status in RELEASABLE:
+        if candidate_source != payload_source:
+            raise GuardError("release lock and evidence source differ")
+    elif candidate_source != previous["functional_source_sha"]:
+        raise GuardError("incomplete evidence cannot advance the active release lock")
     for source, message in (
         (previous["functional_source_sha"], "locked release is not retained"),
         (candidate_source, "new lock does not point into the branch"),
@@ -117,11 +124,8 @@ def validate_update(repository: Path, reference: str, old: str, new: str) -> Non
         "--evidence-commit-sha",
         new,
     ]
-    # Every accepted update moves the active release lock to the evidence
-    # commit's functional parent.  Require the controller receipt even when
-    # the accompanying evidence is marked incomplete so that an unsigned
-    # evidence commit cannot advance the deployable source.
-    command.append("--require-authoritative-admission")
+    if status in RELEASABLE:
+        command.append("--require-authoritative-admission")
     result = subprocess.run(command, cwd=repository, capture_output=True, text=True)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "admission rejected"

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -95,6 +96,32 @@ def _trust_bundle(tmp_path: Path, public_key: Path) -> tuple[Path, Path, Path]:
         },
     )
     return trust, launcher, hook
+
+
+def _real_verifier_wrapper(
+    tmp_path: Path,
+    trust: Path,
+    arguments_log: Path,
+) -> Path:
+    wrapper = tmp_path / "real-qazcoop-verifier"
+    source_root = Path(__file__).parents[1] / "src"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(source_root)!r})\n"
+        "from qdev_runner.qazcoop_release_guard import main\n"
+        f"Path({str(arguments_log)!r}).write_text("
+        "json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "raise SystemExit(main([*sys.argv[1:], "
+        f"'--trust-dir', {str(trust)!r}, "
+        f"'--receipt-dir', {str(tmp_path / 'unused-receipts')!r}, "
+        f"'--replay-store', {str(tmp_path / 'unused-replay.sqlite3')!r}]))\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
 
 
 def _release_payload(functional_sha: str, manifest: dict[str, object]) -> dict[str, object]:
@@ -478,13 +505,13 @@ def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
     assert verifier_calls[0][-1] == "--require-authoritative-admission"
 
 
-def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
+def test_update_hook_keeps_active_lock_and_allows_incomplete_evidence_without_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     private = tmp_path / "private.pem"
     public = tmp_path / "public.pem"
     initialize_keypair(private, public)
-    trust, _launcher, _installed_hook = _trust_bundle(tmp_path, public)
+    trust, launcher, installed_hook = _trust_bundle(tmp_path, public)
     repository, functional_sha, evidence_sha = _repository(tmp_path, trust)
     payload_path = repository / PAYLOAD_PATH
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -502,26 +529,21 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
     controller["admission_id"] = None
     controller["claim_id"] = None
     _write_json(controller_path, controller)
-    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH)
+    historical_lock = json.loads(_git(repository, "show", f"{functional_sha}:{LOCK_PATH}"))
+    _write_json(repository / LOCK_PATH, historical_lock)
+    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH)
     _git(repository, "commit", "--amend", "--no-edit")
     evidence_sha = _git(repository, "rev-parse", "HEAD")
     hook = _hook_module()
-    verifier_calls: list[list[str]] = []
-    original_run = subprocess.run
-
-    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        command = args[0]
-        if isinstance(command, list) and command and str(command[0]).endswith(
-            "qdev-controller-verify-admission"
-        ):
-            verifier_calls.append([str(value) for value in command])
-            return subprocess.CompletedProcess(
-                command, 1, "", "authoritative admission requires a releasable payload\n"
-            )
-        return original_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(hook.subprocess, "run", observed_run)
-    with pytest.raises(hook.GuardError, match="authoritative admission requires"):
-        hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
-    assert len(verifier_calls) == 1
-    assert verifier_calls[0][-1] == "--require-authoritative-admission"
+    arguments_log = tmp_path / "verifier-arguments.json"
+    monkeypatch.setattr(
+        hook,
+        "VERIFIER",
+        _real_verifier_wrapper(tmp_path, trust, arguments_log),
+    )
+    monkeypatch.setenv("QAZCOOP_GUARD_LAUNCHER", str(launcher))
+    monkeypatch.setenv("QAZCOOP_GUARD_HOOK", str(installed_hook))
+    hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
+    verifier_arguments = json.loads(arguments_log.read_text(encoding="utf-8"))
+    assert verifier_arguments[-1] == evidence_sha
+    assert "--require-authoritative-admission" not in verifier_arguments

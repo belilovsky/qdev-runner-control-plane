@@ -5,6 +5,8 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -107,7 +109,54 @@ def test_activation_adapter_binds_source_target_and_anchor() -> None:
         )
 
 
-def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
+def test_activation_adapter_replay_rechecks_measured_identity_under_release_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    envelope = _activation_envelope()
+    monkeypatch.setattr(ACTIVATION.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        ACTIVATION.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(ACTIVATION, "_candidate", lambda _revision: Path("/fixed/release"))
+    monkeypatch.setattr(ACTIVATION, "_release_digest", lambda _candidate: DIGEST)
+
+    lock_held = False
+
+    @contextmanager
+    def release_lock() -> Iterator[None]:
+        nonlocal lock_held
+        assert lock_held is False
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    status_reads: list[bool] = []
+    identities = iter(
+        [
+            (SHA, DIGEST),
+            ("e" * 40, "sha256:" + "f" * 64),
+        ]
+    )
+
+    def read_status(*, require_measured: bool = False) -> tuple[str, str]:
+        assert lock_held is True
+        status_reads.append(require_measured)
+        return next(identities)
+
+    monkeypatch.setattr(ACTIVATION, "_release_lock", release_lock)
+    monkeypatch.setattr(ACTIVATION, "_read_status", read_status)
+
+    with pytest.raises(ACTIVATION.AdapterError, match="activation_identity_mismatch"):
+        ACTIVATION.main()
+    assert status_reads == [False, True]
+    assert lock_held is False
+
+
+def test_activation_adapter_accepts_legacy_migration_anchor_and_measured_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status = tmp_path / "controller-release.json"
@@ -118,6 +167,7 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
                 "state": "active",
                 "revision": SHA,
                 "release_digest": "b" * 64,
+                "activated_at": "2026-09-05T00:00:00Z",
             }
         ),
         encoding="utf-8",
@@ -131,8 +181,9 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
         return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
 
     monkeypatch.setattr(Path, "lstat", root_owned)
+    assert ACTIVATION._read_status() == (SHA, DIGEST)
     with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
-        ACTIVATION._read_status()
+        ACTIVATION._read_status(require_measured=True)
 
     status.write_text(
         json.dumps(
@@ -158,6 +209,19 @@ def test_activation_adapter_rejects_legacy_and_accepts_measured_runtime(
         encoding="utf-8",
     )
     assert ACTIVATION._read_status() == (SHA, DIGEST)
+    assert ACTIVATION._read_status(require_measured=True) == (SHA, DIGEST)
+
+    measured = json.loads(status.read_text(encoding="utf-8"))
+    measured["release_digest"] = "b" * 64
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_digest_invalid"):
+        ACTIVATION._read_status()
+
+    measured["release_digest"] = DIGEST
+    measured["activated_at"] = "not-a-date"
+    status.write_text(json.dumps(measured), encoding="utf-8")
+    with pytest.raises(ACTIVATION.AdapterError, match="runtime_status_invalid"):
+        ACTIVATION._read_status()
 
 
 def test_candidate_preparation_requires_same_measured_runtime_anchor(
@@ -190,8 +254,7 @@ def test_candidate_preparation_requires_same_measured_runtime_anchor(
         encoding="utf-8",
     )
     status.chmod(0o600)
-    with pytest.raises(PREPARE.ControllerCandidateError, match="status is unsafe"):
-        PREPARE._active_runtime_source_sha()
+    assert PREPARE._active_runtime_source_sha() == SHA
 
     measured = {
         "schema": "qdev-controller-release-status-v2",

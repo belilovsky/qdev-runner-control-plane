@@ -9,17 +9,22 @@ the candidate's fixed activation entrypoint with compare-and-swap semantics.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 RELEASES_ROOT = Path("/opt/qdev-runner-control-plane/releases")
 STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
+RELEASE_LOCK_PATH = Path("/run/lock/qdev-controller-release.lock")
 SCHEMA = "qdev-fleet-bootstrap-adapter-result-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -170,38 +175,54 @@ def _release_digest(candidate: Path) -> str:
     return digest
 
 
-def _read_status() -> tuple[str, str]:
+def _valid_activated_at(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _read_status(*, require_measured: bool = False) -> tuple[str, str]:
     try:
         metadata = STATUS_PATH.lstat()
         payload = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdapterError("runtime_status_unavailable") from exc
+    schema = payload.get("schema") if isinstance(payload, dict) else None
+    legacy_keys = {"schema", "state", "revision", "release_digest", "activated_at"}
+    measured_keys = legacy_keys | {"runtime_identity", "dependency_identity"}
+    expected_keys = legacy_keys if schema == "qdev-controller-release-status-v1" else measured_keys
     if (
         not stat.S_ISREG(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or metadata.st_uid != 0
         or stat.S_IMODE(metadata.st_mode) & 0o022
         or not isinstance(payload, dict)
-        or set(payload)
-        != {
-            "schema",
-            "state",
-            "revision",
-            "release_digest",
-            "activated_at",
-            "runtime_identity",
-            "dependency_identity",
-        }
-        or payload.get("schema") != "qdev-controller-release-status-v2"
+        or schema
+        not in {"qdev-controller-release-status-v1", "qdev-controller-release-status-v2"}
+        or set(payload) != expected_keys
         or payload.get("state") != "active"
+        or not _valid_activated_at(payload.get("activated_at"))
+        or (require_measured and schema != "qdev-controller-release-status-v2")
     ):
         raise AdapterError("runtime_status_invalid")
     revision = payload.get("revision")
     digest = payload.get("release_digest")
     if not isinstance(revision, str) or not SHA.fullmatch(revision):
         raise AdapterError("runtime_revision_invalid")
+    if (
+        schema == "qdev-controller-release-status-v1"
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        digest = f"sha256:{digest}"
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise AdapterError("runtime_digest_invalid")
+    if schema == "qdev-controller-release-status-v1":
+        return revision, digest
     runtime_identity = payload.get("runtime_identity")
     dependency_identity = payload.get("dependency_identity")
     if (
@@ -241,6 +262,27 @@ def _read_status() -> tuple[str, str]:
     return revision, digest
 
 
+@contextmanager
+def _release_lock() -> Iterator[None]:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(RELEASE_LOCK_PATH, flags, 0o600)
+    except OSError as exc:
+        raise AdapterError("controller_release_lock_unavailable") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
+            raise AdapterError("controller_release_lock_invalid")
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise AdapterError("controller_release_busy") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def _response(
     request: dict[str, Any],
     target: dict[str, Any],
@@ -270,24 +312,36 @@ def main() -> int:
     candidate = _candidate(str(request["controller_revision"]))
     if _release_digest(candidate) != request["controller_release_digest"]:
         raise AdapterError("release_digest_mismatch")
-    current_revision, current_digest = _read_status()
-    if (
-        current_revision == request["controller_revision"]
-        and current_digest == request["controller_release_digest"]
-    ):
-        response = _response(
-            request,
-            target,
-            status="already_completed",
-            result={"runtime_revision": current_revision, "runtime_digest": current_digest},
-        )
-        print(json.dumps(response, sort_keys=True, separators=(",", ":")))
-        return 0
-    if (
-        current_revision != target["rollback_revision"]
-        or current_digest != target["rollback_release_digest"]
-    ):
-        raise AdapterError("rollback_anchor_mismatch")
+    with _release_lock():
+        current_revision, current_digest = _read_status()
+        if (
+            current_revision == request["controller_revision"]
+            and current_digest == request["controller_release_digest"]
+        ):
+            # A legacy v1 status is a migration anchor only.  It cannot prove that
+            # the requested measured release has already been activated.
+            runtime_revision, runtime_digest = _read_status(require_measured=True)
+            if (
+                runtime_revision != request["controller_revision"]
+                or runtime_digest != request["controller_release_digest"]
+            ):
+                raise AdapterError("activation_identity_mismatch")
+            response = _response(
+                request,
+                target,
+                status="already_completed",
+                result={
+                    "runtime_revision": runtime_revision,
+                    "runtime_digest": runtime_digest,
+                },
+            )
+            print(json.dumps(response, sort_keys=True, separators=(",", ":")))
+            return 0
+        if (
+            current_revision != target["rollback_revision"]
+            or current_digest != target["rollback_release_digest"]
+        ):
+            raise AdapterError("rollback_anchor_mismatch")
     environment = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C.UTF-8",
@@ -308,7 +362,7 @@ def main() -> int:
         raise AdapterError("activation_outcome_unknown") from exc
     if completed.returncode != 0:
         raise AdapterError("activation_failed")
-    runtime_revision, runtime_digest = _read_status()
+    runtime_revision, runtime_digest = _read_status(require_measured=True)
     if (
         runtime_revision != request["controller_revision"]
         or runtime_digest != request["controller_release_digest"]
