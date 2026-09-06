@@ -583,6 +583,33 @@ def native_receipt(
         raise IdPObservationError("invalid IdP native observation") from None
 
 
+def installed_binding(observation: dict[str, Any]) -> bytes:
+    """Validated historical cutover bytes; not current admission authority."""
+    native_receipt(observation, installed=True)
+    return canonical(_binding(observation, True))
+
+
+def same_installed_release(retained: dict[str, Any], fresh: dict[str, Any]) -> bool:
+    """Compare complete validated receipts, allowing ONLY a later reobservation.
+
+    Both original observations/digests are checked before normalization. Journal,
+    CI, rollback, component and scope contents stay exact; no receipt is modified.
+    Collector origin and current freshness are enforced by the locked caller.
+    """
+    for receipt in (retained, fresh):
+        validate_runtime_evidence(receipt, installed_only=True)
+    old, new = (json.loads(canonical(value)) for value in (retained, fresh))
+    old_proof, new_proof = (value["artifact_provenance"] for value in (old, new))
+    if timestamp(new_proof["observation"]["observed_at"]) < timestamp(
+        old_proof["observation"]["observed_at"]
+    ):
+        return False
+    for proof in (old_proof, new_proof):
+        del proof["observation_sha256"]
+        del proof["observation"]["observed_at"]
+    return bool(old == new)
+
+
 def validate_runtime_evidence(receipt: dict[str, Any], *, installed_only: bool = False) -> None:
     """Same validator on host and controller; hashes without content cannot pass."""
     try:

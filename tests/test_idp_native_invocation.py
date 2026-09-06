@@ -84,7 +84,9 @@ def invocation(tmp_path, monkeypatch):
 def test_load_after_signature_verification_and_fixed_arguments(invocation, monkeypatch):
     calls = []
 
-    def dispatch(root, stage, target, args, helpers, *, controller_adapter):
+    def dispatch(
+        root, stage, target, args, helpers, *, controller_adapter, controller_recovery=None,
+    ):
         calls.append(args.action)
         assert str(root) == "/var/lib/qdev-idp/releases"
         assert stage == root / "native-test-001"
@@ -93,6 +95,7 @@ def test_load_after_signature_verification_and_fixed_arguments(invocation, monke
         assert args.bundle_digest == invocation.binding["bundle_sha256"]
         assert args.expected_previous == invocation.job["rollback_anchor"]["source_sha"]
         assert isinstance(controller_adapter, AGENT.ControllerIssuedIdPFileApplyAdapter)
+        assert controller_recovery is None
         return {"synthetic": True}
 
     native = SimpleNamespace(
@@ -144,6 +147,7 @@ def test_historical_signature_does_not_create_live_adapter(invocation, monkeypat
 
     def dispatch(*args, **kwargs):
         assert kwargs["controller_adapter"] is None
+        assert callable(kwargs.get("controller_recovery")) == (action == "reconcile")
         return {"synthetic": True}
 
     native = SimpleNamespace(

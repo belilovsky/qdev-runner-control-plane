@@ -315,6 +315,24 @@ loaded all 123 actual components and passed 12 incomplete-staging recovery
 observations, including an untrusted staged helper and interruption before mkdir.
 That local Git-produced fixture is NOT a published CI artifact or release proof.
 
+The native `reconcile` invocation now supplies a fixed code-only recovery reader.
+Under native-global then host-journal locks it matches the retained release,
+lease, fence, nonce, expiry, rollback anchor and full candidate to the signed job.
+It revalidates the archive/CI binding at the recorded cutover time, independently
+reobserves installed files and reconciles the existing controller job. Historical
+validation grants no new write authority. A not-yet-completed expired lease
+remains unresolved; a controller-verified job may repair local bookkeeping after
+expiry without another completion request or installation.
+
+Both retained and fresh completion receipts pass full content/digest validation
+before comparison. Only the collector's later observation time and its enclosing
+digest may differ; journal, CI, rollback, components, scope and public checks stay
+exact. The original receipt remains immutable. This permits recovery after lost
+completion replies or failed state writes without accepting changed evidence.
+The native active pointer is finalized only after host/controller recovery returns.
+Tests exercise both baseline and subsequent releases with real local locks and
+journals; their runtime/provider inputs remain synthetic, not production proof.
+
 ## Still required before enrollment or production use
 
 1. Release and enroll the implemented fixed issuer through the existing controller
@@ -325,8 +343,9 @@ That local Git-produced fixture is NOT a published CI artifact or release proof.
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
    and the explicit installed inspect/recovery entrypoint. The code-only invocation,
    factory and typed observations above are implemented, but the polling owner must
-   still retain and supply the published outer archive and authenticated job and
-   connect native reconciliation to its existing pending host journal. They are
+   still retain and supply the published outer archive and authenticated job.
+   Native reconciliation is now connected to its existing pending host journal
+   in the code-only invocation; the installed polling owner must use it. They are
    not an installed executable integration.
    No source from the IdP caller may replace the controller transaction, profile
    or protected key. No AVDS/QAK evidence is invented and no runtime validation

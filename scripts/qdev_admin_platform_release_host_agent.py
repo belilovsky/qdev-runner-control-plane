@@ -1608,7 +1608,9 @@ def _write_operation(
     )
 
 
-def _pending_operation(profile: Profile) -> dict[str, Any] | None:
+def _pending_operation(
+    profile: Profile, *, include_completed: bool = False,
+) -> dict[str, Any] | None:
     events = [event for event in _journal_events(profile) if "release_id" in event]
     if not events:
         return None
@@ -1616,7 +1618,9 @@ def _pending_operation(profile: Profile) -> dict[str, Any] | None:
     if not isinstance(release_id, str) or not _LEASE.fullmatch(release_id):
         raise AgentError("host operation journal release id is invalid")
     operation = [event for event in events if event.get("release_id") == release_id]
-    if operation[-1].get("phase") in {"completed", "rolled_back"}:
+    if operation[-1].get("phase") == "rolled_back" or (
+        operation[-1].get("phase") == "completed" and not include_completed
+    ):
         return None
     supported_phases = {
         "dispatch_accepted",
@@ -1632,6 +1636,8 @@ def _pending_operation(profile: Profile) -> dict[str, Any] | None:
         "recovery_rollback_ready",
         "recovery_unresolved",
     }
+    if include_completed:
+        supported_phases.add("completed")
     if any(event.get("phase") not in supported_phases for event in operation):
         raise AgentError("host operation journal phase is invalid")
     identity: dict[str, str] = {}
@@ -1801,6 +1807,15 @@ def _recover_pending(
             reason = "controller is verified but the candidate is not running"
             _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
+        if profile.adapter == "idp-file-v1":
+            _idp_reobserved_completion(
+                measured_receipt,
+                _completion_receipt(profile, candidate, previous_release, current_native),
+            )
+        if phases[-1] == "completed":
+            if not verified_state or runtime_receipt is None:
+                raise ControllerOutcomeUnresolved("completed operation state is inconsistent")
+            return {"status": "verified", "recovered": True, "release_id": release_id}
         verified_context = _operation_context(
             profile,
             candidate,
@@ -1882,6 +1897,8 @@ def _recover_pending(
         return {"status": "rolled_back", "recovered": True, "release_id": release_id}
 
     if current_release == candidate:
+        if phases[-1] == "completed":
+            raise ControllerOutcomeUnresolved("completed operation is not controller-verified")
         rollback_intent = any(
             phase
             in {
@@ -1897,6 +1914,8 @@ def _recover_pending(
             _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
             raise ControllerOutcomeUnresolved(reason)
         measured_receipt = _completion_receipt(profile, candidate, previous_release, current_native)
+        if runtime_receipt is not None and profile.adapter == "idp-file-v1":
+            measured_receipt = _idp_reobserved_completion(runtime_receipt, measured_receipt)
         if runtime_receipt is not None and runtime_receipt != measured_receipt:
             reason = "fresh and durable runtime receipts disagree"
             _record_recovery_unresolved(profile, release_id, lease_id, fence, context, reason)
@@ -2414,6 +2433,20 @@ class ControllerIssuedIdPFileApplyAdapter:
         return authorize
 
 
+def _idp_reobserved_completion(retained, fresh):
+    from qdev_runner.idp_file_runtime import IdPObservationError, same_installed_release
+
+    try:
+        if not same_installed_release(retained, fresh):
+            raise IdPObservationError("changed installed evidence")
+    except IdPObservationError:
+        raise ControllerOutcomeUnresolved(
+            "fresh IdP evidence differs from retained completion"
+        ) from None
+    # Preserve original evidence; a later observation cannot rewrite history.
+    return retained
+
+
 class IdPNativeInvocation:
     """Fixed code-only bridge from a signed job and published archive to native.
 
@@ -2513,10 +2546,17 @@ class IdPNativeInvocation:
             ControllerIssuedIdPFileApplyAdapter(self._config, self._profile, self._lane, job)
             if action == "apply" else None
         )
+        recovery = (
+            {"controller_recovery": lambda reader: self._reconcile_controller(
+                reader, bundle, transaction,
+            )}
+            if action == "reconcile" else {}
+        )
         try:
             result = native.dispatch(
                 self.STATE_ROOT, self.STATE_ROOT / transaction, self.TARGET, args, helpers,
                 controller_adapter=adapter,
+                **recovery,
             )
             native.contract.validate_native_response(
                 _canonical_bytes(result), action=action, transaction=transaction,
@@ -2528,6 +2568,63 @@ class IdPNativeInvocation:
             # The caller must inspect/reconcile the retained native+host journals.
             raise AgentError("IdP native outcome requires retained-state inspection") from None
         return result
+
+    def _reconcile_controller(self, reader, bundle, transaction):
+        """Native lock precedes host lock; recover only this retained signed job."""
+        from qdev_runner.file_apply_authorization import verify_dispatch_binding
+        from qdev_runner.idp_file_runtime import installed_binding, native_receipt, timestamp
+
+        if not callable(getattr(reader, "observe_installed", None)):
+            raise AgentError("locked installed IdP reader required")
+        job, candidate = self._verified_job(live=False)
+        profile, config, lane = self._profile, self._config, self._lane
+        with _acquire_lock(profile.lock_path) as locked:
+            fcntl.flock(locked.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            pending = _pending_operation(profile, include_completed=True)
+            claim = job["dispatch_claim"]
+            expected = {
+                "release_id": job["release_id"], "lease_id": job["lease_id"],
+                "fence": job["fence"], "dispatch_nonce": claim["nonce"],
+                "lease_expires_at": job["lease_expires_at"],
+                "rollback_anchor": job["rollback_anchor"],
+                "previous_release": job["rollback_anchor"],
+                "candidate_release": {key: job[key] for key in (
+                    "source_sha", "artifact_digest", "artifact_ref"
+                )},
+            }
+            if pending is None or any(pending.get(k) != v for k, v in expected.items()):
+                raise AgentError("IdP recovery does not match the retained host operation")
+            observation = reader.observe_installed()
+            raw_binding = installed_binding(observation)
+            binding = json.loads(raw_binding)
+            if (
+                binding["transaction"] != transaction
+                or binding["bundle_sha256"] != bundle.bundle_sha256
+                or binding["manifest_sha256"] != bundle.manifest_sha256
+            ):
+                raise AgentError("IdP recovery observation belongs to another native bundle")
+            previous = None
+            if job["rollback_anchor"]["artifact_digest"] != f"sha256:{binding['snapshot_sha256']}":
+                previous = _idp_previous_observation(profile, job["rollback_anchor"])
+            # Verify signature/CI/archives at the actual cutover time, not now.
+            # This is historical authentication and never authorizes installation.
+            verify_dispatch_binding(
+                raw_binding, lane=lane, claim=claim, candidate=candidate,
+                signature=job["dispatch_claim_signature"], signing_key=config.dispatch_secret,
+                now=timestamp(observation["events"][6]["observed_at"]),
+                previous_observation=previous,
+            )
+            current = native_receipt(
+                observation, installed=True, expected_binding=raw_binding, now=time.time(),
+                previous_observation=previous,
+            )
+            active, rollback = read_state(profile.state_path, profile, allow_bootstrap=False)
+            result = _recover_pending(
+                config, profile, active, rollback, pending, observe_current=lambda: current,
+            )
+            if result.get("status") != "verified":
+                raise ControllerOutcomeUnresolved("IdP controller recovery is not verified")
+            return result
 
 
 class IdPFileApplyAdapter:
