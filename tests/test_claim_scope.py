@@ -10,6 +10,7 @@ from qdev_runner.claim_scope import (
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
+    ScopedFifoSkip,
     ScopedJob,
     load_claim_scopes,
     resolve_bound_claim_scope,
@@ -460,6 +461,18 @@ def test_upsert_v2_scope_preserves_legacy_scope_and_exact_binding(tmp_path: Path
         host="srv1879763-light-primary",
         runner="qdev-runner-01",
         correlation_id="correlation-1",
+        fifo_skipped=(
+            ScopedFifoSkip(
+                job_id=221,
+                profile="qdev-ci-docker",
+                repository="belilovsky/qazposter",
+                run_id=70,
+                attempt=1,
+                exact_sha="a" * 40,
+                managed_registry_entry="qazposter",
+                reason="admin-platform-candidate-not-active",
+            ),
+        ),
     )
 
     upsert_claim_scope(path, scope)
@@ -488,3 +501,19 @@ def test_upsert_v2_scope_preserves_legacy_scope_and_exact_binding(tmp_path: Path
         attempt=1,
     )
     assert bound.runner == "qdev-runner-01"
+    assert bound.skips(
+        221,
+        "belilovsky/qazposter",
+        "a" * 40,
+        "qdev-ci-docker",
+        run_id=70,
+        attempt=1,
+    )
+    assert not bound.skips(
+        221,
+        "belilovsky/qazposter",
+        "a" * 40,
+        "qdev-ci-docker",
+        run_id=70,
+        attempt=2,
+    )

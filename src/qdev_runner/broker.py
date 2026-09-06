@@ -30,6 +30,7 @@ from .claim_scope import (
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
+    ScopedFifoSkip,
     ScopedJob,
     claim_scope_mapping,
     load_claim_scopes,
@@ -800,11 +801,16 @@ def create_app(
                 )
                 if not admitted:
                     assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": queued_managed.entry_id,
@@ -1841,11 +1847,16 @@ def create_app(
                     # prerequisite for restoring normal signed admission.  It
                     # may bypass earlier rows without cancelling or mutating
                     # them; the signed receipt preserves every skipped tuple.
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": (
@@ -1876,11 +1887,18 @@ def create_app(
                         # Direct requests for the same managed row still use
                         # validate_admission above and remain fail-closed.
                         assert reason is not None
+                        queued_attempt = _job_attempt(queued)
+                        if queued_attempt is None:
+                            # An incomplete provider tuple cannot become a
+                            # signed exception to durable FIFO.
+                            profile_queue.append(queued)
+                            continue
                         fifo_skipped.append(
                             {
                                 "job_id": int(queued["job_id"]),
                                 "repository": str(queued["repository"]),
                                 "run_id": int(queued["run_id"]),
+                                "attempt": queued_attempt,
                                 "head_sha": str(queued["head_sha"]),
                                 "profile": queued_profile.name,
                                 "managed_registry_entry": queued_managed.entry_id,
@@ -1895,6 +1913,23 @@ def create_app(
         attempt = _job_attempt(candidate)
         if attempt is None:
             raise HTTPException(status_code=409, detail="provider attempt is unavailable")
+        scoped_fifo_skipped = tuple(
+            ScopedFifoSkip(
+                job_id=int(item["job_id"]),
+                repository=str(item["repository"]),
+                run_id=int(item["run_id"]),
+                attempt=int(item["attempt"]),
+                exact_sha=str(item["head_sha"]),
+                profile=str(item["profile"]),
+                managed_registry_entry=(
+                    str(item["managed_registry_entry"])
+                    if item["managed_registry_entry"] is not None
+                    else None
+                ),
+                reason=str(item["reason"]),
+            )
+            for item in fifo_skipped
+        )
 
         try:
             scopes = load_claim_scopes(settings.claim_scopes_path)
@@ -1908,6 +1943,7 @@ def create_app(
         rolled_over_terminal_scope = False
         rebound_legacy_scope = False
         retained_jobs: tuple[ScopedJob, ...] = ()
+        reuse_existing_jobs = False
         if existing is not None:
             same_scope = (
                 existing.schema == SCHEMA_V2
@@ -1917,6 +1953,7 @@ def create_app(
                 and existing.runner == request.runner
                 and existing.correlation_id == request.correlation_id
                 and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.fifo_skipped == scoped_fifo_skipped
                 and existing.permits(
                     job_id=job_id,
                     repository=str(candidate["repository"]),
@@ -1955,6 +1992,28 @@ def create_app(
                     }
                     return operation_store.receipt(payload)
                 replaced_expired_scope = True
+            elif (
+                existing.schema == SCHEMA_V2
+                and existing.worker_name == request.worker_name
+                and existing.tier == request.tier
+                and existing.host == request.host
+                and existing.runner == request.runner
+                and existing.correlation_id == request.correlation_id
+                and existing.worker_certificate_sha256 == certificate_sha256
+                and existing.expires_at > datetime.now(UTC)
+                and existing.permits(
+                    job_id=job_id,
+                    repository=str(candidate["repository"]),
+                    head_sha=str(candidate["head_sha"]),
+                    profile=profile.name,
+                    run_id=int(candidate["run_id"]),
+                    attempt=attempt,
+                )
+            ):
+                # Refresh only controller-derived skip evidence for the same
+                # already-bound immutable target.
+                retained_jobs = existing.jobs
+                reuse_existing_jobs = True
             elif (
                 # A legacy v2 document issued before certificate binding was
                 # enforced cannot be claimed: the worker-side claim endpoint
@@ -2039,7 +2098,8 @@ def create_app(
             correlation_id=request.correlation_id,
             worker_certificate_sha256=certificate_sha256,
             expires_at=datetime.now(UTC) + timedelta(seconds=request.duration_seconds),
-            jobs=retained_jobs + (scoped_job,),
+            jobs=retained_jobs if reuse_existing_jobs else retained_jobs + (scoped_job,),
+            fifo_skipped=scoped_fifo_skipped,
         )
         try:
             upsert_claim_scope(settings.claim_scopes_path, scope)
@@ -2155,11 +2215,16 @@ def create_app(
                 # Capacity and claim-scope issuance must agree on the same
                 # narrowly ledger-bound controller prerequisite.  The skipped
                 # row remains pending and is recorded in the signed receipt.
+                queued_attempt = _job_attempt(queued)
+                if queued_attempt is None:
+                    pending_for_override.append(queued)
+                    continue
                 fifo_skipped.append(
                     {
                         "job_id": int(queued["job_id"]),
                         "repository": str(queued["repository"]),
                         "run_id": int(queued["run_id"]),
+                        "attempt": queued_attempt,
                         "head_sha": str(queued["head_sha"]),
                         "profile": queued_profile.name,
                         "managed_registry_entry": (
@@ -2183,11 +2248,16 @@ def create_app(
                 )
                 if not admitted:
                     assert reason is not None
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        pending_for_override.append(queued)
+                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
                             "repository": str(queued["repository"]),
                             "run_id": int(queued["run_id"]),
+                            "attempt": queued_attempt,
                             "head_sha": str(queued["head_sha"]),
                             "profile": queued_profile.name,
                             "managed_registry_entry": queued_managed.entry_id,
