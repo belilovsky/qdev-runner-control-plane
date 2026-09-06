@@ -256,9 +256,7 @@ def test_prepare_controller_candidate_accepts_repeated_terminal_runtime_attempts
     _, snapshot = state.current()
     entry = snapshot["entries"][0]
     runtime_attempts = [
-        attempt
-        for attempt in entry["attempts"]
-        if attempt["source_sha"] == CURRENT_SHA
+        attempt for attempt in entry["attempts"] if attempt["source_sha"] == CURRENT_SHA
     ]
     assert [attempt["terminal_state"] for attempt in runtime_attempts] == [
         "blocked",
