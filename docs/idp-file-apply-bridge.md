@@ -77,8 +77,13 @@ an earlier successful observation. Explicit recovery accepts a fixed
 `observe_current` reader for the same reason.
 It never invokes the native release or rollback dispatcher itself.
 
-This is still a generic source adapter, not a compiled IdP profile or installed
-integration. Existing admin-platform profiles are not an IdP enrollment adapter.
+The code-only `IdPFileApplyAdapter` now binds that journal factory to a fixed
+`id-qdev-run` / `belilovsky/id-qdev-run` / `idp-file-v1` identity. Its installed
+owner supplies the full immutable candidate separately; the existing signed job
+schema does not gain a caller-supplied candidate or executable field. Lane,
+placement, artifact prefix and host identity must agree before construction.
+This is source implementation, not a compiled IdP profile or installed integration.
+Existing admin-platform profiles are not an IdP enrollment adapter.
 
 The yielded native guard implements `assert_current()` to recheck live lease/fence
 without consuming again. The public callback yields a `FileApplyGuard` that checks
@@ -102,18 +107,40 @@ revocation. The existing controller cannot replace an active job implicitly;
 explicit revocation is observed on the next guard check. Each individual atomic
 file replacement is bounded by that check, not presented as a distributed lock.
 
+## Typed native observations
+
+`qdev_runner.idp_file_runtime` validates both native prepared and installed
+observations and retains their complete redacted content with its canonical
+digest in `qdev-idp-file-runtime-provenance-v1`. Host and controller use the same
+validator. It checks the component manifest, exact CI tuples/download binding,
+transaction hash chain, phase-specific evidence, unchanged container identities,
+file and PostgreSQL capacity observations, disposable restore result, retained
+rollback and installed component/public rechecks. A digest alone, a rehashed
+contradictory observation, or an `accepted` flag cannot pass. Native dispatch,
+verified bundle/helper provenance and the authenticated journal/transport remain
+the trust boundary: arbitrary JSON is not authenticated by these shape checks.
+
+Prepared files bind the **previous SHA and retained snapshot**, explicitly marked
+`observed_files_only_not_retroactive_ci`; installed files bind the candidate SHA
+and downloaded CI artifact. Neither observation establishes protected acceptance.
+The signed rollback anchor must match that exact native previous snapshot before
+any dispatch is consumed. This first-baseline path cannot silently replace an
+already known active artifact with a new snapshot digest. Subsequent release
+enrollment must explicitly reconcile the retained snapshot with the independently
+verified previous release identity; that association is not implemented here.
+
 ## Still required before enrollment or production use
 
 1. An approved controller issuer must bind freshly verified provider CI and native
    snapshot/transaction evidence into this envelope. This source helper is not
    an HTTP issuer endpoint and does not establish provider provenance itself.
-2. A fixed IdP host adapter must connect the journal-backed factory above to the
-   IdP global lock and its verified in-process helper, typed native runtime/rollback
-   receipts and explicit inspect/reconciliation. No source from the IdP caller
-   may supply or replace the controller transaction, profile or protected key.
-   IdP evidence must not be represented by invented AVDS/QAK provenance: the
-   code-only observation path deliberately does not add an IdP profile or waive
-   existing runtime validation. It is not yet a completed IdP host adapter.
+2. Install the fixed IdP adapter through the native verified-helper/global-lock
+   boundary and complete exact-target enrollment, baseline/snapshot reconciliation
+   and the explicit inspect/recovery entrypoint. The code-only factory and typed
+   observations above are implemented, but not an installed executable integration.
+   No source from the IdP caller may replace the controller transaction, profile
+   or protected key. No AVDS/QAK evidence is invented and no runtime validation
+   is waived.
 3. Normal source-bound release and exact-target enrollment must install the adapter
    and select its protected key/material references. None are installed here.
 
@@ -127,5 +154,8 @@ production deployment or acceptance. No workflow dispatch is added.
 In-process observation tests additionally assert the real controller lock at
 each read, forbid any receipt subprocess, reject failed/unmeasured/drifting
 observations at all three boundaries and recover lost completion without a
-second apply. Their measured-runtime documents remain test fixtures for existing
-profiles, not IdP production evidence.
+second apply. Typed IdP tests retain full native-shaped observations, including
+rehashed drift, wrong CI attempts, missing database capacity, failed restore,
+wrong profile and a conflicting known active artifact. They exercise the fixed
+adapter with the real host journal and lock, with synthetic controller/runtime
+sources; they are not IdP production evidence.

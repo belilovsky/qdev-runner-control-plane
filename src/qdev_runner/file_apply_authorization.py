@@ -296,6 +296,9 @@ class FileApplyBridge:
             or not claim["issued_at"] <= now + 30
             or not now < claim["expires_at"] <= claim["lease_expires_at"]
             or claim["rollback_anchor"]["source_sha"] != binding.expected_previous_sha
+            or claim["rollback_anchor"]["artifact_digest"] != f"sha256:{binding.snapshot_sha256}"
+            or claim["rollback_anchor"]["artifact_ref"]
+            != f"{self._lane.artifact_ref_prefix}@sha256:{binding.snapshot_sha256}"
             or any(
                 not re.fullmatch(pattern, claim[field])
                 for field, pattern in (

@@ -112,8 +112,8 @@ def fixture():
         "lease_expires_at": NOW + 600,
         "rollback_anchor": {
             "source_sha": "e" * 40,
-            "artifact_digest": "sha256:" + "e" * 64,
-            "artifact_ref": "qdev/idp-release@sha256:" + "e" * 64,
+            "artifact_digest": "sha256:" + "f" * 64,
+            "artifact_ref": "qdev/idp-release@sha256:" + "f" * 64,
         },
         "issued_at": NOW,
         "expires_at": NOW + 120,
@@ -286,6 +286,20 @@ def test_wrong_dispatch_even_when_resigned(fixture, field, value):
     authorize, raw, native = bridge(fixture)
     with pytest.raises(ReleaseLaneError), authorize(raw):
         pytest.fail("wrong dispatch reached apply")
+    assert not native.consumed
+
+
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_resigned_rollback_must_match_native_previous_snapshot(fixture, source_changed):
+    anchor = fixture[1]["rollback_anchor"]
+    if source_changed:
+        anchor["source_sha"] = "1" * 40
+    else:
+        anchor["artifact_digest"] = "sha256:" + "1" * 64
+        anchor["artifact_ref"] = "qdev/idp-release@sha256:" + "1" * 64
+    authorize, raw, native = bridge(fixture)
+    with pytest.raises(ReleaseLaneError), authorize(raw):
+        pytest.fail("different rollback anchor reached apply")
     assert not native.consumed
 
 

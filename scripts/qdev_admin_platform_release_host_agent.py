@@ -918,7 +918,24 @@ def _runtime_evidence(
         not isinstance(value, str) or not value.strip() for value in dependencies.values()
     ):
         raise AgentError("native dependency identity is incomplete")
-    if profile.name == "qmt":
+    if profile.project_id == "id-qdev-run":
+        from qdev_runner.idp_file_runtime import (
+            ADAPTER,
+            ARTIFACT_PREFIX,
+            REPOSITORY,
+            IdPObservationError,
+            validate_runtime_evidence,
+        )
+
+        if (profile.repository, profile.adapter, profile.artifact_prefix) != (
+            REPOSITORY, ADAPTER, ARTIFACT_PREFIX,
+        ):
+            raise AgentError("native IdP adapter scope is invalid")
+        try:
+            validate_runtime_evidence(document)
+        except IdPObservationError:
+            raise AgentError("native IdP runtime provenance is invalid") from None
+    elif profile.name == "qmt":
         qmt_version = dependencies.get("qmt_version")
         if not isinstance(qmt_version, str) or not _QMT_VERSION.fullmatch(qmt_version):
             raise AgentError("native QMT dependency identity is invalid")
@@ -2248,6 +2265,77 @@ class FileApplyObservations:
     def __post_init__(self) -> None:
         if not callable(self.before_apply) or not callable(self.after_apply):
             raise AgentError("file apply observations must be trusted callables")
+
+
+class IdPFileApplyAdapter:
+    """Code-only factory for verified native dispatch, not an enrollment/CLI.
+
+    The installed owner supplies the fixed lane/profile/config and independently
+    signed job/envelope. No executable/profile/key comes from IdP or JSON. A
+    bundle-verified native dispatch calls this factory under its global lock.
+    Every read then occurs under the host journal lock, without reentering IdP.
+    """
+
+    def __init__(self, config, profile, lane, job, authorization, signature, *, candidate_receipt):
+        from qdev_runner.idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
+
+        if (
+            (profile.project_id, profile.repository, profile.adapter, profile.artifact_prefix)
+            != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+            or (lane.project_id, lane.canonical_repository, lane.native_host_adapter,
+                lane.artifact_ref_prefix) != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+            or profile.lane != lane.name or profile.placement != lane.placement
+            or config.host_identity != lane.host_agent_mtls_identity
+            or profile.readiness != {key: "ok" for key in lane.required_readiness}
+        ):
+            raise AgentError("IdP file adapter requires its fixed native lane and identity")
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+        self._candidate = _canonical_bytes(candidate_receipt)
+        self._authorization, self._signature = _canonical_bytes(authorization), signature
+
+    def __call__(self, reader):
+        from qdev_runner.file_apply_authorization import FileApplyBridge
+        from qdev_runner.idp_file_runtime import native_receipt
+
+        # This is a trusted in-process capability, not an object accepted over an
+        # API. Native dispatch itself fences its PID/thread/active-pointer lifetime.
+        if not callable(getattr(reader, "observe_prepared", None)) or not callable(
+            getattr(reader, "observe_installed", None)
+        ):
+            raise AgentError("locked native IdP observation reader required")
+        job = json.loads(self._job)
+
+        @contextmanager
+        def authorize(binding):
+            if not isinstance(binding, bytes):
+                raise AgentError("immutable native IdP binding required")
+            observations = FileApplyObservations(
+                before_apply=lambda: native_receipt(
+                    reader.observe_prepared(), installed=False,
+                    expected_binding=binding, now=time.time(),
+                ),
+                after_apply=lambda: native_receipt(
+                    reader.observe_installed(), installed=True,
+                    expected_binding=binding, now=time.time(),
+                ),
+            )
+            bridge = FileApplyBridge(
+                lane=self._lane, dispatch_claim=job["dispatch_claim"],
+                candidate_receipt=json.loads(self._candidate),
+                dispatch_signature=job["dispatch_claim_signature"],
+                authorization=json.loads(self._authorization),
+                authorization_signature=self._signature,
+                signing_key=self._config.dispatch_secret,
+                dispatch_transaction=JournaledFileApplyTransaction(
+                    self._config, self._profile, job, observations=observations,
+                ),
+                clock=time.time,
+            )
+            with bridge(binding) as guard:
+                yield guard
+
+        return authorize
 
 
 class JournaledFileApplyTransaction:

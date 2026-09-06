@@ -806,7 +806,7 @@ def validate_runtime_receipt(
             for value in dependency_identity.values()
         ):
             raise ReleaseLaneError("runtime dependency identity is invalid")
-        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+        _validate_runtime_provenance(receipt, lane, installed_only=True)
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     rollback_tuple = (
@@ -894,7 +894,31 @@ def validate_native_runtime_receipt(
             not isinstance(value, str) or not value.strip() for value in dependencies.values()
         ):
             raise ReleaseLaneError("native dependency identity is incomplete")
-        _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+        _validate_runtime_provenance(receipt, lane)
+
+
+def _validate_runtime_provenance(
+    receipt: dict[str, Any], lane: ReleaseLane, *, installed_only: bool = False,
+) -> None:
+    if lane.project_id == "id-qdev-run":
+        from qdev_runner.idp_file_runtime import (
+            ADAPTER,
+            ARTIFACT_PREFIX,
+            REPOSITORY,
+            IdPObservationError,
+            validate_runtime_evidence,
+        )
+
+        if (lane.canonical_repository, lane.native_host_adapter, lane.artifact_ref_prefix) != (
+            REPOSITORY, ADAPTER, ARTIFACT_PREFIX,
+        ):
+            raise ReleaseLaneError("IdP native adapter scope is invalid")
+        try:
+            validate_runtime_evidence(receipt, installed_only=installed_only)
+        except IdPObservationError:
+            raise ReleaseLaneError("IdP runtime provenance is invalid") from None
+        return
+    _validate_artifact_provenance(receipt["artifact_provenance"], lane)
 
 
 def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None:
