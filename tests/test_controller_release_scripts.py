@@ -383,6 +383,22 @@ def test_controller_rollback_reuses_existing_images() -> None:
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
     assert "QDEV_CONTROLLER_ROLLBACK=true" in script
     assert 'QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION="$current_revision"' in script
+    assert (
+        'current_public_saved_ref="qdev-runner-controller-anchor-public:$current_revision"'
+        in script
+    )
+    assert (
+        'current_internal_saved_ref="qdev-runner-controller-anchor-internal:$current_revision"'
+        in script
+    )
+    assert 'docker image tag "$current_public_image_id" "$current_public_saved_ref"' in script
+    assert 'docker image tag "$current_internal_image_id" "$current_internal_saved_ref"' in script
+    activation_call = script.index('"$script_dir/activate_controller_release.sh" "$target"')
+    reverse_anchor = script.index('python3 - "$rollback_anchor_path" "$current_revision"')
+    assert activation_call < reverse_anchor
+    assert "os.replace(temporary_name, target_path)" in script
+    assert "os.chown(temporary_name, 0, 0)" in script
+    assert "os.chmod(temporary_name, 0o600)" in script
     assert 'rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-' in activation
     assert "qdev-controller-rollback-anchor-v1" in activation
     assert "metadata.st_uid != 0" in activation
