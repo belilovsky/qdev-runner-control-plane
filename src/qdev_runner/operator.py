@@ -16,7 +16,11 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from .models import RecoveryBindingsResponse, RecoveryOperationResponse
+from .models import (
+    RecoveryBindingsResponse,
+    RecoveryOperationResponse,
+    RecoverySupersessionResponse,
+)
 from .operations import payload_digest, sign_payload, validate_controller_receipt_payload
 from .worker_recovery import INTERFACE_DIGEST, INTERFACE_VERSION
 
@@ -240,9 +244,7 @@ def _fresh_recovery_provenance(settings: OperatorSettings) -> dict[str, Any]:
         "schema": "qdev-runner-recovery-provenance-v1",
         "nonce": f"recovery-{secrets.token_hex(16)}",
         "issued_at": issued_at.isoformat().replace("+00:00", "Z"),
-        "expires_at": (issued_at + timedelta(seconds=lifetime))
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "expires_at": (issued_at + timedelta(seconds=lifetime)).isoformat().replace("+00:00", "Z"),
         "controller_revision": bindings.controller_revision,
         "controller_release_digest": bindings.controller_release_digest,
         "policy_digest": bindings.policy_digest,
@@ -340,6 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
         recovery_command.add_argument("--request-fingerprint", required=True)
         if command_name == "recovery-accept":
             recovery_command.add_argument("--canary-head-sha")
+
+    recovery_supersede = commands.add_parser(
+        "recovery-supersede-stale",
+        help="Release one obsolete recovery fence after a fresh provider idle proof",
+    )
+    recovery_supersede.add_argument("--operation-id", required=True)
+    recovery_supersede.add_argument("--request-fingerprint", required=True)
+    recovery_supersede.add_argument("--reason", required=True)
 
     activate_controller = commands.add_parser(
         "activate-controller",
@@ -439,10 +449,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
         return controller_request(
             settings,
             method="POST",
-            path=(
-                f"/internal/v1/operations/jobs/{arguments.job_id}"
-                "/recover-failed-worker-exit"
-            ),
+            path=(f"/internal/v1/operations/jobs/{arguments.job_id}/recover-failed-worker-exit"),
             body={
                 "owner": arguments.owner,
                 "reason": arguments.reason,
@@ -505,14 +512,34 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 arguments.canary_head_sha,
                 field="canary head SHA",
             )
-        response = recovery_request(
+        operation_response = recovery_request(
             settings,
             method="POST",
             path=f"/internal/v1/operations/worker-recovery/{action}",
             body=action_body,
             response_model=RecoveryOperationResponse,
         )
-        return response.model_dump(mode="json", by_alias=True)
+        return operation_response.model_dump(mode="json", by_alias=True)
+    if arguments.command == "recovery-supersede-stale":
+        operation_id = _sha256_hex(arguments.operation_id, field="operation ID")
+        request_fingerprint = _sha256_hex(
+            arguments.request_fingerprint,
+            field="request fingerprint",
+        )
+        supersession_response = recovery_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operations/worker-recovery/supersede-stale",
+            body={
+                "schema": "qdev-runner-recovery-supersede-v1",
+                "operation_id": operation_id,
+                "request_fingerprint": request_fingerprint,
+                "reason": arguments.reason,
+                "provenance": _fresh_recovery_provenance(settings),
+            },
+            response_model=RecoverySupersessionResponse,
+        )
+        return supersession_response.model_dump(mode="json", by_alias=True)
     if arguments.command in {"activate-controller", "enrol-host-agent"}:
         key = _idempotency_key(arguments.idempotency_key)
         try:

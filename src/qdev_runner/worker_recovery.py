@@ -22,6 +22,8 @@ from .models import (
     RecoveryReconcileRequest,
     RecoveryRequestProvenance,
     RecoveryStatusRequest,
+    RecoverySupersedeRequest,
+    RecoverySupersessionResponse,
     RecoveryTargetId,
 )
 from .settings import BrokerSettings
@@ -89,6 +91,7 @@ INTERFACE_MANIFEST: dict[str, Any] = {
     "endpoints": {
         "bindings": "/internal/v1/operations/worker-recovery/bindings",
         "prepare": "/internal/v1/operations/worker-recovery/prepare",
+        "supersede_stale": "/internal/v1/operations/worker-recovery/supersede-stale",
         "status": "/internal/v1/operations/worker-recovery/status",
         "accept": "/internal/v1/operations/worker-recovery/accept",
         "claim": "/internal/v1/worker-recovery/claim",
@@ -100,6 +103,8 @@ INTERFACE_MANIFEST: dict[str, Any] = {
         "command": "qdev-runner-recovery-agent-command-v1",
         "envelope": "qdev-runner-recovery-agent-envelope-v1",
         "reconcile": "qdev-runner-recovery-reconcile-v1",
+        "supersede_stale": "qdev-runner-recovery-supersede-v1",
+        "supersession": "qdev-runner-recovery-supersession-v1",
     },
     "provider_runner_identity": {
         "restore_saved_configuration": "required-positive-integer",
@@ -308,6 +313,7 @@ class WorkerRecoveryController:
         target = RECOVERY_TARGETS[request.target_id]
         release = self._configuration()
         certificate = self._operator_certificate(operator_certificate_sha256)
+        self._validate_provenance(request.provenance, release=release)
         fingerprint = self._request_fingerprint(request, certificate)
 
         existing = self.store.worker_recovery_by_idempotency_key(request.idempotency_key)
@@ -321,71 +327,10 @@ class WorkerRecoveryController:
             )
             return self._project(existing, idempotent_replay=True)
 
-        self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
-        try:
-            allowed_initial_status = (
-                ("offline", "online")
-                if target.action == "restore_saved_configuration"
-                else "offline"
-            )
-            runners, observed, provider_observation = self._observe_runner(
-                target,
-                expected_labels=target.labels,
-                status=allowed_initial_status,
-                require_idle=True,
-            )
-            provider_runner_id: int | None = int(observed["id"])
-            if (
-                target.expected_provider_runner_id is not None
-                and provider_runner_id != target.expected_provider_runner_id
-            ):
-                raise WorkerRecoveryError(
-                    "provider runner id does not match the fixed recovery target"
-                )
-            provider_observed_at = float(observed["observed_at"])
-        except WorkerRecoveryError as error:
-            if target.action != "replace_existing_registration":
-                raise
-            installation_id = self.github.repository_installation_id(target.repository)
-            runners = sorted(
-                (
-                    _runner_record(raw)
-                    for raw in self.github.repository_runners(installation_id, target.repository)
-                ),
-                key=lambda runner: int(runner["id"]),
-            )
-            if any(runner["name"] == target.worker_name for runner in runners):
-                raise error
-            active_jobs = self.github.runner_name_active_jobs(
-                installation_id, target.repository, target.worker_name
-            )
-            if active_jobs:
-                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
-            provider_runner_id = None
-            provider_observed_at = time.time()
-            provider_observation = {
-                "schema": "qdev-worker-provider-absence-observation-v1",
-                "repository": target.repository,
-                "worker_name": target.worker_name,
-                "runners": {"total_count": len(runners), "items": runners},
-                "active_target_jobs": {"total_count": 0, "items": []},
-            }
+        proof = self._provider_idle_proof(target)
         proof_key = self._receipt_key()
-        proof = self.store.issue_worker_provider_idle_proof(
-            key=proof_key,
-            worker_name=target.worker_name,
-            repository=target.repository,
-            labels=target.labels,
-            provider_runner_id=provider_runner_id,
-            provider_status=(
-                None if provider_runner_id is None else cast(str, observed["status"])
-            ),
-            provider_busy=None if provider_runner_id is None else False,
-            active_jobs=0,
-            provider_observation=provider_observation,
-            observed_at=provider_observed_at,
-        )
+        provider_observed_at = float(proof["observed_at"])
         controller_receipt_id = _digest(
             {
                 "schema": "qdev-runner-recovery-controller-receipt-v1",
@@ -418,6 +363,60 @@ class WorkerRecoveryController:
             proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
         )
         return self._project(row, idempotent_replay=False)
+
+    def supersede_stale(
+        self,
+        request: RecoverySupersedeRequest,
+        *,
+        operator_certificate_sha256: str,
+    ) -> RecoverySupersessionResponse:
+        release = self._configuration()
+        self._validate_provenance(request.provenance, release=release)
+        row = self._operation(request.operation_id, request.request_fingerprint)
+        self._require_operation_operator(row, operator_certificate_sha256)
+        target = self._target_from_row(row)
+        self._require_no_claim_scope(target.worker_name)
+        reason_digest = _digest(
+            {
+                "schema": "qdev-runner-recovery-supersede-reason-v1",
+                "operation_id": request.operation_id,
+                "request_fingerprint": request.request_fingerprint,
+                "reason": request.reason,
+            },
+            prefix=True,
+        )
+        existing = self.store.worker_recovery_supersession(request.operation_id)
+        if existing is not None:
+            if (
+                existing.get("request_fingerprint") != request.request_fingerprint
+                or existing.get("operator_certificate_sha256")
+                != self._operator_certificate(operator_certificate_sha256)
+                or existing.get("reason_digest") != reason_digest
+            ):
+                raise WorkerRecoveryError("recovery supersession binding changed")
+            return self._project_supersession(existing, target=target, replay=True)
+        proof = self._provider_idle_proof(target)
+        try:
+            supersession = self.store.supersede_worker_recovery(
+                operation_id=request.operation_id,
+                request_fingerprint=request.request_fingerprint,
+                operator_certificate_sha256=self._operator_certificate(operator_certificate_sha256),
+                reason_digest=reason_digest,
+                provider_idle_proof=proof,
+                provider_proof_key=self._receipt_key(),
+                expected_agent_certificate_sha256=self._agent_certificate(target),
+                interface_version=INTERFACE_VERSION,
+                interface_digest=INTERFACE_DIGEST,
+                controller_revision=cast(str, release["revision"]),
+                controller_release_digest=cast(str, release["release_digest"]),
+                policy_digest=self._policy_digest(),
+                agent_release_digest=self._agent_release_digest(),
+                receipt_key=self._receipt_key(),
+                proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
+            )
+        except ValueError as error:
+            raise WorkerRecoveryError(str(error)) from error
+        return self._project_supersession(supersession, target=target, replay=False)
 
     def status(
         self,
@@ -1016,6 +1015,99 @@ class WorkerRecoveryController:
             }
         return runners, observed, provider_observation
 
+    def _provider_idle_proof(self, target: RecoveryTarget) -> dict[str, Any]:
+        observed: dict[str, Any] | None = None
+        try:
+            allowed_initial_status = (
+                ("offline", "online")
+                if target.action == "restore_saved_configuration"
+                else "offline"
+            )
+            runners, observed, provider_observation = self._observe_runner(
+                target,
+                expected_labels=target.labels,
+                status=allowed_initial_status,
+                require_idle=True,
+            )
+            if observed is None:
+                raise WorkerRecoveryError("provider runner observation is unavailable")
+            provider_runner_id: int | None = int(observed["id"])
+            provider_status: str | None = cast(str, observed["status"])
+            if (
+                target.expected_provider_runner_id is not None
+                and provider_runner_id != target.expected_provider_runner_id
+            ):
+                raise WorkerRecoveryError(
+                    "provider runner id does not match the fixed recovery target"
+                )
+            provider_observed_at = float(observed["observed_at"])
+        except WorkerRecoveryError as error:
+            if target.action != "replace_existing_registration":
+                raise
+            installation_id = self.github.repository_installation_id(target.repository)
+            runners = sorted(
+                (
+                    _runner_record(raw)
+                    for raw in self.github.repository_runners(installation_id, target.repository)
+                ),
+                key=lambda runner: int(runner["id"]),
+            )
+            if any(runner["name"] == target.worker_name for runner in runners):
+                raise error
+            active_jobs = self.github.runner_name_active_jobs(
+                installation_id, target.repository, target.worker_name
+            )
+            if active_jobs:
+                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
+            provider_runner_id = None
+            provider_status = None
+            provider_observed_at = time.time()
+            provider_observation = {
+                "schema": "qdev-worker-provider-absence-observation-v1",
+                "repository": target.repository,
+                "worker_name": target.worker_name,
+                "runners": {"total_count": len(runners), "items": runners},
+                "active_target_jobs": {"total_count": 0, "items": []},
+            }
+        return self.store.issue_worker_provider_idle_proof(
+            key=self._receipt_key(),
+            worker_name=target.worker_name,
+            repository=target.repository,
+            labels=target.labels,
+            provider_runner_id=provider_runner_id,
+            provider_status=provider_status,
+            provider_busy=None if provider_runner_id is None else False,
+            active_jobs=0,
+            provider_observation=provider_observation,
+            observed_at=provider_observed_at,
+        )
+
+    @staticmethod
+    def _project_supersession(
+        row: dict[str, Any], *, target: RecoveryTarget, replay: bool
+    ) -> RecoverySupersessionResponse:
+        return RecoverySupersessionResponse.model_validate(
+            {
+                "schema": "qdev-runner-recovery-supersession-v1",
+                "operation_id": row["operation_id"],
+                "request_fingerprint": row["request_fingerprint"],
+                "target_id": target.target_id,
+                "worker_name": row["worker_name"],
+                "repository": row["repository"],
+                "prior_state": row["prior_state"],
+                "native_outcome": row["native_outcome"],
+                "provider_runner_id": row["provider_runner_id"],
+                "provider_idle_proof_digest": row["provider_idle_proof_digest"],
+                "supersession_receipt_digest": row["receipt_digest"],
+                "controller_revision": row["current_controller_revision"],
+                "controller_release_digest": row["current_controller_release_digest"],
+                "policy_digest": row["current_policy_digest"],
+                "agent_release_digest": row["current_agent_release_digest"],
+                "superseded_at": datetime.fromtimestamp(float(row["superseded_at"]), tz=UTC),
+                "idempotent_replay": replay,
+            }
+        )
+
     def _command_envelope(self, row: dict[str, Any], *, target: RecoveryTarget) -> dict[str, Any]:
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=self.settings.recovery_command_ttl_seconds)
@@ -1052,8 +1144,7 @@ class WorkerRecoveryController:
             "recovery_action": target.action,
             "execution_disposition": (
                 "verify_only"
-                if target.action == "restore_saved_configuration"
-                and provider_status == "online"
+                if target.action == "restore_saved_configuration" and provider_status == "online"
                 else target.action
             ),
             "operator_certificate_sha256": row["operator_certificate_sha256"],
@@ -1198,9 +1289,7 @@ class WorkerRecoveryController:
             release=release,
         )
 
-    def _require_acceptance_row(
-        self, row: dict[str, Any], *, release: dict[str, Any]
-    ) -> None:
+    def _require_acceptance_row(self, row: dict[str, Any], *, release: dict[str, Any]) -> None:
         """Allow a completed native mutation to finish after controller upgrade.
 
         Native execution remains bound to its original immutable release.  Only
@@ -1228,8 +1317,7 @@ class WorkerRecoveryController:
             or row.get("repository") != target.repository
             or labels != target.labels
             or row.get("recovery_action") != target.action
-            or row.get("expected_agent_certificate_sha256")
-            != self._agent_certificate(target)
+            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
             or row.get("interface_version") != INTERFACE_VERSION
             or row.get("interface_digest") != INTERFACE_DIGEST
             or row.get("agent_release_digest") != self._agent_release_digest()
@@ -1306,11 +1394,17 @@ class WorkerRecoveryController:
     ) -> str:
         return _digest(
             {
-                "schema": "qdev-runner-recovery-request-binding-v1",
-                "request": request.model_dump(mode="json", by_alias=True),
+                "schema": "qdev-runner-recovery-request-binding-v2",
+                "target_id": request.target_id,
+                "idempotency_key": request.idempotency_key,
+                "reason": request.reason,
                 "operator_certificate_sha256": operator_certificate,
                 "interface_version": INTERFACE_VERSION,
                 "interface_digest": INTERFACE_DIGEST,
+                "controller_revision": request.provenance.controller_revision,
+                "controller_release_digest": request.provenance.controller_release_digest,
+                "policy_digest": request.provenance.policy_digest,
+                "agent_release_digest": request.provenance.agent_release_digest,
             }
         )
 

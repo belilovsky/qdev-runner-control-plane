@@ -26,9 +26,7 @@ def test_claim_scope_uses_fifo_endpoint(
 
     monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
 
-    def fake_request(
-        settings: operator.OperatorSettings, **kwargs: Any
-    ) -> dict[str, Any]:
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
         captured["settings"] = settings
         captured.update(kwargs)
         return {"schema": "qdev-controller-receipt-v2"}
@@ -103,9 +101,7 @@ def test_capacity_override_sends_exact_source_binding(
 
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
-    assert captured["path"].endswith(
-        "/workers/srv1879763-light-primary/capacity-override"
-    )
+    assert captured["path"].endswith("/workers/srv1879763-light-primary/capacity-override")
     assert captured["body"] == {
         "repository": "belilovsky/qazlake",
         "head_sha": "b" * 40,
@@ -143,12 +139,73 @@ def test_failed_worker_recovery_uses_provider_reconciled_endpoint(
 
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "POST"
-    assert captured["path"] == (
-        "/internal/v1/operations/jobs/42/recover-failed-worker-exit"
-    )
+    assert captured["path"] == ("/internal/v1/operations/jobs/42/recover-failed-worker-exit")
     assert captured["body"] == {
         "owner": "portfolio-ci",
         "reason": "provider remains queued",
+    }
+
+
+def test_stale_worker_recovery_supersession_uses_exact_typed_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+    monkeypatch.setattr(
+        operator,
+        "_fresh_recovery_provenance",
+        lambda settings: {
+            "schema": "qdev-runner-recovery-provenance-v1",
+            "nonce": "nonce-operator-supersede",
+            "issued_at": "2026-09-07T00:00:00Z",
+            "expires_at": "2026-09-07T00:01:00Z",
+            "controller_revision": "1" * 40,
+            "controller_release_digest": "2" * 64,
+            "policy_digest": "sha256:" + "3" * 64,
+            "agent_release_digest": "sha256:" + "4" * 64,
+        },
+    )
+
+    class Response:
+        def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+            return {"schema": "qdev-runner-recovery-supersession-v1"}
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> Response:
+        captured["settings"] = settings
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(operator, "recovery_request", fake_request)
+    result = operator.run(
+        [
+            "recovery-supersede-stale",
+            "--operation-id",
+            "a" * 64,
+            "--request-fingerprint",
+            "b" * 64,
+            "--reason",
+            "Release exact obsolete recovery fence.",
+        ]
+    )
+
+    assert result == {"schema": "qdev-runner-recovery-supersession-v1"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == ("/internal/v1/operations/worker-recovery/supersede-stale")
+    assert captured["body"] == {
+        "schema": "qdev-runner-recovery-supersede-v1",
+        "operation_id": "a" * 64,
+        "request_fingerprint": "b" * 64,
+        "reason": "Release exact obsolete recovery fence.",
+        "provenance": {
+            "schema": "qdev-runner-recovery-provenance-v1",
+            "nonce": "nonce-operator-supersede",
+            "issued_at": "2026-09-07T00:00:00Z",
+            "expires_at": "2026-09-07T00:01:00Z",
+            "controller_revision": "1" * 40,
+            "controller_release_digest": "2" * 64,
+            "policy_digest": "sha256:" + "3" * 64,
+            "agent_release_digest": "sha256:" + "4" * 64,
+        },
     }
 
 
@@ -175,8 +232,7 @@ def test_capacity_override_cancel_requires_exact_operation_id(
     assert result == {"schema": "qdev-controller-receipt-v2"}
     assert captured["method"] == "DELETE"
     assert captured["path"].endswith(
-        "/workers/srv1879763-light-primary/capacity-override"
-        "?operation_id=operation-123"
+        "/workers/srv1879763-light-primary/capacity-override?operation_id=operation-123"
     )
 
 
@@ -512,11 +568,6 @@ def test_recovery_request_never_self_asserts_edge_identity(
     )
 
     assert response.interface_version == operator.INTERFACE_VERSION
-    assert captured["client_kwargs"]["headers"] == {
-        "X-QDev-Operator-Token": "inert-operator-token"
-    }
+    assert captured["client_kwargs"]["headers"] == {"X-QDev-Operator-Token": "inert-operator-token"}
     assert "X-QDev-Operator-Proxy-Auth" not in captured["client_kwargs"]["headers"]
-    assert (
-        "X-QDev-Verified-Client-Certificate-SHA256"
-        not in captured["client_kwargs"]["headers"]
-    )
+    assert "X-QDev-Verified-Client-Certificate-SHA256" not in captured["client_kwargs"]["headers"]

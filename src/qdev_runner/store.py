@@ -281,8 +281,7 @@ def _validate_provider_absence_observation(
     except ValueError as error:
         raise ValueError("provider absence observation is invalid") from error
     if (
-        set(observation)
-        != {"schema", "repository", "worker_name", "runners", "active_target_jobs"}
+        set(observation) != {"schema", "repository", "worker_name", "runners", "active_target_jobs"}
         or observation["schema"] != "qdev-worker-provider-absence-observation-v1"
         or observation["repository"] != repository
         or observation["worker_name"] != worker_name
@@ -387,7 +386,8 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
     canary_status TEXT,
     canary_conclusion TEXT,
     canary_completed_at REAL,
-    released_at REAL
+    released_at REAL,
+    release_disposition TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_active_idx
     ON worker_recoveries(worker_name) WHERE state!='released';
@@ -418,6 +418,52 @@ CREATE TABLE IF NOT EXISTS worker_recovery_outcomes (
 );
 CREATE INDEX IF NOT EXISTS worker_recovery_outcomes_operation_idx
     ON worker_recovery_outcomes(operation_id, reconciled_at);
+
+-- A stale fence may be released only through a separately signed,
+-- append-only supersession receipt.  Free-form operator reasons are reduced
+-- to a digest so the ledger proves authority without retaining commentary.
+CREATE TABLE IF NOT EXISTS worker_recovery_supersessions (
+    receipt_digest TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    request_fingerprint TEXT NOT NULL,
+    worker_name TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    prior_state TEXT NOT NULL CHECK(prior_state IN ('prepared','completed')),
+    native_outcome TEXT CHECK(native_outcome IS NULL OR native_outcome='completed'),
+    provider_runner_id INTEGER,
+    provider_idle_proof_digest TEXT NOT NULL,
+    reason_digest TEXT NOT NULL,
+    operator_certificate_sha256 TEXT NOT NULL,
+    old_controller_revision TEXT NOT NULL,
+    old_controller_release_digest TEXT NOT NULL,
+    old_policy_digest TEXT NOT NULL,
+    old_agent_release_digest TEXT NOT NULL,
+    old_expected_agent_certificate_sha256 TEXT NOT NULL,
+    old_interface_version TEXT NOT NULL,
+    old_interface_digest TEXT NOT NULL,
+    current_controller_revision TEXT NOT NULL,
+    current_controller_release_digest TEXT NOT NULL,
+    current_policy_digest TEXT NOT NULL,
+    current_agent_release_digest TEXT NOT NULL,
+    current_expected_agent_certificate_sha256 TEXT NOT NULL,
+    current_interface_version TEXT NOT NULL,
+    current_interface_digest TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    superseded_at REAL NOT NULL,
+    FOREIGN KEY(operation_id) REFERENCES worker_recoveries(operation_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_supersessions_no_update
+BEFORE UPDATE ON worker_recovery_supersessions
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery supersessions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS worker_recovery_supersessions_no_delete
+BEFORE DELETE ON worker_recovery_supersessions
+BEGIN
+    SELECT RAISE(ABORT, 'worker recovery supersessions are append-only');
+END;
 
 -- Acceptance is a second, append-only controller observation.  A successful
 -- native mutation is deliberately still fenced until the provider proves the
@@ -696,6 +742,7 @@ class Store:
             "canary_conclusion": "TEXT",
             "canary_completed_at": "REAL",
             "released_at": "REAL",
+            "release_disposition": "TEXT",
         }
         for name, sql_type in recovery_additions.items():
             if name not in recovery_columns:
@@ -940,9 +987,7 @@ class Store:
         fifo_skip_job_ids: frozenset[int] = frozenset(),
         fifo_skip_guard: Callable[[frozenset[int]], frozenset[int]] | None = None,
     ) -> dict[str, Any] | None:
-        if fifo_skip_job_ids and (
-            claim_scope is None or claim_scope.schema != SCHEMA_V2
-        ):
+        if fifo_skip_job_ids and (claim_scope is None or claim_scope.schema != SCHEMA_V2):
             raise ValueError("FIFO skips require an exact v2 claim scope")
         now = time.time()
         with self.connect() as connection:
@@ -3330,6 +3375,307 @@ class Store:
                 (idempotency_key,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def worker_recovery_supersession(self, operation_id: str) -> dict[str, Any] | None:
+        if not isinstance(operation_id, str) or not _SHA256_HEX.fullmatch(operation_id):
+            raise ValueError("native recovery operation identity is invalid")
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM worker_recovery_supersessions WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def supersede_worker_recovery(
+        self,
+        *,
+        operation_id: str,
+        request_fingerprint: str,
+        operator_certificate_sha256: str,
+        reason_digest: str,
+        provider_idle_proof: dict[str, Any],
+        provider_proof_key: str,
+        expected_agent_certificate_sha256: str,
+        interface_version: str,
+        interface_digest: str,
+        controller_revision: str,
+        controller_release_digest: str,
+        policy_digest: str,
+        agent_release_digest: str,
+        receipt_key: str,
+        proof_max_age_seconds: float = 120.0,
+    ) -> dict[str, Any]:
+        """Release only an obsolete, independently proven-idle recovery fence."""
+
+        proof_max_age_seconds = _recovery_proof_window(proof_max_age_seconds)
+        if (
+            not isinstance(operation_id, str)
+            or not _SHA256_HEX.fullmatch(operation_id)
+            or not isinstance(request_fingerprint, str)
+            or not _SHA256_HEX.fullmatch(request_fingerprint)
+            or not isinstance(operator_certificate_sha256, str)
+            or not _SHA256_HEX.fullmatch(operator_certificate_sha256)
+            or not isinstance(reason_digest, str)
+            or not _SHA256_DIGEST.fullmatch(reason_digest)
+            or not isinstance(expected_agent_certificate_sha256, str)
+            or not _SHA256_HEX.fullmatch(expected_agent_certificate_sha256)
+            or not isinstance(interface_version, str)
+            or not _INTERFACE_VERSION.fullmatch(interface_version)
+            or not isinstance(interface_digest, str)
+            or not _SHA256_HEX.fullmatch(interface_digest)
+            or not isinstance(controller_revision, str)
+            or not _GIT_REVISION.fullmatch(controller_revision)
+            or not isinstance(controller_release_digest, str)
+            or not _SHA256_HEX.fullmatch(controller_release_digest)
+            or not isinstance(policy_digest, str)
+            or not _SHA256_DIGEST.fullmatch(policy_digest)
+            or not isinstance(agent_release_digest, str)
+            or not _SHA256_DIGEST.fullmatch(agent_release_digest)
+            or not isinstance(receipt_key, str)
+            or not receipt_key
+        ):
+            raise ValueError("worker recovery supersession binding is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = connection.execute(
+                    "SELECT * FROM worker_recovery_supersessions WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if replay is not None:
+                    if (
+                        replay["request_fingerprint"],
+                        replay["operator_certificate_sha256"],
+                        replay["reason_digest"],
+                    ) != (
+                        request_fingerprint,
+                        operator_certificate_sha256,
+                        reason_digest,
+                    ):
+                        raise ValueError("recovery supersession is bound to another request")
+                    connection.execute("COMMIT")
+                    return dict(replay)
+                row = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("recovery operation is unavailable")
+                target = _WORKER_RECOVERY_BINDINGS.get(str(row["worker_name"]))
+                try:
+                    labels = tuple(json.loads(str(row["labels_json"])))
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ValueError("recovery operation binding is invalid") from error
+                if (
+                    row["request_fingerprint"] != request_fingerprint
+                    or row["operator_certificate_sha256"] != operator_certificate_sha256
+                    or target is None
+                    or row["repository"] != target["repository"]
+                    or labels != target["labels"]
+                    or row["recovery_action"] != target["recovery_action"]
+                ):
+                    raise ValueError("recovery operation binding is invalid")
+                old_bindings = (
+                    row["expected_agent_certificate_sha256"],
+                    row["interface_version"],
+                    row["interface_digest"],
+                    row["controller_revision"],
+                    row["controller_release_digest"],
+                    row["policy_digest"],
+                    row["agent_release_digest"],
+                )
+                current_bindings = (
+                    expected_agent_certificate_sha256,
+                    interface_version,
+                    interface_digest,
+                    controller_revision,
+                    controller_release_digest,
+                    policy_digest,
+                    agent_release_digest,
+                )
+                if old_bindings == current_bindings:
+                    raise ValueError("current recovery operation must use normal acceptance")
+                if row["state"] not in {"prepared", "completed"}:
+                    raise ValueError("recovery operation is not safely supersedable")
+                outcomes = connection.execute(
+                    "SELECT * FROM worker_recovery_outcomes WHERE operation_id=? "
+                    "ORDER BY reconciled_at,receipt_digest",
+                    (operation_id,),
+                ).fetchall()
+                if row["state"] == "prepared":
+                    if (
+                        row["invoked_at"] is not None
+                        or row["native_outcome"] is not None
+                        or outcomes
+                    ):
+                        raise ValueError("prepared recovery operation has native evidence")
+                else:
+                    completed = next(
+                        (
+                            outcome
+                            for outcome in outcomes
+                            if outcome["outcome"] == "completed"
+                            and outcome["outcome_digest"] == row["native_outcome_digest"]
+                        ),
+                        None,
+                    )
+                    if row["native_outcome"] != "completed" or completed is None:
+                        raise ValueError("completed recovery outcome is unavailable")
+                    outcome_payload = {
+                        "schema": "qdev-worker-recovery-native-outcome-v1",
+                        "operation_id": operation_id,
+                        "worker_name": row["worker_name"],
+                        "request_digest": request_fingerprint,
+                        "agent_certificate_sha256": completed["agent_certificate_sha256"],
+                        "provider_reconciliation_digest": completed[
+                            "provider_reconciliation_digest"
+                        ],
+                        "recovery_action": completed["recovery_action"],
+                        "request_nonce": completed["request_nonce"],
+                        "policy_digest": completed["policy_digest"],
+                        "agent_release_digest": completed["agent_release_digest"],
+                        "outcome": "completed",
+                        "outcome_digest": completed["outcome_digest"],
+                        "observed_at": float(completed["observed_at"]),
+                    }
+                    canonical_outcome = json.dumps(
+                        outcome_payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    outcome_receipt = "sha256:" + hashlib.sha256(canonical_outcome).hexdigest()
+                    outcome_signature = hmac.new(
+                        receipt_key.encode("utf-8"), canonical_outcome, hashlib.sha256
+                    ).hexdigest()
+                    if (
+                        completed["receipt_digest"] != outcome_receipt
+                        or not hmac.compare_digest(str(completed["signature"]), outcome_signature)
+                        or completed["worker_name"] != row["worker_name"]
+                        or completed["request_digest"] != request_fingerprint
+                        or completed["agent_certificate_sha256"]
+                        != row["expected_agent_certificate_sha256"]
+                        or completed["provider_reconciliation_digest"]
+                        != row["provider_reconciliation_digest"]
+                        or completed["recovery_action"] != row["recovery_action"]
+                        or completed["request_nonce"] != row["request_nonce"]
+                        or completed["policy_digest"] != row["policy_digest"]
+                        or completed["agent_release_digest"] != row["agent_release_digest"]
+                        or completed["signature"] != row["native_outcome_signature"]
+                    ):
+                        raise ValueError("completed recovery outcome signature is invalid")
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM worker_recovery_acceptances WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    is not None
+                    or connection.execute(
+                        "SELECT 1 FROM worker_recovery_canaries WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("accepted recovery operation cannot be superseded")
+                proof = self.verify_worker_provider_idle_proof(
+                    provider_idle_proof,
+                    key=provider_proof_key,
+                    worker_name=str(row["worker_name"]),
+                    repository=str(row["repository"]),
+                    labels=labels,
+                    max_age_seconds=proof_max_age_seconds,
+                )
+                if (
+                    row["recovery_action"] == "restore_saved_configuration"
+                    and proof["provider_runner_id"] != row["provider_runner_id"]
+                ):
+                    raise ValueError("provider runner identity changed")
+                self._require_no_durable_worker_work(connection, str(row["worker_name"]))
+                receipt_payload = {
+                    "schema": "qdev-worker-recovery-supersession-v1",
+                    "operation_id": operation_id,
+                    "request_fingerprint": request_fingerprint,
+                    "worker_name": row["worker_name"],
+                    "repository": row["repository"],
+                    "prior_state": row["state"],
+                    "native_outcome": row["native_outcome"],
+                    "provider_runner_id": proof["provider_runner_id"],
+                    "provider_idle_proof_digest": proof["digest"],
+                    "reason_digest": reason_digest,
+                    "operator_certificate_sha256": operator_certificate_sha256,
+                    "old_bindings": list(old_bindings),
+                    "current_bindings": list(current_bindings),
+                    "superseded_at": now,
+                }
+                canonical_receipt = json.dumps(
+                    receipt_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                receipt_digest = "sha256:" + hashlib.sha256(canonical_receipt).hexdigest()
+                signature = hmac.new(
+                    receipt_key.encode("utf-8"), canonical_receipt, hashlib.sha256
+                ).hexdigest()
+                connection.execute(
+                    "INSERT INTO worker_recovery_supersessions("
+                    "receipt_digest,operation_id,request_fingerprint,worker_name,repository,"
+                    "prior_state,native_outcome,provider_runner_id,provider_idle_proof_digest,"
+                    "reason_digest,operator_certificate_sha256,"
+                    "old_controller_revision,old_controller_release_digest,old_policy_digest,"
+                    "old_agent_release_digest,old_expected_agent_certificate_sha256,"
+                    "old_interface_version,old_interface_digest,current_controller_revision,"
+                    "current_controller_release_digest,current_policy_digest,"
+                    "current_agent_release_digest,current_expected_agent_certificate_sha256,"
+                    "current_interface_version,current_interface_digest,signature,superseded_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        receipt_digest,
+                        operation_id,
+                        request_fingerprint,
+                        row["worker_name"],
+                        row["repository"],
+                        row["state"],
+                        row["native_outcome"],
+                        proof["provider_runner_id"],
+                        proof["digest"],
+                        reason_digest,
+                        operator_certificate_sha256,
+                        row["controller_revision"],
+                        row["controller_release_digest"],
+                        row["policy_digest"],
+                        row["agent_release_digest"],
+                        row["expected_agent_certificate_sha256"],
+                        row["interface_version"],
+                        row["interface_digest"],
+                        controller_revision,
+                        controller_release_digest,
+                        policy_digest,
+                        agent_release_digest,
+                        expected_agent_certificate_sha256,
+                        interface_version,
+                        interface_digest,
+                        signature,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE worker_recoveries SET state='released',"
+                    "release_disposition='superseded',released_at=?,updated_at=? "
+                    "WHERE operation_id=? AND state=?",
+                    (now, now, operation_id, row["state"]),
+                )
+                supersession = connection.execute(
+                    "SELECT * FROM worker_recovery_supersessions WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert supersession is not None
+                return dict(supersession)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
 
     def prepared_worker_recovery(self, worker_name: str) -> dict[str, Any] | None:
         if not isinstance(worker_name, str) or worker_name not in _WORKER_RECOVERY_BINDINGS:

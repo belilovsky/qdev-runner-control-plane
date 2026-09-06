@@ -364,6 +364,27 @@ def _completed_recovery(store: Store) -> dict[str, Any]:
     )
 
 
+def _supersede_arguments(recovery: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "operation_id": recovery["operation_id"],
+        "request_fingerprint": recovery["request_fingerprint"],
+        "operator_certificate_sha256": recovery["operator_certificate_sha256"],
+        "reason_digest": "sha256:" + "8" * 64,
+        "provider_idle_proof": _provider_proof(),
+        "provider_proof_key": PROOF_KEY,
+        "expected_agent_certificate_sha256": "7" * 64,
+        "interface_version": "qdev-worker-recovery-v3",
+        "interface_digest": "8" * 64,
+        "controller_revision": "9" * 40,
+        "controller_release_digest": "0" * 64,
+        "policy_digest": "sha256:" + "1" * 64,
+        "agent_release_digest": "sha256:" + "5" * 64,
+        "receipt_key": RECONCILIATION_KEY,
+    }
+    values.update(overrides)
+    return values
+
+
 def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
     tmp_path: Path,
 ) -> None:
@@ -433,11 +454,13 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
     assert "worker_recovery_acceptances" in tables
     assert "worker_recovery_canaries" in tables
     assert "worker_recovery_canary_events" in tables
+    assert "worker_recovery_supersessions" in tables
     assert {
         "provider_observation_json",
         "provider_reconciliation_digest",
         "policy_digest",
         "agent_release_digest",
+        "release_disposition",
     } <= recovery_columns
     assert {
         "provider_reconciliation_digest",
@@ -457,6 +480,91 @@ def test_legacy_worker_recovery_schema_migrates_before_new_indexes(
         "job_runner_name",
         "dispatched_at",
     } <= canary_columns
+
+
+def test_prepared_stale_recovery_can_be_superseded_once_with_append_only_receipt(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = store.begin_worker_recovery(**_begin_arguments())
+    arguments = _supersede_arguments(recovery)
+
+    supersession = store.supersede_worker_recovery(**arguments)
+    replay = store.supersede_worker_recovery(**arguments)
+    current = store.worker_recovery(recovery["operation_id"])
+
+    assert current is not None
+    assert current["state"] == "released"
+    assert current["release_disposition"] == "superseded"
+    assert supersession == replay
+    assert supersession["prior_state"] == "prepared"
+    assert supersession["native_outcome"] is None
+    assert supersession["provider_runner_id"] == 187
+    assert supersession["receipt_digest"].startswith("sha256:")
+    assert store.worker_recovery_supersession(recovery["operation_id"]) == supersession
+
+    with store.connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE worker_recovery_supersessions SET reason_digest=? WHERE operation_id=?",
+                ("sha256:" + "6" * 64, recovery["operation_id"]),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM worker_recovery_supersessions WHERE operation_id=?",
+                (recovery["operation_id"],),
+            )
+
+
+def test_signed_completed_stale_recovery_can_be_superseded(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    recovery = _completed_recovery(store)
+
+    supersession = store.supersede_worker_recovery(**_supersede_arguments(recovery))
+
+    assert supersession["prior_state"] == "completed"
+    assert supersession["native_outcome"] == "completed"
+    current = store.worker_recovery(recovery["operation_id"])
+    assert current is not None
+    assert current["state"] == "released"
+    assert current["release_disposition"] == "superseded"
+
+
+def test_recovery_supersession_rejects_current_or_unsafe_fences(tmp_path: Path) -> None:
+    current_store = Store(tmp_path / "current.db")
+    current = current_store.begin_worker_recovery(**_begin_arguments())
+    with pytest.raises(ValueError, match="normal acceptance"):
+        current_store.supersede_worker_recovery(
+            **_supersede_arguments(
+                current,
+                expected_agent_certificate_sha256=current["expected_agent_certificate_sha256"],
+                interface_version=current["interface_version"],
+                interface_digest=current["interface_digest"],
+                controller_revision=current["controller_revision"],
+                controller_release_digest=current["controller_release_digest"],
+                policy_digest=current["policy_digest"],
+                agent_release_digest=current["agent_release_digest"],
+            )
+        )
+
+    invoking_store = Store(tmp_path / "invoking.db")
+    invoking = invoking_store.begin_worker_recovery(**_begin_arguments())
+    invoking_store.advance_worker_recovery(
+        invoking["idempotency_key"], expected="prepared", state="invoking"
+    )
+    with pytest.raises(ValueError, match="not safely supersedable"):
+        invoking_store.supersede_worker_recovery(**_supersede_arguments(invoking))
+
+    work_store = Store(tmp_path / "work.db")
+    blocked = work_store.begin_worker_recovery(**_begin_arguments())
+    work_store.enqueue(_queued_job())
+    with work_store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET status='claimed',worker_name=? WHERE job_id=?",
+            (WORKER, _queued_job().job_id),
+        )
+    with pytest.raises(ValueError, match="durable active work"):
+        work_store.supersede_worker_recovery(**_supersede_arguments(blocked))
 
 
 def test_offline_worker_can_be_fenced_only_with_signed_provider_and_durable_idle_proof(

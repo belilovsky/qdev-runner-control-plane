@@ -136,6 +136,22 @@ class RecoveryStatusRequest(BaseModel):
     provenance: RecoveryRequestProvenance
 
 
+class RecoverySupersedeRequest(BaseModel):
+    """Release one stale fixed-target fence after independent idle proof."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-supersede-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-supersede-v1$",
+    )
+    operation_id: Sha256Hex
+    request_fingerprint: Sha256Hex
+    reason: str = Field(min_length=8, max_length=500)
+    provenance: RecoveryRequestProvenance
+
+
 class RecoveryReconcileRequest(BaseModel):
     """Native result supplied by the certificate-authenticated host agent."""
 
@@ -342,3 +358,37 @@ class RecoveryOperationResponse(BaseModel):
     policy_digest: Sha256Digest
     agent_release_digest: Sha256Digest
     idempotent_replay: bool = False
+
+
+class RecoverySupersessionResponse(BaseModel):
+    """Topology-free append-only evidence for a released stale fence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-supersession-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-supersession-v1$",
+    )
+    operation_id: Sha256Hex
+    request_fingerprint: Sha256Hex
+    target_id: RecoveryTargetId
+    worker_name: RecoveryIdentifier
+    repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    prior_state: Literal["prepared", "completed"]
+    native_outcome: Literal["completed"] | None = None
+    provider_runner_id: int | None = Field(default=None, gt=0)
+    provider_idle_proof_digest: Sha256Digest
+    supersession_receipt_digest: Sha256Digest
+    controller_revision: GitRevision
+    controller_release_digest: Sha256Hex
+    policy_digest: Sha256Digest
+    agent_release_digest: Sha256Digest
+    superseded_at: datetime
+    idempotent_replay: bool = False
+
+    @model_validator(mode="after")
+    def validate_superseded_at(self) -> RecoverySupersessionResponse:
+        if self.superseded_at.tzinfo is None:
+            raise ValueError("recovery supersession timestamp must include a timezone")
+        return self
