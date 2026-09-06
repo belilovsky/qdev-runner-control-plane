@@ -1525,11 +1525,16 @@ class Store:
             or active_jobs != 0
         )
         provider_is_absent = provider_runner_id is None
+        provider_status_is_allowed = provider_status == "offline" or (
+            target is not None
+            and target["recovery_action"] == "restore_saved_configuration"
+            and provider_status == "online"
+        )
         present_invalid = not provider_is_absent and (
             isinstance(provider_runner_id, bool)
             or not isinstance(provider_runner_id, int)
             or provider_runner_id <= 0
-            or provider_status != "offline"
+            or not provider_status_is_allowed
             or provider_busy is not False
         )
         absent_invalid = provider_is_absent and (
@@ -1685,7 +1690,14 @@ class Store:
             and not isinstance(proof["provider_runner_id"], bool)
             and isinstance(proof["provider_runner_id"], int)
             and proof["provider_runner_id"] > 0
-            and proof["provider_status"] == "offline"
+            and (
+                proof["provider_status"] == "offline"
+                or (
+                    target is not None
+                    and target["recovery_action"] == "restore_saved_configuration"
+                    and proof["provider_status"] == "online"
+                )
+            )
             and proof["provider_busy"] is False
         )
         if (

@@ -491,7 +491,30 @@ def test_offline_recovery_rejects_provider_work_and_durable_claims(tmp_path: Pat
         store.begin_worker_recovery(**_begin_arguments())
 
 
-def test_pre_recovery_proof_is_offline_only_and_strictly_typed(tmp_path: Path) -> None:
+def test_saved_platform_pre_recovery_proof_accepts_exact_online_idle() -> None:
+    proof = Store.issue_worker_provider_idle_proof(
+        key=PROOF_KEY,
+        worker_name=WORKER,
+        repository=REPOSITORY,
+        labels=LABELS,
+        provider_runner_id=187,
+        provider_status="online",
+        provider_busy=False,
+        active_jobs=0,
+        provider_observation=_provider_observation(provider_status="online"),
+    )
+    verified = Store.verify_worker_provider_idle_proof(
+        proof,
+        key=PROOF_KEY,
+        worker_name=WORKER,
+        repository=REPOSITORY,
+        labels=LABELS,
+        max_age_seconds=60,
+    )
+    assert verified["provider_status"] == "online"
+
+
+def test_pre_recovery_proof_remains_strictly_typed(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     with pytest.raises(ValueError, match="provider idle proof"):
         Store.issue_worker_provider_idle_proof(
@@ -501,9 +524,11 @@ def test_pre_recovery_proof_is_offline_only_and_strictly_typed(tmp_path: Path) -
             labels=LABELS,
             provider_runner_id=187,
             provider_status="online",
-            provider_busy=False,
+            provider_busy=True,
             active_jobs=0,
-            provider_observation=_provider_observation(provider_status="online"),
+            provider_observation=_provider_observation(
+                provider_status="online", provider_busy=True
+            ),
         )
     with pytest.raises(ValueError, match="operation identity"):
         store.worker_recovery(None)  # type: ignore[arg-type]

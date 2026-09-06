@@ -378,6 +378,45 @@ def test_prepare_is_provider_observed_and_exactly_idempotent(
     assert harness.github.observation_calls == 1
 
 
+def test_exact_online_idle_saved_platform_runner_prepares_without_restart(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    harness.github.status = "online"
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(idempotency_key="recovery-platform-online-idle"),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    operation = response.json()
+    assert operation["state"] == "prepared"
+    row = harness.client.app.state.store.worker_recovery(operation["operation_id"])
+    assert row is not None
+    assert row["provider_runner_id"] == 187
+    assert harness.github.status == "online"
+    assert harness.github.busy is False
+
+
+def test_online_replacement_runner_is_not_admitted_as_absent(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    harness.github.status = "online"
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(
+            "qdev-qazstack-01", idempotency_key="recovery-qazstack-online"
+        ),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 409
+
+
 def test_bindings_are_live_source_bound_and_non_secret(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:

@@ -298,8 +298,16 @@ class WorkerRecoveryController:
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
         try:
+            allowed_initial_status = (
+                ("offline", "online")
+                if target.action == "restore_saved_configuration"
+                else "offline"
+            )
             runners, observed, provider_observation = self._observe_runner(
-                target, expected_labels=target.labels, status="offline", require_idle=True
+                target,
+                expected_labels=target.labels,
+                status=allowed_initial_status,
+                require_idle=True,
             )
             provider_runner_id: int | None = int(observed["id"])
             provider_observed_at = float(observed["observed_at"])
@@ -337,7 +345,9 @@ class WorkerRecoveryController:
             repository=target.repository,
             labels=target.labels,
             provider_runner_id=provider_runner_id,
-            provider_status=None if provider_runner_id is None else "offline",
+            provider_status=(
+                None if provider_runner_id is None else cast(str, observed["status"])
+            ),
             provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
@@ -881,7 +891,7 @@ class WorkerRecoveryController:
         target: RecoveryTarget,
         *,
         expected_labels: tuple[str, ...] | tuple[tuple[str, ...], ...],
-        status: str,
+        status: str | tuple[str, ...],
         require_idle: bool,
         canary: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
@@ -922,7 +932,11 @@ class WorkerRecoveryController:
                 "labels": observed["labels"],
             }
             or observed["name"] != target.worker_name
-            or observed["status"] != status
+            or (
+                observed["status"] not in status
+                if isinstance(status, tuple)
+                else observed["status"] != status
+            )
             or tuple(observed["labels"]) not in allowed_labels
             or (require_idle and (observed["busy"] or observed["active_job_ids"]))
         ):

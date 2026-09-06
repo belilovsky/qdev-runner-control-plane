@@ -50,6 +50,12 @@ cannot choose a host, service, executable, certificate or CA key.
    runner or a signed observation that the name is absent and has no active
    provider jobs. It refuses preparation when the runner is busy, has active
    jobs or has a conflicting identity.
+
+   A saved-configuration target that already has the exact unique provider
+   identity `online` and idle is admitted through the same signed transaction.
+   The fixed host agent then records `already_applied` without restarting the
+   runner; native proof, exact-SHA canary, acceptance and replay are still
+   mandatory. This no-op path is not available to replacement targets.
 4. Start the already installed one-shot service on the fixed target host:
 
    ```bash
