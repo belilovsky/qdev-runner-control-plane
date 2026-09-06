@@ -83,6 +83,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "/usr/local/sbin/qdev-controller-activate" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
+    assert "/usr/local/sbin/qdev-worker-recovery-bindings-provision" in script
+    assert (
+        '"$release/scripts/provision_worker_recovery_bindings.py"' in script
+    )
     assert "/usr/local/sbin/qdev-fleet-host-dispatch-state-provision" in script
     assert "deploy/qdev-fleet-host-dispatch.service" in script
     assert "deploy/qdev-fleet-host-dispatch.path" in script

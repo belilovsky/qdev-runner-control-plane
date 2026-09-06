@@ -1172,6 +1172,9 @@ install_fleet_host_dispatch() {
     "$script_root/scripts/qdev_fleet_worker_recovery_adapter.py" \
     /usr/local/sbin/qdev-fleet-worker-recovery
   install -o root -g root -m 0755 -- \
+    "$release/scripts/provision_worker_recovery_bindings.py" \
+    /usr/local/sbin/qdev-worker-recovery-bindings-provision
+  install -o root -g root -m 0755 -- \
     "$script_root/scripts/provision_fleet_host_dispatch_state.py" \
     /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
