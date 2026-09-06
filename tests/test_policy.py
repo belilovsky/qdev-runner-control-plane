@@ -172,7 +172,7 @@ def test_qdevrun_ordinary_admission_rejects_invalid_budgets(
         Policy(inventory, profiles)
 
 
-def test_source_config_only_changes_qdevrun_ordinary_admission() -> None:
+def test_source_config_bounds_qdevrun_ordinary_admission_by_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
     qdevrun_overrides = {
@@ -180,19 +180,17 @@ def test_source_config_only_changes_qdevrun_ordinary_admission() -> None:
         for key, value in policy.repository_profile_disk_mb.items()
         if key[0] == "belilovsky/qdev-run-site"
     }
-    assert qdevrun_overrides == {("belilovsky/qdev-run-site", "qdev-ci"): 4096}
-    assert policy.profiles["qdev-ci"].disk_mb == 12288
+    assert qdevrun_overrides == {}
+    assert policy.profiles["qdev-ci"].disk_mb == 4096
     assert policy.profiles["qdev-ci-browser"].disk_mb == 5120
 
 
-def test_source_config_bounds_qazknowledge_fifo_head_admission() -> None:
+def test_source_config_bounds_qazknowledge_fifo_head_by_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
-    assert policy.repository_profile_disk_mb[
-        ("belilovsky/qazknowledge", "qdev-ci")
-    ] == 4096
-    assert policy.profiles["qdev-ci"].disk_mb == 12288
+    assert ("belilovsky/qazknowledge", "qdev-ci") not in policy.repository_profile_disk_mb
+    assert policy.profiles["qdev-ci"].disk_mb == 4096
 
 
 def test_policy_rejects_casefold_repository_collision(

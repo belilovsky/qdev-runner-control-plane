@@ -3,39 +3,6 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
-  # The controller's qdev-ci workflow installs its small Python verification
-  # environment and runs the hosted policy/test suite without building OCI
-  # images. The measured checkout plus environment is below 1 GiB; reserve
-  # 4 GiB while retaining the worker's independent running free-space floor.
-  belilovsky/qdev-runner-control-plane:
-    qdev-ci: 4096
-  # QDEV's qdev-ci lane only checks its runner contract and environment.
-  # The ~20.4 MiB checkout has no build or package-install workload here.
-  # 4 GiB conservatively covers checkout and the pinned Actions/Python setup
-  # for this dependency-free check. Its separate browser lane and the worker's
-  # independent 4.5 GiB running floor remain unchanged.
-  belilovsky/qdev-run-site:
-    qdev-ci: 4096
-  # QazPoster uses qdev-ci only for its dependency-free runner contract check.
-  # The exact queued workflow checks out source, provisions pinned Python 3.12,
-  # and runs one local policy script; it does not install project dependencies
-  # or build artifacts. Reserve 4 GiB for that bounded lane while retaining the
-  # worker's independent 4.5 GiB running floor and all controller checks.
-  belilovsky/qazposter:
-    qdev-ci: 4096
-  # QazKnowledge's exact FIFO-head workflow has a 1.9 MiB source tree and one
-  # pinned development dependency (jsonschema). It checks JSON, compiles Python
-  # sources and runs the repository's deterministic unit/foundation tests; it
-  # does not build an image or launch services. Reserve 4 GiB for this exact
-  # repository/profile while retaining the worker's independent 4.5 GiB floor.
-  belilovsky/qazknowledge:
-    qdev-ci: 4096
-  # Platform Portal's required qdev-runner-contract job is a bounded
-  # dependency-free policy check: checkout, pinned Python 3.12 and one local
-  # script. Reserve 4 GiB for that exact repository/profile while retaining
-  # the worker's independent 4.5 GiB running floor and controller checks.
-  belilovsky/platform-portal:
-    qdev-ci: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
@@ -86,7 +53,12 @@ repository_admission_disk_mb:
 profiles:
   qdev-ci:
     labels: [self-hosted, Linux, X64, qdev-ci]
-    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 12288, pids_limit: 512}
+    # qdev-ci is the dependency-light contract/test lane. Image builds and
+    # browser runtimes use their separately sized profiles below. The measured
+    # queue head and AVDS foundation candidate each require under 1 GiB, so a
+    # 4 GiB reservation keeps more than 4x headroom while the worker's
+    # independent 4.5 GiB running floor remains enforced.
+    resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 4096, pids_limit: 512}
     timeout_minutes: 45
     # Public repositories may run trusted same-repository PR branches. The
     # broker still rejects every cross-repository/fork PR by repository ID.
