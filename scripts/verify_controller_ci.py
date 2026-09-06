@@ -54,7 +54,11 @@ def commands(python: str) -> list[list[str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lane", choices=("local", "hosted", "controller-recovery"), required=True)
+    parser.add_argument(
+        "--lane",
+        choices=("local", "hosted", "self-hosted", "controller-recovery"),
+        required=True,
+    )
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):
         parser.error("complete controller CI requires Python 3.12")
