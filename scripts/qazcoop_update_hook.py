@@ -95,13 +95,11 @@ def validate_update(repository: Path, reference: str, old: str, new: str) -> Non
     previous = release_lock(repository, old)
     candidate = release_lock(repository, new)
     payload = object_at(repository, new, PAYLOAD_PATH)
-    candidate_source = candidate["functional_source_sha"]
     payload_source = payload.get("functional_source_sha")
-    if candidate_source != payload_source:
-        raise GuardError("release lock and evidence source differ")
+    if candidate != previous:
+        raise GuardError("historical release lock changed before deployment")
     for source, message in (
         (previous["functional_source_sha"], "locked release is not retained"),
-        (candidate_source, "new lock does not point into the branch"),
         (payload_source, "receipt source does not point into the branch"),
     ):
         if not isinstance(source, str) or SHA.fullmatch(source) is None:
@@ -117,10 +115,9 @@ def validate_update(repository: Path, reference: str, old: str, new: str) -> Non
         "--evidence-commit-sha",
         new,
     ]
-    # Every accepted update moves the active release lock to the evidence
-    # commit's functional parent.  Require the controller receipt even when
-    # the accompanying evidence is marked incomplete so that an unsigned
-    # evidence commit cannot advance the deployable source.
+    # The tracked lock is immutable historical deployment evidence. Require
+    # controller admission for every protected update so that an unsigned
+    # evidence chain cannot advance the deployable functional source.
     command.append("--require-authoritative-admission")
     result = subprocess.run(command, cwd=repository, capture_output=True, text=True)
     if result.returncode:

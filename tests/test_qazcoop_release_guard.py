@@ -7,6 +7,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from qdev_runner import controller_admission
 from qdev_runner.controller_admission import initialize_keypair, sign_payload
 from qdev_runner.qazcoop_release_guard import (
     CONTROLLER_PATH,
+    EVIDENCE_ALLOWLIST,
     LOCK_PATH,
     PAYLOAD_PATH,
     QazCoopReleaseGuardError,
@@ -22,6 +24,7 @@ from qdev_runner.qazcoop_release_guard import (
 
 CONTROLLER_REVISION = "c" * 40
 BRANCH = "refs/heads/codex/qazcoop-mvp"
+HISTORICAL_IMAGE_DIGEST = "sha256:" + "8" * 64
 
 
 def _hook_module() -> ModuleType:
@@ -97,7 +100,11 @@ def _trust_bundle(tmp_path: Path, public_key: Path) -> tuple[Path, Path, Path]:
     return trust, launcher, hook
 
 
-def _release_payload(functional_sha: str, manifest: dict[str, object]) -> dict[str, object]:
+def _release_payload(
+    functional_sha: str,
+    manifest: dict[str, object],
+    historical_sha: str,
+) -> dict[str, Any]:
     files = manifest["files"]
     assert isinstance(files, dict)
     return {
@@ -114,15 +121,15 @@ def _release_payload(functional_sha: str, manifest: dict[str, object]) -> dict[s
         "browser_acceptance": {
             "observed_source_sha": functional_sha,
             "status": "verified",
-            "artifact": "browser.jsonl",
+            "artifact": "docs/acceptance/browser-matrix.v1.json",
             "artifact_sha256": "sha256:" + "4" * 64,
-            "routes_total": 24,
-            "batch_checked": 24,
-            "browser_cases": 960,
-            "passed": 944,
+            "routes_total": 1,
+            "batch_checked": 1,
+            "browser_cases": 1,
+            "passed": 1,
             "failed": 0,
             "auth_blocked": 0,
-            "not_applicable": 16,
+            "not_applicable": 0,
             "acceptance_rule": "all mandatory private cells must pass",
         },
         "restore": {
@@ -137,14 +144,14 @@ def _release_payload(functional_sha: str, manifest: dict[str, object]) -> dict[s
             "evidence_gap": None,
         },
         "previous_release": {
-            "functional_source_sha": "a" * 40,
-            "application_image_digest": "sha256:" + "8" * 64,
-            "evidence_status": "unsafe_for_authz_rollback",
+            "functional_source_sha": historical_sha,
+            "application_image_digest": HISTORICAL_IMAGE_DIGEST,
+            "evidence_status": "verified",
         },
         "rollback": {
             "status": "verified",
-            "application_image_digest": "sha256:" + "9" * 64,
-            "retention_image_digest": "sha256:" + "a" * 64,
+            "application_image_digest": HISTORICAL_IMAGE_DIGEST,
+            "retention_image_digest": HISTORICAL_IMAGE_DIGEST,
             "historical_tags": ["qazcoop-app:rollback-safe"],
             "reason": "first image after tenant isolation closure",
         },
@@ -219,27 +226,95 @@ def _repository(tmp_path: Path, trust: Path) -> tuple[Path, str, str]:
         {
             "contract": "qazcoop-release-lock/v1",
             "status": "active",
+            "locked_at": "2026-09-04T18:06:20Z",
+            "protected_branch": "codex/qazcoop-mvp",
             "functional_source_sha": bootstrap_sha,
             "public_marker": f"qazcoop-{bootstrap_sha[:7]}",
+            "application_version": "0.2.6",
+            "public_url": "https://qazcoop.qdev.run",
+            "image_digest": HISTORICAL_IMAGE_DIGEST,
+            "runtime": {
+                "container_name": "qazcoop_app",
+                "host_bind": "127.0.0.1:8320",
+            },
         },
     )
+    for relative_path in EVIDENCE_ALLOWLIST:
+        if relative_path in {CONTROLLER_PATH, PAYLOAD_PATH}:
+            continue
+        path = repository / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("functional placeholder\n", encoding="utf-8")
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "functional")
     functional_sha = _git(repository, "rev-parse", "HEAD")
     manifest = json.loads((trust / "bundle.json").read_text(encoding="utf-8"))
-    _write_json(repository / PAYLOAD_PATH, _release_payload(functional_sha, manifest))
-    _write_json(repository / CONTROLLER_PATH, _controller(functional_sha, manifest))
+    payload = _release_payload(functional_sha, manifest, bootstrap_sha)
+    browser = {
+        "contract": "qazcoop-browser-matrix/v1",
+        "status": "verified",
+        "functional_source_sha": functional_sha,
+        "release_marker": f"qazcoop-{functional_sha[:7]}",
+        "application_image_digest": payload["artifact_identity"]["application_image_digest"],
+        "route_contract_sha256": "sha256:" + "d" * 64,
+        "cells": [
+            {
+                "route_id": "home",
+                "route_template": "/",
+                "instance": "default",
+                "observed_path": "/",
+                "access": "public",
+                "width": 320,
+                "theme": "light",
+                "locale": "ru",
+                "outcome": "passed",
+            }
+        ],
+    }
+    _write_json(repository / "docs/acceptance/browser-matrix.v1.json", browser)
     _write_json(
-        repository / LOCK_PATH,
+        repository / "docs/acceptance/defect-register.json",
         {
-            "contract": "qazcoop-release-lock/v1",
-            "status": "active",
-            "functional_source_sha": functional_sha,
-            "public_marker": f"qazcoop-{functional_sha[:7]}",
+            "schema_version": "qazcoop-closeout-defects/v1",
+            "project": "QazCoop",
+            "items": [
+                {
+                    "id": "SEC-001",
+                    "priority": "P0",
+                    "status": "verified",
+                    "evidence": "Immutable tenant isolation tests passed.",
+                    "verification": "Independent security review passed.",
+                },
+                {
+                    "id": "FIN-001",
+                    "priority": "P0",
+                    "status": "accepted-boundary",
+                },
+            ],
         },
     )
-    _git(repository, "add", PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH)
-    _git(repository, "commit", "-m", "evidence")
+    payload["browser_acceptance"]["artifact_sha256"] = _digest(
+        repository / "docs/acceptance/browser-matrix.v1.json"
+    )
+    _write_json(repository / PAYLOAD_PATH, payload)
+    _write_json(repository / CONTROLLER_PATH, _controller(functional_sha, manifest))
+    first_evidence = sorted(EVIDENCE_ALLOWLIST)[:6]
+    remaining_evidence = sorted(EVIDENCE_ALLOWLIST)[6:]
+    generated_json = {
+        PAYLOAD_PATH,
+        CONTROLLER_PATH,
+        "docs/acceptance/browser-matrix.v1.json",
+        "docs/acceptance/defect-register.json",
+    }
+    for relative_path in EVIDENCE_ALLOWLIST - generated_json:
+        (repository / relative_path).write_text(
+            f"verified evidence for {functional_sha}\n", encoding="utf-8"
+        )
+    _git(repository, "add", *first_evidence)
+    _git(repository, "commit", "-m", "evidence part one")
+    _git(repository, "add", *remaining_evidence)
+    _git(repository, "commit", "-m", "evidence part two")
     return repository, functional_sha, _git(repository, "rev-parse", "HEAD")
 
 
@@ -389,7 +464,7 @@ def test_guard_rejects_evidence_commit_with_extra_file(
         )
 
 
-def test_update_hook_rejects_lock_receipt_mismatch_before_verifier(
+def test_update_hook_rejects_historical_lock_mutation_before_verifier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repository = tmp_path / "bare.git"
@@ -435,7 +510,7 @@ def test_update_hook_rejects_lock_receipt_mismatch_before_verifier(
 
     original_run = subprocess.run
 
-    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def observed_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         nonlocal verifier_called
         command = args[0]
         if isinstance(command, list) and command and str(command[0]).endswith(
@@ -443,15 +518,15 @@ def test_update_hook_rejects_lock_receipt_mismatch_before_verifier(
         ):
             verifier_called = True
             return subprocess.CompletedProcess(command, 0, "", "")
-        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+        return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
 
     monkeypatch.setattr(hook.subprocess, "run", observed_run)
-    with pytest.raises(hook.GuardError, match="release lock and evidence source differ"):
+    with pytest.raises(hook.GuardError, match="historical release lock changed"):
         hook.validate_update(repository, BRANCH, old, new)
     assert verifier_called is False
 
 
-def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
+def test_update_hook_accepts_reachable_multi_commit_evidence_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     private = tmp_path / "private.pem"
@@ -463,14 +538,14 @@ def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
     verifier_calls: list[list[str]] = []
     original_run = subprocess.run
 
-    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def observed_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         command = args[0]
         if isinstance(command, list) and command and str(command[0]).endswith(
             "qdev-controller-verify-admission"
         ):
             verifier_calls.append([str(value) for value in command])
             return subprocess.CompletedProcess(command, 0, "", "")
-        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+        return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
 
     monkeypatch.setattr(hook.subprocess, "run", observed_run)
     hook.validate_update(repository, BRANCH, functional_sha, evidence_sha)
@@ -509,7 +584,7 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
     verifier_calls: list[list[str]] = []
     original_run = subprocess.run
 
-    def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def observed_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         command = args[0]
         if isinstance(command, list) and command and str(command[0]).endswith(
             "qdev-controller-verify-admission"
@@ -518,7 +593,7 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
             return subprocess.CompletedProcess(
                 command, 1, "", "authoritative admission requires a releasable payload\n"
             )
-        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+        return cast(subprocess.CompletedProcess[str], original_run(*args, **kwargs))
 
     monkeypatch.setattr(hook.subprocess, "run", observed_run)
     with pytest.raises(hook.GuardError, match="authoritative admission requires"):

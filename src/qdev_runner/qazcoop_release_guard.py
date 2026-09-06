@@ -27,8 +27,26 @@ PROTECTED_REF = "refs/heads/codex/qazcoop-mvp"
 PAYLOAD_PATH = "docs/acceptance/release-receipt.v3.payload.json"
 CONTROLLER_PATH = "app/contracts/qdev_ci_controller.v1.json"
 LOCK_PATH = "app/contracts/release_lock.v1.json"
+BROWSER_MATRIX_PATH = "docs/acceptance/browser-matrix.v1.json"
+DEFECT_REGISTER_PATH = "docs/acceptance/defect-register.json"
 PUBLIC_KEY_MIRROR_PATH = "app/contracts/trust/qdev-ci-controller-ed25519.pub"
-EVIDENCE_ALLOWLIST = frozenset({PAYLOAD_PATH, CONTROLLER_PATH, LOCK_PATH})
+EVIDENCE_ALLOWLIST = frozenset(
+    {
+        CONTROLLER_PATH,
+        "docs/current-status.md",
+        "docs/acceptance/README.md",
+        "docs/acceptance/agent-rechecks.md",
+        BROWSER_MATRIX_PATH,
+        "docs/acceptance/checks.md",
+        "docs/acceptance/coverage.json",
+        DEFECT_REGISTER_PATH,
+        "docs/acceptance/page-inventory.json",
+        PAYLOAD_PATH,
+        "docs/acceptance/restore-evidence.md",
+        "docs/acceptance/rollback.md",
+        "docs/acceptance/work-artifact-classification.json",
+    }
+)
 RELEASABLE = frozenset({"release_ready", "released"})
 EXPECTED_JOBS = {
     "reuse-first": "qdev-ci",
@@ -367,6 +385,124 @@ def _validate_releasable_payload(payload: Mapping[str, Any], functional_sha: str
         raise QazCoopReleaseGuardError("previous release evidence status is unavailable")
 
 
+def _validate_browser_artifact(
+    repository: Path,
+    evidence_sha: str,
+    payload: Mapping[str, Any],
+    functional_sha: str,
+) -> None:
+    """Validate the tracked browser bytes and their release aggregates."""
+
+    browser = _mapping(payload["browser_acceptance"], "browser acceptance")
+    if browser.get("artifact") != BROWSER_MATRIX_PATH:
+        raise QazCoopReleaseGuardError("browser artifact path is not canonical")
+    observed_digest = _file_digest_at(repository, evidence_sha, BROWSER_MATRIX_PATH)
+    if browser.get("artifact_sha256") != observed_digest:
+        raise QazCoopReleaseGuardError("browser artifact digest does not match its bytes")
+    artifact = _object_at(repository, evidence_sha, BROWSER_MATRIX_PATH)
+    _exact_fields(
+        artifact,
+        {
+            "contract",
+            "status",
+            "functional_source_sha",
+            "release_marker",
+            "application_image_digest",
+            "route_contract_sha256",
+            "cells",
+        },
+        "browser matrix",
+    )
+    application = _mapping(payload["artifact_identity"], "artifact identity").get(
+        "application_image_digest"
+    )
+    if (
+        artifact.get("contract") != "qazcoop-browser-matrix/v1"
+        or artifact.get("status") != "verified"
+        or artifact.get("functional_source_sha") != functional_sha
+        or artifact.get("release_marker") != f"qazcoop-{functional_sha[:7]}"
+        or artifact.get("application_image_digest") != application
+    ):
+        raise QazCoopReleaseGuardError("browser matrix identity is not release bound")
+    _digest(artifact.get("route_contract_sha256"), "browser route contract digest")
+    cells = artifact.get("cells")
+    if not isinstance(cells, list):
+        raise QazCoopReleaseGuardError("browser matrix cells are invalid")
+    required_cell_fields = {
+        "route_id",
+        "route_template",
+        "instance",
+        "observed_path",
+        "access",
+        "width",
+        "theme",
+        "locale",
+        "outcome",
+    }
+    seen: set[tuple[object, object, object, object, object]] = set()
+    route_instances: set[tuple[object, object]] = set()
+    for index, raw_cell in enumerate(cells):
+        cell = _mapping(raw_cell, f"browser cell {index}")
+        _exact_fields(cell, required_cell_fields, f"browser cell {index}")
+        key = (
+            cell.get("route_id"),
+            cell.get("instance"),
+            cell.get("width"),
+            cell.get("theme"),
+            cell.get("locale"),
+        )
+        if key in seen:
+            raise QazCoopReleaseGuardError("browser matrix contains a duplicate cell")
+        seen.add(key)
+        route_instances.add((cell.get("route_id"), cell.get("instance")))
+        if cell.get("outcome") != "passed":
+            raise QazCoopReleaseGuardError("releasable browser matrix contains a non-pass cell")
+    expected = {
+        "routes_total": len(route_instances),
+        "batch_checked": len(route_instances),
+        "browser_cases": len(cells),
+        "passed": len(cells),
+        "failed": 0,
+        "auth_blocked": 0,
+        "not_applicable": 0,
+    }
+    for field, value in expected.items():
+        if browser.get(field) != value:
+            raise QazCoopReleaseGuardError(f"browser matrix does not reconcile {field}")
+
+
+def _validate_defect_register(repository: Path, evidence_sha: str) -> None:
+    """Reject releasable evidence with an unclosed private P0/P1 defect."""
+
+    register = _object_at(repository, evidence_sha, DEFECT_REGISTER_PATH)
+    if register.get("schema_version") != "qazcoop-closeout-defects/v1":
+        raise QazCoopReleaseGuardError("defect register contract is invalid")
+    items = register.get("items")
+    if not isinstance(items, list):
+        raise QazCoopReleaseGuardError("defect register items are invalid")
+    terminal = {"fixed", "closed", "verified"}
+    boundaries = {"accepted-boundary", "blocked-by-owner-data-handoff"}
+    seen: set[str] = set()
+    for index, raw_item in enumerate(items):
+        item = _mapping(raw_item, f"defect {index}")
+        defect_id = item.get("id")
+        if not isinstance(defect_id, str) or not defect_id or defect_id in seen:
+            raise QazCoopReleaseGuardError("defect register contains an invalid identity")
+        seen.add(defect_id)
+        if item.get("priority") not in {"P0", "P1"}:
+            continue
+        status = item.get("status")
+        if status not in terminal | boundaries:
+            raise QazCoopReleaseGuardError(f"open private P0/P1 defect: {defect_id}")
+        if status in terminal:
+            for field in ("evidence", "verification"):
+                value = item.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise QazCoopReleaseGuardError(
+                        f"terminal defect lacks {field}: {defect_id}"
+                    )
+
+
 def validate_evidence_commit(
     repository: Path,
     evidence_commit_sha: str,
@@ -378,10 +514,47 @@ def validate_evidence_commit(
     if protected_ref != PROTECTED_REF:
         raise QazCoopReleaseGuardError("protected ref does not match QazCoop policy")
     repository = repository.resolve(strict=True)
-    parents = str(_git(repository, "rev-list", "--parents", "-n", "1", evidence_sha)).split()
-    if len(parents) != 2:
-        raise QazCoopReleaseGuardError("evidence commit must have one direct parent")
-    functional_sha = parents[1]
+    payload = _object_at(repository, evidence_sha, PAYLOAD_PATH)
+    functional_sha = _sha(payload.get("functional_source_sha"), "functional source SHA")
+    if subprocess.run(  # noqa: S603
+        ["/usr/bin/git", "merge-base", "--is-ancestor", functional_sha, evidence_sha],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    ).returncode:
+        raise QazCoopReleaseGuardError(
+            "functional source SHA is not an ancestor of the evidence commit"
+        )
+    current = evidence_sha
+    while current != functional_sha:
+        parents = str(
+            _git(repository, "rev-list", "--parents", "-n", "1", current)
+        ).split()
+        if len(parents) != 2:
+            raise QazCoopReleaseGuardError(
+                "every evidence-chain commit must have one direct parent"
+            )
+        parent = parents[1]
+        commit_changed = {
+            line
+            for line in str(
+                _git(
+                    repository,
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-only",
+                    "-r",
+                    parent,
+                    current,
+                )
+            ).splitlines()
+            if line
+        }
+        if commit_changed - EVIDENCE_ALLOWLIST:
+            raise QazCoopReleaseGuardError(
+                "evidence chain changed files outside the exact allowlist"
+            )
+        current = parent
     changed = {
         line
         for line in str(
@@ -406,27 +579,44 @@ def validate_evidence_commit(
                 f"evidence path is not a regular Git file: {relative_path}"
             )
 
-    payload = _object_at(repository, evidence_sha, PAYLOAD_PATH)
     controller = _object_at(repository, evidence_sha, CONTROLLER_PATH)
     release_lock = _object_at(repository, evidence_sha, LOCK_PATH)
     if payload.get("contract") != "qazcoop-release-receipt-payload/v3":
         raise QazCoopReleaseGuardError("release payload contract is invalid")
     if payload.get("status") not in {"acceptance_incomplete", *RELEASABLE}:
         raise QazCoopReleaseGuardError("release payload status is invalid")
-    if payload.get("functional_source_sha") != functional_sha:
-        raise QazCoopReleaseGuardError("release payload is not bound to its direct parent")
     _exact_fields(
         release_lock,
-        {"contract", "status", "functional_source_sha", "public_marker"},
+        {
+            "contract",
+            "status",
+            "locked_at",
+            "protected_branch",
+            "functional_source_sha",
+            "public_marker",
+            "application_version",
+            "public_url",
+            "image_digest",
+            "runtime",
+        },
         "release lock",
     )
+    lock_source = _sha(release_lock.get("functional_source_sha"), "release lock source SHA")
+    lock_digest = _digest(release_lock.get("image_digest"), "release lock image digest")
     if (
         release_lock.get("contract") != "qazcoop-release-lock/v1"
         or release_lock.get("status") != "active"
-        or release_lock.get("functional_source_sha") != functional_sha
-        or release_lock.get("public_marker") != f"qazcoop-{functional_sha[:7]}"
+        or release_lock.get("protected_branch") != PROTECTED_REF.removeprefix("refs/heads/")
+        or release_lock.get("public_marker") != f"qazcoop-{lock_source[:7]}"
     ):
-        raise QazCoopReleaseGuardError("release lock is not bound to the functional parent")
+        raise QazCoopReleaseGuardError("historical release lock is invalid")
+    if subprocess.run(  # noqa: S603
+        ["/usr/bin/git", "merge-base", "--is-ancestor", lock_source, functional_sha],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    ).returncode:
+        raise QazCoopReleaseGuardError("historical release is not retained")
     if controller.get("contract") != "qdev-ci-controller-admission/v1":
         raise QazCoopReleaseGuardError("controller contract is invalid")
     _exact_fields(
@@ -462,6 +652,16 @@ def validate_evidence_commit(
         raise QazCoopReleaseGuardError("controller required profiles do not match QazCoop policy")
     if payload["status"] in RELEASABLE:
         _validate_releasable_payload(payload, functional_sha)
+        _validate_browser_artifact(repository, evidence_sha, payload, functional_sha)
+        _validate_defect_register(repository, evidence_sha)
+        previous = _mapping(payload["previous_release"], "previous release")
+        if (
+            previous.get("functional_source_sha") != lock_source
+            or previous.get("application_image_digest") != lock_digest
+        ):
+            raise QazCoopReleaseGuardError(
+                "previous release does not match the historical release lock"
+            )
     return payload, controller, functional_sha
 
 
