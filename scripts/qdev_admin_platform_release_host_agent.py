@@ -39,6 +39,10 @@ _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _HOST_IDENTITY = re.compile(r"^qdev-host-agent:[a-z0-9][a-z0-9-]{2,127}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_IDP_AUTHORIZATION_PATH = re.compile(
+    r"^/internal/v1/release-hosts/[a-z0-9][a-z0-9-]{2,127}/jobs/"
+    r"[A-Za-z0-9_-]{16,128}/idp-file-authorization$"
+)
 _QMT_VERSION = re.compile(r"^4\.4\.[0-9]+$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 STATE_SCHEMA = "qdev-release-host-state-v1"
@@ -371,10 +375,21 @@ def request(
     config: Config,
     method: str,
     path: str,
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, Any] | bytes | None = None,
     *,
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
+    # Only the fixed IdP collector may send native canonical bytes (including
+    # their terminal LF). Re-serializing these as the legacy JSON transport
+    # would change the exact observation authenticated by the controller.
+    if isinstance(payload, bytes) and (
+        method != "POST"
+        or not _IDP_AUTHORIZATION_PATH.fullmatch(path)
+        or not 0 < len(payload) <= 2 * 1024 * 1024
+        or not payload.endswith(b"\n")
+        or set(headers or ()) != {"X-QDev-Release-Lease", "X-QDev-Release-Fence"}
+    ):
+        raise AgentError("raw controller payload requires the fixed IdP authorization endpoint")
     if headers is not None:
         allowed_headers = {"X-QDev-Release-Lease", "X-QDev-Release-Fence"}
         if set(headers) - allowed_headers:
@@ -414,7 +429,11 @@ def request(
     body = None
     if payload is not None:
         command[2:2] = ["--header", "content-type: application/json", "--data-binary", "@-"]
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        body = (
+            payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
     try:
         response = _run(command, payload=body)
     except AgentError as error:
@@ -2232,6 +2251,168 @@ def _idp_previous_observation(profile, anchor):
     raise AgentError("previous IdP release has no accepted native journal observation")
 
 
+def _validate_idp_file_scope(config, profile, lane):
+    from qdev_runner.idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
+
+    if (
+        (profile.project_id, profile.repository, profile.adapter, profile.artifact_prefix)
+        != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+        or (
+            lane.project_id,
+            lane.canonical_repository,
+            lane.native_host_adapter,
+            lane.artifact_ref_prefix,
+        )
+        != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
+        or profile.lane != lane.name
+        or profile.placement != lane.placement
+        or config.host_identity != lane.host_agent_mtls_identity
+        or profile.readiness != {key: "ok" for key in lane.required_readiness}
+    ):
+        raise AgentError("IdP file adapter requires its fixed native lane and identity")
+
+
+def _idp_authorization_response(raw, job):
+    """Strict bounded transport envelope; signatures are verified by the bridge."""
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate")
+            value[key] = item
+        return value
+
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= 2 * 1024 * 1024:
+            raise ValueError("size")
+        value = json.loads(raw, object_pairs_hook=unique)
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {
+                "schema",
+                "authorization",
+                "authorization_signature",
+                "dispatch_claim",
+                "dispatch_claim_signature",
+                "candidate_receipt",
+                "journal_seq",
+                "journal_event_sha256",
+                "acceptance",
+            }
+            or value["schema"] != "qdev-controller-idp-file-authorization-receipt-v1"
+            or value["acceptance"] != "not_run"
+            or value["dispatch_claim"] != job["dispatch_claim"]
+            or value["dispatch_claim_signature"] != job["dispatch_claim_signature"]
+            or type(value["journal_seq"]) is not int
+            or value["journal_seq"] <= 0
+            or not isinstance(value["journal_event_sha256"], str)
+            or not _HEX64.fullmatch(value["journal_event_sha256"])
+            or not isinstance(value["authorization"], dict)
+            or not isinstance(value["authorization_signature"], str)
+            or not isinstance(value["candidate_receipt"], dict)
+        ):
+            raise ValueError("envelope")
+        return value
+    except (ValueError, TypeError, KeyError, RecursionError):
+        # Never include an untrusted response, exception body or native evidence.
+        raise AgentError("invalid controller IdP authorization response") from None
+
+
+class ControllerIssuedIdPFileApplyAdapter:
+    """Fixed in-process collector/issuer bridge, not an installed enrollment.
+
+    Verified native dispatch holds its global lock across collection, network
+    issuance and application. The host lock is released during provider checks;
+    the existing durable transaction rechecks everything before consuming the
+    dispatch. No retries, renewed lease, native CLI or caller-selected key/path.
+    """
+
+    def __init__(self, config, profile, lane, job):
+        _validate_idp_file_scope(config, profile, lane)
+        _validated_job(job, profile, config)
+        self._config, self._profile, self._lane = config, profile, lane
+        self._job = _canonical_bytes(job)
+
+    def __call__(self, reader):
+        from qdev_runner.file_apply_authorization import canonical_bytes, parse_binding
+        from qdev_runner.idp_file_issuer import parse_native
+        from qdev_runner.idp_file_runtime import native_receipt
+
+        if not callable(getattr(reader, "observe_prepared", None)) or not callable(
+            getattr(reader, "observe_installed", None)
+        ):
+            raise AgentError("locked native IdP observation reader required")
+        config, profile, lane = self._config, self._profile, self._lane
+        job = json.loads(self._job)
+
+        @contextmanager
+        def authorize(binding):
+            scope = parse_binding(binding, now=time.time())
+            with _acquire_lock(profile.lock_path) as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise AgentError("release lock is already held") from error
+                if _pending_operation(profile) is not None:
+                    raise ControllerOutcomeUnresolved(
+                        "pending native operation requires reconciliation"
+                    )
+                release_id, candidate, lease, fence, nonce, _, anchor, _ = _validated_job(
+                    job, profile, config
+                )
+                if _dispatch_nonce_seen(profile, nonce):
+                    raise AgentError("controller host dispatch claim was already consumed")
+                active, _ = read_state(profile.state_path, profile, allow_bootstrap=True)
+                if active != anchor:
+                    raise AgentError("IdP runtime anchor differs from current host state")
+                previous = (
+                    None
+                    if anchor["artifact_digest"] == f"sha256:{scope.snapshot_sha256}"
+                    else _idp_previous_observation(profile, anchor)
+                )
+                raw = canonical_bytes(reader.observe_prepared())
+                native = parse_native(raw, lane)
+                prepared = native_receipt(
+                    native,
+                    installed=False,
+                    expected_binding=binding,
+                    now=time.time(),
+                    previous_observation=previous,
+                )
+                _validate_native_runtime(prepared, profile, active)
+                current = _controller_status(
+                    config, profile, release_id, candidate, lease, fence, restored=active
+                )
+                if current["status"] != "dispatched":
+                    raise AgentError("file apply requires the current dispatched controller job")
+            status, body = request(
+                config,
+                "POST",
+                f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}"
+                "/idp-file-authorization",
+                raw,
+                headers=_controller_headers(lease, fence),
+            )
+            if status != 200:
+                raise ControllerTransportError("controller IdP authorization was not confirmed")
+            response = _idp_authorization_response(body, job)
+            adapter = IdPFileApplyAdapter(
+                config,
+                profile,
+                lane,
+                job,
+                response["authorization"],
+                response["authorization_signature"],
+                candidate_receipt=response["candidate_receipt"],
+            )
+            with adapter(reader)(binding) as guard:
+                yield guard
+
+        return authorize
+
+
 class IdPFileApplyAdapter:
     """Code-only factory for verified native dispatch, not an enrollment/CLI.
 
@@ -2242,24 +2423,7 @@ class IdPFileApplyAdapter:
     """
 
     def __init__(self, config, profile, lane, job, authorization, signature, *, candidate_receipt):
-        from qdev_runner.idp_file_runtime import ADAPTER, ARTIFACT_PREFIX, PROJECT, REPOSITORY
-
-        if (
-            (profile.project_id, profile.repository, profile.adapter, profile.artifact_prefix)
-            != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
-            or (
-                lane.project_id,
-                lane.canonical_repository,
-                lane.native_host_adapter,
-                lane.artifact_ref_prefix,
-            )
-            != (PROJECT, REPOSITORY, ADAPTER, ARTIFACT_PREFIX)
-            or profile.lane != lane.name
-            or profile.placement != lane.placement
-            or config.host_identity != lane.host_agent_mtls_identity
-            or profile.readiness != {key: "ok" for key in lane.required_readiness}
-        ):
-            raise AgentError("IdP file adapter requires its fixed native lane and identity")
+        _validate_idp_file_scope(config, profile, lane)
         self._config, self._profile, self._lane = config, profile, lane
         self._job = _canonical_bytes(job)
         self._candidate = _canonical_bytes(candidate_receipt)

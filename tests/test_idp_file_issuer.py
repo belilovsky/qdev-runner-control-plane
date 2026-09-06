@@ -55,6 +55,7 @@ def make_issuer(tmp_path, *, associated=False):
         }
         refresh_snapshot_binding(pair)
     before, after, binding, claim, lane, candidate = pair
+    after["schema_version"] = "qdev-idp-release-observation-v2"
     artifact_root = root / "artifacts"
     artifact = binding["ci_observation"]["artifact"]
     archive = artifact_root / artifact["storage_key"]
@@ -75,6 +76,14 @@ def make_issuer(tmp_path, *, associated=False):
             }
     before["binding_sha256"] = runtime.digest(binding)
     rehash(before)
+    for event in after["events"]:
+        if "ci_observation" in event:
+            event["ci_observation"] = {
+                **copy.deepcopy(binding["ci_observation"]),
+                "path": event["ci_observation"]["path"],
+            }
+    after["events"][6]["controller_apply_binding_sha256"] = runtime.digest(binding)
+    rehash(after)
     claim.update(
         artifact_digest="sha256:" + digest,
         artifact_ref=runtime.ARTIFACT_PREFIX + "@sha256:" + digest,
@@ -120,6 +129,7 @@ def make_issuer(tmp_path, *, associated=False):
         store._append_operation_unlocked(lane, job, "dispatched", recorded_at=NOW)
         store._write(store._job_path(lane.name), job)
     return SimpleNamespace(
+        pair=pair,
         native=before,
         binding=binding,
         claim=claim,

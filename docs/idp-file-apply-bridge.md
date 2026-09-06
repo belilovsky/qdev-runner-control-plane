@@ -255,6 +255,35 @@ snapshot-write failure is reconciled from the durable journal. Concurrent
 requests cannot sign against a changed journal: the loser must reread and retry
 without renewal. No new runner, queue admission or workflow dispatch is involved.
 
+## Fixed host collection and issuance
+
+`ControllerIssuedIdPFileApplyAdapter` connects the protected native reader to
+the issuer without accepting an executable, key path or provider flags from
+the native bundle. Verified native dispatch must already hold its global IdP
+lock. Under the existing host journal lock the adapter rejects pending work and
+consumed nonces, verifies the current signed job, previous installed anchor and
+fresh prepared-v2 observation, and checks live controller lease/fence status.
+It sends the exact canonical native bytes, including the terminal LF, through
+the configured host-agent mTLS path. The host journal lock is released during
+provider IO; the native global lock remains held by dispatch.
+
+The returned envelope is bounded, duplicate-key rejecting and exact-schema.
+Its original dispatch must match the supplied job. The existing
+`IdPFileApplyAdapter` independently verifies both signatures, the full candidate
+and file binding, reacquires the host lock, rereads native state and checks live
+authority before consuming the dispatch. Journal locators alone are not proof.
+Every write remains fenced by the native/host guard; a changed lease, controller
+status, previous runtime or pending operation rejects application.
+
+No HTTP request retries automatically. An unconfirmed issuance has no local
+apply side effect; an explicit retry obtains a fresh observation without
+renewing the claim. Once local application starts, unknown outcomes require
+native reconciliation before another issuance or application. The transport
+preserves existing JSON callers unchanged; raw bytes are restricted to the fixed
+IdP authorization endpoint with lease/fence headers. These are source-level
+integration tests using the real local controller store and host journals, with
+synthetic provider/native observations, not live authorization or deployment.
+
 ## Still required before enrollment or production use
 
 1. Release and enroll the implemented fixed issuer through the existing controller
