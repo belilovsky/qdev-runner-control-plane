@@ -84,6 +84,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
     assert "scripts/qdev_fixed_worker_recovery_dispatch.py" in script
+    assert "scripts/qdev_recovery_host_enrol_adapter.py" in script
+    assert "scripts/qdev_recovery_host_apply.py" in script
     assert "src/qdev_runner/durable_state.py" in script
     assert "scripts/qdev_runner_recovery_host_agent.py" in script
     assert "scripts/install_qdev_runner_recovery_host_agent.sh" in script
@@ -95,10 +97,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
     assert "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch" in script
+    assert "/usr/local/sbin/qdev-recovery-host-enrol" in script
     assert "/usr/local/sbin/qdev-worker-recovery-bindings-provision" in script
-    assert (
-        '"$release/scripts/provision_worker_recovery_bindings.py"' in script
-    )
+    assert '"$release/scripts/provision_worker_recovery_bindings.py"' in script
     assert "/usr/local/sbin/qdev-fleet-host-dispatch-state-provision" in script
     assert "deploy/qdev-fleet-host-dispatch.service" in script
     assert "deploy/qdev-fleet-host-dispatch.path" in script
@@ -171,9 +172,7 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
 def test_controller_provisions_root_owned_admission_signer() -> None:
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
-    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(
-        encoding="utf-8"
-    )
+    wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(encoding="utf-8")
 
     assert "/etc/qdev-runner/admission" in provisioning
     assert "/run/qdev-controller" in provisioning
@@ -202,9 +201,9 @@ def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
     assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
         "if ! install_qazcoop_release_guard; then"
     )
-    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split(
-        "\n}\n", 1
-    )[0]
+    guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split("\n}\n", 1)[
+        0
+    ]
     assert '[[ "$rollback_mode" != true ]] || return 0' in guard_function
     assert "currently deployed product remains available" in guard_function
 
@@ -222,7 +221,7 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "validate_previous_release_status()" in script
     assert "validate_controller_image_binding()" in script
     assert "scripts/validate_controller_image_binding.py" in script
-    assert 'com.docker.compose.image' in script
+    assert "com.docker.compose.image" in script
     assert "controller_release_receipt=active" in script
     assert "qdev-controller-release-status-v2" in script
     assert "runtime_identity" in script
@@ -334,15 +333,15 @@ def test_historical_controller_rollback_does_not_require_or_replace_admission_wr
     script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
 
     base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
-    forward_required = script.split(
-        'if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1
-    )[1].split("\n  )", 1)[0]
+    forward_required = script.split('if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1)[
+        1
+    ].split("\n  )", 1)[0]
     assert "qdev_controller_admission_host.sh" not in base_required
     assert "scripts/qdev_controller_admission_host.sh" in forward_required
     assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
     assert (
         'if [[ "$rollback_mode" != true ]]; then\n'
-        '  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller'
+        "  install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller"
     ) in script
 
 
@@ -356,9 +355,7 @@ def test_controller_compose_project_is_namespaced() -> None:
 
 def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
     provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
-    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(
-        encoding="utf-8"
-    )
+    helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(encoding="utf-8")
 
     assert "qdev-worker-recovery-bindings-provision" in provision
     assert "recovery-controller.env" in helper

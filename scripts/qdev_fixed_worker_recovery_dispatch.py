@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -17,14 +18,17 @@ SSH = Path("/usr/bin/ssh")
 IDENTITY_ROOT = Path("/etc/qdev-runner/worker-recovery-dispatch")
 IDENTITY = IDENTITY_ROOT / "id_ed25519"
 KNOWN_HOSTS = IDENTITY_ROOT / "known_hosts"
+ENROL = Path("/usr/local/sbin/qdev-recovery-host-enrol")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+HEX = re.compile(r"^[0-9a-f]{64}$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
 TARGETS: dict[str, dict[str, object]] = {
     "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187": {
         "worker_name": "qdev-platform-ci-187",
-        "service_unit": (
-            "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service"
-        ),
+        "service_unit": ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service"),
         "labels": ["self-hosted", "Linux", "X64", "qdev-platform-ci"],
         "host": "187.55.228.239",
+        "profile": "platform",
         "recovery_service": "qdev-runner-recovery-platform.service",
     },
     "actions.runner.belilovsky-qazstack.qdev-qazstack-01": {
@@ -32,6 +36,7 @@ TARGETS: dict[str, dict[str, object]] = {
         "service_unit": "actions.runner.belilovsky-qazstack.qdev-qazstack-01.service",
         "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
         "host": "148.230.117.131",
+        "profile": "qazstack",
         "recovery_service": "qdev-runner-recovery-qazstack.service",
     },
 }
@@ -65,6 +70,70 @@ def _validate_private_identity() -> None:
     _root_private_file(KNOWN_HOSTS, 0o600)
     if not SSH.is_file() or SSH.is_symlink():
         raise DispatchError("ssh_client_unavailable")
+    enrol = ENROL.lstat()
+    if (
+        not stat.S_ISREG(enrol.st_mode)
+        or stat.S_ISLNK(enrol.st_mode)
+        or enrol.st_uid != 0
+        or stat.S_IMODE(enrol.st_mode) != 0o755
+    ):
+        raise DispatchError("host_enrol_adapter_invalid")
+
+
+def _enrol(target_id: str, expected: dict[str, object]) -> dict[str, str]:
+    completed = subprocess.run(
+        [str(ENROL), "--target-id", target_id],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=420,
+        check=False,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        },
+    )
+    if completed.returncode != 0:
+        raise DispatchError("host_enrol_failed")
+    try:
+        response = json.loads(completed.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DispatchError("host_enrol_response_invalid") from error
+    fields = {
+        "schema",
+        "status",
+        "profile",
+        "controller_revision",
+        "controller_release_digest",
+        "agent_release_digest",
+        "agent_certificate_sha256",
+        "rollback_agent_release_digest",
+        "receipt_digest",
+    }
+    if (
+        not isinstance(response, dict)
+        or set(response) != fields
+        or response.get("schema") != "qdev-recovery-host-enrol-result-v1"
+        or response.get("status") not in {"completed", "already_completed"}
+        or response.get("profile") != expected["profile"]
+        or not isinstance(response.get("controller_revision"), str)
+        or SHA.fullmatch(response["controller_revision"]) is None
+        or not isinstance(response.get("controller_release_digest"), str)
+        or DIGEST.fullmatch(response["controller_release_digest"]) is None
+        or not isinstance(response.get("agent_release_digest"), str)
+        or DIGEST.fullmatch(response["agent_release_digest"]) is None
+        or not isinstance(response.get("agent_certificate_sha256"), str)
+        or HEX.fullmatch(response["agent_certificate_sha256"]) is None
+        or not isinstance(response.get("rollback_agent_release_digest"), str)
+        or (
+            response["rollback_agent_release_digest"] != "none"
+            and DIGEST.fullmatch(response["rollback_agent_release_digest"]) is None
+        )
+        or not isinstance(response.get("receipt_digest"), str)
+        or DIGEST.fullmatch(response["receipt_digest"]) is None
+    ):
+        raise DispatchError("host_enrol_response_invalid")
+    return {key: str(value) for key, value in response.items()}
 
 
 def _parse() -> tuple[dict[str, Any], dict[str, object]]:
@@ -110,6 +179,7 @@ def _result(
     expected: dict[str, object],
     *,
     status: str,
+    enrolment: dict[str, str] | None = None,
     error_code: str | None = None,
 ) -> dict[str, object]:
     target = envelope["target"]
@@ -120,6 +190,18 @@ def _result(
     }
     if error_code is not None:
         details["error_code"] = error_code
+    if enrolment is not None:
+        details.update(
+            {
+                "enrolment_status": enrolment["status"],
+                "enrolment_receipt_digest": enrolment["receipt_digest"],
+                "controller_revision": enrolment["controller_revision"],
+                "controller_release_digest": enrolment["controller_release_digest"],
+                "agent_release_digest": enrolment["agent_release_digest"],
+                "agent_certificate_sha256": enrolment["agent_certificate_sha256"],
+                "rollback_agent_release_digest": enrolment["rollback_agent_release_digest"],
+            }
+        )
     return {
         "schema": SCHEMA,
         "status": status,
@@ -136,6 +218,17 @@ def main() -> int:
         raise DispatchError("root_identity_required")
     envelope, expected = _parse()
     _validate_private_identity()
+    try:
+        enrolment = _enrol(str(envelope["target"]["target_id"]), expected)
+    except DispatchError as error:
+        response = _result(
+            envelope,
+            expected,
+            status="access_blocked",
+            error_code=str(error),
+        )
+        print(json.dumps(response, sort_keys=True, separators=(",", ":")))
+        return 0
     command = [
         str(SSH),
         "-F",
@@ -174,6 +267,7 @@ def main() -> int:
         envelope,
         expected,
         status="completed" if completed.returncode == 0 else "access_blocked",
+        enrolment=enrolment,
         error_code=None if completed.returncode == 0 else "fixed_host_dispatch_failed",
     )
     print(json.dumps(response, sort_keys=True, separators=(",", ":")))

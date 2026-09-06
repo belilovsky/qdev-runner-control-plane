@@ -66,6 +66,8 @@ install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
   /usr/local/sbin/qdev-fleet-worker-recovery
 install -o root -g root -m 0755 scripts/qdev_fixed_worker_recovery_dispatch.py \
   /usr/local/sbin/qdev-fixed-worker-recovery-dispatch
+install -o root -g root -m 0755 scripts/qdev_recovery_host_enrol_adapter.py \
+  /usr/local/sbin/qdev-recovery-host-enrol
 install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
 install -o root -g root -m 0755 scripts/provision_worker_recovery_bindings.py \
