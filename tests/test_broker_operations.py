@@ -757,6 +757,7 @@ def _seed_pending_job(
     *,
     repository: str = "belilovsky/example",
     head_sha: str = "a" * 40,
+    profile: str = "qdev-ci-docker",
 ) -> None:
     store: Store = client.app.state.store
     assert (
@@ -768,7 +769,7 @@ def _seed_pending_job(
                 repository=repository,
                 repository_id=1,
                 installation_id=2,
-                labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+                labels=("self-hosted", "Linux", "X64", profile),
                 head_sha=head_sha,
                 head_branch="main",
                 payload={"workflow_job": {"run_attempt": 1}},
@@ -1665,6 +1666,96 @@ def test_controller_rolls_scope_forward_only_after_terminal_fifo_tuple(tmp_path:
     assert payload["idempotent"] is False
     assert payload["rolled_over_terminal_scope"] is True
     assert [item["job_id"] for item in payload["claim_scope"]["jobs"]] == [42, 43]
+
+
+def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identity(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub(job_run_id=84000000043))
+    profiles = ["qdev-ci-docker", "qdev-ci-browser"]
+    _heartbeat(
+        client,
+        admitted=True,
+        scope_id="srv1879763-primary",
+        profiles=profiles,
+    )
+    _seed_pending_job(client, 42, "docker-before-browser")
+    _seed_pending_job(client, 43, "browser-head", profile="qdev-ci-browser")
+    base_request = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "duration_seconds": 900,
+    }
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=base_request
+        | {"job_id": 42, "correlation_id": "cross-profile-rollover"},
+    )
+    assert issued.status_code == 200
+    client.app.state.store.set_status(42, "completed", "success")
+    rollover = client.post(
+        "/internal/v1/operations/jobs/43/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=base_request
+        | {"job_id": 43, "correlation_id": "cross-profile-rollover"},
+    )
+    assert rollover.status_code == 200
+
+    # Reproduce the live constrained-capacity state only after the v2 scope
+    # has retained tuples from both profiles.  The directive below admits the
+    # browser subset while the durable worker registration remains unchanged.
+    _heartbeat(
+        client,
+        admitted=False,
+        scope_id="srv1879763-primary",
+        profiles=profiles,
+    )
+
+    operation = client.app.state.operations.create_capacity_override(
+        worker_name=WORKER_NAME,
+        repository="belilovsky/example",
+        head_sha="a" * 40,
+        profiles=("qdev-ci-browser",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=94.0,
+        owner="test-owner",
+        reason="admit the exact browser FIFO tuple",
+        duration_seconds=300,
+        registered_profiles=tuple(profiles),
+    )
+    worker = client.app.state.store.health()["workers"][0]
+    detail = json.loads(worker["detail_json"])
+    detail["capacity_directive_id"] = operation.operation_id
+    with client.app.state.store.connect() as connection:
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
+        )
+
+    claim = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "claim_scope_id": "srv1879763-primary",
+            "profiles": ["qdev-ci-browser"],
+            "disk_free_gib": 100.0,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": operation.operation_id,
+            "capacity_repository": "belilovsky/example",
+            "capacity_head_sha": "a" * 40,
+        },
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == 43
+    assert claim.json()["profile"]["name"] == "qdev-ci-browser"
 
 
 def test_controller_rebinds_legacy_scope_only_for_its_same_immutable_tuple(tmp_path: Path) -> None:
