@@ -133,6 +133,14 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                         "default_branch": "main",
                         "profiles": ["qdev-ci-docker"],
                     },
+                    {
+                        "id": 6,
+                        "full_name": "belilovsky/qazgeo",
+                        "private": True,
+                        "archived": False,
+                        "default_branch": "main",
+                        "profiles": ["qdev-ci-docker"],
+                    },
                 ]
             }
         ),
@@ -148,6 +156,7 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
                     "belilovsky/example": {"qdev-ci-docker": 15360},
                     "belilovsky/qazposter": {"qdev-ci-docker": 15360},
                     "belilovsky/qdev-runner-control-plane": {"qdev-ci-docker": 15360},
+                    "belilovsky/qazgeo": {"qdev-ci-docker": 15360},
                 },
                 "profiles": {
                     "qdev-ci-docker": {
@@ -238,6 +247,9 @@ def _app(tmp_path: Path, github: Any | None = None) -> TestClient:
         fleet_host_dispatch_request_root=tmp_path / "fleet-host-dispatch" / "incoming",
         fleet_host_dispatch_result_root=tmp_path / "fleet-host-dispatch" / "results",
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
+        managed_release_ledger_path=(
+            Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
+        ),
         admin_platform_ledger_path=admin_platform_ledger,
         admin_platform_receipt_root=admin_platform_receipts,
         release_jobs_root=tmp_path / "release-jobs",
@@ -1284,6 +1296,33 @@ def test_durable_queue_audit_is_signed_and_reports_profile_heads(tmp_path: Path)
     ]
 
 
+def test_durable_queue_audit_omits_superseded_managed_production_head(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha="5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea",
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+
+    response = client.get(
+        "/internal/v1/operations/jobs/pending",
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["pending"] == 2
+    assert payload["unclassified"] == []
+    assert len(payload["profile_heads"]) == 1
+    assert payload["profile_heads"][0]["job_id"] == 42
+    assert payload["profile_heads"][0]["repository"] == "belilovsky/example"
+
+
 def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
@@ -1448,6 +1487,105 @@ def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: 
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "admin platform candidate is not active"
+
+
+def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path, FakeGitHub())
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(client, 42, "first-admissible-row")
+    request = {
+        "job_id": 42,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "fifo-head-after-superseded-managed-row",
+        "duration_seconds": 900,
+    }
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert issued.status_code == 200
+    payload = verify_controller_receipt(issued.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
+        }
+    ]
+
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["job_id"] == 42
+    assert client.app.state.store.job_status(41) == "pending"
+
+
+def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha="5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea",
+    )
+    request = {
+        "job_id": 41,
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "scope_id": "srv1879763-primary",
+        "host": "srv1879763-light-primary",
+        "runner": "qdev-ci-docker",
+        "worker_certificate_sha256": "c" * 64,
+        "correlation_id": "superseded-managed-row-direct",
+        "duration_seconds": 900,
+    }
+
+    response = client.post(
+        "/internal/v1/operations/jobs/41/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json=request,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "managed production candidate tuple is not admitted"
 
 
 def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(
@@ -2016,6 +2154,59 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
             "profile": "qdev-ci-docker",
             "managed_registry_entry": "qazposter",
             "reason": "admin-platform-candidate-not-active",
+        }
+    ]
+
+
+def test_capacity_override_skips_superseded_managed_production_fifo_rows(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+    stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
+    _seed_pending_job(
+        client,
+        41,
+        "superseded-managed-production-row",
+        repository="belilovsky/qazgeo",
+        head_sha=stale_sha,
+    )
+    _seed_pending_job(
+        client,
+        42,
+        "first-admissible-row",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+    )
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazlake",
+            "head_sha": "b" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": 95.0,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "admissible head after superseded managed-production row",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_tuple"]["job_id"] == 42
+    assert payload["fifo_skipped"] == [
+        {
+            "job_id": 41,
+            "repository": "belilovsky/qazgeo",
+            "run_id": 84000000041,
+            "attempt": 1,
+            "head_sha": stale_sha,
+            "profile": "qdev-ci-docker",
+            "managed_registry_entry": "qazgeo",
+            "reason": "managed-production-candidate-tuple-not-admitted",
         }
     ]
 
