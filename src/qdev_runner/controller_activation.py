@@ -1968,10 +1968,22 @@ def _artifact_member(
 def _trivy_actionable_findings(report: object) -> int:
     """Count high/critical vulnerabilities and every detected secret."""
 
-    if not isinstance(report, dict) or not isinstance(report.get("Results"), list):
+    if (
+        not isinstance(report, dict)
+        or not isinstance(report.get("SchemaVersion"), int)
+        or not isinstance(report.get("ArtifactName"), str)
+        or not isinstance(report.get("ArtifactType"), str)
+        or not isinstance(report.get("Trivy"), dict)
+        or not isinstance(report["Trivy"].get("Version"), str)
+    ):
+        raise ControllerActivationError("controller artifact Trivy report is invalid")
+    results = report.get("Results")
+    if results is None:
+        return 0
+    if not isinstance(results, list):
         raise ControllerActivationError("controller artifact Trivy report is invalid")
     total = 0
-    for result in report["Results"]:
+    for result in results:
         if not isinstance(result, dict):
             raise ControllerActivationError("controller artifact Trivy result is invalid")
         vulnerabilities = result.get("Vulnerabilities") or []

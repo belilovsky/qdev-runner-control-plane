@@ -391,6 +391,23 @@ def _recovery_claim_receipt(*, now: datetime) -> dict[str, object]:
     return {**unsigned, "signature": sign_payload(unsigned, RECEIPT_KEY)}
 
 
+def _trivy_report(
+    artifact_name: str,
+    artifact_type: str,
+    *,
+    results: object = None,
+) -> dict[str, object]:
+    report: dict[str, object] = {
+        "SchemaVersion": 2,
+        "ArtifactName": artifact_name,
+        "ArtifactType": artifact_type,
+        "Trivy": {"Version": "0.74.0"},
+    }
+    if results is not None:
+        report["Results"] = results
+    return report
+
+
 def _artifact_bundle(
     tmp_path: Path,
     *,
@@ -403,8 +420,13 @@ def _artifact_bundle(
     scans = tmp_path / "controller-security-scans.json"
     source_scan = tmp_path / "controller-source-trivy.json"
     image_scan = tmp_path / "controller-image-trivy.json"
-    source_scan.write_text(json.dumps({"Results": []}), encoding="utf-8")
-    image_scan.write_text(json.dumps({"Results": []}), encoding="utf-8")
+    source_scan.write_text(
+        json.dumps(_trivy_report("controller-source", "repository")), encoding="utf-8"
+    )
+    image_scan.write_text(
+        json.dumps(_trivy_report("controller-image", "container_image", results=[])),
+        encoding="utf-8",
+    )
     source_scan_digest = hashlib.sha256(source_scan.read_bytes()).hexdigest()
     image_scan_digest = hashlib.sha256(image_scan.read_bytes()).hexdigest()
     scans.write_text(
@@ -545,14 +567,16 @@ def test_artifact_manifest_rejects_raw_trivy_findings_despite_green_summary(
     source_scan = tmp_path / "controller-source-trivy.json"
     source_scan.write_text(
         json.dumps(
-            {
-                "Results": [
+            _trivy_report(
+                "controller-source",
+                "repository",
+                results=[
                     {
                         "Vulnerabilities": [{"Severity": "CRITICAL"}],
                         "Secrets": [],
                     }
-                ]
-            }
+                ],
+            )
         ),
         encoding="utf-8",
     )
