@@ -17,23 +17,24 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+if TYPE_CHECKING:
+    from .github import GitHubAppClient
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _ARTIFACT_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}$")
 _CANONICAL_REPOSITORY = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,38}/[a-z0-9][a-z0-9_.-]{0,99}$")
-_ARTIFACT_PREFIX = re.compile(
-    r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$"
-)
+_ARTIFACT_PREFIX = re.compile(r"^(?:[a-z0-9][a-z0-9.-]{0,62}/)?[a-z0-9][a-z0-9._/-]{1,191}$")
 _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 _CI_SCOPE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
@@ -225,8 +226,7 @@ class ReleaseLanePolicy:
                     or not raw_readiness
                     or len(raw_readiness) != len(set(raw_readiness))
                     or not all(
-                        isinstance(item, str) and _SEGMENT.fullmatch(item)
-                        for item in raw_readiness
+                        isinstance(item, str) and _SEGMENT.fullmatch(item) for item in raw_readiness
                     )
                 ):
                     raise ReleaseLaneError("release lane v2 values are invalid")
@@ -294,9 +294,9 @@ def _is_lane_artifact_ref(value: object, digest: str, lane: ReleaseLane) -> bool
 
 
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -572,8 +572,7 @@ def validate_controller_claim(
         )
         or scope.get("runner_profile") not in _RUNNER_PROFILES
         or any(
-            not isinstance(scope.get(field), str)
-            or not _CI_SCOPE_VALUE.fullmatch(scope[field])
+            not isinstance(scope.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(scope[field])
             for field in ("workflow", "job")
         )
     ):
@@ -663,8 +662,7 @@ def host_dispatch_claim_payload(
         )
         or claim["runner_profile"] not in _RUNNER_PROFILES
         or any(
-            not isinstance(claim.get(field), str)
-            or not _CI_SCOPE_VALUE.fullmatch(claim[field])
+            not isinstance(claim.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(claim[field])
             for field in ("workflow", "job")
         )
         or not isinstance(artifact_digest, str)
@@ -677,8 +675,7 @@ def host_dispatch_claim_payload(
         or isinstance(claim["lease_expires_at"], bool)
         or expires_at > claim["lease_expires_at"]
         or not isinstance(claim["rollback_anchor"], dict)
-        or set(claim["rollback_anchor"])
-        != {"source_sha", "artifact_digest", "artifact_ref"}
+        or set(claim["rollback_anchor"]) != {"source_sha", "artifact_digest", "artifact_ref"}
         or not _is_sha(claim["rollback_anchor"].get("source_sha"))
         or not _is_digest(claim["rollback_anchor"].get("artifact_digest"))
         or not _is_lane_artifact_ref(
@@ -692,9 +689,7 @@ def host_dispatch_claim_payload(
     return claim
 
 
-def sign_host_dispatch_claim(
-    claim: dict[str, Any], *, signing_key: str | bytes | None
-) -> str:
+def sign_host_dispatch_claim(claim: dict[str, Any], *, signing_key: str | bytes | None) -> str:
     """Sign a dispatch claim with a key supplied only by fixed controller config."""
     return hmac.new(_dispatch_key(signing_key), _canonical_bytes(claim), hashlib.sha256).hexdigest()
 
@@ -724,9 +719,7 @@ def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) ->
         and rollback.get("verified") is True
         and _is_sha(rollback.get("source_sha"))
         and _is_digest(rollback.get("artifact_digest"))
-        and _is_lane_artifact_ref(
-            rollback.get("artifact_ref"), rollback["artifact_digest"], lane
-        )
+        and _is_lane_artifact_ref(rollback.get("artifact_ref"), rollback["artifact_digest"], lane)
     )
     if not active_valid or not rollback_valid:
         raise ReleaseLaneError("host-agent rollback proof is invalid")
@@ -801,19 +794,20 @@ def validate_runtime_receipt(
         ):
             raise ReleaseLaneError("runtime receipt does not contain measured identity")
         dependency_identity = receipt["dependency_identity"]
-        if not isinstance(dependency_identity, dict) or not dependency_identity or any(
-            not isinstance(value, str) or not value.strip()
-            for value in dependency_identity.values()
+        if (
+            not isinstance(dependency_identity, dict)
+            or not dependency_identity
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in dependency_identity.values()
+            )
         ):
             raise ReleaseLaneError("runtime dependency identity is invalid")
         _validate_runtime_provenance(receipt, lane, installed_only=True)
     readiness = receipt.get("readiness")
     rollback = receipt.get("rollback")
     rollback_tuple = (
-        {
-            key: rollback.get(key)
-            for key in ("source_sha", "artifact_digest", "artifact_ref")
-        }
+        {key: rollback.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")}
         if isinstance(rollback, dict)
         else None
     )
@@ -890,15 +884,22 @@ def validate_native_runtime_receipt(
         ):
             raise ReleaseLaneError("native runtime identity is not measured")
         dependencies = receipt["dependency_identity"]
-        if not isinstance(dependencies, dict) or not dependencies or any(
-            not isinstance(value, str) or not value.strip() for value in dependencies.values()
+        if (
+            not isinstance(dependencies, dict)
+            or not dependencies
+            or any(
+                not isinstance(value, str) or not value.strip() for value in dependencies.values()
+            )
         ):
             raise ReleaseLaneError("native dependency identity is incomplete")
         _validate_runtime_provenance(receipt, lane)
 
 
 def _validate_runtime_provenance(
-    receipt: dict[str, Any], lane: ReleaseLane, *, installed_only: bool = False,
+    receipt: dict[str, Any],
+    lane: ReleaseLane,
+    *,
+    installed_only: bool = False,
 ) -> None:
     if lane.project_id == "id-qdev-run":
         from qdev_runner.idp_file_runtime import (
@@ -910,7 +911,9 @@ def _validate_runtime_provenance(
         )
 
         if (lane.canonical_repository, lane.native_host_adapter, lane.artifact_ref_prefix) != (
-            REPOSITORY, ADAPTER, ARTIFACT_PREFIX,
+            REPOSITORY,
+            ADAPTER,
+            ARTIFACT_PREFIX,
         ):
             raise ReleaseLaneError("IdP native adapter scope is invalid")
         try:
@@ -1017,9 +1020,7 @@ class ReleaseStore:
         if path.is_symlink():
             raise ReleaseLaneError("release operation journal must not be a symlink")
         if not path.exists() and legacy.exists():
-            raise ReleaseLaneError(
-                "legacy replaceable release journal requires explicit migration"
-            )
+            raise ReleaseLaneError("legacy replaceable release journal requires explicit migration")
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
@@ -1108,9 +1109,7 @@ class ReleaseStore:
         event: dict[str, Any] = {
             "schema": OPERATION_JOURNAL_SCHEMA,
             "journal_seq": journal_seq,
-            "previous_event_sha256": (
-                events[-1]["event_sha256"] if events else _JOURNAL_GENESIS
-            ),
+            "previous_event_sha256": (events[-1]["event_sha256"] if events else _JOURNAL_GENESIS),
             "release_lane": lane.name,
             "project_id": lane.project_id,
             "placement": lane.placement,
@@ -1225,10 +1224,7 @@ class ReleaseStore:
         request = self._heartbeat_request(record)
         validate_host_heartbeat(request, lane)
         received_at = record.get("received_at")
-        if (
-            not isinstance(received_at, (int, float))
-            or isinstance(received_at, bool)
-        ):
+        if not isinstance(received_at, (int, float)) or isinstance(received_at, bool):
             raise ReleaseLaneError("persisted host-agent heartbeat timestamp is invalid")
         current = time.time() if now is None else now
         age = current - float(received_at)
@@ -1349,9 +1345,7 @@ class ReleaseStore:
             self._write(self._agent_path(lane.name), record)
         return record
 
-    def fresh_agent(
-        self, lane: ReleaseLane, *, now: float | None = None
-    ) -> dict[str, Any] | None:
+    def fresh_agent(self, lane: ReleaseLane, *, now: float | None = None) -> dict[str, Any] | None:
         with self._lock(lane.name):
             return self._fresh_agent_unlocked(lane, now=now)
 
@@ -1390,28 +1384,24 @@ class ReleaseStore:
                     raise ReleaseLaneError("managed release host-agent heartbeat is stale")
                 if float(agent.get("capacity_free_gib", -1)) < lane.minimum_free_gib:
                     raise ReleaseLaneError("managed release host-agent capacity is insufficient")
-                rollback_anchor = {
-                    key: agent["active_release"][key] for key in tuple_fields
-                }
-                if rollback_anchor == {
-                    key: getattr(request, key) for key in tuple_fields
-                }:
+                rollback_anchor = {key: agent["active_release"][key] for key in tuple_fields}
+                if rollback_anchor == {key: getattr(request, key) for key in tuple_fields}:
                     raise ReleaseLaneError("managed candidate must differ from rollback anchor")
             if existing is not None:
-                if all(
-                    existing.get(name) == getattr(request, name) for name in tuple_fields
-                ) and existing.get("candidate_receipt") == request.candidate_receipt and (
-                    lane.canonical_repository is None
-                    or (
-                        existing.get("controller_claim_nonce") == claim_nonce
-                        and existing.get("controller_claim_sha256") == claim_sha256
+                if (
+                    all(existing.get(name) == getattr(request, name) for name in tuple_fields)
+                    and existing.get("candidate_receipt") == request.candidate_receipt
+                    and (
+                        lane.canonical_repository is None
+                        or (
+                            existing.get("controller_claim_nonce") == claim_nonce
+                            and existing.get("controller_claim_sha256") == claim_sha256
+                        )
                     )
                 ):
                     return existing, True
                 raise ReleaseLaneError("release lane already has an active immutable tuple")
-            if claim_nonce is not None and self._claim_nonce_used_unlocked(
-                lane, nonce=claim_nonce
-            ):
+            if claim_nonce is not None and self._claim_nonce_used_unlocked(lane, nonce=claim_nonce):
                 raise ReleaseLaneError("controller-signed claim nonce was already consumed")
             current = self._job_unlocked(lane)
             if current is not None and current.get("status") == "verified":
@@ -1492,9 +1482,7 @@ class ReleaseStore:
             current_claim = job.get("dispatch_claim")
             current_signature = job.get("dispatch_claim_signature")
             if current_claim is not None or current_signature is not None:
-                if not isinstance(current_claim, dict) or not isinstance(
-                    current_signature, str
-                ):
+                if not isinstance(current_claim, dict) or not isinstance(current_signature, str):
                     raise ReleaseLaneError("persisted host dispatch claim is invalid")
                 current_issued_at = current_claim.get("issued_at")
                 current_expires_at = current_claim.get("expires_at")
@@ -1526,9 +1514,7 @@ class ReleaseStore:
                     return job
             elif job["status"] == "dispatched":
                 raise ReleaseLaneError("dispatched managed job has no signed host claim")
-            dispatch_expires_at = min(
-                issued_at + claim_ttl_seconds, int(job["lease_expires_at"])
-            )
+            dispatch_expires_at = min(issued_at + claim_ttl_seconds, int(job["lease_expires_at"]))
             if dispatch_expires_at <= issued_at:
                 raise ReleaseLaneError("managed release lease cannot cover a dispatch claim")
             claim = host_dispatch_claim_payload(
@@ -1559,6 +1545,143 @@ class ReleaseStore:
             )
             self._write(self._job_path(lane.name), job)
             return job
+
+    def authorize_idp_file_apply(
+        self,
+        lane: ReleaseLane,
+        release_id: str,
+        raw_native: bytes,
+        *,
+        lease_id: str | None,
+        fence: str | None,
+        signing_key: str | bytes,
+        github: GitHubAppClient,
+        artifact_root: Path,
+        clock: Callable[[], float] = time.time,
+    ) -> dict[str, Any]:
+        """Authorize only a current dispatch; never admit/reissue/consume it.
+
+        The private handler authenticates the fixed release-host identity before
+        entering here. No caller can choose a collector, key or candidate. Do
+        not hold the lane lock across provider I/O: revocation must remain live.
+        """
+        from datetime import datetime
+
+        from .file_apply_authorization import authorization_payload, canonical_bytes
+        from .idp_file_evidence import observe_idp_ci
+        from .idp_file_issuer import (
+            check_storage,
+            parse_native,
+            previous_observation,
+            verify_native_dispatch,
+        )
+
+        native = parse_native(raw_native, lane)
+
+        def current() -> dict[str, Any]:
+            check_storage(self.root, lane)
+            job = self._job_unlocked(lane)
+            if (
+                job is None
+                or job.get("release_id") != release_id
+                or job.get("status") != "dispatched"
+                or not lease_id
+                or not fence
+                or job.get("lease_id") != lease_id
+                or job.get("fence") != fence
+            ):
+                raise ReleaseLaneError("IdP release dispatch or fence is not current")
+            self._ensure_live_lease(job, lane, now=clock())
+            if job.get("idp_file_transaction") not in (None, native.get("transaction")):
+                raise ReleaseLaneError("IdP dispatch is bound to another native transaction")
+            return job
+
+        check_storage(self.root, lane)
+        with self._lock(lane.name):
+            job = current()
+            prior = previous_observation(
+                self._operation_events_unlocked(lane),
+                lane,
+                job["rollback_anchor"],
+            )
+            binding_bytes = verify_native_dispatch(
+                native,
+                job,
+                lane,
+                signing_key=signing_key,
+                now=clock(),
+                previous=prior,
+            )
+            frozen_job = canonical_bytes(job)
+
+        ci = observe_idp_ci(
+            binding_bytes,
+            github=github,
+            artifact_root=artifact_root,
+            clock=clock,
+        )
+
+        with self._lock(lane.name):
+            job = current()
+            if canonical_bytes(job) != frozen_job:
+                raise ReleaseLaneError("IdP dispatch changed during provider observation")
+            verified_at = clock()
+            if not (
+                datetime.fromisoformat(ci["observed_at"]).timestamp()
+                <= verified_at
+                < datetime.fromisoformat(ci["expires_at"]).timestamp()
+            ):
+                raise ReleaseLaneError("IdP provider observation expired before authorization")
+            verify_native_dispatch(
+                native,
+                job,
+                lane,
+                signing_key=signing_key,
+                now=verified_at,
+                previous=prior,
+            )
+            envelope = authorization_payload(binding_bytes, job["dispatch_claim"])
+            signature = sign_host_dispatch_claim(envelope, signing_key=signing_key)
+            observation = {
+                "schema": "qdev-controller-idp-file-authorization-observation-v1",
+                "observed_at": verified_at,
+                "expires_at": job["dispatch_claim"]["expires_at"],
+                "release_lane": lane.name,
+                "host_identity": lane.host_agent_mtls_identity,
+                "native_origin": "configured_release_host_mtls",
+                "native_observation": native,
+                "native_observation_sha256": hashlib.sha256(raw_native).hexdigest(),
+                "prior_observation_sha256": (
+                    None if prior is None else hashlib.sha256(canonical_bytes(prior)).hexdigest()
+                ),
+                "ci": ci,
+                "authorization": envelope,
+                "authorization_signature": signature,
+                "acceptance": "not_run",
+            }
+            # The existing journal is the durable boundary, including a lost
+            # HTTP response or snapshot write. Retry records a separate fresh
+            # observation; it cannot overwrite history or extend dispatch TTL.
+            job["idp_file_transaction"] = native["transaction"]
+            event = self._append_operation_unlocked(
+                lane,
+                job,
+                "idp_file_authorized",
+                recorded_at=verified_at,
+                idp_file_authorization=observation,
+            )
+            self._write(self._job_path(lane.name), job)
+            return {
+                "schema": "qdev-controller-idp-file-authorization-receipt-v1",
+                "authorization": envelope,
+                "authorization_signature": signature,
+                "dispatch_claim": job["dispatch_claim"],
+                "dispatch_claim_signature": job["dispatch_claim_signature"],
+                "candidate_receipt": job["candidate_receipt"],
+                "journal_seq": event["journal_seq"],
+                "journal_event_sha256": event["event_sha256"],
+                "acceptance": "not_run",
+            }
 
     def complete(
         self,
@@ -1675,8 +1798,7 @@ class ReleaseStore:
                 raise ReleaseLaneError("rollback receipt does not bind failed release")
             restored = receipt["restored_release"]
             _release_tuple = {
-                key: restored.get(key)
-                for key in ("source_sha", "artifact_digest", "artifact_ref")
+                key: restored.get(key) for key in ("source_sha", "artifact_digest", "artifact_ref")
             }
             if not _is_sha(_release_tuple["source_sha"]) or not _is_digest(
                 _release_tuple["artifact_digest"]

@@ -8,7 +8,6 @@ import os
 import re
 import secrets
 import ssl
-import stat
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,6 +47,7 @@ from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
 from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .idp_file_evidence import observe_idp_ci
+from .idp_file_issuer import MAX_NATIVE_OBSERVATION, check_storage, private_bytes
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import ManagedReleaseLedger, ManagedReleaseLedgerError
 from .models import (
@@ -258,28 +258,30 @@ def _release_host_dispatch_signing_key(path: Path, identity: str) -> str:
     generic error deliberately prevents path, identity and secret disclosure.
     """
 
-    def private_file(value: Path) -> str:
+    def private_file(value: Path, *, private_parent: bool = True) -> str:
         try:
-            if not value.is_absolute() or value.is_symlink():
-                raise ReleaseLaneError("managed release dispatch key is unavailable")
-            metadata = value.stat()
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid not in {0, os.geteuid()}
-                or metadata.st_mode & 0o077
-            ):
-                raise ReleaseLaneError("managed release dispatch key is unavailable")
-            return value.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
+            return private_bytes(value, limit=65536, private_parent=private_parent).decode("utf-8")
+        except (ReleaseLaneError, OSError, UnicodeDecodeError) as error:
             raise ReleaseLaneError("managed release dispatch key is unavailable") from error
 
+    def unique_mapping(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ReleaseLaneError("managed release dispatch key is unavailable")
+            result[key] = value
+        return result
+
     try:
-        mapping = json.loads(private_file(path))
+        # Native provisioner keeps this non-secret path map in /etc/qdev-runner
+        # (0755), while key material lives in its separate private 0700 root.
+        mapping = json.loads(
+            private_file(path, private_parent=False), object_pairs_hook=unique_mapping
+        )
     except (TypeError, json.JSONDecodeError) as error:
         raise ReleaseLaneError("managed release dispatch key is unavailable") from error
     if not isinstance(mapping, dict) or any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in mapping.items()
+        not isinstance(key, str) or not isinstance(value, str) for key, value in mapping.items()
     ):
         raise ReleaseLaneError("managed release dispatch key is unavailable")
     secret_path = mapping.get(identity)
@@ -466,11 +468,7 @@ def worker_authenticated(
     """
     if claim_scope is not None and claim_scope.worker_certificate_sha256:
         return claim_scope.certificate_matches(client_certificate_sha256)
-    return bool(
-        token
-        and expected_token
-        and secrets.compare_digest(token, expected_token)
-    )
+    return bool(token and expected_token and secrets.compare_digest(token, expected_token))
 
 
 def _safe_segment(value: str) -> str:
@@ -480,9 +478,7 @@ def _safe_segment(value: str) -> str:
     return value
 
 
-def _surface_allows_path(
-    surface: Literal["public", "internal", "test"], path: str
-) -> bool:
+def _surface_allows_path(surface: Literal["public", "internal", "test"], path: str) -> bool:
     """Keep the public webhook/artifact broker separate from mTLS control APIs.
 
     The source-owned edge remains responsible for authenticating client
@@ -494,11 +490,7 @@ def _surface_allows_path(
     if surface == "test":
         return True
     if surface == "public":
-        return (
-            path == "/health"
-            or path == "/github/workflow-job"
-            or path.startswith("/artifacts/")
-        )
+        return path == "/health" or path == "/github/workflow-job" or path.startswith("/artifacts/")
     return path in {"/health", "/health/runtime"} or path.startswith("/internal/")
 
 
@@ -645,9 +637,7 @@ def create_app(
                 status_code=503,
                 detail="recovery edge authentication is not configured",
             )
-        if not proxy_auth or not secrets.compare_digest(
-            proxy_auth, settings.operator_proxy_secret
-        ):
+        if not proxy_auth or not secrets.compare_digest(proxy_auth, settings.operator_proxy_secret):
             raise HTTPException(
                 status_code=401,
                 detail="recovery edge authentication failed",
@@ -668,16 +658,12 @@ def create_app(
         require_operator(token)
         certificate = recovery_edge_certificate(proxy_auth, certificate_sha256)
         allowlist = settings.recovery_operator_certificate_sha256s
-        if not allowlist or any(
-            not _SHA256_DIGEST.fullmatch(item) for item in allowlist
-        ):
+        if not allowlist or any(not _SHA256_DIGEST.fullmatch(item) for item in allowlist):
             raise HTTPException(
                 status_code=503,
                 detail="recovery operator certificate allowlist is not configured",
             )
-        if not any(
-            secrets.compare_digest(certificate, allowed) for allowed in allowlist
-        ):
+        if not any(secrets.compare_digest(certificate, allowed) for allowed in allowlist):
             raise HTTPException(
                 status_code=403,
                 detail="recovery operator certificate is not allowlisted",
@@ -1043,7 +1029,9 @@ def create_app(
             body.extend(chunk)
         try:
             observation = await run_in_threadpool(
-                observe_idp_ci, bytes(body), github=require_github(),
+                observe_idp_ci,
+                bytes(body),
+                github=require_github(),
                 artifact_root=settings.artifact_root,
             )
         except ReleaseLaneError:
@@ -1176,6 +1164,54 @@ def create_app(
             response["dispatch_claim"] = claim
             response["dispatch_claim_signature"] = signature
         return response
+
+    @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/idp-file-authorization")
+    async def authorize_idp_file_apply(
+        placement: str,
+        release_id: str,
+        request: Request,
+        release_lane: str | None = Query(default=None),
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            lane = release_policy().lane_for_host(placement, release_lane)
+        except ReleaseLaneError:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from None
+        require_release_mtls(x_qdev_mtls_identity, lane.host_agent_mtls_identity)
+        # Authentication precedes reading/parsing; native observations cannot
+        # carry executable paths, signing material or a replacement candidate.
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_NATIVE_OBSERVATION:
+                raise HTTPException(status_code=413, detail="IdP observation exceeds size limit")
+            body.extend(chunk)
+        try:
+            key = _release_host_dispatch_signing_key(
+                settings.release_host_dispatch_keys_file,
+                lane.host_agent_mtls_identity,
+            )
+            check_storage(settings.release_jobs_root, lane)
+            result = await run_in_threadpool(
+                release_state().authorize_idp_file_apply,
+                lane,
+                release_id,
+                bytes(body),
+                lease_id=x_qdev_release_lease,
+                fence=x_qdev_release_fence,
+                signing_key=key,
+                github=require_github(),
+                artifact_root=settings.artifact_root,
+            )
+            return dict(result)
+        except ReleaseLaneError:
+            raise HTTPException(
+                status_code=409,
+                detail="IdP file release was not authorized",
+            ) from None
 
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/receipt")
@@ -1646,17 +1682,14 @@ def create_app(
         durable result returned by the root-owned dispatcher.
         """
 
-        operation_store = require_operator_session(
-            operator_token, operator_mtls_identity
-        )
+        operation_store = require_operator_session(operator_token, operator_mtls_identity)
         try:
             bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
             if bootstrap_request.action != expected_action:
                 raise FleetBootstrapError("fleet bootstrap action does not match route")
             policy_value = fleet_bootstrap_policy()
             operation_path = (
-                settings.fleet_bootstrap_operation_root
-                / f"{request.idempotency_key}.json"
+                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
             )
             execution = FleetHostDispatchSpool(
                 settings.fleet_host_dispatch_request_root,
@@ -2130,10 +2163,7 @@ def create_app(
                 status_code=409,
                 detail="profile FIFO head has no immutable provider attempt",
             )
-        if (
-            fifo_head["repository"] != repository_name
-            or fifo_head["exact_sha"] != request.head_sha
-        ):
+        if fifo_head["repository"] != repository_name or fifo_head["exact_sha"] != request.head_sha:
             raise HTTPException(
                 status_code=409,
                 detail="capacity override target is not the durable FIFO head",
@@ -2294,9 +2324,7 @@ def create_app(
         try:
             github_client = require_github()
             remote_job = github_client.workflow_job(installation_id, repository, job_id)
-            remote_run = github_client.workflow_run(
-                installation_id, repository, int(row["run_id"])
-            )
+            remote_run = github_client.workflow_run(installation_id, repository, int(row["run_id"]))
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),
@@ -2390,9 +2418,7 @@ def create_app(
         raw_job = payload.get("workflow_job") or {}
         repository = payload.get("repository") or {}
         try:
-            policy.repository(
-                str(repository["full_name"]), repository_id=int(repository["id"])
-            )
+            policy.repository(str(repository["full_name"]), repository_id=int(repository["id"]))
         except (KeyError, TypeError, ValueError, PolicyError) as error:
             LOGGER.warning("rejected webhook: %s", error)
             return Response(status_code=202)

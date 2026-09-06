@@ -2,8 +2,10 @@
 
 This implementation does not enroll IdP, issue a live authorization, install a
 host agent, or dispatch a release. Existing release/claim APIs and their schemas
-are unchanged. A separate private read-only CI observation endpoint is described
-below; its signature is explicitly not a claim or an apply authorization.
+are unchanged. The separate private read-only CI observation endpoint is not
+admission. The file-authorization endpoint below combines actual CI/archive and
+authenticated native observations with an already admitted signed dispatch.
+Neither endpoint creates a release claim or installs this source candidate.
 It adds no AVDS or IdP profiles. Existing host-agent lock opening now rejects
 link substitution and unsafe ancestry, retaining the native sticky `/run/lock`.
 
@@ -196,18 +198,69 @@ The result attests `provider_ci_archive_verified` only; inner bundle/components,
 native runtime, rollback and controller admission remain `not_verified`, and
 acceptance remains `not_run`. It does not attest a caller's snapshot or local
 CI-observation file digest. This must be combined with separately verified
-native evidence and real admission by the future enrolled issuer.
+native evidence and real admission by the separately enrolled issuer.
 
 Tests cover the actual private handler/verifier with synthetic provider/store
 fixtures, archive mutation, current-attempt drift, mandatory steps/profiles,
 redirection, privacy and public-surface isolation. They are not live CI proof.
 
+## Fixed private issuer for an existing dispatch
+
+`POST /internal/v1/release-hosts/{placement}/jobs/{release_id}/idp-file-authorization`
+requires the configured lane's exact **host-agent** mTLS identity, live
+`X-QDev-Release-Lease` and `X-QDev-Release-Fence`. An operator identity is not a
+host identity. The internal certificate-authenticating edge remains the sole
+trusted source of the identity header; the public surface returns empty 404.
+Unknown lanes are not created, and no client-provided key, candidate, collector,
+executable or source-of-truth path is accepted. The body is canonical native
+`qdev-idp-prepared-observation-v2`, bounded to 2 MiB after authentication.
+
+The issuer validates storage before constructing the generic release store:
+root/agents/jobs/locks/operations are private 0700, journal/lock/snapshot are
+private regular 0600 single-link files, and every path component is opened
+no-follow and must be root/broker-owned. Other-writable ancestry is forbidden
+except non-final root-owned sticky directories. The configured host-key map and
+selected key use the same private-file reader with bounded, stable reads.
+The non-secret path map may retain the native provisioner's trusted 0755 config
+parent; actual keys must retain their separate 0700 parent. Both files remain
+0600, no-follow and single-link; duplicate mapping keys are rejected.
+A request cannot cause an unsafe directory
+to be chmodded by the generic constructor.
+
+Under the existing lane lock, the issuer reads the hash-chain-authoritative job,
+verifies current dispatch/lease/fence, exact immutable candidate and signature,
+native snapshot/transaction evidence and any previous accepted native history.
+It then releases the lock for actual provider/archive observation, so revocation
+does not wait on network I/O. After reacquiring the lock it rejects any job change
+or expired CI/dispatch, and revalidates the full native/dispatch binding before
+signing the file-authorization envelope above. A missing job snapshot may be
+repaired from the journal; a missing journal or unverifiable previous archive
+association cannot be substituted with a caller claim.
+
+The existing journal durably appends
+`qdev-controller-idp-file-authorization-observation-v1`, containing the redacted
+native observation and digest, its configured mTLS origin, prior-history digest,
+actual CI/archive observation and signed envelope. The job is pinned to that
+native transaction. The returned
+`qdev-controller-idp-file-authorization-receipt-v1` includes the envelope,
+signature, original dispatch/signature/candidate and durable journal locator.
+This signature authorizes only the exact binding and still requires the installed
+guard's live lease/fence/replay checks; it is not a completed apply or acceptance.
+`acceptance` remains `not_run`.
+
+Neither issuance nor retry changes status, operation phase, nonce, lease or TTL.
+A retry rereads actual evidence and appends a separate observation; the original
+receipt remains immutable. A journal append followed by a lost HTTP response or
+snapshot-write failure is reconciled from the durable journal. Concurrent
+requests cannot sign against a changed journal: the loser must reread and retry
+without renewal. No new runner, queue admission or workflow dispatch is involved.
+
 ## Still required before enrollment or production use
 
-1. An approved controller issuer must bind freshly verified provider CI and native
-   snapshot/transaction evidence into this envelope. The new read-only HTTP CI
-   observation verifies provider/archive provenance, but does not issue this
-   envelope, verify native snapshots, or allocate a release claim.
+1. Release and enroll the implemented fixed issuer through the existing controller
+   recovery/release transaction with exact-SHA CI and configured host identity.
+   Its source-level tests use synthetic admission/provider/native state; no live
+   authorization or operational enrollment has been performed here.
 2. Install the fixed IdP adapter through the native verified-helper/global-lock
    boundary and complete exact-target enrollment, baseline/snapshot reconciliation
    and the explicit inspect/recovery entrypoint. The code-only factory and typed

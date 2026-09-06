@@ -150,8 +150,8 @@ def parse_binding(raw: bytes, *, now: float) -> FileApplyBinding:
 def authorization_payload(binding_bytes: bytes, dispatch_claim: dict[str, Any]) -> dict[str, Any]:
     """Issuer building block only: callers still need native admission evidence.
 
-    No public API exposes this function. Signing must happen in a future enrolled
-    controller path after fresh provider/native evidence, not in IdP or the CLI.
+    Signing belongs to the fixed private controller issuer after fresh
+    provider/native evidence, not to IdP or a caller-selected CLI.
     """
     return {
         "schema": ENVELOPE_SCHEMA,
@@ -223,7 +223,6 @@ class FileApplyBridge:
 
     def _verify(self, raw: bytes) -> dict[str, Any]:
         now = self._clock()
-        binding = parse_binding(raw, now=now)
         claim: dict[str, Any] = json.loads(self._dispatch)
         envelope = json.loads(self._authorization)
         for document, signature in (
@@ -237,94 +236,20 @@ class FileApplyBridge:
                 raise ReleaseLaneError("file apply authorization signature mismatch")
         if envelope != authorization_payload(raw, claim):
             raise ReleaseLaneError("file apply authorization binding mismatch")
-        quality = binding.ci_observation.quality
-        artifact = binding.ci_observation.artifact
-        candidate = json.loads(self._candidate)
-        artifact_ref = claim.get("artifact_ref")
-        if not isinstance(artifact_ref, str):
-            raise ReleaseLaneError("file apply dispatch artifact reference missing")
-        try:
-            request = ReleaseAdmissionRequest(
-                schema=REQUEST_SCHEMA,
-                release_lane=self._lane.name,
-                project_id=self._lane.project_id,
-                placement=self._lane.placement,
-                source_sha=binding.source_sha,
-                artifact_digest=f"sha256:{artifact.artifact_sha256}",
-                artifact_ref=artifact_ref,
-                candidate_receipt=candidate,
-            )
-            validate_candidate(request, self._lane)
-        except (ValidationError, TypeError) as exc:
-            raise ReleaseLaneError("invalid file apply candidate receipt") from exc
-        expected_candidate = {
-            "repository": binding.repository,
-            "workflow": "quality.yml",
-            "job": "static-contracts",
-            "run_id": quality.run_id,
-            "job_id": quality.job_id,
-            "attempt": quality.attempt,
-            "runner_profile": quality.profile,
-            "artifact_type": "http-archive",
-            "archive_sha256": artifact.artifact_sha256,
-            "payload_sha256": binding.bundle_sha256,
-        }
-        if any(candidate.get(key) != value for key, value in expected_candidate.items()):
-            raise ReleaseLaneError("file apply candidate does not bind observed CI and archives")
-        job = {
-            **claim,
-            "source_sha": binding.source_sha,
-            "artifact_digest": f"sha256:{artifact.artifact_sha256}",
-            "candidate_receipt": candidate,
-        }
-        issued_at, expires_at, nonce = (
-            claim.get("issued_at"),
-            claim.get("expires_at"),
-            claim.get("nonce"),
+        return verify_dispatch_binding(
+            raw,
+            lane=self._lane,
+            claim=claim,
+            candidate=json.loads(self._candidate),
+            signature=self._dispatch_signature,
+            signing_key=self._key,
+            now=now,
+            previous_observation=(
+                None
+                if self._previous_observation is None
+                else json.loads(self._previous_observation)
+            ),
         )
-        if type(issued_at) is not int or type(expires_at) is not int or not isinstance(nonce, str):
-            raise ReleaseLaneError("file apply dispatch lifetime or nonce missing")
-        expected_claim = host_dispatch_claim_payload(
-            job,
-            self._lane,
-            host_identity=self._lane.host_agent_mtls_identity,
-            issued_at=issued_at,
-            expires_at=expires_at,
-            nonce=nonce,
-        )
-        expected_rollback = {
-            "source_sha": binding.expected_previous_sha,
-            "artifact_digest": f"sha256:{binding.snapshot_sha256}",
-            "artifact_ref": f"{self._lane.artifact_ref_prefix}@sha256:{binding.snapshot_sha256}",
-        }
-        if self._previous_observation is not None:
-            from qdev_runner.idp_file_runtime import IdPObservationError, native_receipt
-
-            try:
-                prior = native_receipt(json.loads(self._previous_observation), installed=True)
-            except IdPObservationError:
-                raise ReleaseLaneError("invalid previously accepted IdP observation") from None
-            expected_rollback = {key: prior[key] for key in expected_rollback}
-            # Snapshot-to-file association is independently checked by the fixed
-            # native journal adapter under its lock before it may yield a guard.
-            if expected_rollback["source_sha"] != binding.expected_previous_sha:
-                raise ReleaseLaneError("previous IdP observation source mismatch")
-        if (
-            claim != expected_claim
-            or not claim["issued_at"] <= now + 30
-            or not now < claim["expires_at"] <= claim["lease_expires_at"]
-            or claim["rollback_anchor"] != expected_rollback
-            or any(
-                not re.fullmatch(pattern, claim[field])
-                for field, pattern in (
-                    ("release_id", r"[A-Za-z0-9_-]{16,128}"),
-                    ("lease_id", r"[A-Za-z0-9_-]{16,128}"),
-                    ("fence", r"[0-9a-f]{24,128}"),
-                )
-            )
-        ):
-            raise ReleaseLaneError("file apply dispatch scope or lifetime mismatch")
-        return claim
 
     @contextmanager
     def __call__(self, binding_bytes: bytes) -> Iterator[FileApplyGuard]:
@@ -349,3 +274,124 @@ class FileApplyBridge:
         if failure is not None:
             # A broken native adapter must never suppress an IdP apply failure.
             raise failure
+
+
+def verify_dispatch_binding(
+    raw: bytes,
+    *,
+    lane: ReleaseLane,
+    claim: dict[str, Any],
+    candidate: dict[str, Any],
+    signature: str,
+    signing_key: str | bytes,
+    now: float,
+    previous_observation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Shared pure verifier, NOT admission, authorization or a native guard."""
+    binding = parse_binding(raw, now=now)
+    if (
+        not isinstance(signature, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        or not hmac.compare_digest(
+            sign_host_dispatch_claim(claim, signing_key=signing_key), signature
+        )
+    ):
+        raise ReleaseLaneError("file apply dispatch signature mismatch")
+    return _verify_dispatch_binding(binding, lane, claim, candidate, now, previous_observation)
+
+
+def _verify_dispatch_binding(
+    binding: FileApplyBinding,
+    lane: ReleaseLane,
+    claim: dict[str, Any],
+    candidate: dict[str, Any],
+    now: float,
+    previous_observation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    quality = binding.ci_observation.quality
+    artifact = binding.ci_observation.artifact
+    artifact_ref = claim.get("artifact_ref")
+    if not isinstance(artifact_ref, str):
+        raise ReleaseLaneError("file apply dispatch artifact reference missing")
+    try:
+        request = ReleaseAdmissionRequest(
+            schema=REQUEST_SCHEMA,
+            release_lane=lane.name,
+            project_id=lane.project_id,
+            placement=lane.placement,
+            source_sha=binding.source_sha,
+            artifact_digest=f"sha256:{artifact.artifact_sha256}",
+            artifact_ref=artifact_ref,
+            candidate_receipt=candidate,
+        )
+        validate_candidate(request, lane)
+    except (ValidationError, TypeError) as exc:
+        raise ReleaseLaneError("invalid file apply candidate receipt") from exc
+    expected_candidate = {
+        "repository": binding.repository,
+        "workflow": "quality.yml",
+        "job": "static-contracts",
+        "run_id": quality.run_id,
+        "job_id": quality.job_id,
+        "attempt": quality.attempt,
+        "runner_profile": quality.profile,
+        "artifact_type": "http-archive",
+        "archive_sha256": artifact.artifact_sha256,
+        "payload_sha256": binding.bundle_sha256,
+    }
+    if any(candidate.get(key) != value for key, value in expected_candidate.items()):
+        raise ReleaseLaneError("file apply candidate does not bind observed CI and archives")
+    job = {
+        **claim,
+        "source_sha": binding.source_sha,
+        "artifact_digest": f"sha256:{artifact.artifact_sha256}",
+        "candidate_receipt": candidate,
+    }
+    issued_at, expires_at, nonce = (
+        claim.get("issued_at"),
+        claim.get("expires_at"),
+        claim.get("nonce"),
+    )
+    if type(issued_at) is not int or type(expires_at) is not int or not isinstance(nonce, str):
+        raise ReleaseLaneError("file apply dispatch lifetime or nonce missing")
+    expected_claim = host_dispatch_claim_payload(
+        job,
+        lane,
+        host_identity=lane.host_agent_mtls_identity,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+    )
+    expected_rollback = {
+        "source_sha": binding.expected_previous_sha,
+        "artifact_digest": f"sha256:{binding.snapshot_sha256}",
+        "artifact_ref": f"{lane.artifact_ref_prefix}@sha256:{binding.snapshot_sha256}",
+    }
+    if previous_observation is not None:
+        from qdev_runner.idp_file_runtime import IdPObservationError, native_receipt
+
+        try:
+            prior = native_receipt(previous_observation, installed=True)
+        except IdPObservationError:
+            raise ReleaseLaneError("invalid previously accepted IdP observation") from None
+        expected_rollback = {key: prior[key] for key in expected_rollback}
+        # Snapshot-to-file association is independently checked by the fixed
+        # native journal adapter under its lock before it may yield a guard.
+        if expected_rollback["source_sha"] != binding.expected_previous_sha:
+            raise ReleaseLaneError("previous IdP observation source mismatch")
+    if (
+        claim != expected_claim
+        or not claim["issued_at"] <= now + 30
+        or not now < claim["expires_at"] <= claim["lease_expires_at"]
+        or claim["rollback_anchor"] != expected_rollback
+        or any(
+            not re.fullmatch(pattern, claim[field])
+            for field, pattern in (
+                ("release_id", r"[A-Za-z0-9_-]{16,128}"),
+                ("lease_id", r"[A-Za-z0-9_-]{16,128}"),
+                ("fence", r"[0-9a-f]{24,128}"),
+            )
+        )
+    ):
+        raise ReleaseLaneError("file apply dispatch scope or lifetime mismatch")
+    return claim
