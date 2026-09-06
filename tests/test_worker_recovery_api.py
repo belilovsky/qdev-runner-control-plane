@@ -717,6 +717,37 @@ def test_qazstack_registration_token_is_minted_only_for_agent_claim(
     assert REGISTRATION_TOKEN not in status.text
 
 
+def test_qazstack_invoking_operation_cannot_mint_a_second_token_from_stale_proof(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    prepared = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-one-shot"),
+        headers=OPERATOR_HEADERS,
+    ).json()
+
+    first = _claim(harness, prepared, "qdev-qazstack-01")
+    assert first["command"]["registration_token"] == REGISTRATION_TOKEN
+    assert harness.github.registration_token_calls == 1
+
+    # The provider can change after the first command is delivered.  Replaying
+    # that operation must neither trust its old offline observation nor mint a
+    # second replacement token.
+    harness.github.status = "online"
+    replay = harness.client.post(
+        "/internal/v1/worker-recovery/claim",
+        json={
+            "schema": "qdev-runner-recovery-agent-claim-v1",
+            "operation_id": prepared["operation_id"],
+        },
+        headers=_agent_headers("qdev-qazstack-01"),
+    )
+
+    assert replay.status_code == 204
+    assert harness.github.registration_token_calls == 1
+
+
 def test_qazstack_absent_registration_prepares_signed_fresh_install(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:

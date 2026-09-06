@@ -461,7 +461,13 @@ class WorkerRecoveryController:
                 state="invoking",
                 proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
             )
-        elif row["state"] != "invoking":
+        else:
+            # Commands are deliberately one-shot.  In particular, never mint
+            # another registration token from the provider snapshot which was
+            # valid for the first invocation: the runner may have become
+            # online after that command was delivered.  A host interruption
+            # stays fenced in ``invoking`` and must reconcile its already
+            # persisted outcome rather than reclaiming mutation authority.
             return None
         return self._command_envelope(row, target=target)
 

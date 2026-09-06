@@ -351,6 +351,41 @@ def test_controller_request_uses_one_fixed_mtls_ca_argument(
     assert observed[-1] == "https://worker.ci.qdev.run/internal/v1/worker-recovery/claim"
 
 
+def test_claimed_state_is_fenced_without_command_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    profile = AGENT.PROFILES["qazstack"]
+    config.state_path.write_text(
+        json.dumps(
+            {
+                "schema": AGENT.STATE_SCHEMA,
+                "profile": profile.name,
+                "status": "claimed",
+                "operation_id": "1" * 64,
+                "request_fingerprint": "2" * 64,
+                "command_digest": "sha256:" + "3" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.state_path.chmod(0o600)
+    monkeypatch.setattr(AGENT, "_private", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        AGENT,
+        "_claim",
+        lambda *_args, **_kwargs: pytest.fail("one-shot command was reclaimed"),
+    )
+
+    result = AGENT.run_once(config, profile)
+
+    assert result == {
+        "status": "manual_reconciliation_required",
+        "profile": "qazstack",
+        "operation_id": "1" * 64,
+    }
+
+
 def test_qazstack_registration_attempt_failure_preserves_ambiguous_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

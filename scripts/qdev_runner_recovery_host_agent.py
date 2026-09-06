@@ -987,12 +987,17 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 "operation_id": payload.get("operation_id"),
                 "outcome": payload.get("outcome"),
             }
-        resume_id: str | None = None
         if state is not None and state.get("status") == "claimed":
-            candidate = state.get("operation_id")
-            if isinstance(candidate, str) and _SHA256.fullmatch(candidate):
-                resume_id = candidate
-        _, command = _claim(config, profile, resume_id)
+            # The controller command is one-shot and may contain a short-lived
+            # registration credential.  Reclaiming it would grant a second
+            # mutation from stale provider evidence, so an interruption after
+            # the durable claim is kept explicitly fenced for reconciliation.
+            return {
+                "status": "manual_reconciliation_required",
+                "profile": profile.name,
+                "operation_id": state.get("operation_id"),
+            }
+        _, command = _claim(config, profile)
         if command is None:
             return {"status": "idle", "profile": profile.name}
         claimed_state = {

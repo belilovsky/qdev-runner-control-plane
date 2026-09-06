@@ -359,6 +359,12 @@ operation is idempotent. The controller GitHub App remains read-only for
 Actions correlation; it never receives repository Contents or Actions-write
 permission for recovery dispatch.
 
+A recovery command is one-shot because it can contain a short-lived runner
+registration credential. An interrupted host retries only a persisted pending
+reconciliation. A locally persisted claim without an outcome remains fenced as
+`manual_reconciliation_required`; it cannot reclaim the command or mint a
+second credential from stale provider evidence.
+
 The retired
 `/internal/v1/operations/fleet-bootstrap/recover-existing-worker` route always
 returns `410`. It is not a fallback to the typed recovery API. Controller
