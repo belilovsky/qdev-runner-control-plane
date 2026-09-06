@@ -40,6 +40,31 @@ def _qgeo_lane():
     return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-qazgeo")
 
 
+def _qgeo_dependency_identity() -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for index, service in enumerate(("db", "martin", "photon", "redis"), start=1):
+        reference = f"registry.example.test/qgeo/{service}@sha256:{index:064x}"
+        result[service] = {
+            "artifact_ref": reference,
+            "source_revision": None,
+            "container_id": f"container-{service}",
+            "config_image": reference,
+            "image_id": f"sha256:{index + 10:064x}",
+            "image_repo_digests": [reference],
+        }
+    result["postgis"] = dict(result["db"])
+    result["postgis"]["image_repo_digests"] = list(result["db"]["image_repo_digests"])
+    result["app"] = {
+        "artifact_ref": QGEO_REF,
+        "source_revision": QGEO_SHA,
+        "container_id": "container-qgeo",
+        "config_image": QGEO_REF,
+        "image_id": "sha256:" + "8" * 64,
+        "image_repo_digests": [QGEO_REF],
+    }
+    return result
+
+
 def _candidate_request(*, evidence: dict | None = None) -> ReleaseAdmissionRequest:
     if evidence is None:
         evidence = {
@@ -300,14 +325,7 @@ def test_qgeo_runtime_receipt_requires_all_dependencies() -> None:
             "image_id": "sha256:" + "8" * 64,
             "image_repo_digests": [QGEO_REF],
         },
-        "dependency_identity": {
-            "db": "postgres:16",
-            "postgis": "postgis:3.5",
-            "martin": "martin:1.0",
-            "photon": "photon:0.1",
-            "redis": "redis:7",
-            "app": QGEO_SHA,
-        },
+        "dependency_identity": _qgeo_dependency_identity(),
         "artifact_provenance": {
             "qazstack_source_sha": "f" * 40,
             "qazstack_version": "candidate-bound",
@@ -335,6 +353,17 @@ def test_qgeo_runtime_receipt_requires_all_dependencies() -> None:
     )
     receipt["readiness"].pop("redis")
     with pytest.raises(ReleaseLaneError, match="readiness or rollback"):
+        validate_runtime_receipt(
+            receipt,
+            lane=lane,
+            source_sha=QGEO_SHA,
+            artifact_digest=QGEO_DIGEST,
+            artifact_ref=QGEO_REF,
+        )
+
+    receipt["readiness"]["redis"] = "ok"
+    receipt["dependency_identity"]["redis"]["artifact_ref"] = "redis:7"
+    with pytest.raises(ReleaseLaneError, match="dependency identity"):
         validate_runtime_receipt(
             receipt,
             lane=lane,
@@ -389,14 +418,7 @@ def test_release_admission_is_idempotent_after_verified_result(tmp_path: Path) -
             "image_id": "sha256:" + "8" * 64,
             "image_repo_digests": [QGEO_REF],
         },
-        "dependency_identity": {
-            "db": "postgres:16",
-            "postgis": "postgis:3.5",
-            "martin": "martin:1.0",
-            "photon": "photon:0.1",
-            "redis": "redis:7",
-            "app": QGEO_SHA,
-        },
+        "dependency_identity": _qgeo_dependency_identity(),
         "artifact_provenance": {
             "qazstack_source_sha": "f" * 40,
             "qazstack_version": "candidate-bound",

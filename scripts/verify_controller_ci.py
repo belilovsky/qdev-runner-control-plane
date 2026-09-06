@@ -13,6 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "belilovsky/qdev-runner-control-plane"
+GITHUB_ENDPOINTS = {
+    "server_url": "https://github.com",
+    "api_url": "https://api.github.com",
+    "graphql_url": "https://api.github.com/graphql",
+}
 
 
 def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | int]:
@@ -108,6 +113,42 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
     return binding
 
 
+def provider_execution_binding(
+    environment: dict[str, str], *, workflow: str, job: str
+) -> dict[str, str | int]:
+    """Bind provider evidence to the official endpoint, workflow and exact job run."""
+    for field, expected in (
+        ("GITHUB_SERVER_URL", GITHUB_ENDPOINTS["server_url"]),
+        ("GITHUB_API_URL", GITHUB_ENDPOINTS["api_url"]),
+        ("GITHUB_GRAPHQL_URL", GITHUB_ENDPOINTS["graphql_url"]),
+    ):
+        if environment.get(field) != expected:
+            raise ValueError("provider endpoint identity mismatch")
+    ref = environment.get("GITHUB_REF", "")
+    workflow_ref = environment.get("GITHUB_WORKFLOW_REF", "")
+    expected_workflow_ref = f"{REPOSITORY}/.github/workflows/{workflow}@{ref}"
+    if workflow_ref != expected_workflow_ref:
+        raise ValueError("provider workflow identity mismatch")
+    if environment.get("GITHUB_JOB") != job:
+        raise ValueError("provider job identity mismatch")
+    numeric: dict[str, int] = {}
+    for field, key in (
+        ("GITHUB_RUN_ID", "run_id"),
+        ("GITHUB_RUN_ATTEMPT", "run_attempt"),
+    ):
+        value = environment.get(field, "")
+        if not value.isdigit() or int(value) < 1:
+            raise ValueError("provider run identity mismatch")
+        numeric[key] = int(value)
+    return {
+        **GITHUB_ENDPOINTS,
+        "workflow_ref": workflow_ref,
+        "job": job,
+        "ref": ref,
+        **numeric,
+    }
+
+
 def validate_context(
     lane: str, environment: dict[str, str], sha: str
 ) -> dict[str, str | int] | None:
@@ -125,6 +166,14 @@ def validate_context(
     if lane == "local":
         raise ValueError("Actions must identify its real execution lane")
     binding = provider_binding(environment, sha)
+    recovery = lane == "controller-recovery"
+    binding.update(
+        provider_execution_binding(
+            environment,
+            workflow="runner-smoke.yml" if recovery else "ci.yml",
+            job="runner-smoke" if recovery else "verify",
+        )
+    )
     runner_environment = "github-hosted" if lane == "github-hosted" else "self-hosted"
     if environment.get("RUNNER_ENVIRONMENT") != runner_environment:
         raise ValueError("runner environment does not match requested execution lane")
@@ -152,25 +201,8 @@ def validate_context(
         ref = environment.get("GITHUB_REF", "")
         if not ref.startswith("refs/heads/") or ref == "refs/heads/":
             raise ValueError("recovery requires a selected repository branch")
-        workflow_ref = environment.get("GITHUB_WORKFLOW_REF", "")
-        expected_workflow_ref = f"{repository}/.github/workflows/runner-smoke.yml@{ref}"
-        if workflow_ref != expected_workflow_ref:
-            raise ValueError("recovery is bound to the exact workflow and branch")
-        if environment.get("GITHUB_JOB") != "runner-smoke":
-            raise ValueError("recovery is bound to the runner-smoke job")
-        for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
-            value = environment.get(name, "")
-            if not value.isdigit() or int(value) < 1:
-                raise ValueError("recovery requires exact provider run identity")
         if environment.get("QDEV_OWNER_RECOVERY") != "true" or not expected:
             raise ValueError("explicit owner recovery confirmation and exact SHA are required")
-    if lane == "github-hosted" and (
-        not environment.get("GITHUB_RUN_ID", "").isdigit()
-        or int(environment.get("GITHUB_RUN_ID", "0")) < 1
-        or not environment.get("GITHUB_RUN_ATTEMPT", "").isdigit()
-        or int(environment.get("GITHUB_RUN_ATTEMPT", "0")) < 1
-    ):
-        raise ValueError("hosted CI requires exact provider repository and run identity")
     return binding
 
 

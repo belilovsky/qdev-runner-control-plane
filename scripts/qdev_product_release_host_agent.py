@@ -49,7 +49,7 @@ _CI_SCOPE_VALUE = re.compile(r"^[\w][\w .:/\-\u2013]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 STATE_SCHEMA = "qdev-release-host-state-v1"
 PENDING_SCHEMA = "qdev-release-host-pending-v1"
-QGEO_PROFILE_SCHEMA = "qdev-qazgeo-host-profile-v1"
+QGEO_PROFILE_SCHEMA = "qdev-qazgeo-host-profile-v2"
 HOST_DISPATCH_CLAIM_SCHEMA = "qdev-controller-host-dispatch-claim-v2"
 HOST_DISPATCH_CLAIM_MAX_TTL_SECONDS = 5 * 60
 HOST_DISPATCH_CLOCK_SKEW_SECONDS = 30
@@ -118,6 +118,7 @@ class Profile:
     avds_artifact_sha256: str | None = None
     candidate_source_sha: str | None = None
     candidate_artifact_digest: str | None = None
+    dependency_images: dict[str, dict[str, str | None]] | None = None
     signed_profile_digest: str | None = None
 
 
@@ -378,6 +379,48 @@ def _profile_public_key(payload: bytes) -> Ed25519PublicKey:
     return key
 
 
+def _immutable_image_reference(value: object) -> str:
+    if not isinstance(value, str) or len(value) > 512 or value.count("@") != 1:
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    name, digest = value.split("@", 1)
+    if not _DIGEST.fullmatch(digest) or not name or name != name.lower():
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    if any(character.isspace() for character in name) or "\\" in name:
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    parts = name.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    if any(re.fullmatch(r"[a-z0-9]+(?:[._-][a-z0-9]+)*", part) is None for part in parts[1:]):
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    first = parts[0]
+    if len(parts) == 1:
+        valid_first = re.fullmatch(r"[a-z0-9]+(?:[._-][a-z0-9]+)*", first)
+    else:
+        valid_first = re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", first)
+    if valid_first is None:
+        raise AgentError("signed QGeo dependency image reference is invalid")
+    return value
+
+
+def _qgeo_dependency_images(value: object) -> dict[str, dict[str, str | None]]:
+    expected_services = {"db", "martin", "photon", "redis"}
+    if not isinstance(value, dict) or set(value) != expected_services:
+        raise AgentError("signed QGeo dependency image set is invalid")
+    result: dict[str, dict[str, str | None]] = {}
+    for service in sorted(expected_services):
+        identity = value.get(service)
+        if not isinstance(identity, dict) or set(identity) != {"artifact_ref", "source_revision"}:
+            raise AgentError("signed QGeo dependency image identity is invalid")
+        revision = identity.get("source_revision")
+        if revision is not None and (not isinstance(revision, str) or not _SHA.fullmatch(revision)):
+            raise AgentError("signed QGeo dependency source revision is invalid")
+        result[service] = {
+            "artifact_ref": _immutable_image_reference(identity.get("artifact_ref")),
+            "source_revision": revision,
+        }
+    return result
+
+
 def verify_qgeo_profile_document(
     document: object,
     public_key: Ed25519PublicKey,
@@ -434,6 +477,7 @@ def verify_qgeo_profile_document(
         "repository",
         "candidate_source_sha",
         "candidate_artifact_digest",
+        "dependency_images",
         "release_dir",
         "compose_files",
         "runtime_env",
@@ -483,6 +527,7 @@ def verify_qgeo_profile_document(
         raise AgentError("signed QGeo candidate source is invalid")
     if not isinstance(candidate_digest, str) or not _DIGEST.fullmatch(candidate_digest):
         raise AgentError("signed QGeo candidate digest is invalid")
+    dependency_images = _qgeo_dependency_images(raw.get("dependency_images"))
     compose_values = raw.get("compose_files")
     if (
         not isinstance(compose_values, list)
@@ -565,6 +610,7 @@ def verify_qgeo_profile_document(
         avds_artifact_sha256=avds_digest,
         candidate_source_sha=candidate_source,
         candidate_artifact_digest=candidate_digest,
+        dependency_images=dependency_images,
         signed_profile_digest=digest,
     )
 
@@ -1266,6 +1312,56 @@ def _running_image_identity(profile: Profile, release: dict[str, str]) -> dict[s
     }
 
 
+def _running_dependency_image_identity(
+    profile: Profile,
+    service: str,
+    expected: dict[str, str | None],
+) -> dict[str, Any]:
+    """Measure one dependency and bind it to the signed immutable profile."""
+    container_id, container = _compose_container(profile, service)
+    config = container.get("Config")
+    configured_image = config.get("Image") if isinstance(config, dict) else None
+    expected_ref = expected["artifact_ref"]
+    if not isinstance(configured_image, str) or configured_image != expected_ref:
+        raise AgentError(f"QGeo service {service} is running a different image reference")
+    inspected = _json_command(
+        ["docker", "image", "inspect", configured_image],
+        description=f"QGeo service {service} image inspection",
+    )
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise AgentError(f"QGeo service {service} image inspection is invalid")
+    image = inspected[0]
+    image_id = image.get("Id")
+    container_image_id = container.get("Image")
+    repo_digests = image.get("RepoDigests")
+    image_config = image.get("Config")
+    labels = image_config.get("Labels") if isinstance(image_config, dict) else None
+    measured_revision = (
+        labels.get("org.opencontainers.image.revision") if isinstance(labels, dict) else None
+    )
+    expected_revision = expected["source_revision"]
+    if measured_revision != expected_revision:
+        raise AgentError(f"QGeo service {service} OCI source revision does not match profile")
+    if (
+        not isinstance(image_id, str)
+        or not image_id.startswith("sha256:")
+        or not isinstance(container_image_id, str)
+        or container_image_id != image_id
+        or not isinstance(repo_digests, list)
+        or expected_ref not in repo_digests
+        or any(not isinstance(value, str) for value in repo_digests)
+    ):
+        raise AgentError(f"QGeo service {service} immutable image identity is unavailable")
+    return {
+        "artifact_ref": expected_ref,
+        "source_revision": measured_revision,
+        "container_id": container_id,
+        "config_image": configured_image,
+        "image_id": image_id,
+        "image_repo_digests": sorted(repo_digests),
+    }
+
+
 def _qgeo_artifact_provenance(profile: Profile) -> dict[str, str]:
     if profile.qazstack_source_directory is None or not profile.qazstack_source_ref:
         raise AgentError("QGeo QazStack source binding is unavailable")
@@ -1528,14 +1624,16 @@ def runtime_proof(
         }
         if any(value is not True for value in dependency_values.values()):
             raise AgentError("QGeo local dependency readiness is not truthful")
-        dependencies: dict[str, str] = {}
-        for service in ("db", "martin", "photon", "redis", "app"):
-            _, container = _compose_container(profile, service)
-            image_id = container.get("Image")
-            if not isinstance(image_id, str) or not image_id.strip():
-                raise AgentError(f"QGeo service {service} image identity is unavailable")
-            dependencies[service] = image_id
-        dependencies["postgis"] = dependencies["db"]
+        if profile.dependency_images is None:
+            raise AgentError("QGeo signed dependency image identities are unavailable")
+        dependencies: dict[str, dict[str, Any]] = {
+            service: _running_dependency_image_identity(profile, service, expected)
+            for service, expected in profile.dependency_images.items()
+        }
+        dependencies["postgis"] = {
+            **dependencies["db"],
+            "image_repo_digests": list(dependencies["db"]["image_repo_digests"]),
+        }
         redis_container_id = _compose_container(profile, "redis")[0]
         redis_inspection = _json_command(
             ["docker", "inspect", redis_container_id], description="QGeo Redis inspection"
@@ -1550,7 +1648,16 @@ def runtime_proof(
         readiness.update({key: "ok" for key in dependency_values})
         readiness["redis"] = "ok"
         readiness["app"] = "ok"
-        proof["runtime_identity"] = _running_image_identity(profile, release)
+        runtime_identity = _running_image_identity(profile, release)
+        proof["runtime_identity"] = runtime_identity
+        dependencies["app"] = {
+            "artifact_ref": release["artifact_ref"],
+            "source_revision": release["source_sha"],
+            "container_id": runtime_identity["container_id"],
+            "config_image": runtime_identity["config_image"],
+            "image_id": runtime_identity["image_id"],
+            "image_repo_digests": list(runtime_identity["image_repo_digests"]),
+        }
         proof["dependency_identity"] = dependencies
         proof["artifact_provenance"] = _qgeo_artifact_provenance(profile)
         if not _is_profile_rollback(release, profile):

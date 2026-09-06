@@ -27,6 +27,12 @@ AVDS_SHA = "d" * 40
 AVDS_DIGEST = "e" * 64
 NOW = 2_000_000_000
 DISPATCH_SECRET = b"qgeo-host-dispatch-test-secret-32-bytes"
+DEPENDENCY_REFS = {
+    "db": "registry.example.test/qgeo/postgis@sha256:" + "1" * 64,
+    "martin": "registry.example.test/qgeo/martin@sha256:" + "2" * 64,
+    "photon": "registry.example.test/qgeo/photon@sha256:" + "3" * 64,
+    "redis": "registry.example.test/qgeo/redis@sha256:" + "4" * 64,
+}
 
 
 def _signed_qgeo_document(
@@ -54,6 +60,10 @@ def _signed_qgeo_document(
         "repository": "belilovsky/qazgeo",
         "candidate_source_sha": SHA,
         "candidate_artifact_digest": DIGEST,
+        "dependency_images": {
+            service: {"artifact_ref": reference, "source_revision": None}
+            for service, reference in DEPENDENCY_REFS.items()
+        },
         "release_dir": str(release),
         "compose_files": [str(compose)],
         "runtime_env": str(runtime_env),
@@ -243,6 +253,10 @@ def test_qgeo_profile_is_externally_signed_and_candidate_bound(tmp_path: Path) -
     assert profile.placement == "qazgeo-app-runtime"
     assert profile.candidate_source_sha == SHA
     assert profile.candidate_artifact_digest == DIGEST
+    assert profile.dependency_images == {
+        service: {"artifact_ref": reference, "source_revision": None}
+        for service, reference in DEPENDENCY_REFS.items()
+    }
     assert profile.signed_profile_digest.startswith("sha256:")
     assert profile.qazstack_version == "candidate-bound"
     assert AGENT._qgeo_artifact_provenance(profile) == {
@@ -295,6 +309,31 @@ def test_qgeo_profile_rejects_expiry_and_foreign_placement(tmp_path: Path) -> No
         AGENT.verify_qgeo_profile_document(foreign, signer.public_key(), now=NOW)
 
 
+def test_qgeo_profile_rejects_mutable_or_incomplete_dependency_images(tmp_path: Path) -> None:
+    for replacement in (
+        {"db": {"artifact_ref": "postgres:16", "source_revision": None}},
+        {
+            **{
+                service: {"artifact_ref": reference, "source_revision": None}
+                for service, reference in DEPENDENCY_REFS.items()
+            },
+            "redis": {"artifact_ref": "redis:7", "source_revision": None},
+        },
+    ):
+        document, signer = _signed_qgeo_document(tmp_path)
+        profile = document["profile"]
+        assert isinstance(profile, dict)
+        profile["dependency_images"] = replacement
+        unsigned = {key: document[key] for key in ("schema", "issued_at", "expires_at", "profile")}
+        document["signature"] = (
+            base64.urlsafe_b64encode(signer.sign(AGENT._canonical_json(unsigned)))
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        with pytest.raises(AGENT.AgentError, match="dependency image"):
+            AGENT.verify_qgeo_profile_document(document, signer.public_key(), now=NOW)
+
+
 def test_qgeo_job_requires_signed_candidate_provenance_and_fence(tmp_path: Path) -> None:
     profile = _qgeo_profile(tmp_path)
     release = {
@@ -334,6 +373,69 @@ def test_qgeo_profile_public_key_is_verification_only(tmp_path: Path) -> None:
     )
     with pytest.raises(AGENT.AgentError, match="public key"):
         AGENT._profile_public_key(private_pem)
+
+
+def test_qgeo_dependency_identity_is_measured_against_signed_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _qgeo_profile(tmp_path)
+    reference = DEPENDENCY_REFS["redis"]
+    image_id = "sha256:" + "5" * 64
+    container = {"Config": {"Image": reference}, "Image": image_id}
+    image = {
+        "Id": image_id,
+        "RepoDigests": [reference],
+        "Config": {"Labels": {}},
+    }
+    monkeypatch.setattr(AGENT, "_compose_container", lambda *_args: ("redis-container", container))
+    monkeypatch.setattr(AGENT, "_json_command", lambda *_args, **_kwargs: [image])
+    assert AGENT._running_dependency_image_identity(
+        profile, "redis", {"artifact_ref": reference, "source_revision": None}
+    ) == {
+        "artifact_ref": reference,
+        "source_revision": None,
+        "container_id": "redis-container",
+        "config_image": reference,
+        "image_id": image_id,
+        "image_repo_digests": [reference],
+    }
+
+    image["RepoDigests"] = ["registry.example.test/qgeo/redis@sha256:" + "6" * 64]
+    with pytest.raises(AGENT.AgentError, match="immutable image identity"):
+        AGENT._running_dependency_image_identity(
+            profile, "redis", {"artifact_ref": reference, "source_revision": None}
+        )
+
+
+def test_qgeo_dependency_identity_rejects_unbound_oci_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _qgeo_profile(tmp_path)
+    reference = DEPENDENCY_REFS["db"]
+    image_id = "sha256:" + "7" * 64
+    monkeypatch.setattr(
+        AGENT,
+        "_compose_container",
+        lambda *_args: (
+            "db-container",
+            {"Config": {"Image": reference}, "Image": image_id},
+        ),
+    )
+    monkeypatch.setattr(
+        AGENT,
+        "_json_command",
+        lambda *_args, **_kwargs: [
+            {
+                "Id": image_id,
+                "RepoDigests": [reference],
+                "Config": {"Labels": {"org.opencontainers.image.revision": SHA}},
+            }
+        ],
+    )
+    with pytest.raises(AGENT.AgentError, match="OCI source revision"):
+        AGENT._running_dependency_image_identity(
+            profile, "db", {"artifact_ref": reference, "source_revision": None}
+        )
 
 
 def test_qgeo_materializes_static_from_candidate_image_idempotently(

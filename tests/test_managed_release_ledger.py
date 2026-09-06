@@ -324,29 +324,21 @@ def test_verified_pr_transitions_to_same_sha_main_push_and_release_admission(
 
 def test_qazgeo_ledger_classifies_fifo_admission_without_mutation(tmp_path: Path) -> None:
     path = _ledger_path(tmp_path)
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    document["entries"]["qazgeo"]["source_sha"] = SOURCE_SHA
-    document["entries"]["qazgeo"]["status"] = "ci_pending"
-    document["entries"]["qazgeo"]["registration"]["state"] = "open"
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    binding = _phase_bindings("pull_request", state="queued", conclusion=None)[0]
+    _register(path, binding)
     ledger = ManagedReleaseLedger(path)
 
-    assert ledger.classify_admission("qazgeo", SOURCE_SHA) == (True, None)
+    assert ledger.classify_admission("qazgeo", PR_CHECKOUT_SHA) == (True, None)
     assert ledger.classify_admission("missing", SOURCE_SHA) == (
         False,
         "managed-production-candidate-not-active",
     )
-    assert ledger.classify_admission("qazgeo", "d" * 40) == (
+    assert ledger.classify_admission("qazgeo", SOURCE_SHA) == (
         False,
         "managed-production-candidate-tuple-not-admitted",
     )
 
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    document["entries"]["qazgeo"]["status"] = "live_accepted"
-    inactive_path = tmp_path / "inactive-ledger.yml"
-    inactive_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
-
-    assert ManagedReleaseLedger(inactive_path).classify_admission("qazgeo", SOURCE_SHA) == (
+    assert ManagedReleaseLedger(_source_path()).classify_admission("qazgeo", SOURCE_SHA) == (
         False,
         "managed-production-candidate-not-active",
     )

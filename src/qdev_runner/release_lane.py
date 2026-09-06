@@ -364,6 +364,81 @@ def _is_lane_artifact_ref(value: object, digest: str, lane: ReleaseLane) -> bool
     return value == f"{lane.artifact_ref_prefix}@{digest}"
 
 
+def _is_immutable_artifact_ref(value: object) -> bool:
+    if not isinstance(value, str) or value.count("@") != 1 or len(value) > 512:
+        return False
+    name, digest = value.split("@", 1)
+    if (
+        not name
+        or not _is_digest(digest)
+        or name != name.lower()
+        or "\\" in name
+        or any(character.isspace() for character in name)
+    ):
+        return False
+    parts = name.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        return False
+    component = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+    if any(component.fullmatch(part) is None for part in parts[1:]):
+        return False
+    if len(parts) == 1:
+        return component.fullmatch(parts[0]) is not None
+    return re.fullmatch(r"[a-z0-9.-]+(?::[0-9]{1,5})?", parts[0]) is not None
+
+
+def _validate_qgeo_dependency_identity(
+    value: object,
+    *,
+    runtime_identity: dict[str, Any],
+    source_sha: str,
+    artifact_ref: str,
+) -> None:
+    services = {"db", "postgis", "martin", "photon", "redis", "app"}
+    fields = {
+        "artifact_ref",
+        "source_revision",
+        "container_id",
+        "config_image",
+        "image_id",
+        "image_repo_digests",
+    }
+    if not isinstance(value, dict) or set(value) != services:
+        raise ReleaseLaneError("QGeo dependency identity set is invalid")
+    for service in services:
+        identity = value.get(service)
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != fields
+            or not _is_immutable_artifact_ref(identity.get("artifact_ref"))
+            or identity.get("config_image") != identity.get("artifact_ref")
+            or not isinstance(identity.get("container_id"), str)
+            or not identity["container_id"]
+            or not isinstance(identity.get("image_id"), str)
+            or not identity["image_id"].startswith("sha256:")
+            or not isinstance(identity.get("image_repo_digests"), list)
+            or identity["artifact_ref"] not in identity["image_repo_digests"]
+            or any(not isinstance(item, str) for item in identity["image_repo_digests"])
+            or (
+                identity.get("source_revision") is not None
+                and not _is_sha(identity.get("source_revision"))
+            )
+        ):
+            raise ReleaseLaneError(f"QGeo dependency identity for {service} is invalid")
+    if value["postgis"] != value["db"]:
+        raise ReleaseLaneError("QGeo PostGIS identity does not match its database image")
+    app = value["app"]
+    if (
+        app.get("artifact_ref") != artifact_ref
+        or app.get("source_revision") != source_sha
+        or app.get("container_id") != runtime_identity.get("container_id")
+        or app.get("config_image") != runtime_identity.get("config_image")
+        or app.get("image_id") != runtime_identity.get("image_id")
+        or app.get("image_repo_digests") != runtime_identity.get("image_repo_digests")
+    ):
+        raise ReleaseLaneError("QGeo app dependency identity does not match runtime identity")
+
+
 def _canonical_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
         "utf-8"
@@ -1125,7 +1200,14 @@ def validate_runtime_receipt(
         ):
             raise ReleaseLaneError("runtime QGeo image identity is incomplete")
         dependency_identity = receipt["dependency_identity"]
-        if (
+        if lane.project_id == "qazgeo":
+            _validate_qgeo_dependency_identity(
+                dependency_identity,
+                runtime_identity=runtime_identity,
+                source_sha=source_sha,
+                artifact_ref=artifact_ref,
+            )
+        elif (
             not isinstance(dependency_identity, dict)
             or not dependency_identity
             or any(
@@ -1239,7 +1321,14 @@ def validate_native_runtime_receipt(
         ):
             raise ReleaseLaneError("native QGeo image identity is incomplete")
         dependencies = receipt["dependency_identity"]
-        if (
+        if lane.project_id == "qazgeo":
+            _validate_qgeo_dependency_identity(
+                dependencies,
+                runtime_identity=runtime_identity,
+                source_sha=source_sha,
+                artifact_ref=artifact_ref,
+            )
+        elif (
             not isinstance(dependencies, dict)
             or not dependencies
             or any(

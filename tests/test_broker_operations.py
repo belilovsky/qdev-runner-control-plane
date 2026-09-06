@@ -1853,7 +1853,7 @@ def test_durable_queue_audit_is_signed_and_reports_profile_heads(tmp_path: Path)
 def test_durable_queue_audit_omits_superseded_managed_production_head(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, include_qgeo=True)
     _seed_pending_job(
         client,
         41,
@@ -2131,8 +2131,13 @@ def test_direct_claim_of_stale_admin_platform_row_remains_fail_closed(tmp_path: 
 def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path, FakeGitHub())
-    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    client = _app(tmp_path, FakeGitHub(), include_qgeo=True)
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=46.0,
+        scope_id="srv1879763-primary",
+    )
     stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
     _seed_pending_job(
         client,
@@ -2172,7 +2177,7 @@ def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
             "head_sha": stale_sha,
             "profile": "qdev-ci-docker",
             "managed_registry_entry": "qazgeo",
-            "reason": "managed-production-candidate-tuple-not-admitted",
+            "reason": "managed-production-candidate-not-active",
         }
     ]
 
@@ -2184,7 +2189,7 @@ def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
             "tier": "primary",
             "profiles": ["qdev-ci-docker"],
             "claim_scope_id": "srv1879763-primary",
-            "disk_free_gib": 30.0,
+            "disk_free_gib": 46.0,
             "min_disk_free_gib": 4.5,
         },
     )
@@ -2196,8 +2201,13 @@ def test_fifo_skips_superseded_managed_production_rows_with_signed_evidence(
 def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
-    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    client = _app(tmp_path, include_qgeo=True)
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=40.0,
+        scope_id="srv1879763-primary",
+    )
     _seed_pending_job(
         client,
         41,
@@ -2224,7 +2234,7 @@ def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "managed production candidate tuple is not admitted"
+    assert response.json()["detail"] == "managed production candidate is not open"
 
 
 def test_managed_production_unknown_run_is_fail_closed_but_does_not_block_fifo(
@@ -2908,22 +2918,23 @@ def test_qazgeo_capacity_override_cannot_weaken_repository_constraints(
     concurrency: int,
     message: str,
 ) -> None:
-    client = _app(tmp_path, include_qgeo=True)
+    github = QGeoFakeGitHub()
+    github.run_status = "queued"
+    github.run_conclusion = None
+    github.job_status = "queued"
+    github.job_conclusion = None
+    client = _app(tmp_path, github=github, include_qgeo=True)
     _heartbeat(client, disk_free_gib=disk_free_gib, concurrency=concurrency)
-    _seed_pending_job(
-        client,
-        42,
-        "qazgeo-head",
-        repository="belilovsky/qazgeo",
-        head_sha="a" * 40,
-    )
+    binding = next(item for item in github.bindings if item["profile"] == "qdev-ci-docker")
+    _seed_qgeo_jobs(client, (binding,))
+    _register_qgeo_bindings(client, (binding,))
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazgeo",
-            "head_sha": "a" * 40,
+            "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 95.0,
@@ -2945,22 +2956,23 @@ def test_qazgeo_capacity_override_cannot_weaken_repository_constraints(
 
 
 def test_qazgeo_capacity_override_accepts_exact_server_owned_boundary(tmp_path: Path) -> None:
-    client = _app(tmp_path, include_qgeo=True)
+    github = QGeoFakeGitHub()
+    github.run_status = "queued"
+    github.run_conclusion = None
+    github.job_status = "queued"
+    github.job_conclusion = None
+    client = _app(tmp_path, github=github, include_qgeo=True)
     _heartbeat(client, disk_free_gib=35.0, concurrency=1)
-    _seed_pending_job(
-        client,
-        42,
-        "qazgeo-head",
-        repository="belilovsky/qazgeo",
-        head_sha="a" * 40,
-    )
+    binding = next(item for item in github.bindings if item["profile"] == "qdev-ci-docker")
+    _seed_qgeo_jobs(client, (binding,))
+    _register_qgeo_bindings(client, (binding,))
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
             "repository": "belilovsky/qazgeo",
-            "head_sha": "a" * 40,
+            "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
             "max_disk_used_pct": 95.0,
@@ -3218,7 +3230,7 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
 def test_capacity_override_skips_superseded_managed_production_fifo_rows(
     tmp_path: Path,
 ) -> None:
-    client = _app(tmp_path)
+    client = _app(tmp_path, include_qgeo=True)
     _heartbeat(client)
     stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
     _seed_pending_job(
@@ -3263,7 +3275,7 @@ def test_capacity_override_skips_superseded_managed_production_fifo_rows(
             "head_sha": stale_sha,
             "profile": "qdev-ci-docker",
             "managed_registry_entry": "qazgeo",
-            "reason": "managed-production-candidate-tuple-not-admitted",
+            "reason": "managed-production-candidate-not-active",
         }
     ]
 

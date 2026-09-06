@@ -37,6 +37,9 @@ def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, 
         "GITHUB_ACTOR": "belilovsky",
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_EVENT_PATH": str(tmp_path / "event.json"),
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_API_URL": "https://api.github.com",
+        "GITHUB_GRAPHQL_URL": "https://api.github.com/graphql",
         "GITHUB_WORKFLOW_REF": (
             "belilovsky/qdev-runner-control-plane/.github/workflows/"
             "runner-smoke.yml@refs/heads/main"
@@ -48,6 +51,14 @@ def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, 
     }
     if event_name == "push":
         event["after"] = SHA
+        environment.update(
+            {
+                "GITHUB_WORKFLOW_REF": (
+                    "belilovsky/qdev-runner-control-plane/.github/workflows/ci.yml@refs/heads/main"
+                ),
+                "GITHUB_JOB": "verify",
+            }
+        )
     if event_name == "pull_request":
         event.update(
             {
@@ -67,6 +78,11 @@ def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, 
                 "GITHUB_REF": "refs/pull/99/merge",
                 "GITHUB_BASE_REF": "main",
                 "GITHUB_HEAD_REF": "candidate",
+                "GITHUB_WORKFLOW_REF": (
+                    "belilovsky/qdev-runner-control-plane/.github/workflows/"
+                    "ci.yml@refs/pull/99/merge"
+                ),
+                "GITHUB_JOB": "verify",
             }
         )
     (tmp_path / "event.json").write_text(json.dumps(event))
@@ -141,6 +157,9 @@ def test_internal_pr_binds_head_and_preserves_provider_merge(tmp_path: Path, lan
         environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
     binding = CI.validate_context(lane, environment, SHA)
     assert binding == {
+        "api_url": "https://api.github.com",
+        "graphql_url": "https://api.github.com/graphql",
+        "server_url": "https://github.com",
         "event": "pull_request",
         "repository": REPOSITORY["full_name"],
         "repository_id": 42,
@@ -148,6 +167,13 @@ def test_internal_pr_binds_head_and_preserves_provider_merge(tmp_path: Path, lan
         "provider_sha": MERGE_SHA,
         "provider_merge_sha": MERGE_SHA,
         "pull_request": 99,
+        "workflow_ref": (
+            "belilovsky/qdev-runner-control-plane/.github/workflows/ci.yml@refs/pull/99/merge"
+        ),
+        "job": "verify",
+        "ref": "refs/pull/99/merge",
+        "run_id": 101,
+        "run_attempt": 1,
     }
     assert environment["GITHUB_SHA"] == MERGE_SHA
     with pytest.raises(ValueError):
@@ -304,6 +330,16 @@ def test_push_dispatch_reject_unbound_payload(
         ("GITHUB_REPOSITORY_OWNER", ""),
         ("GITHUB_REPOSITORY", "someone/else"),
         ("GITHUB_EVENT_NAME", "schedule"),
+        ("GITHUB_SERVER_URL", "https://example.invalid"),
+        ("GITHUB_API_URL", "https://example.invalid/api"),
+        ("GITHUB_GRAPHQL_URL", "https://example.invalid/graphql"),
+        (
+            "GITHUB_WORKFLOW_REF",
+            "belilovsky/qdev-runner-control-plane/.github/workflows/other.yml@refs/heads/main",
+        ),
+        ("GITHUB_JOB", "other"),
+        ("GITHUB_RUN_ID", "0"),
+        ("GITHUB_RUN_ATTEMPT", "0"),
     ],
 )
 def test_managed_rejects_unbound_context(tmp_path: Path, key: str, value: str) -> None:

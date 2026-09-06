@@ -783,7 +783,11 @@ class ManagedReleaseLedger:
         entry = self._by_entry_id.get(entry_id)
         if entry is None or entry.status not in ACTIVE_STATUSES:
             return False, "managed-production-candidate-not-active"
-        if entry.source_sha != exact_sha:
+        admitted_checkout = any(
+            binding["checkout_sha"] == exact_sha and binding["state"] in {"queued", "in_progress"}
+            for binding in entry.ci_runs
+        )
+        if not admitted_checkout:
             return False, "managed-production-candidate-tuple-not-admitted"
         return True, None
 
