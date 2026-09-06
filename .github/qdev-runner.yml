@@ -1,8 +1,8 @@
-schema_version: qdev-runner-v3
-execution_mode: controller-managed-self-hosted
-github_hosted_fallback: false
-# Every self-hosted workflow is admitted by the controller against the exact
-# repository, run, job, attempt, SHA, event, ref, profile and unique job label.
+schema_version: qdev-runner-v2
+execution_mode: github-hosted-primary
+self_hosted_recovery: true
+# Normal verification runs on the provider-hosted lane. The sole self-hosted
+# workflow is an owner-dispatched, exact-SHA controller recovery job.
 profiles:
   - qdev-ci
 trusted_events:
@@ -15,3 +15,5 @@ resources:
   disk_mb: 12288
 artifact_policy: qdev-artifact-v1
 release_runner: null
+recovery_workflows:
+  - runner-smoke.yml

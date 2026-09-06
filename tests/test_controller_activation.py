@@ -32,6 +32,7 @@ from qdev_runner.controller_activation import (
     fingerprint_release_tree,
     verify_controller_artifact_manifest,
 )
+from qdev_runner.operations import payload_digest, sign_payload
 
 PRIVATE_KEY = Ed25519PrivateKey.generate()
 PUBLIC_KEY = PRIVATE_KEY.public_key()
@@ -43,6 +44,7 @@ ARTIFACT_MANIFEST = "9" * 64
 ENTRYPOINT_RECONCILIATION = "a" * 64
 CANDIDATE_RELEASE_DIGEST = "b" * 64
 ROOT = Path(__file__).resolve().parents[1]
+RECEIPT_KEY = "controller-activation-test-receipt-key"
 
 _CLI_HARNESS = """
 import importlib.util
@@ -337,43 +339,134 @@ def test_valid_envelope_cli_recovers_every_durable_crash_state(tmp_path: Path) -
     assert "runtime does not match committed" in committed_foreign_runtime.stderr
 
 
-def _artifact_bundle(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+def _recovery_claim_receipt(*, now: datetime) -> dict[str, object]:
+    job = {
+        "repository": CONTROLLER_REPOSITORY,
+        "run_id": 101,
+        "job_id": 202,
+        "attempt": 1,
+        "exact_sha": NEW.source_sha,
+        "profile": "qdev-ci",
+    }
+    scope = {
+        "schema": "claim-scope-v2",
+        "scope_id": "controller-recovery-scope",
+        "worker_name": "qdev-controller-recovery",
+        "tier": "recovery",
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "worker_certificate_sha256": "c" * 64,
+        "host": "recovery-build-host",
+        "runner": "qdev-job-101-1-smoke",
+        "correlation_id": "controller-recovery-correlation",
+        "fifo_exception": False,
+        "jobs": [job],
+        "fifo_skipped": [],
+    }
+    payload: dict[str, object] = {
+        "kind": "fifo-claim-scope-issued",
+        "operator_session": "verified",
+        "mtls_identity": "qdev-fleet-operations",
+        "idempotent": True,
+        "claim_scope": scope,
+        "immutable_tuple": {
+            **job,
+            "runner": "qdev-job-101-1-smoke",
+            "host": "recovery-build-host",
+        },
+        "fifo_skipped": [],
+        "worker": {},
+        "managed_registry_entry": None,
+        "admission_ledger": "admin-platform",
+        "admin_platform_ledger_entry": "controller",
+        "managed_release_ledger_entry": None,
+    }
+    digest = payload_digest(payload)
+    unsigned: dict[str, object] = {
+        "schema": "qdev-controller-receipt-v2",
+        "receipt_id": digest,
+        "payload": payload,
+        "digest": digest,
+        "enforcement": "enforced",
+    }
+    return {**unsigned, "signature": sign_payload(unsigned, RECEIPT_KEY)}
+
+
+def _artifact_bundle(
+    tmp_path: Path,
+    *,
+    workflow_identity: dict[str, object] | None = None,
+) -> tuple[Path, dict[str, object]]:
     archive = tmp_path / "controller-image.tar"
     archive.write_bytes(b"exact controller image archive")
     sbom = tmp_path / "controller.spdx.json"
     sbom.write_text(json.dumps({"spdxVersion": "SPDX-2.3", "name": "controller"}), encoding="utf-8")
-    archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    sbom_digest = hashlib.sha256(sbom.read_bytes()).hexdigest()
-    provenance = tmp_path / "provenance.json"
-    provenance.write_text(
+    scans = tmp_path / "controller-security-scans.json"
+    source_scan = tmp_path / "controller-source-trivy.json"
+    image_scan = tmp_path / "controller-image-trivy.json"
+    source_scan.write_text(json.dumps({"Results": []}), encoding="utf-8")
+    image_scan.write_text(json.dumps({"Results": []}), encoding="utf-8")
+    source_scan_digest = hashlib.sha256(source_scan.read_bytes()).hexdigest()
+    image_scan_digest = hashlib.sha256(image_scan.read_bytes()).hexdigest()
+    scans.write_text(
         json.dumps(
             {
-                "schema": ARTIFACT_PROVENANCE_SCHEMA,
-                "repository": CONTROLLER_REPOSITORY,
-                "source_sha": NEW.source_sha,
-                "image_digest": NEW.image_digest,
-                "policy_bundle_digest": NEW.policy_bundle_digest,
-                "entrypoint_reconciliation_digest": ENTRYPOINT_RECONCILIATION,
-                "image_unpacked_size": 123456789,
-                "image_archive_sha256": archive_digest,
-                "sbom_sha256": sbom_digest,
-                "workflow_identity": {
-                    "issuer": "https://token.actions.githubusercontent.com",
-                    "subject": (f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"),
-                    "workflow_ref": (
-                        f"{CONTROLLER_REPOSITORY}/.github/workflows/ci.yml@refs/heads/main"
-                    ),
-                    "event": "push",
-                    "ref": "refs/heads/main",
-                    "run_id": 101,
-                    "job_id": 202,
-                    "attempt": 1,
-                    "reconciled_at": "2026-09-05T01:00:00Z",
-                },
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+                "schema": "qdev-controller-security-scans-v1",
+                "status": "passed",
+                "source_high_critical": 0,
+                "image_high_critical": 0,
+                "source_report_sha256": source_scan_digest,
+                "image_report_sha256": image_scan_digest,
+            }
         ),
+        encoding="utf-8",
+    )
+    archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    sbom_digest = hashlib.sha256(sbom.read_bytes()).hexdigest()
+    scans_digest = hashlib.sha256(scans.read_bytes()).hexdigest()
+    claim_receipt: Path | None = None
+    claim_receipt_digest: str | None = None
+    if workflow_identity is not None and workflow_identity.get("execution_lane") == "recovery":
+        reconciled_at = datetime.fromisoformat(
+            str(workflow_identity["reconciled_at"]).replace("Z", "+00:00")
+        )
+        claim_document = _recovery_claim_receipt(now=reconciled_at)
+        claim_receipt = tmp_path / "controller-claim-receipt.json"
+        claim_receipt.write_text(
+            json.dumps(claim_document, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        claim_receipt_digest = hashlib.sha256(claim_receipt.read_bytes()).hexdigest()
+    provenance = tmp_path / "provenance.json"
+    provenance_document: dict[str, object] = {
+        "schema": ARTIFACT_PROVENANCE_SCHEMA,
+        "repository": CONTROLLER_REPOSITORY,
+        "source_sha": NEW.source_sha,
+        "image_digest": NEW.image_digest,
+        "policy_bundle_digest": NEW.policy_bundle_digest,
+        "entrypoint_reconciliation_digest": ENTRYPOINT_RECONCILIATION,
+        "image_unpacked_size": 123456789,
+        "image_archive_sha256": archive_digest,
+        "sbom_sha256": sbom_digest,
+        "security_scans_sha256": scans_digest,
+        "source_scan_sha256": source_scan_digest,
+        "image_scan_sha256": image_scan_digest,
+        "workflow_identity": workflow_identity
+        or {
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subject": (f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"),
+            "workflow_ref": (f"{CONTROLLER_REPOSITORY}/.github/workflows/ci.yml@refs/heads/main"),
+            "event": "push",
+            "ref": "refs/heads/main",
+            "run_id": 101,
+            "job_id": 202,
+            "attempt": 1,
+            "reconciled_at": "2026-09-05T01:00:00Z",
+        },
+    }
+    if claim_receipt_digest is not None:
+        provenance_document["claim_receipt_sha256"] = claim_receipt_digest
+    provenance.write_text(
+        json.dumps(provenance_document, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
     )
 
@@ -391,8 +484,13 @@ def _artifact_bundle(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "image_unpacked_size": 123456789,
         "image_archive": descriptor(archive),
         "sbom": descriptor(sbom),
+        "security_scans": descriptor(scans),
+        "source_scan": descriptor(source_scan),
+        "image_scan": descriptor(image_scan),
         "provenance": descriptor(provenance),
     }
+    if claim_receipt is not None:
+        document["claim_receipt"] = descriptor(claim_receipt)
     manifest = tmp_path / "artifact-manifest.json"
     manifest.write_text(
         json.dumps(document, sort_keys=True, separators=(",", ":")), encoding="utf-8"
@@ -414,6 +512,10 @@ def test_artifact_manifest_binds_exact_archive_sbom_and_provenance(tmp_path: Pat
     assert verified.entrypoint_reconciliation_digest == ENTRYPOINT_RECONCILIATION
     assert verified.image_unpacked_size == 123456789
     assert verified.image_archive.name == "controller-image.tar"
+    assert (
+        verified.source_scan_digest
+        == hashlib.sha256((tmp_path / "controller-source-trivy.json").read_bytes()).hexdigest()
+    )
 
     (tmp_path / "controller-image.tar").write_bytes(b"forged archive")
     with pytest.raises(ControllerActivationError, match="bytes do not match"):
@@ -434,6 +536,137 @@ def test_artifact_manifest_rejects_wrong_identity_and_traversal(tmp_path: Path) 
     manifest.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ControllerActivationError, match="path"):
         verify_controller_artifact_manifest(manifest, require_root_owner=False)
+
+
+def test_artifact_manifest_rejects_raw_trivy_findings_despite_green_summary(
+    tmp_path: Path,
+) -> None:
+    manifest, document = _artifact_bundle(tmp_path)
+    source_scan = tmp_path / "controller-source-trivy.json"
+    source_scan.write_text(
+        json.dumps(
+            {
+                "Results": [
+                    {
+                        "Vulnerabilities": [{"Severity": "CRITICAL"}],
+                        "Secrets": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_descriptor = dict(document["source_scan"])  # type: ignore[arg-type]
+    source_descriptor["sha256"] = hashlib.sha256(source_scan.read_bytes()).hexdigest()
+    source_descriptor["size"] = source_scan.stat().st_size
+    document["source_scan"] = source_descriptor
+    scans = tmp_path / "controller-security-scans.json"
+    scans_document = json.loads(scans.read_text(encoding="utf-8"))
+    scans_document["source_report_sha256"] = source_descriptor["sha256"]
+    scans.write_text(json.dumps(scans_document), encoding="utf-8")
+    scans_descriptor = dict(document["security_scans"])  # type: ignore[arg-type]
+    scans_descriptor["sha256"] = hashlib.sha256(scans.read_bytes()).hexdigest()
+    scans_descriptor["size"] = scans.stat().st_size
+    document["security_scans"] = scans_descriptor
+    provenance = tmp_path / "provenance.json"
+    provenance_document = json.loads(provenance.read_text(encoding="utf-8"))
+    provenance_document["source_scan_sha256"] = source_descriptor["sha256"]
+    provenance_document["security_scans_sha256"] = scans_descriptor["sha256"]
+    provenance.write_text(json.dumps(provenance_document), encoding="utf-8")
+    provenance_descriptor = dict(document["provenance"])  # type: ignore[arg-type]
+    provenance_descriptor["sha256"] = hashlib.sha256(provenance.read_bytes()).hexdigest()
+    provenance_descriptor["size"] = provenance.stat().st_size
+    document["provenance"] = provenance_descriptor
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ControllerActivationError, match="security scans did not pass"):
+        verify_controller_artifact_manifest(manifest, require_root_owner=False)
+
+
+def _recovery_workflow_identity(*, now: datetime) -> dict[str, object]:
+    ref = "refs/heads/codex/controller-recovery"
+    receipt = _recovery_claim_receipt(now=now)
+    return {
+        "issuer": "https://api.github.com",
+        "subject": f"repo:{CONTROLLER_REPOSITORY}:ref:{ref}",
+        "workflow_ref": f"{CONTROLLER_REPOSITORY}/.github/workflows/runner-smoke.yml@{ref}",
+        "event": "workflow_dispatch",
+        "ref": ref,
+        "run_id": 101,
+        "job_id": 202,
+        "attempt": 1,
+        "reconciled_at": now.isoformat().replace("+00:00", "Z"),
+        "head_sha": NEW.source_sha,
+        "job_name": "runner-smoke",
+        "labels": [
+            "self-hosted",
+            "Linux",
+            "X64",
+            "qdev-ci",
+            "qdev-job-101-1-smoke",
+        ],
+        "owner_recovery": True,
+        "execution_lane": "recovery",
+        "expected_sha": NEW.source_sha,
+        "admission_nonce": f"controller-claim:{receipt['receipt_id']}",
+        "idempotency_key": "recovery-artifact-0001",
+        "issued_at": (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + timedelta(minutes=14)).isoformat().replace("+00:00", "Z"),
+        "conclusion": "success",
+    }
+
+
+def test_artifact_manifest_accepts_fresh_exact_recovery_identity(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    manifest, _ = _artifact_bundle(
+        tmp_path,
+        workflow_identity=_recovery_workflow_identity(now=now),
+    )
+    verified = verify_controller_artifact_manifest(
+        manifest,
+        require_root_owner=False,
+        now=now,
+    )
+    assert verified.source_sha == NEW.source_sha
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("expected_sha", "0" * 40),
+        ("job_id", 0),
+        ("labels", ["self-hosted", "Linux", "X64", "qdev-ci"]),
+        ("admission_nonce", "bad"),
+        ("conclusion", "failure"),
+    ],
+)
+def test_artifact_manifest_rejects_forged_recovery_identity(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    identity = _recovery_workflow_identity(now=now)
+    identity[field] = value
+    manifest, _ = _artifact_bundle(tmp_path, workflow_identity=identity)
+    with pytest.raises(ControllerActivationError, match="workflow identity"):
+        verify_controller_artifact_manifest(
+            manifest,
+            require_root_owner=False,
+            now=now,
+        )
+
+
+def test_artifact_manifest_rejects_expired_recovery_identity(tmp_path: Path) -> None:
+    issued = datetime(2026, 9, 6, 11, tzinfo=UTC)
+    identity = _recovery_workflow_identity(now=issued)
+    manifest, _ = _artifact_bundle(tmp_path, workflow_identity=identity)
+    with pytest.raises(ControllerActivationError, match="recovery workflow identity"):
+        verify_controller_artifact_manifest(
+            manifest,
+            require_root_owner=False,
+            now=issued + timedelta(minutes=31),
+        )
 
 
 def test_config_fingerprint_binds_logical_names_and_bytes(tmp_path: Path) -> None:

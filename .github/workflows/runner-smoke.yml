@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   runner-smoke:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.execution_lane == 'recovery' && inputs.owner_recovery && github.repository_owner != '' && github.actor == github.repository_owner
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && inputs.execution_lane == 'recovery' && inputs.owner_recovery && github.repository_owner != '' && github.actor == github.repository_owner
     name: runner-smoke
     runs-on:
       - self-hosted
@@ -39,12 +39,16 @@ jobs:
     steps:
       - name: Verify ephemeral runner contract
         shell: bash
+        env:
+          QDEV_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           test "${RUNNER_ENVIRONMENT}" = "self-hosted"
           test -n "${RUNNER_NAME}"
           test -n "${GITHUB_SHA}"
-          test "${GITHUB_REF}" = "refs/heads/main"
+          [[ "${GITHUB_REF}" == refs/heads/* && "${GITHUB_REF}" != refs/heads/ ]]
+          [[ "${QDEV_EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_SHA}" = "${QDEV_EXPECTED_SHA}"
           test ! -S /var/run/docker.sock
           printf 'runner_smoke_ok repo=%s sha=%s runner=%s\n' \
             "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RUNNER_NAME}"

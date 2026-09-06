@@ -45,6 +45,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _TRANSACTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{86}$")
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 
 _PROCESS_LOCKS_GUARD = threading.Lock()
 _PROCESS_LOCKS: dict[str, threading.RLock] = {}
@@ -79,6 +80,11 @@ class VerifiedControllerArtifact:
     image_archive_digest: str
     image_unpacked_size: int
     sbom_digest: str
+    source_scan_digest: str
+    image_scan_digest: str
+    claim_receipt: Path | None
+    claim_receipt_digest: str | None
+    workflow_identity: dict[str, object]
     provenance_digest: str
 
 
@@ -1959,11 +1965,34 @@ def _artifact_member(
     return path, raw, observed_digest
 
 
+def _trivy_actionable_findings(report: object) -> int:
+    """Count high/critical vulnerabilities and every detected secret."""
+
+    if not isinstance(report, dict) or not isinstance(report.get("Results"), list):
+        raise ControllerActivationError("controller artifact Trivy report is invalid")
+    total = 0
+    for result in report["Results"]:
+        if not isinstance(result, dict):
+            raise ControllerActivationError("controller artifact Trivy result is invalid")
+        vulnerabilities = result.get("Vulnerabilities") or []
+        secrets = result.get("Secrets") or []
+        if not isinstance(vulnerabilities, list) or not isinstance(secrets, list):
+            raise ControllerActivationError("controller artifact Trivy findings are invalid")
+        total += sum(
+            1
+            for finding in vulnerabilities
+            if isinstance(finding, dict) and finding.get("Severity") in {"HIGH", "CRITICAL"}
+        )
+        total += len(secrets)
+    return total
+
+
 def verify_controller_artifact_manifest(
     path: Path,
     *,
     expected_manifest_digest: str | None = None,
     require_root_owner: bool = True,
+    now: datetime | None = None,
 ) -> VerifiedControllerArtifact:
     """Verify an import-only image archive, SPDX SBOM and provenance receipt.
 
@@ -1999,9 +2028,15 @@ def verify_controller_artifact_manifest(
         "image_unpacked_size",
         "image_archive",
         "sbom",
+        "security_scans",
+        "source_scan",
+        "image_scan",
         "provenance",
     }
-    if not isinstance(document, dict) or set(document) != required:
+    if not isinstance(document, dict) or set(document) not in {
+        frozenset(required),
+        frozenset(required | {"claim_receipt"}),
+    }:
         raise ControllerActivationError("controller artifact manifest shape is invalid")
     if (
         document["schema"] != ARTIFACT_MANIFEST_SCHEMA
@@ -2037,6 +2072,34 @@ def verify_controller_artifact_manifest(
         field="SBOM",
         require_root_owner=require_root_owner,
     )
+    _, security_scans_raw, security_scans_digest = _artifact_member(
+        path.parent,
+        document["security_scans"],
+        field="security scans",
+        require_root_owner=require_root_owner,
+    )
+    _, source_scan_raw, source_scan_digest = _artifact_member(
+        path.parent,
+        document["source_scan"],
+        field="source Trivy scan",
+        require_root_owner=require_root_owner,
+    )
+    _, image_scan_raw, image_scan_digest = _artifact_member(
+        path.parent,
+        document["image_scan"],
+        field="image Trivy scan",
+        require_root_owner=require_root_owner,
+    )
+    claim_receipt_path: Path | None = None
+    claim_receipt_raw: bytes | None = None
+    claim_receipt_digest: str | None = None
+    if "claim_receipt" in document:
+        claim_receipt_path, claim_receipt_raw, claim_receipt_digest = _artifact_member(
+            path.parent,
+            document["claim_receipt"],
+            field="controller claim receipt",
+            require_root_owner=require_root_owner,
+        )
     _, provenance_raw, provenance_digest = _artifact_member(
         path.parent,
         document["provenance"],
@@ -2046,11 +2109,26 @@ def verify_controller_artifact_manifest(
 
     try:
         sbom = json.loads(sbom_raw.decode("utf-8"))
+        security_scans = json.loads(security_scans_raw.decode("utf-8"))
+        source_scan = json.loads(source_scan_raw.decode("utf-8"))
+        image_scan = json.loads(image_scan_raw.decode("utf-8"))
         provenance = json.loads(provenance_raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ControllerActivationError("controller artifact evidence is invalid") from error
     if not isinstance(sbom, dict) or sbom.get("spdxVersion") != "SPDX-2.3":
         raise ControllerActivationError("controller artifact SBOM is not SPDX 2.3")
+    if (
+        not isinstance(security_scans, dict)
+        or security_scans.get("schema") != "qdev-controller-security-scans-v1"
+        or security_scans.get("status") != "passed"
+        or security_scans.get("source_high_critical") != 0
+        or security_scans.get("image_high_critical") != 0
+        or security_scans.get("source_report_sha256") != source_scan_digest
+        or security_scans.get("image_report_sha256") != image_scan_digest
+        or _trivy_actionable_findings(source_scan) != 0
+        or _trivy_actionable_findings(image_scan) != 0
+    ):
+        raise ControllerActivationError("controller artifact security scans did not pass")
     provenance_fields = {
         "schema",
         "repository",
@@ -2061,12 +2139,18 @@ def verify_controller_artifact_manifest(
         "image_unpacked_size",
         "image_archive_sha256",
         "sbom_sha256",
+        "security_scans_sha256",
+        "source_scan_sha256",
+        "image_scan_sha256",
         "workflow_identity",
     }
-    if not isinstance(provenance, dict) or set(provenance) != provenance_fields:
+    if not isinstance(provenance, dict) or set(provenance) not in {
+        frozenset(provenance_fields),
+        frozenset(provenance_fields | {"claim_receipt_sha256"}),
+    }:
         raise ControllerActivationError("controller artifact provenance shape is invalid")
     workflow_identity = provenance.get("workflow_identity")
-    identity_fields = {
+    normal_identity_fields = {
         "issuer",
         "subject",
         "workflow_ref",
@@ -2077,16 +2161,26 @@ def verify_controller_artifact_manifest(
         "attempt",
         "reconciled_at",
     }
-    if not isinstance(workflow_identity, dict) or set(workflow_identity) != identity_fields:
+    recovery_identity_fields = normal_identity_fields | {
+        "head_sha",
+        "job_name",
+        "labels",
+        "owner_recovery",
+        "execution_lane",
+        "expected_sha",
+        "admission_nonce",
+        "idempotency_key",
+        "issued_at",
+        "expires_at",
+        "conclusion",
+    }
+    if not isinstance(workflow_identity, dict) or set(workflow_identity) not in {
+        frozenset(normal_identity_fields),
+        frozenset(recovery_identity_fields),
+    }:
         raise ControllerActivationError("controller artifact workflow identity is invalid")
-    if (
-        workflow_identity.get("issuer") != "https://token.actions.githubusercontent.com"
-        or workflow_identity.get("event") != "push"
-        or workflow_identity.get("ref") != "refs/heads/main"
-        or not isinstance(workflow_identity.get("subject"), str)
-        or not workflow_identity["subject"].startswith(
-            f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"
-        )
+    common_identity_invalid = (
+        not isinstance(workflow_identity.get("subject"), str)
         or not isinstance(workflow_identity.get("workflow_ref"), str)
         or not workflow_identity["workflow_ref"].startswith(
             f"{CONTROLLER_REPOSITORY}/.github/workflows/"
@@ -2098,10 +2192,136 @@ def verify_controller_artifact_manifest(
             or workflow_identity[field] < 1
             for field in ("run_id", "job_id", "attempt")
         )
-    ):
+    )
+    if common_identity_invalid:
         raise ControllerActivationError("controller artifact workflow identity is invalid")
-    _parse_time(workflow_identity["reconciled_at"], "workflow reconciled_at")
-    if provenance != {
+    reconciled_at = _parse_time(workflow_identity["reconciled_at"], "workflow reconciled_at")
+    if set(workflow_identity) == normal_identity_fields:
+        if claim_receipt_raw is not None or "claim_receipt_sha256" in provenance:
+            raise ControllerActivationError(
+                "normal controller artifact must not contain a recovery claim receipt"
+            )
+        if (
+            workflow_identity.get("issuer") != "https://token.actions.githubusercontent.com"
+            or workflow_identity.get("event") != "push"
+            or workflow_identity.get("ref") != "refs/heads/main"
+            or not workflow_identity["subject"].startswith(
+                f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"
+            )
+        ):
+            raise ControllerActivationError("controller artifact workflow identity is invalid")
+    else:
+        if claim_receipt_raw is None or claim_receipt_digest is None:
+            raise ControllerActivationError(
+                "controller recovery artifact claim receipt is unavailable"
+            )
+        try:
+            claim_receipt = json.loads(claim_receipt_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ControllerActivationError(
+                "controller recovery artifact claim receipt is invalid"
+            ) from error
+        if not isinstance(claim_receipt, dict):
+            raise ControllerActivationError("controller recovery artifact claim receipt is invalid")
+        claim_payload = claim_receipt.get("payload")
+        claim_receipt_id = claim_receipt.get("receipt_id")
+        claim_tuple = (
+            claim_payload.get("immutable_tuple") if isinstance(claim_payload, dict) else None
+        )
+        claim_scope = claim_payload.get("claim_scope") if isinstance(claim_payload, dict) else None
+        claim_jobs = claim_scope.get("jobs") if isinstance(claim_scope, dict) else None
+        claim_job = claim_jobs[0] if isinstance(claim_jobs, list) and len(claim_jobs) == 1 else None
+        claim_expires_at = _parse_time(
+            claim_scope.get("expires_at") if isinstance(claim_scope, dict) else None,
+            "recovery claim scope expires_at",
+        )
+        canonical_claim_digest = (
+            hashlib.sha256(_canonical(claim_payload)).hexdigest()
+            if isinstance(claim_payload, dict)
+            else ""
+        )
+        issued_at = _parse_time(workflow_identity.get("issued_at"), "recovery issued_at")
+        expires_at = _parse_time(workflow_identity.get("expires_at"), "recovery expires_at")
+        observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+        labels = workflow_identity.get("labels")
+        run_id = workflow_identity.get("run_id")
+        attempt = workflow_identity.get("attempt")
+        expected_labels = {
+            "self-hosted",
+            "Linux",
+            "X64",
+            "qdev-ci",
+            f"qdev-job-{run_id}-{attempt}-smoke",
+        }
+        ref = workflow_identity.get("ref")
+        if (
+            set(claim_receipt)
+            != {"schema", "receipt_id", "payload", "digest", "enforcement", "signature"}
+            or claim_receipt.get("schema") != "qdev-controller-receipt-v2"
+            or claim_receipt.get("enforcement") != "enforced"
+            or not isinstance(claim_receipt_id, str)
+            or _DIGEST.fullmatch(claim_receipt_id) is None
+            or claim_receipt.get("digest") != claim_receipt_id
+            or canonical_claim_digest != claim_receipt_id
+            or not isinstance(claim_receipt.get("signature"), str)
+            or not isinstance(claim_payload, dict)
+            or claim_payload.get("kind") != "fifo-claim-scope-issued"
+            or claim_payload.get("operator_session") != "verified"
+            or claim_payload.get("admission_ledger") != "admin-platform"
+            or claim_payload.get("admin_platform_ledger_entry") != "controller"
+            or claim_payload.get("managed_release_ledger_entry") is not None
+            or claim_payload.get("managed_registry_entry") is not None
+            or not isinstance(claim_tuple, dict)
+            or claim_tuple.get("repository") != CONTROLLER_REPOSITORY
+            or claim_tuple.get("run_id") != workflow_identity.get("run_id")
+            or claim_tuple.get("job_id") != workflow_identity.get("job_id")
+            or claim_tuple.get("attempt") != workflow_identity.get("attempt")
+            or claim_tuple.get("exact_sha") != source_sha
+            or claim_tuple.get("profile") != "qdev-ci"
+            or not isinstance(claim_scope, dict)
+            or claim_scope.get("schema") != "claim-scope-v2"
+            or claim_scope.get("runner") != claim_tuple.get("runner")
+            or claim_scope.get("host") != claim_tuple.get("host")
+            or not isinstance(claim_job, dict)
+            or claim_job.get("repository") != CONTROLLER_REPOSITORY
+            or claim_job.get("run_id") != workflow_identity.get("run_id")
+            or claim_job.get("job_id") != workflow_identity.get("job_id")
+            or claim_job.get("attempt") != workflow_identity.get("attempt")
+            or claim_job.get("exact_sha") != source_sha
+            or claim_job.get("profile") != "qdev-ci"
+            or workflow_identity.get("admission_nonce") != f"controller-claim:{claim_receipt_id}"
+            or provenance.get("claim_receipt_sha256") != claim_receipt_digest
+            or claim_expires_at <= observed_at
+            or workflow_identity.get("issuer") != "https://api.github.com"
+            or workflow_identity.get("event") != "workflow_dispatch"
+            or not isinstance(ref, str)
+            or not ref.startswith("refs/heads/")
+            or workflow_identity.get("head_sha") != source_sha
+            or workflow_identity.get("expected_sha") != source_sha
+            or workflow_identity.get("job_name") != "runner-smoke"
+            or workflow_identity.get("conclusion") != "success"
+            or workflow_identity.get("owner_recovery") is not True
+            or workflow_identity.get("execution_lane") != "recovery"
+            or workflow_identity["subject"] != f"repo:{CONTROLLER_REPOSITORY}:ref:{ref}"
+            or workflow_identity["workflow_ref"]
+            != f"{CONTROLLER_REPOSITORY}/.github/workflows/runner-smoke.yml@{ref}"
+            or not isinstance(labels, list)
+            or not all(isinstance(label, str) for label in labels)
+            or len(labels) != len(set(labels))
+            or set(labels) != expected_labels
+            or not isinstance(workflow_identity.get("admission_nonce"), str)
+            or _IDENTIFIER.fullmatch(workflow_identity["admission_nonce"]) is None
+            or not isinstance(workflow_identity.get("idempotency_key"), str)
+            or _IDENTIFIER.fullmatch(workflow_identity["idempotency_key"]) is None
+            or expires_at <= issued_at
+            or expires_at - issued_at > MAX_ENVELOPE_TTL
+            or reconciled_at < issued_at
+            or reconciled_at > expires_at
+            or issued_at > observed_at + MAX_CLOCK_SKEW
+            or expires_at <= observed_at
+        ):
+            raise ControllerActivationError("controller recovery workflow identity is invalid")
+    expected_provenance: dict[str, object] = {
         "schema": ARTIFACT_PROVENANCE_SCHEMA,
         "repository": CONTROLLER_REPOSITORY,
         "source_sha": source_sha,
@@ -2111,8 +2331,14 @@ def verify_controller_artifact_manifest(
         "image_unpacked_size": image_unpacked_size,
         "image_archive_sha256": image_archive_digest,
         "sbom_sha256": sbom_digest,
+        "security_scans_sha256": security_scans_digest,
+        "source_scan_sha256": source_scan_digest,
+        "image_scan_sha256": image_scan_digest,
         "workflow_identity": workflow_identity,
-    }:
+    }
+    if claim_receipt_digest is not None:
+        expected_provenance["claim_receipt_sha256"] = claim_receipt_digest
+    if provenance != expected_provenance:
         raise ControllerActivationError("controller artifact provenance binding is invalid")
     return VerifiedControllerArtifact(
         manifest_digest=manifest_digest,
@@ -2124,5 +2350,10 @@ def verify_controller_artifact_manifest(
         image_archive_digest=image_archive_digest,
         image_unpacked_size=image_unpacked_size,
         sbom_digest=sbom_digest,
+        source_scan_digest=source_scan_digest,
+        image_scan_digest=image_scan_digest,
+        claim_receipt=claim_receipt_path,
+        claim_receipt_digest=claim_receipt_digest,
+        workflow_identity=workflow_identity,
         provenance_digest=provenance_digest,
     )

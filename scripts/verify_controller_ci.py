@@ -28,7 +28,7 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
         raise ValueError("Actions must identify its real execution lane")
     if environment.get("GITHUB_SHA") != sha:
         raise ValueError("provider SHA does not match checkout")
-    runner_environment = "github-hosted" if lane == "hosted" else "self-hosted"
+    runner_environment = "github-hosted" if lane == "github-hosted" else "self-hosted"
     if environment.get("RUNNER_ENVIRONMENT") != runner_environment:
         raise ValueError("runner environment does not match requested execution lane")
     if lane == "managed":
@@ -47,10 +47,39 @@ def validate_context(lane: str, environment: dict[str, str], sha: str) -> None:
         owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
         if not owner or environment.get("GITHUB_ACTOR") != owner:
             raise ValueError("recovery requires the nonempty repository owner actor")
+        repository = environment.get("GITHUB_REPOSITORY")
+        if repository != f"{owner}/qdev-runner-control-plane":
+            raise ValueError("recovery is bound to the controller repository")
         if environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             raise ValueError("recovery requires manual workflow_dispatch")
+        ref = environment.get("GITHUB_REF", "")
+        if not ref.startswith("refs/heads/") or ref == "refs/heads/":
+            raise ValueError("recovery requires a selected repository branch")
+        workflow_ref = environment.get("GITHUB_WORKFLOW_REF", "")
+        expected_workflow_ref = f"{repository}/.github/workflows/runner-smoke.yml@{ref}"
+        if workflow_ref != expected_workflow_ref:
+            raise ValueError("recovery is bound to the exact workflow and branch")
+        if environment.get("GITHUB_JOB") != "runner-smoke":
+            raise ValueError("recovery is bound to the runner-smoke job")
+        for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            value = environment.get(name, "")
+            if not value.isdigit() or int(value) < 1:
+                raise ValueError("recovery requires exact provider run identity")
         if environment.get("QDEV_OWNER_RECOVERY") != "true" or not expected:
             raise ValueError("explicit owner recovery confirmation and exact SHA are required")
+    if lane == "github-hosted":
+        owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
+        if (
+            not owner
+            or environment.get("GITHUB_REPOSITORY") != f"{owner}/qdev-runner-control-plane"
+            or environment.get("GITHUB_EVENT_NAME")
+            not in {"push", "workflow_dispatch", "pull_request"}
+            or not environment.get("GITHUB_RUN_ID", "").isdigit()
+            or int(environment.get("GITHUB_RUN_ID", "0")) < 1
+            or not environment.get("GITHUB_RUN_ATTEMPT", "").isdigit()
+            or int(environment.get("GITHUB_RUN_ATTEMPT", "0")) < 1
+        ):
+            raise ValueError("hosted CI requires exact provider repository and run identity")
 
 
 def commands(python: str) -> list[list[str]]:
@@ -68,7 +97,9 @@ def commands(python: str) -> list[list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--lane", choices=("local", "hosted", "managed", "controller-recovery"), required=True
+        "--lane",
+        choices=("local", "github-hosted", "managed", "controller-recovery"),
+        required=True,
     )
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 12):
