@@ -758,8 +758,8 @@ def create_app(
 
         The same fail-closed classification is used both when the operator
         signs an exact scope and when the worker consumes it. Malformed managed
-        rows remain in FIFO, while an inactive admin-platform or stale managed
-        release candidate cannot indefinitely hold an unrelated profile queue.
+        rows remain in FIFO, while an inactive managed candidate cannot
+        indefinitely hold an unrelated profile queue.
         """
 
         profile_queue: list[dict[str, Any]] = []
@@ -824,7 +824,13 @@ def create_app(
                 and queued_managed.admission_ledger == "managed-production"
             ):
                 if queued_managed_release_ledger is None:
-                    queued_managed_release_ledger = managed_release_ledger()
+                    try:
+                        queued_managed_release_ledger = managed_release_ledger()
+                    except ManagedReleaseLedgerError as exc:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"managed release ledger unavailable: {exc}",
+                        ) from exc
                 admitted, reason = queued_managed_release_ledger.classify_admission(
                     queued_managed.entry_id, str(queued["head_sha"])
                 )
@@ -1941,7 +1947,13 @@ def create_app(
                     and queued_managed.admission_ledger == "managed-production"
                 ):
                     if queued_managed_release_ledger is None:
-                        queued_managed_release_ledger = managed_release_ledger()
+                        try:
+                            queued_managed_release_ledger = managed_release_ledger()
+                        except ManagedReleaseLedgerError as exc:
+                            raise HTTPException(
+                                status_code=503,
+                                detail=f"managed release ledger unavailable: {exc}",
+                            ) from exc
                     admitted, reason = queued_managed_release_ledger.classify_admission(
                         queued_managed.entry_id, str(queued["head_sha"])
                     )
@@ -2329,7 +2341,13 @@ def create_app(
                 and queued_managed.admission_ledger == "managed-production"
             ):
                 if queued_managed_release_ledger is None:
-                    queued_managed_release_ledger = managed_release_ledger()
+                    try:
+                        queued_managed_release_ledger = managed_release_ledger()
+                    except ManagedReleaseLedgerError as exc:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"managed release ledger unavailable: {exc}",
+                        ) from exc
                 admitted, reason = queued_managed_release_ledger.classify_admission(
                     queued_managed.entry_id, str(queued["head_sha"])
                 )
@@ -2470,7 +2488,14 @@ def create_app(
             x_qdev_operator_token, x_qdev_operator_mtls_identity
         )
         pending_jobs = store.pending_jobs()
-        profile_heads, unclassified = durable_profile_heads(pending_jobs, policy)
+        profile_heads: list[dict[str, Any]] = []
+        for profile_name in policy.profiles:
+            profile_queue, _ = admissible_profile_queue(profile_name)
+            candidates, _ = durable_profile_heads(profile_queue, policy)
+            profile_heads.extend(
+                item for item in candidates if item["profile"] == profile_name
+            )
+        _, unclassified = durable_profile_heads(pending_jobs, policy)
         return operation_store.receipt(
             {
                 "kind": "durable-queue-audit",

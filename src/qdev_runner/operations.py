@@ -43,8 +43,8 @@ _FIFO_SKIP_REASONS = frozenset(
         "active-admin-platform-controller-priority",
         "admin-platform-candidate-not-active",
         "admin-platform-candidate-tuple-not-admitted",
-        "managed-release-candidate-not-active",
-        "managed-release-candidate-tuple-not-admitted",
+        "managed-production-candidate-not-active",
+        "managed-production-candidate-tuple-not-admitted",
     }
 )
 
