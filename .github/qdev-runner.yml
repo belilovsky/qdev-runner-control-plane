@@ -1,16 +1,8 @@
-schema_version: qdev-runner-v2
-execution_mode: github-hosted-primary
-self_hosted_recovery: true
-# Self-hosted profiles are permitted only in these manual recovery workflows.
-recovery_workflows:
-  - runner-smoke.yml
-  - fleet-bootstrap.yml
-# Existing QDev capacity is the bounded primary lane for repository verification
-# while provider-hosted jobs are unavailable. Each workflow remains fork-guarded
-# and binds to a unique controller-issued runner label.
-primary_self_hosted_workflows:
-  - ci.yml
-  - qdev-runner-contract.yml
+schema_version: qdev-runner-v3
+execution_mode: controller-managed-self-hosted
+github_hosted_fallback: false
+# Every self-hosted workflow is admitted by the controller against the exact
+# repository, run, job, attempt, SHA, event, ref, profile and unique job label.
 profiles:
   - qdev-ci
 trusted_events:

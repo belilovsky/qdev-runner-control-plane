@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: controller-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
 jobs:
   runner-smoke:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.execution_lane == 'recovery' && inputs.owner_recovery && github.repository_owner != '' && github.actor == github.repository_owner
