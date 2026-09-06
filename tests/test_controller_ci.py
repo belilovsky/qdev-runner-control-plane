@@ -25,7 +25,7 @@ def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, 
         "sender": {"login": "belilovsky"},
         "ref": "refs/heads/main",
     }
-    environment = {
+    environment: dict[str, str] = {
         "GITHUB_ACTIONS": "true",
         "GITHUB_SHA": SHA,
         "QDEV_EXPECTED_SHA": SHA,

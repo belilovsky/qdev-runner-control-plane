@@ -174,7 +174,7 @@ def validate_context(
     if environment.get("GITHUB_ACTIONS") != "true":
         if lane != "local":
             raise ValueError("provider CI evidence requires a real Actions execution")
-        return
+        return None
     if lane == "local":
         raise ValueError("Actions must identify its real execution lane")
     binding = provider_binding(environment, sha)
