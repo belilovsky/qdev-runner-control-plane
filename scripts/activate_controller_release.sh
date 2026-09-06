@@ -903,7 +903,7 @@ install_qazcoop_release_guard() {
     printf 'QazCoop remote staging path is invalid\n' >&2
     return 1
   fi
-  local remote_cleanup=true output=""
+  local remote_cleanup=true output="" verify_output="" guard_verified=false
   if scp -q -o BatchMode=yes -o StrictHostKeyChecking=yes -r -- \
       "$bundle" "$release/scripts/install_qazcoop_release_guard.py" \
       "$qazcoop_guard_host:$remote_stage/"; then
@@ -913,11 +913,27 @@ install_qazcoop_release_guard() {
         --candidate-repository "$qazcoop_repository" \
         --controller-bundle "$remote_stage/bundle"
     )" || output=""
+    if [[ "$output" == "qazcoop_release_guard_installed=$release_revision" ]]; then
+      guard_verified=true
+    else
+      # The remote mutation can finish even when the SSH transport loses its
+      # exit status. Reconcile that ambiguous outcome against the exact signed
+      # bundle instead of rolling back an already installed fail-closed guard.
+      verify_output="$(
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$qazcoop_guard_host" \
+          python3 "$remote_stage/install_qazcoop_release_guard.py" \
+          --candidate-repository "$qazcoop_repository" \
+          --controller-bundle "$remote_stage/bundle" \
+          --verify-only
+      )" || verify_output=""
+      if [[ "$verify_output" == "qazcoop_release_guard_verified=$release_revision" ]]; then
+        guard_verified=true
+      fi
+    fi
   fi
   ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$qazcoop_guard_host" \
     rm -rf -- "$remote_stage" >/dev/null 2>&1 || remote_cleanup=false
-  if [[ "$remote_cleanup" != true ||
-        "$output" != "qazcoop_release_guard_installed=$release_revision" ]]; then
+  if [[ "$remote_cleanup" != true || "$guard_verified" != true ]]; then
     printf 'QazCoop product release guard activation failed\n' >&2
     return 1
   fi

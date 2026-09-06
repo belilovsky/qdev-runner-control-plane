@@ -433,9 +433,7 @@ def _run_as_identity(command: list[str], uid: int, gid: int) -> None:
     subprocess.run([*prefix, *command], check=True, capture_output=True, text=True)
 
 
-def install_bundle(candidate: Path, bundle: Path) -> str:
-    if os.geteuid() != 0:
-        raise PermissionError("run as root")
+def _validate_candidate_repository(candidate: Path) -> tuple[Path, int, int]:
     candidate = candidate.resolve(strict=True)
     if candidate != EXPECTED_REPOSITORY or not (candidate / "HEAD").is_file():
         raise ValueError("candidate repository is not the QazCoop production bare repository")
@@ -447,11 +445,85 @@ def install_bundle(candidate: Path, bundle: Path) -> str:
         text=True,
     ).stdout.strip() != "true":
         raise ValueError("candidate repository must be bare")
+    status = candidate.stat()
+    return candidate, status.st_uid, status.st_gid
+
+
+def _validate_exact_deployed_file(
+    path: Path, source: Path, *, mode: int, uid: int, gid: int
+) -> None:
+    status = path.lstat()
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or stat.S_ISLNK(status.st_mode)
+        or status.st_uid != uid
+        or status.st_gid != gid
+        or status.st_nlink != 1
+        or stat.S_IMODE(status.st_mode) != mode
+        or digest(path) != digest(source)
+    ):
+        raise ValueError(f"deployed guard file does not match its bundle: {path}")
+
+
+def verify_bundle_installation(candidate: Path, bundle: Path) -> str:
+    """Reconcile an ambiguous remote install against the exact signed bundle."""
+    if os.geteuid() != 0:
+        raise PermissionError("run as root")
+    candidate, receive_uid, receive_gid = _validate_candidate_repository(candidate)
+    manifest = validate_bundle(bundle)
+    revision = str(manifest["controller_revision"])
+    version_root = Path("/usr/local/lib/qazcoop-release-guard") / revision
+    trust_root = Path("/etc/qazcoop/release-controller")
+    launcher = Path("/usr/local/sbin/qdev-controller-verify-admission")
+    hook = candidate / "hooks/update"
+
+    _validate_installed_version(version_root, manifest, gid=receive_gid)
+    trust_status = trust_root.lstat()
+    if (
+        not stat.S_ISDIR(trust_status.st_mode)
+        or stat.S_ISLNK(trust_status.st_mode)
+        or trust_status.st_uid != 0
+        or trust_status.st_gid != receive_gid
+        or stat.S_IMODE(trust_status.st_mode) != 0o750
+    ):
+        raise ValueError("deployed trust root metadata is invalid")
+    trust_sources = {
+        "bundle.json": bundle / "bundle.json",
+        "public.pem": bundle / EXPECTED_FILES["public.pem"],
+        "admission.schema.json": bundle / EXPECTED_FILES["admission.schema.json"],
+        "key-canary.json": bundle / EXPECTED_FILES["key-canary.json"],
+    }
+    if {path.name for path in trust_root.iterdir()} != set(trust_sources):
+        raise ValueError("deployed trust root inventory is not exact")
+    for name, source in trust_sources.items():
+        _validate_exact_deployed_file(
+            trust_root / name, source, mode=0o640, uid=0, gid=receive_gid
+        )
+
+    _managed_file(hook, HOOK_MARKER)
+    _managed_file(launcher, LAUNCHER_MARKER)
+    for destination, source_name in (
+        (hook, "qazcoop-update"),
+        (launcher, "qdev-controller-verify-admission"),
+    ):
+        _validate_exact_deployed_file(
+            destination,
+            bundle / EXPECTED_FILES[source_name],
+            mode=0o750,
+            uid=0,
+            gid=receive_gid,
+        )
+    _run_as_identity([str(launcher), "--help"], receive_uid, receive_gid)
+    return revision
+
+
+def install_bundle(candidate: Path, bundle: Path) -> str:
+    if os.geteuid() != 0:
+        raise PermissionError("run as root")
+    candidate, receive_uid, receive_gid = _validate_candidate_repository(candidate)
 
     manifest = validate_bundle(bundle)
     revision = str(manifest["controller_revision"])
-    candidate_status = candidate.stat()
-    receive_uid, receive_gid = candidate_status.st_uid, candidate_status.st_gid
     version_root = Path("/usr/local/lib/qazcoop-release-guard") / revision
     trust_parent = Path("/etc/qazcoop")
     trust_root = trust_parent / "release-controller"
@@ -631,12 +703,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-repository", type=Path, required=True)
     parser.add_argument("--controller-bundle", type=Path, required=True)
+    parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
-    revision = install_bundle(
-        args.candidate_repository,
-        args.controller_bundle.resolve(strict=True),
-    )
-    print(f"qazcoop_release_guard_installed={revision}")
+    operation = verify_bundle_installation if args.verify_only else install_bundle
+    revision = operation(args.candidate_repository, args.controller_bundle.resolve(strict=True))
+    outcome = "verified" if args.verify_only else "installed"
+    print(f"qazcoop_release_guard_{outcome}={revision}")
     return 0
 
 
