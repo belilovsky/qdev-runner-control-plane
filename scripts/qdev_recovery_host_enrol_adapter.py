@@ -98,7 +98,11 @@ def _active_release() -> tuple[Path, str, str]:
         status = json.loads(STATUS.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise EnrolError("active_controller_release_unavailable") from error
-    _root_regular(STATUS, private=True)
+    # The release-status projection is intentionally mounted read-only into the
+    # rootless brokers and is written by activation with mode 0644.  It carries
+    # only public runtime identity, so require root ownership and immutability
+    # by non-root users without incorrectly treating it as a secret file.
+    _root_regular(STATUS, private=False)
     if (
         not stat.S_ISLNK(link.st_mode)
         or link.st_uid != 0
