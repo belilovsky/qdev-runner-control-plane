@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -17,7 +20,21 @@ CI = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CI)
 SHA = "1" * 40
 MERGE_SHA = "2" * 40
-REPOSITORY = {"id": 42, "full_name": "belilovsky/qdev-runner-control-plane"}
+REPOSITORY_FULL_NAME = "belilovsky/qdev-runner-control-plane"
+REPOSITORY = {"id": 42, "full_name": REPOSITORY_FULL_NAME}
+
+
+def assert_exact_value_error(expected: str, action: object) -> None:
+    """Keep fail-closed rejection codes stable for operators and callers."""
+    assert callable(action)
+    with pytest.raises(ValueError, match=f"^{re.escape(expected)}$"):
+        action()
+
+
+def pull_request_payload(event: dict[str, object]) -> dict[str, object]:
+    payload = event["pull_request"]
+    assert isinstance(payload, dict)
+    return cast(dict[str, object], payload)
 
 
 def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, str]:
@@ -32,7 +49,7 @@ def context(tmp_path: Path, event_name: str = "workflow_dispatch") -> dict[str, 
         "QDEV_EXPECTED_SHA": SHA,
         "RUNNER_ENVIRONMENT": "self-hosted",
         "GITHUB_REPOSITORY_OWNER": "belilovsky",
-        "GITHUB_REPOSITORY": REPOSITORY["full_name"],
+        "GITHUB_REPOSITORY": REPOSITORY_FULL_NAME,
         "GITHUB_REPOSITORY_ID": "42",
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_ACTOR": "belilovsky",
@@ -402,6 +419,200 @@ def test_provider_event_size_limit_is_exact_and_not_truncated(tmp_path: Path) ->
         CI.validate_context("managed", environment, SHA)
 
 
+def test_provider_binding_rejection_codes_are_exact(tmp_path: Path) -> None:
+    """Each provider failure is an observable fail-closed contract, not just any error."""
+
+    def remove_pr_base(event: dict[str, object]) -> None:
+        pull_request_payload(event)["base"] = None
+
+    def corrupt_pr_base_sha(event: dict[str, object]) -> None:
+        base = pull_request_payload(event)["base"]
+        assert isinstance(base, dict)
+        base["sha"] = "not-a-sha"
+
+    def rejects(
+        message: str,
+        *,
+        event_name: str = "workflow_dispatch",
+        environment_update: dict[str, str] | None = None,
+        event_update: Callable[[dict[str, object]], None] | None = None,
+        raw_payload: str | None = None,
+    ) -> None:
+        environment = context(tmp_path, event_name)
+        event_path = Path(environment["GITHUB_EVENT_PATH"])
+        if environment_update:
+            environment.update(environment_update)
+        event = json.loads(event_path.read_text())
+        if event_update:
+            event_update(event)
+        event_path.write_text(raw_payload if raw_payload is not None else json.dumps(event))
+        assert_exact_value_error(message, lambda: CI.provider_binding(environment, SHA))
+
+    rejects("exact provider SHA is required", environment_update={"GITHUB_SHA": ""})
+    rejects(
+        "readable provider event is required",
+        environment_update={"GITHUB_EVENT_PATH": str(tmp_path / "missing-event.json")},
+    )
+    rejects(
+        "provider event must be an object",
+        raw_payload="[]",
+    )
+    rejects(
+        "provider repository identity mismatch",
+        environment_update={"GITHUB_REPOSITORY": "someone/other"},
+    )
+    rejects(
+        "pull request merge context mismatch",
+        event_name="pull_request",
+        event_update=lambda event: event.update({"action": "closed"}),
+    )
+    rejects(
+        "pull request source identity missing",
+        event_name="pull_request",
+        event_update=remove_pr_base,
+    )
+    rejects(
+        "pull request source identity mismatch",
+        event_name="pull_request",
+        event_update=corrupt_pr_base_sha,
+    )
+    rejects(
+        "pull request head does not match checkout",
+        event_name="pull_request",
+        environment_update={"GITHUB_SHA": SHA},
+    )
+    rejects(
+        "provider SHA does not match checkout",
+        event_name="push",
+        environment_update={"GITHUB_SHA": MERGE_SHA},
+    )
+    rejects(
+        "provider branch ref is required",
+        event_name="push",
+        environment_update={"GITHUB_REF": "refs/heads/"},
+    )
+    rejects(
+        "push event does not match checkout",
+        event_name="push",
+        event_update=lambda event: event.update({"after": MERGE_SHA}),
+    )
+    rejects(
+        "dispatch requires a confirmed owner and exact branch",
+        event_update=lambda event: event.update({"sender": {"login": "someone-else"}}),
+    )
+    rejects(
+        "unsupported provider event",
+        environment_update={"GITHUB_EVENT_NAME": "schedule"},
+    )
+
+
+def test_provider_binding_uses_the_exact_bounded_read_and_lowercase_sha(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The event cap and SHA grammar are part of the source-binding boundary."""
+    lowercase_sha = "a" * 40
+    environment = context(tmp_path, "push")
+    environment["GITHUB_SHA"] = lowercase_sha
+    payload = {
+        "repository": REPOSITORY,
+        "sender": {"login": "belilovsky"},
+        "ref": "refs/heads/main",
+        "after": lowercase_sha,
+    }
+    reads: list[int] = []
+
+    class Stream:
+        def __enter__(self) -> Stream:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            reads.append(size)
+            return json.dumps(payload).encode()
+
+    class EventPath:
+        def open(self, mode: str) -> Stream:
+            assert mode == "rb"
+            return Stream()
+
+    monkeypatch.setattr(CI, "Path", lambda _path: EventPath())
+    assert CI.provider_binding(environment, lowercase_sha)["checkout_sha"] == lowercase_sha
+    assert reads == [1024 * 1024 + 1]
+
+
+def test_validate_context_rejection_codes_are_exact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Lane checks keep their distinct audit reasons after provider binding succeeds."""
+    assert_exact_value_error(
+        "unknown execution lane", lambda: CI.validate_context("other", {}, SHA)
+    )
+    assert_exact_value_error(
+        "exact checkout SHA is required", lambda: CI.validate_context("local", {}, "A" * 40)
+    )
+    assert_exact_value_error(
+        "checkout does not match requested SHA",
+        lambda: CI.validate_context("local", {"QDEV_EXPECTED_SHA": MERGE_SHA}, SHA),
+    )
+    assert_exact_value_error(
+        "provider CI evidence requires a real Actions execution",
+        lambda: CI.validate_context("managed", {}, SHA),
+    )
+    assert_exact_value_error(
+        "Actions must identify its real execution lane",
+        lambda: CI.validate_context("local", {"GITHUB_ACTIONS": "true"}, SHA),
+    )
+
+    environment = managed(tmp_path)
+    environment["RUNNER_ENVIRONMENT"] = "github-hosted"
+    assert_exact_value_error(
+        "runner environment does not match requested execution lane",
+        lambda: CI.validate_context("managed", environment, SHA),
+    )
+
+    environment = managed(tmp_path)
+    environment.pop("QDEV_EXPECTED_SHA")
+    assert_exact_value_error(
+        "managed CI requires an exact controller-bound checkout",
+        lambda: CI.validate_context("managed", environment, SHA),
+    )
+
+    environment = managed(tmp_path)
+    environment.pop("RUNNER_NAME")
+    assert_exact_value_error(
+        "managed CI requires an enrolled ephemeral runner",
+        lambda: CI.validate_context("managed", environment, SHA),
+    )
+
+    monkeypatch.setattr(CI, "provider_binding", lambda _environment, _sha: {})
+    environment = managed(tmp_path)
+    environment["GITHUB_EVENT_NAME"] = "schedule"
+    assert_exact_value_error(
+        "managed CI received an untrusted event",
+        lambda: CI.validate_context("managed", environment, SHA),
+    )
+    environment = context(tmp_path)
+    environment["GITHUB_ACTOR"] = ""
+    assert_exact_value_error(
+        "recovery requires the nonempty repository owner actor",
+        lambda: CI.validate_context("controller-recovery", environment, SHA),
+    )
+    environment = context(tmp_path)
+    environment["GITHUB_EVENT_NAME"] = "push"
+    assert_exact_value_error(
+        "recovery requires manual workflow_dispatch",
+        lambda: CI.validate_context("controller-recovery", environment, SHA),
+    )
+    environment = context(tmp_path)
+    environment["QDEV_OWNER_RECOVERY"] = "false"
+    assert_exact_value_error(
+        "explicit owner recovery confirmation and exact SHA are required",
+        lambda: CI.validate_context("controller-recovery", environment, SHA),
+    )
+
+
 @pytest.mark.parametrize("event_name", ["push", "workflow_dispatch"])
 def test_non_pr_events_keep_exact_provider_sha(tmp_path: Path, event_name: str) -> None:
     environment = context(tmp_path, event_name)
@@ -520,25 +731,89 @@ def test_local_is_never_provider_evidence() -> None:
 def test_main_emits_a_complete_local_receipt_without_provider_binding(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def check_output(command: list[str], **_kwargs: object) -> str:
+    def check_output(command: list[str], **kwargs: object) -> str:
         if command == ["git", "rev-parse", "HEAD"]:
+            assert kwargs == {"cwd": ROOT, "text": True}
             return SHA
         assert command == ["git", "status", "--porcelain"]
+        assert kwargs == {"cwd": ROOT}
         return ""
 
     commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> None:
+        assert kwargs == {"cwd": ROOT, "check": True}
+        commands.append(command)
+
     monkeypatch.setattr(CI.subprocess, "check_output", check_output)
-    monkeypatch.setattr(CI.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(CI.subprocess, "run", run)
+    monkeypatch.setattr(
+        CI.os,
+        "environ",
+        {
+            "RUNNER_ENVIRONMENT": "local-proof",
+            "GITHUB_RUN_ID": "42",
+            "GITHUB_RUN_ATTEMPT": "3",
+        },
+    )
     monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py", "--lane", "local"])
 
     assert CI.main() == 0
 
-    receipt = json.loads(capsys.readouterr().out)
-    assert receipt["sha"] == SHA
-    assert receipt["source_binding"] is None
-    assert receipt["source_scope"] == "commit"
-    assert receipt["checks"] == ["lint", "typing", "pytest", "runner-policy", "runtime-install"]
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert output == json.dumps(receipt, sort_keys=True) + "\n"
+    assert receipt == {
+        "schema": "qdev-controller-ci-execution-v1",
+        "sha": SHA,
+        "source_scope": "commit",
+        "dirty": False,
+        "lane": "local",
+        "source_binding": None,
+        "runner_environment": "local-proof",
+        "run_id": "42",
+        "attempt": "3",
+        "checks": ["lint", "format", "typing", "pytest", "runner-policy", "runtime-install"],
+        "status": "passed",
+        "signed": False,
+    }
     assert commands == CI.commands(sys.executable)
+
+
+@pytest.mark.parametrize("lane", ["github-hosted", "managed", "controller-recovery"])
+def test_main_accepts_every_declared_provider_lane(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], lane: str
+) -> None:
+    def check_output(command: list[str], **_kwargs: object) -> str:
+        return SHA if command == ["git", "rev-parse", "HEAD"] else ""
+
+    monkeypatch.setattr(CI.subprocess, "check_output", check_output)
+    monkeypatch.setattr(CI.subprocess, "run", lambda _command, **_kwargs: None)
+    monkeypatch.setattr(
+        CI,
+        "validate_context",
+        lambda actual_lane, _environment, _sha: {"lane": actual_lane},
+    )
+    monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py", "--lane", lane])
+
+    assert CI.main() == 0
+    assert json.loads(capsys.readouterr().out)["lane"] == lane
+
+
+def test_main_parser_requires_a_declared_lane(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py"])
+    with pytest.raises(SystemExit) as error:
+        CI.main()
+    assert error.value.code == 2
+    assert "the following arguments are required: --lane" in capsys.readouterr().err
+
+    monkeypatch.setattr(sys, "argv", ["verify_controller_ci.py", "--lane", "other"])
+    with pytest.raises(SystemExit) as error:
+        CI.main()
+    assert error.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_main_rejects_dirty_provider_evidence_before_running_checks(

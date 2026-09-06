@@ -49,13 +49,12 @@ def test_provision_requires_source_bound_buildkit_materialization() -> None:
     script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
 
     assert (
-        "buildkit_source_sha256="
-        "c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
+        "buildkit_source_sha256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
     ) in script
     assert "buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173" in script
     assert "QDEV_BUILDKIT_ARTIFACT_ROOT" in script
     assert "QDEV_BUILDKIT_IMAGE_REF" in script
     assert "source-bound BuildKit artifact is required" in script
     assert "source-bound BuildKit artifact failed validation" in script
-    assert "mv -- \"$buildkit_release_stage\" \"$buildkit_root\"" in script
+    assert 'mv -- "$buildkit_release_stage" "$buildkit_root"' in script
     assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in script
