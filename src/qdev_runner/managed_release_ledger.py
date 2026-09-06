@@ -120,6 +120,22 @@ class ManagedReleaseLedger:
             raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
         return entry
 
+    def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
+        """Observe whether a queued managed-production tuple remains admissible.
+
+        Direct claims continue to use :meth:`validate_admission` and fail
+        closed. This observational form exists only for FIFO scans, where a
+        retired or superseded production candidate must remain recorded but
+        must not indefinitely hold an unrelated profile queue.
+        """
+
+        entry = self._by_entry_id.get(entry_id)
+        if entry is None or entry.status not in ACTIVE_STATUSES:
+            return False, "managed-production-candidate-not-active"
+        if entry.source_sha != exact_sha:
+            return False, "managed-production-candidate-tuple-not-admitted"
+        return True, None
+
     @staticmethod
     def _validate_stage(value: Any) -> None:
         if not isinstance(value, dict) or set(value) != {"state", "receipt_uri"}:
