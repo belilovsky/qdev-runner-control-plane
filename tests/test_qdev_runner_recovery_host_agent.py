@@ -177,6 +177,21 @@ def test_archive_validation_rejects_traversing_links(tmp_path: Path) -> None:
         AGENT._safe_archive(archive)
 
 
+def test_archive_validation_accepts_relative_link_that_stays_inside_root(tmp_path: Path) -> None:
+    archive = tmp_path / "runner.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        regular = tarfile.TarInfo("externals/node24/lib/node_modules/npm/bin/npm-cli.js")
+        payload = b"runner"
+        regular.size = len(payload)
+        bundle.addfile(regular, io.BytesIO(payload))
+        link = tarfile.TarInfo("externals/node24/bin/npm")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../lib/node_modules/npm/bin/npm-cli.js"
+        bundle.addfile(link)
+
+    AGENT._safe_archive(archive)
+
+
 def test_qazstack_partial_registration_is_ambiguous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

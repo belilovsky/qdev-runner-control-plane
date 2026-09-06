@@ -668,6 +668,26 @@ def _recover_platform(
     }
 
 
+def _archive_link_stays_within_root(member: tarfile.TarInfo) -> bool:
+    """Return whether a tar link resolves lexically inside the extraction root."""
+
+    link = PurePosixPath(member.linkname)
+    if link.is_absolute():
+        return False
+    base = PurePosixPath(member.name).parent if member.issym() else PurePosixPath()
+    depth = 0
+    for part in (*base.parts, *link.parts):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        else:
+            depth += 1
+    return True
+
+
 def _safe_archive(archive: Path) -> None:
     try:
         with tarfile.open(archive, mode="r:gz") as bundle:
@@ -675,10 +695,10 @@ def _safe_archive(archive: Path) -> None:
                 path = PurePosixPath(member.name)
                 if path.is_absolute() or ".." in path.parts or member.isdev():
                     raise AgentError("runner archive contains an unsafe member")
-                if member.issym() or member.islnk():
-                    link = PurePosixPath(member.linkname)
-                    if link.is_absolute() or ".." in link.parts:
-                        raise AgentError("runner archive contains an unsafe link")
+                if (member.issym() or member.islnk()) and not _archive_link_stays_within_root(
+                    member
+                ):
+                    raise AgentError("runner archive contains an unsafe link")
     except (OSError, tarfile.TarError) as error:
         raise AgentError("runner archive cannot be inspected") from error
 
