@@ -123,9 +123,7 @@ def test_v3_ledger_does_not_admit_an_unsigned_pending_source_tuple() -> None:
         "admin-platform-candidate-tuple-not-admitted",
     )
     with pytest.raises(AdminPlatformLedgerError, match="tuple"):
-        ledger.validate_admission(
-            "controller", "21b23e25ed45a547ad460e4bc412a4949a909c3f"
-        )
+        ledger.validate_admission("controller", "21b23e25ed45a547ad460e4bc412a4949a909c3f")
     with pytest.raises(AdminPlatformLedgerError, match="not active"):
         ledger.validate_admission("ortcom", "a" * 40)
     with pytest.raises(AdminPlatformLedgerError, match="tuple"):
@@ -342,9 +340,7 @@ def test_v3_terminal_attempt_and_live_acceptance_require_immutable_receipts(
         {
             "release_id": "controller-v3-21b23e25",
             "lane": lane,
-            "outcome": (
-                "not_applicable" if lane in {"browser", "observation"} else "passed"
-            ),
+            "outcome": ("not_applicable" if lane in {"browser", "observation"} else "passed"),
             "recorded_at": "2026-09-05T01:00:00Z",
             "receipt_uri": f"receipts/controller-{lane}.json",
             "receipt_sha256": "0" * 64,
@@ -378,24 +374,24 @@ def test_v3_terminal_attempt_and_live_acceptance_require_immutable_receipts(
                     "receipt_uri": "receipts/avds-blocked.json",
                     "receipt_sha256": "0" * 64,
                 }
-                ],
-                "results": [
-                    {
-                        "release_id": "avds-blocked-1",
-                        "lane": "source",
-                        "outcome": "passed",
-                        "recorded_at": "2026-09-05T02:00:00Z",
-                        "receipt_uri": "receipts/avds-source.json",
-                        "receipt_sha256": "0" * 64,
-                    },
-                    {
-                        "release_id": "avds-blocked-1",
-                        "lane": "ci",
+            ],
+            "results": [
+                {
+                    "release_id": "avds-blocked-1",
+                    "lane": "source",
+                    "outcome": "passed",
+                    "recorded_at": "2026-09-05T02:00:00Z",
+                    "receipt_uri": "receipts/avds-source.json",
+                    "receipt_sha256": "0" * 64,
+                },
+                {
+                    "release_id": "avds-blocked-1",
+                    "lane": "ci",
                     "outcome": "blocked",
                     "recorded_at": "2026-09-05T02:01:00Z",
                     "receipt_uri": "receipts/avds-ci-blocked.json",
                     "receipt_sha256": "0" * 64,
-                }
+                },
             ],
         }
     )

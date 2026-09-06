@@ -134,3 +134,15 @@ sudo qdev-runner-worker-gate release \
 
 Use `--require-primary-slot` or `--require-reserve-slot` only for a controlled
 idle failover test; a busy but healthy tier is not otherwise a defect.
+
+The worker audit rejects explicitly empty or unknown profile sets; an omitted
+profile setting retains the worker's default of all three profiles. Its
+`image_release.status=verified` requires strict verification of the local
+evidence files, digest bindings and Ed25519 provenance signatures, not merely
+a structurally valid digest envelope. Existing v1 manifests stay structurally
+readable by the standalone validator, but cannot authorize recovery without
+their complete evidence bundle. Provision that bundle before releasing a
+worker gate; do not manufacture a passing receipt or remove the strict check.
+The audit's v1 receipt shape and gate consumers are unchanged. This trusted-admin
+check does not by itself establish publisher trust, the effective systemd
+configuration, browser/client compatibility, or an exact-SHA CI conclusion.

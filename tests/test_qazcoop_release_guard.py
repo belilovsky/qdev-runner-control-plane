@@ -438,8 +438,10 @@ def test_update_hook_rejects_lock_receipt_mismatch_before_verifier(
     def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         nonlocal verifier_called
         command = args[0]
-        if isinstance(command, list) and command and str(command[0]).endswith(
-            "qdev-controller-verify-admission"
+        if (
+            isinstance(command, list)
+            and command
+            and str(command[0]).endswith("qdev-controller-verify-admission")
         ):
             verifier_called = True
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -465,8 +467,10 @@ def test_update_hook_accepts_reachable_evidence_lock_bound_to_functional_parent(
 
     def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         command = args[0]
-        if isinstance(command, list) and command and str(command[0]).endswith(
-            "qdev-controller-verify-admission"
+        if (
+            isinstance(command, list)
+            and command
+            and str(command[0]).endswith("qdev-controller-verify-admission")
         ):
             verifier_calls.append([str(value) for value in command])
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -511,8 +515,10 @@ def test_update_hook_requires_authoritative_admission_for_incomplete_evidence(
 
     def observed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         command = args[0]
-        if isinstance(command, list) and command and str(command[0]).endswith(
-            "qdev-controller-verify-admission"
+        if (
+            isinstance(command, list)
+            and command
+            and str(command[0]).endswith("qdev-controller-verify-admission")
         ):
             verifier_calls.append([str(value) for value in command])
             return subprocess.CompletedProcess(

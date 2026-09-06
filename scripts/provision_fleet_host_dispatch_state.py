@@ -21,9 +21,7 @@ RECOVERY_TARGETS: dict[str, dict[str, object]] = {
     "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187": {
         "worker_name": "qdev-platform-ci-187",
         "target_id": "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187",
-        "service_unit": (
-            "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service"
-        ),
+        "service_unit": ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service"),
         "host_binding": "controller-registry",
         "labels": ["self-hosted", "Linux", "X64", "qdev-platform-ci"],
         "adapter_path": RECOVERY_ADAPTER,

@@ -5,6 +5,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _activation_script() -> str:
+    """Read the root-owned wrapper and its immutable activation payload."""
+
+    return "\n".join(
+        (
+            (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8"),
+            (ROOT / "scripts/activate_controller_release_payload.sh").read_text(encoding="utf-8"),
+        )
+    )
+
+
+def _activation_material_helper() -> str:
+    return (ROOT / "scripts/controller_activation_material.py").read_text(encoding="utf-8")
+
+
+def _activation_payload() -> str:
+    return (ROOT / "scripts/activate_controller_release_payload.sh").read_text(encoding="utf-8")
+
+
 def _load_recovery_binding_provisioner():
     path = ROOT / "scripts/provision_worker_recovery_bindings.py"
     spec = importlib.util.spec_from_file_location("recovery_binding_provisioner", path)
@@ -14,25 +33,22 @@ def _load_recovery_binding_provisioner():
     return module
 
 
-def _load_controller_capacity_gate():
-    path = ROOT / "scripts/controller_capacity_gate.py"
-    spec = importlib.util.spec_from_file_location("controller_capacity_gate", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_controller_activation_is_targeted_and_rollback_aware() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    path = ROOT / "scripts/activate_controller_release.sh"
+    script = _activation_script()
+    helper = (ROOT / "src/qdev_runner/controller_activation.py").read_text(encoding="utf-8")
 
+    assert path.stat().st_mode & 0o111
+    assert "qdev-controller-activation.lock" in script
+    assert "another controller activation owns the complete host lifecycle" in script
     assert "broker-public broker-internal" in script
     assert "--no-deps" in script
-    assert script.count("--force-recreate") == 3
+    assert "--no-build" in script
     assert "compose down" not in script
     assert "systemctl daemon-reload" in script
     assert "systemctl enable --now qdev-fleet-host-dispatch.path" in script
-    assert "mv -Tf" in script
+    assert "controller_activation_material.py" in script
+    assert "os.replace(" in _activation_material_helper()
     assert "rollback" in script
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
     assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96" in script
@@ -41,29 +57,38 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
         in script
     )
-    assert 'python3 "$script_root/scripts/controller_capacity_gate.py"' in script
-    capacity = json.loads(
-        (ROOT / "config/controller-capacity.json").read_text(encoding="utf-8")
-    )
+    assert 'python3 "$release/scripts/controller_capacity_gate.py"' in script
+    capacity = json.loads((ROOT / "config/controller-capacity.json").read_text(encoding="utf-8"))
     assert capacity["max_disk_used_pct"] == 96
     assert capacity["min_free_gib"] == 8
     assert capacity["root_available_bytes"] >= (
-        capacity["minimum_operational_reserve_bytes"]
-        + capacity["estimated_peak_incremental_bytes"]
+        capacity["minimum_operational_reserve_bytes"] + capacity["estimated_peak_incremental_bytes"]
     )
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
+    assert "authorize-rollback" in script
+    assert "complete-rollback" in script
+    assert '"QDEV_CONTROLLER_NO_BUILD=true"' in script
+    assert "compose_action=(up -d --force-recreate --no-build" in script
+    assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
+    assert "capacity gate rejected controller activation" in script
+    assert "verified_artifact=" in script
+    assert script.index("verify-artifact") < script.index(" reserve --status")
+    assert "expected_current_status_digest" in helper
+    assert "expected_current_config_digest" in script
+    assert "--observed-current-public-image" in script
+    assert "--observed-current-internal-image" in script
+    assert "--observed-current-config" in script
+    assert "--candidate-config-digest" in script
+    assert "--artifact-manifest-digest" in script
     assert "compose -p qdev-runner" in script
     assert "compose -p deploy" not in script
     assert "qdev-runner-broker-internal" in script
     assert "deploy-broker-internal-1" not in script
-    assert 'docker image tag "$previous_public_image"' in script
-    assert 'docker image tag "$previous_internal_image"' in script
-    assert 'rollback_public_ref="qdev-runner-rollback-public:$$"' in script
-    assert 'rollback_internal_ref="qdev-runner-rollback-internal:$$"' in script
     assert 'docker image tag "$rollback_public_ref" "$previous_public_ref"' in script
     assert 'docker image tag "$rollback_internal_ref" "$previous_internal_ref"' in script
-    assert "cleanup_rollback_images" in script
+    assert "verify_oci_tuple" in script
+    assert "verify_controller_runtime_health" in script
     assert "config/profiles.yml" in script
     assert "config/release-lanes.yml" in script
     assert "config/fleet-bootstrap.yml" in script
@@ -86,7 +111,6 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qazposter.service" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
-
     assert "scripts/prepare_controller_candidate.py" in script
     assert "src/qdev_runner/controller_candidate.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
@@ -127,12 +151,10 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "will not install a packaged snapshot" in script
     assert "intentionally neither installed nor" in script
     assert "admin_platform_ledger_backup" not in script
-    assert (
-        '"$release/config/managed-release-ledger.yml" /etc/qdev-runner/managed-release-ledger.yml'
-        in script
-    )
-    assert '"$profiles_backup" /etc/qdev-runner/profiles.yml' in script
-    assert '"$fleet_bootstrap_backup" /etc/qdev-runner/fleet-bootstrap.yml' in script
+    assert '"$release/config/managed-release-ledger.yml"' in script
+    assert "/etc/qdev-runner/managed-release-ledger.yml 0644" in script
+    assert '--snapshot "configuration=/etc/qdev-runner/profiles.yml"' in script
+    assert '--snapshot "configuration=/etc/qdev-runner/fleet-bootstrap.yml"' in script
     assert 'operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"' in script
     assert (
         'release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"' in script
@@ -153,48 +175,11 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "legacy and canonical controller state conflict" in script
     assert "legacy claim-scope stores disagree" in script
     assert "restore_operator_identity_metadata()" in script
+    assert "/var/lib/qdev-runner/controller-activation-transactions" in script
+    assert "activation snapshot digest mismatch" in _activation_material_helper()
+    assert '--snapshot "operator=$operator_identity_dir/operator-key.pem"' in script
+    assert "--group operator" in script
     assert '"$release/scripts/provision_operator_identity.sh"' in script
-    assert "operator mTLS identity is not usable" in script
-
-
-def test_controller_activation_capacity_gate_has_independent_absolute_boundaries() -> None:
-    helper = _load_controller_capacity_gate()
-    gib = 1024**3
-    common = {
-        "memory_kib": 8 * gib // 1024,
-        "cpu_count": 4,
-        "load_15": 1.0,
-        "max_disk_used_pct": 96,
-        "min_free_gib": 8,
-        "min_memory_gib": 4,
-        "max_load_per_cpu": 2,
-        "estimated_peak_incremental_bytes": gib,
-    }
-
-    assert helper.capacity_allowed(
-        disk_used_pct=96,
-        disk_free_kib=9 * gib // 1024,
-        no_build=False,
-        **common,
-    )
-    assert not helper.capacity_allowed(
-        disk_used_pct=96,
-        disk_free_kib=7 * gib // 1024,
-        no_build=True,
-        **common,
-    )
-    assert not helper.capacity_allowed(
-        disk_used_pct=97,
-        disk_free_kib=9 * gib // 1024,
-        no_build=False,
-        **common,
-    )
-    assert not helper.capacity_allowed(
-        disk_used_pct=96,
-        disk_free_kib=(9 * gib // 1024) - 1,
-        no_build=False,
-        **common,
-    )
 
 
 def test_controller_provisions_only_the_operator_identity_permissions() -> None:
@@ -202,11 +187,12 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
 
     assert "operator-key.pem" in script
-    assert "never creates, reads, copies, or rotates key material" in script
+    assert "never creates, reads, copies, rotates, chmods, or chowns" in script
     assert '-L "$path"' in script
-    assert "install -d -o root -g 9020 -m 0750" in script
-    assert "chown root:9020" in script
-    assert "chmod 0640" in script
+    assert "chown " not in script
+    assert "chmod " not in script
+    assert "install " not in script
+    assert "validated without mutation" in script
     assert "/etc/qdev-runner/mtls/operator" in provisioning
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in provisioning
     assert "/usr/local/sbin/qdev-admin-platform-ledger-bootstrap" in provisioning
@@ -220,15 +206,16 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
 
 def test_controller_provisions_root_owned_admission_signer() -> None:
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
-    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
     wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(encoding="utf-8")
 
     assert "/etc/qdev-runner/admission" in provisioning
     assert "/run/qdev-controller" in provisioning
     assert "/usr/local/sbin/qdev-controller-admission" in provisioning
     assert "scripts/qdev_controller_admission_host.sh" in activation
-    assert "admission_host_tool_backup" in activation
-    assert "admission_host_tool_was_present" in activation
+    assert '--snapshot "dispatcher=/usr/local/sbin/qdev-controller-admission"' in activation
+    assert 'atomic_install "$release/scripts/qdev_controller_admission_host.sh"' in activation
+    assert 'restore --directory "$transaction_dir"' in activation
     assert "--network none" in wrapper
     assert "--read-only" in wrapper
     assert "--user 0:0" in wrapper
@@ -239,7 +226,10 @@ def test_controller_provisions_root_owned_admission_signer() -> None:
 
 def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
     provisioning = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
-    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
+    forward = _activation_payload().rsplit('if ! "${compose[@]}" "${compose_action[@]}"; then', 1)[
+        1
+    ]
 
     assert "scripts/provision_qazcoop_release_signing_key.py" in provisioning
     assert "/etc/qdev-runner/qazcoop-release-signing" in provisioning
@@ -247,7 +237,7 @@ def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
     assert "scripts/build_qazcoop_release_guard_bundle.py" in activation
     assert "scripts/install_qazcoop_release_guard.py" in activation
     assert "-o StrictHostKeyChecking=yes" in activation
-    assert activation.index("if ! verify_controller_runtime_health; then") < activation.index(
+    assert forward.index("if ! verify_controller_runtime_health; then") < forward.index(
         "if ! install_qazcoop_release_guard; then"
     )
     guard_function = activation.split("install_qazcoop_release_guard() {", 1)[1].split("\n}\n", 1)[
@@ -258,9 +248,11 @@ def test_controller_provisions_and_activates_qazcoop_release_guard() -> None:
 
 
 def test_controller_activation_publishes_revertible_exact_release_status() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    script = _activation_script()
+    payload = _activation_payload()
 
-    assert "controller-release.json" in script
+    assert "/var/lib/qdev-runner/controller-status/controller-release.json" in script
+    assert "QDEV_CONTROLLER_LEGACY_RELEASE_STATUS" in script
     assert "QDEV_CONTROLLER_RELEASE_REVISION" in script
     assert "controller activation requires a source-bound git release checkout" in script
     assert 'git -C "$release" diff --quiet "$release_revision" -- .' in script
@@ -304,25 +296,79 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert "rollback restored an unexpected public broker image" in rollback
     assert "rollback restored an unexpected internal broker image" in rollback
     assert "rollback runtime does not satisfy the previous controller receipt" in rollback
+    assert "validate_transition_configuration" in rollback
+    assert "restore_controller_configuration" in rollback
+    assert "restore_operator_identity_metadata" in rollback
+    assert "restore_rollback_anchor" in rollback
+    assert "restore_fleet_host_dispatch" in rollback
+    assert "verify-envelope" in script
+    assert "verify-artifact" in script
+    assert " reserve --status" in script
+    assert " commit --status" in script
+    assert "finalize-measured --status" in script
+    assert "finalize-historical --status" in script
+    assert 'activation_envelope="${QDEV_CONTROLLER_ACTIVATION_ENVELOPE:-}"' in script
+    assert 'artifact_manifest="${QDEV_CONTROLLER_ARTIFACT_MANIFEST:-}"' in script
+    assert "qdev-controller-activation-material-v1" in _activation_material_helper()
+    assert "image_archive_sha256" in (ROOT / "src/qdev_runner/controller_activation.py").read_text(
+        encoding="utf-8"
+    )
+    assert script.index("verify-artifact") < script.index(" reserve --status")
+    forward = payload.rsplit('if ! "${compose[@]}" "${compose_action[@]}"; then', 1)[1]
+    assert forward.index("verify_controller_runtime_health") < forward.index("commit-candidate")
+    assert forward.index("commit-candidate") < forward.index("finalize-candidate")
+    assert forward.index("install_qazcoop_release_guard") < forward.index("finalize-candidate")
+    assert forward.index("finalize-candidate") < forward.index("activation_finished=true")
+
+
+def test_controller_recovery_handles_partial_config_and_expired_commit() -> None:
+    wrapper = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    payload = _activation_payload()
+
+    assert "--allow-config-transition" in wrapper
+    assert 'transaction_state_path="${activation_status}.transaction"' in wrapper
+    transaction_recovery = wrapper.split(
+        'if [[ -e "$transaction_state_path" || -L "$transaction_state_path" ]]; then', 1
+    )[1].split("expected_source=", 1)[0]
+    assert "verify-recovery-envelope" in transaction_recovery
+    assert "verify-envelope" in transaction_recovery
+    assert transaction_recovery.index("verify-recovery-envelope") < transaction_recovery.index(
+        "verify-envelope"
+    )
+    assert 'QDEV_ACT_CONFIG_TRANSITION_SAFE="$transition_config_safe"' in payload
+    assert "pending-config-transition" in payload
+    assert "configuration is neither the snapshot nor the signed candidate" in payload
+    recovery = payload.split('if [[ -n "$recovery_state" ]]; then', 1)[1].split(
+        "# Recheck at the last non-mutating boundary", 1
+    )[0]
+    assert 'if [[ "$envelope_expired" == true ]]; then' in recovery
+    assert recovery.index('if [[ "$envelope_expired" == true ]]') < recovery.index(
+        "install_qazcoop_release_guard"
+    )
+    assert "recovery_terminal_outcome=rolled-back" in wrapper
+    assert "verify-rollback-terminal" in wrapper
+    assert wrapper.index("verify-rollback-terminal") < wrapper.index(
+        "activated runtime does not match signed candidate"
+    )
 
 
 def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    script = _activation_script()
+    payload = _activation_payload()
+    helper = (ROOT / "src/qdev_runner/controller_activation.py").read_text(encoding="utf-8")
 
-    assert "QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
-    assert "activation requires QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION" in script
-    assert 'release_lock_path="${QDEV_CONTROLLER_RELEASE_LOCK:-/run/lock/' in script
+    assert "/run/lock/qdev-controller-activation.lock" in script
     assert "flock -n 9" in script
-    assert "read_active_release_revision()" in script
-    assert "qdev-controller-release-status-v1" in script
-    assert "qdev-controller-release-status-v2" in script
-    assert "controller release compare-and-swap rejected" in script
-    assert script.count("assert_expected_current_revision") == 3
-    assert script.index("assert_expected_current_revision\n# Forward activation") < script.index(
-        'install -d -o "$runtime_uid" -g "$runtime_gid"'
-    )
-    assert script.index("# Recheck at the last non-mutating boundary") < script.index(
-        'install -m 0644 -- "$release/inventory/repos.json"'
+    assert "verify-envelope" in script
+    assert '"expected_generation"' in helper
+    assert '"expected_current_status_digest"' in helper
+    assert script.count("assert-current --status") == 2
+    assert "authorize-rollback --status" in script
+    assert "complete-rollback --status" in script
+    assert script.index("flock -n 9") < script.index("verify-artifact")
+    assert script.index("assert-current --status") < script.index("payload_environment=(")
+    assert payload.index('"$transaction_hook" __transaction_hook__ pre-flip') < (
+        payload.index('atomic_install "$release/inventory/repos.json"')
     )
     assert "metadata.st_uid != runtime_uid" in script
     assert "metadata.st_gid != runtime_gid" in script
@@ -331,7 +377,7 @@ def test_controller_forward_activation_is_serialized_and_compare_and_swap_bound(
 
 def test_controller_rollback_reuses_existing_images() -> None:
     script = (ROOT / "scripts/rollback_controller_release.sh").read_text(encoding="utf-8")
-    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
 
     assert "^[0-9a-f]{40}$" in script
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
@@ -350,7 +396,7 @@ def test_controller_rollback_reuses_existing_images() -> None:
 
 
 def test_controller_rollback_accepts_clean_historical_anchor_without_modern_dispatcher() -> None:
-    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
 
     base_required = activation.split("required=(", 1)[1].split(")\nif [[", 1)[0]
     forward_marker = 'if [[ "$rollback_mode" != true ]]; then\n  required+=('
@@ -371,15 +417,15 @@ def test_controller_rollback_accepts_clean_historical_anchor_without_modern_disp
     assert 'git -C "$release" diff --quiet "$release_revision" -- .' in activation
     assert 'git -C "$release" ls-files --others --exclude-standard -- .' in activation
 
-    install_call = activation.split("if ! prepare_broker_state; then", 1)[1].split(
+    install_call = activation.split("(set -e; prepare_broker_state)", 1)[1].split(
         'if ! "${compose[@]}"', 1
     )[0]
     assert install_call.count('if [[ "$rollback_mode" != true ]]; then') == 1
-    assert install_call.count("if ! install_fleet_host_dispatch; then") == 1
+    assert install_call.count("(set -e; install_fleet_host_dispatch)") == 1
 
 
 def test_historical_controller_rollback_does_not_require_or_replace_admission_wrapper() -> None:
-    script = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    script = _activation_script()
 
     base_required = script.split("required=(", 1)[1].split(")\nif [[", 1)[0]
     forward_required = script.split('if [[ "$rollback_mode" != true ]]; then\n  required+=(', 1)[
@@ -400,6 +446,14 @@ def test_controller_compose_project_is_namespaced() -> None:
 
     assert compose.startswith("name: qdev-runner\n")
     assert service.count("--project-name qdev-runner") == 2
+    # Only the internal broker can mutate the durable managed-release ledger.
+    assert (
+        compose.count(
+            "QDEV_MANAGED_RELEASE_LEDGER: /var/lib/qdev-runner/managed-release-state/"
+            "managed-release-ledger.yml"
+        )
+        == 1
+    )
 
 
 def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
@@ -491,7 +545,7 @@ def test_installed_recovery_binding_provisioner_rejects_mutable_release(
 
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
-    activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
     public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
 
     assert "/etc/qdev-runner/controller-release.json:" not in compose

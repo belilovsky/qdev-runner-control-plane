@@ -25,10 +25,9 @@ ACTIVE_CONTROLLER_RELEASE = Path("/opt/qdev-runner-control-plane/current")
 
 
 def _has_binding_sources(root: Path) -> bool:
-    return (
-        (root / "src" / "qdev_runner" / "worker_recovery.py").is_file()
-        and (root / "scripts" / "install_qdev_runner_recovery_host_agent.sh").is_file()
-    )
+    return (root / "src" / "qdev_runner" / "worker_recovery.py").is_file() and (
+        root / "scripts" / "install_qdev_runner_recovery_host_agent.sh"
+    ).is_file()
 
 
 def _resolve_source_root(
@@ -218,9 +217,7 @@ def main() -> int:
     release = _active_release(arguments.release_status)
     current = _private_values(arguments.controller_env)
     proxy_secret = _secret(current, "QDEV_OPERATOR_PROXY_SECRET", arguments.rotate_secrets)
-    signing_key = _secret(
-        current, "QDEV_RECOVERY_AGENT_SIGNING_KEY", arguments.rotate_secrets
-    )
+    signing_key = _secret(current, "QDEV_RECOVERY_AGENT_SIGNING_KEY", arguments.rotate_secrets)
     controller = {
         "QDEV_OPERATOR_PROXY_SECRET": proxy_secret,
         "QDEV_RECOVERY_OPERATOR_CERTIFICATE_SHA256S": _certificate_fingerprint(

@@ -131,6 +131,8 @@ def test_build_request_derives_controller_tuple_from_running_source(
     # Obsolete caller-selected values must not be able to redirect activation.
     monkeypatch.setenv("BOOTSTRAP_CONTROLLER_REVISION", "d" * 40)
     monkeypatch.setenv("BOOTSTRAP_CONTROLLER_RELEASE_DIGEST", "sha256:" + "e" * 64)
+    monkeypatch.setenv("BOOTSTRAP_CONTROLLER_IMAGE_DIGEST", "sha256:" + "f" * 64)
+    monkeypatch.setenv("BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST", "sha256:" + "1" * 64)
     monkeypatch.setattr(validator, "resolve_job_id", lambda *args, **kwargs: 9001)
     monkeypatch.setattr(validator, "controller_release_digest", lambda root: release_digest)
 
@@ -139,6 +141,8 @@ def test_build_request_derives_controller_tuple_from_running_source(
     assert request.source_sha == source_sha
     assert request.controller_revision == source_sha
     assert request.controller_release_digest == release_digest
+    assert request.controller_image_digest == "sha256:" + "f" * 64
+    assert request.activation_envelope_digest == "sha256:" + "1" * 64
     assert request.run_id == 42
     assert request.job_id == 9001
     assert request.attempt == 3

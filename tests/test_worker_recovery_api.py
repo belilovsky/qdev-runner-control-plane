@@ -188,11 +188,22 @@ def _settings(
     release_status.write_text(
         json.dumps(
             {
-                "schema": "qdev-controller-release-status-v1",
+                "schema": "qdev-controller-release-status-v2",
                 "state": "active",
                 "revision": CONTROLLER_REVISION,
                 "release_digest": ACTIVE_CONTROLLER_RELEASE_DIGEST,
                 "activated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "runtime_identity": {
+                    "source_revision": CONTROLLER_REVISION,
+                    "source_digest": "sha256:" + "4" * 64,
+                    "public_image_id": "sha256:" + "5" * 64,
+                    "internal_image_id": "sha256:" + "6" * 64,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "7" * 64,
+                    "public_installed_digest": "sha256:" + "8" * 64,
+                    "internal_installed_digest": "sha256:" + "8" * 64,
+                },
             }
         ),
         encoding="utf-8",
@@ -436,9 +447,7 @@ def test_online_replacement_runner_is_not_admitted_as_absent(
 
     response = harness.client.post(
         "/internal/v1/operations/worker-recovery/prepare",
-        json=_prepare_body(
-            "qdev-qazstack-01", idempotency_key="recovery-qazstack-online"
-        ),
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-online"),
         headers=OPERATOR_HEADERS,
     )
 
@@ -844,9 +853,7 @@ def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     assert failed.status_code == 409
     assert failed.json()["detail"] == "worker recovery request rejected"
     assert harness.github.dispatch_calls == 0
-    assert harness.client.app.state.store.worker_recovery_canary(
-        prepared["operation_id"]
-    ) is None
+    assert harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"]) is None
 
     accept_body["canary_head_sha"] = "5" * 40
     pending = harness.client.post(

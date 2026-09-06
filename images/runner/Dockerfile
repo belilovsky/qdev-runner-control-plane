@@ -122,18 +122,54 @@ USER runner
 WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
+FROM golang:1.26.8-alpine3.23@sha256:07558d5472e9acb5fc5656b485e963602e925e00111b8ad676a804306e711ba3 AS buildkit-builder
+ARG BUILDKIT_VERSION=0.33.0
+ARG BUILDKIT_SOURCE_SHA256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306
+ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173
+ARG BUILDKIT_GO_ARCHIVE_VERSION=0.3.3
+ENV GOFLAGS=-mod=mod
+RUN apk add --no-cache ca-certificates curl tar
+WORKDIR /src
+RUN curl --fail --location --retry 5 \
+      "https://github.com/moby/buildkit/archive/refs/tags/v${BUILDKIT_VERSION}.tar.gz" \
+      --output /tmp/buildkit-source.tar.gz \
+    && printf '%s  %s\\n' "${BUILDKIT_SOURCE_SHA256}" /tmp/buildkit-source.tar.gz | sha256sum --check - \
+    && tar --extract --gzip --strip-components=1 --file /tmp/buildkit-source.tar.gz --directory /src \
+    && rm -f /tmp/buildkit-source.tar.gz \
+    && go mod edit -require="github.com/moby/go-archive@v${BUILDKIT_GO_ARCHIVE_VERSION}" \
+    && go mod download \
+    && mkdir -p /out \
+    && CGO_ENABLED=0 go build -trimpath \
+         -tags "osusergo netgo static_build seccomp" \
+         -ldflags "-s -w -X github.com/moby/buildkit/version.Version=v${BUILDKIT_VERSION} -X github.com/moby/buildkit/version.Revision=${BUILDKIT_SOURCE_REVISION} -X github.com/moby/buildkit/version.Package=github.com/moby/buildkit" \
+         -o /out/buildkitd ./cmd/buildkitd \
+    && CGO_ENABLED=0 go build -trimpath \
+         -ldflags "-s -w -X github.com/moby/buildkit/version.Version=v${BUILDKIT_VERSION} -X github.com/moby/buildkit/version.Revision=${BUILDKIT_SOURCE_REVISION} -X github.com/moby/buildkit/version.Package=github.com/moby/buildkit" \
+         -o /out/buildctl ./cmd/buildctl \
+    && test -x /out/buildkitd /out/buildctl
+
 FROM base AS docker
 ARG BUILDKIT_VERSION=0.33.0
-ARG BUILDKIT_SHA256=b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead
+ARG BUILDKIT_SOURCE_SHA256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306
+ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --fail --location --retry 5 \
-      "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz" \
-      --output /tmp/buildkit.tar.gz \
-    && echo "${BUILDKIT_SHA256}  /tmp/buildkit.tar.gz" | sha256sum --check - \
-    && tar -xzf /tmp/buildkit.tar.gz -C /usr/local \
-    && rm /tmp/buildkit.tar.gz
+    && test -n "${BUILDKIT_SOURCE_SHA256}" \
+    && test -n "${BUILDKIT_SOURCE_REVISION}"
+COPY --from=buildkit-builder /out/buildkitd /usr/local/bin/buildkitd
+COPY --from=buildkit-builder /out/buildctl /usr/local/bin/buildctl
+RUN install -d -m 0555 /usr/local/share/qdev-buildkit \
+    && printf '%s\\n' "${BUILDKIT_SOURCE_REVISION}" > /usr/local/share/qdev-buildkit/source-revision \
+    && printf '%s\\n' "${BUILDKIT_SOURCE_SHA256}" > /usr/local/share/qdev-buildkit/source-sha256 \
+    && chmod 0444 /usr/local/share/qdev-buildkit/source-revision /usr/local/share/qdev-buildkit/source-sha256 \
+    && chmod 0555 /usr/local/bin/buildkitd /usr/local/bin/buildctl \
+    && /usr/local/bin/buildkitd --version | grep -F "v${BUILDKIT_VERSION}" \
+    && /usr/local/bin/buildctl --version | grep -F "v${BUILDKIT_VERSION}"
+LABEL org.opencontainers.image.version="24.04" \
+      org.qdev.buildkit.version="${BUILDKIT_VERSION}" \
+      org.qdev.buildkit.source-revision="${BUILDKIT_SOURCE_REVISION}" \
+      org.qdev.buildkit.source-sha256="${BUILDKIT_SOURCE_SHA256}"
 USER runner
 
 # The Docker daemon used by qdev-ci-docker jobs is built from the same pinned
