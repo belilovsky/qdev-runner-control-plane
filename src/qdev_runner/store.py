@@ -7,7 +7,7 @@ import math
 import re
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -911,6 +911,7 @@ class Store:
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
         fifo_skip_job_ids: frozenset[int] = frozenset(),
+        fifo_skip_guard: Callable[[frozenset[int]], frozenset[int]] | None = None,
     ) -> dict[str, Any] | None:
         if fifo_skip_job_ids and (
             claim_scope is None or claim_scope.schema != SCHEMA_V2
@@ -919,6 +920,12 @@ class Store:
         now = time.time()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # Revalidate externally governed FIFO exceptions only after the
+            # durable queue transaction has begun. This read is the claim's
+            # linearization point: a head reactivated before it blocks the
+            # later row, while a later ledger mutation is ordered after claim.
+            if fifo_skip_guard is not None:
+                fifo_skip_job_ids = fifo_skip_guard(fifo_skip_job_ids)
             if self._worker_fenced(connection, worker_name):
                 connection.execute("COMMIT")
                 return None

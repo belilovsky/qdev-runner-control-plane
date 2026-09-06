@@ -258,6 +258,7 @@ required=(
 if [[ "$rollback_mode" != true ]]; then
   required+=(
     config/controller-capacity.json
+    scripts/controller_capacity_gate.py
     scripts/validate_controller_image_binding.py
     src/qdev_runner/durable_state.py
     src/qdev_runner/controller_candidate.py
@@ -433,13 +434,18 @@ if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2
   exit 64
 fi
-awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
-  -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
-  -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
-  -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if ((used > max_used && free < (min_free_gib * 1048576)) ||
-        mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
-  }' || {
+python3 "$script_root/scripts/controller_capacity_gate.py" \
+  --capacity-config "$release/config/controller-capacity.json" \
+  --disk-used-pct "$disk_used" \
+  --disk-free-kib "$disk_free_kib" \
+  --memory-kib "$memory_kib" \
+  --cpu-count "$cpu_count" \
+  --load-15 "$load_15" \
+  --max-disk-used-pct "$max_disk_used_pct" \
+  --min-free-gib "$min_free_gib" \
+  --min-memory-gib "$min_memory_gib" \
+  --max-load-per-cpu "$max_load_per_cpu" \
+  --no-build "$no_build" || {
     printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
       "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
     exit 75
