@@ -253,12 +253,12 @@ required=(
   deploy/qdev-release-qaz-events.service \
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qmt.compose.yml \
-  deploy/Dockerfile.broker \
-  scripts/validate_controller_image_binding.py
+  deploy/Dockerfile.broker
 )
 if [[ "$rollback_mode" != true ]]; then
   required+=(
     config/controller-capacity.json
+    scripts/validate_controller_image_binding.py
     src/qdev_runner/durable_state.py
     src/qdev_runner/controller_candidate.py
     scripts/bootstrap_admin_platform_ledger_v3.py
