@@ -274,6 +274,7 @@ def _managed_release_ledger(
     *,
     source_sha: str,
     run_id: int,
+    run_attempt: int = 1,
     status: str = "ci_queued",
 ) -> Path:
     template_path = Path(__file__).parents[1] / "config" / "managed-release-ledger.yml"
@@ -281,7 +282,9 @@ def _managed_release_ledger(
     entry = document["entries"]["qazgeo"]
     entry["source_sha"] = source_sha
     entry["status"] = status
-    entry["ci_runs"] = [{"run_id": str(run_id), "state": "queued"}]
+    entry["ci_runs"] = [
+        {"run_id": str(run_id), "run_attempt": str(run_attempt), "state": "queued"}
+    ]
     path = tmp_path / "managed-release-ledger.yml"
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return path
@@ -1611,14 +1614,15 @@ def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
     assert response.json()["detail"] == "managed production candidate tuple is not admitted"
 
 
-def test_managed_production_unknown_run_is_fail_closed_but_does_not_block_fifo(
+def test_managed_production_wrong_attempt_is_fail_closed_but_does_not_block_fifo(
     tmp_path: Path,
 ) -> None:
     exact_sha = "9" * 40
     ledger_path = _managed_release_ledger(
         tmp_path,
         source_sha=exact_sha,
-        run_id=84000000999,
+        run_id=84000000041,
+        run_attempt=2,
     )
     client = _app(
         tmp_path,
@@ -1758,6 +1762,75 @@ def test_managed_production_fifo_skip_is_rechecked_when_ledger_reactivates(
     assert claimed.status_code == 204
     assert client.app.state.store.job_status(41) == "pending"
     assert client.app.state.store.job_status(42) == "pending"
+
+
+def test_managed_production_fifo_skip_is_rechecked_inside_claim_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active_sha = "9" * 40
+    stale_sha = "8" * 40
+    ledger_path = _managed_release_ledger(
+        tmp_path,
+        source_sha=stale_sha,
+        run_id=84000000041,
+    )
+    client = _app(tmp_path, managed_release_ledger_path=ledger_path)
+    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _seed_pending_job(
+        client,
+        41,
+        "managed-row-reactivated-at-claim-boundary",
+        repository="belilovsky/qazgeo",
+        head_sha=active_sha,
+    )
+    _seed_pending_job(client, 42, "later-admissible-row")
+
+    issued = client.post(
+        "/internal/v1/operations/jobs/42/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": 42,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": "srv1879763-primary",
+            "host": "srv1879763-light-primary",
+            "runner": "qdev-ci-docker",
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": "fifo-race-at-durable-claim",
+            "duration_seconds": 900,
+        },
+    )
+    assert issued.status_code == 200
+
+    store: Store = client.app.state.store
+    original_claim = store.claim
+
+    def reactivate_then_claim(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        _managed_release_ledger(
+            tmp_path,
+            source_sha=active_sha,
+            run_id=84000000041,
+        )
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(store, "claim", reactivate_then_claim)
+    claimed = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Client-Certificate-SHA256": "c" * 64},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "claim_scope_id": "srv1879763-primary",
+            "disk_free_gib": 30.0,
+            "min_disk_free_gib": 4.5,
+        },
+    )
+
+    assert claimed.status_code == 204
+    assert store.job_status(41) == "pending"
+    assert store.job_status(42) == "pending"
 
 
 def test_active_controller_candidate_bypasses_earlier_unrelated_profile_rows(

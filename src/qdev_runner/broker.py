@@ -823,6 +823,10 @@ def create_app(
                 queued_managed is not None
                 and queued_managed.admission_ledger == "managed-production"
             ):
+                queued_attempt = _job_attempt(queued)
+                if queued_attempt is None:
+                    profile_queue.append(queued)
+                    continue
                 if queued_managed_release_ledger is None:
                     try:
                         queued_managed_release_ledger = managed_release_ledger()
@@ -835,13 +839,10 @@ def create_app(
                     queued_managed.entry_id,
                     str(queued["head_sha"]),
                     run_id=int(queued["run_id"]),
+                    run_attempt=queued_attempt,
                 )
                 if not admitted:
                     assert reason is not None
-                    queued_attempt = _job_attempt(queued)
-                    if queued_attempt is None:
-                        profile_queue.append(queued)
-                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
@@ -865,6 +866,69 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="managed release ledger is unavailable"
             ) from error
+
+    def revalidate_fifo_skip_job_ids(
+        claim_scope: ClaimScope,
+        requested_job_ids: frozenset[int],
+    ) -> frozenset[int]:
+        """Re-read every external admission source at the durable claim boundary."""
+
+        if claim_scope.schema != SCHEMA_V2 or not requested_job_ids:
+            return frozenset()
+        current_registry = managed_registry()
+        allowed: set[int] = set()
+        for item in claim_scope.fifo_skipped:
+            if item.job_id not in requested_job_ids:
+                continue
+            if item.reason == "active-admin-platform-controller-priority":
+                current_ledger = admin_platform_ledger()
+                active = current_ledger.active_candidate
+                if (
+                    current_ledger.active_stage == "controller"
+                    and active is not None
+                    and active.repository == _CONTROLLER_REPOSITORY
+                    and any(
+                        scoped.repository == active.repository
+                        and scoped.exact_sha == active.source_sha
+                        for scoped in claim_scope.jobs
+                    )
+                ):
+                    try:
+                        current_ledger.validate_admission("controller", active.source_sha)
+                    except AdminPlatformLedgerError:
+                        continue
+                    allowed.add(item.job_id)
+                continue
+            try:
+                managed_entry = current_registry.validate_claim_if_managed(
+                    item.repository, item.profile
+                )
+            except ManagedRegistryError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="managed registry changed during FIFO claim",
+                ) from error
+            if (
+                managed_entry is None
+                or managed_entry.entry_id != item.managed_registry_entry
+            ):
+                continue
+            if managed_entry.admission_ledger == "admin-platform":
+                admitted, _ = admin_platform_ledger().classify_admission(
+                    managed_entry.entry_id, item.exact_sha
+                )
+            elif managed_entry.admission_ledger == "managed-production":
+                admitted, _ = managed_release_ledger().classify_admission(
+                    managed_entry.entry_id,
+                    item.exact_sha,
+                    run_id=item.run_id,
+                    run_attempt=item.attempt,
+                )
+            else:
+                continue
+            if not admitted:
+                allowed.add(item.job_id)
+        return frozenset(allowed)
 
     def release_state() -> ReleaseStore:
         nonlocal release_store
@@ -1799,6 +1863,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="job not found")
         if candidate.get("status") != "pending":
             raise HTTPException(status_code=409, detail="job is not pending")
+        attempt = _job_attempt(candidate)
+        if attempt is None:
+            raise HTTPException(status_code=409, detail="provider attempt is unavailable")
 
         labels = _json_strings(candidate["labels_json"])
         try:
@@ -1835,6 +1902,7 @@ def create_app(
                         managed_entry.entry_id,
                         str(candidate["head_sha"]),
                         run_id=int(candidate["run_id"]),
+                        run_attempt=attempt,
                     )
                     managed_release_ledger_entry = managed_entry.entry_id
             except (AdminPlatformLedgerError, ManagedReleaseLedgerError) as exc:
@@ -1950,6 +2018,10 @@ def create_app(
                     queued_managed is not None
                     and queued_managed.admission_ledger == "managed-production"
                 ):
+                    queued_attempt = _job_attempt(queued)
+                    if queued_attempt is None:
+                        profile_queue.append(queued)
+                        continue
                     if queued_managed_release_ledger is None:
                         try:
                             queued_managed_release_ledger = managed_release_ledger()
@@ -1962,13 +2034,10 @@ def create_app(
                         queued_managed.entry_id,
                         str(queued["head_sha"]),
                         run_id=int(queued["run_id"]),
+                        run_attempt=queued_attempt,
                     )
                     if not admitted:
                         assert reason is not None
-                        queued_attempt = _job_attempt(queued)
-                        if queued_attempt is None:
-                            profile_queue.append(queued)
-                            continue
                         fifo_skipped.append(
                             {
                                 "job_id": int(queued["job_id"]),
@@ -1986,9 +2055,6 @@ def create_app(
         if not profile_queue or int(profile_queue[0]["job_id"]) != job_id:
             raise HTTPException(status_code=409, detail="job is not the FIFO head for its profile")
 
-        attempt = _job_attempt(candidate)
-        if attempt is None:
-            raise HTTPException(status_code=409, detail="provider attempt is unavailable")
         scoped_fifo_skipped = tuple(
             ScopedFifoSkip(
                 job_id=int(item["job_id"]),
@@ -2346,6 +2412,10 @@ def create_app(
                 queued_managed is not None
                 and queued_managed.admission_ledger == "managed-production"
             ):
+                queued_attempt = _job_attempt(queued)
+                if queued_attempt is None:
+                    pending_for_override.append(queued)
+                    continue
                 if queued_managed_release_ledger is None:
                     try:
                         queued_managed_release_ledger = managed_release_ledger()
@@ -2358,13 +2428,10 @@ def create_app(
                     queued_managed.entry_id,
                     str(queued["head_sha"]),
                     run_id=int(queued["run_id"]),
+                    run_attempt=queued_attempt,
                 )
                 if not admitted:
                     assert reason is not None
-                    queued_attempt = _job_attempt(queued)
-                    if queued_attempt is None:
-                        pending_for_override.append(queued)
-                        continue
                     fifo_skipped.append(
                         {
                             "job_id": int(queued["job_id"]),
@@ -2901,12 +2968,19 @@ def create_app(
             else None
         )
         fifo_skip_job_ids = frozenset[int]()
+        fifo_skip_guard: Callable[[frozenset[int]], frozenset[int]] | None = None
         if claim_scope is not None and claim_scope.schema == SCHEMA_V2:
             skipped: set[int] = set()
             for profile_name in request.profiles:
                 _, profile_skipped = admissible_profile_queue(profile_name)
                 skipped.update(int(item["job_id"]) for item in profile_skipped)
             fifo_skip_job_ids = frozenset(skipped)
+            bound_claim_scope = claim_scope
+
+            def scoped_fifo_skip_guard(requested: frozenset[int]) -> frozenset[int]:
+                return revalidate_fifo_skip_job_ids(bound_claim_scope, requested)
+
+            fifo_skip_guard = scoped_fifo_skip_guard
         claimed = store.claim(
             request.worker_name,
             tuple(request.profiles),
@@ -2919,6 +2993,7 @@ def create_app(
             repository=repository,
             head_sha=head_sha,
             fifo_skip_job_ids=fifo_skip_job_ids,
+            fifo_skip_guard=fifo_skip_guard,
         )
         if claimed is None:
             return Response(status_code=204)
