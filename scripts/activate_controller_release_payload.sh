@@ -341,6 +341,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
+    scripts/qdev_fixed_worker_recovery_dispatch.py
     scripts/qdev_runner_recovery_host_agent.py
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
@@ -504,7 +505,7 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
   -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
   -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if (used > max_used || free < (min_free_gib * 1048576) ||
+    if ((used > max_used && free < (min_free_gib * 1048576)) ||
         mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
   }' || {
     printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
@@ -1332,6 +1333,12 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/qdev_fleet_worker_recovery_adapter.py" \
     /usr/local/sbin/qdev-fleet-worker-recovery 0755 || return 1
+  atomic_install \
+    "$release/scripts/qdev_fixed_worker_recovery_dispatch.py" \
+    /usr/local/sbin/qdev-fixed-worker-recovery-dispatch 0755 || return 1
+  atomic_install \
+    "$release/scripts/provision_worker_recovery_bindings.py" \
+    /usr/local/sbin/qdev-worker-recovery-bindings-provision 0755 || return 1
   atomic_install \
     "$release/scripts/provision_fleet_host_dispatch_state.py" \
     /usr/local/sbin/qdev-fleet-host-dispatch-state-provision 0755 || return 1
