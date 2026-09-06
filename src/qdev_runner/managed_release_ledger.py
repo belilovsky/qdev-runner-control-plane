@@ -771,7 +771,13 @@ class ManagedReleaseLedger:
             raise ManagedReleaseLedgerError("managed production candidate tuple is not admitted")
         return entry
 
-    def classify_admission(self, entry_id: str, exact_sha: str) -> tuple[bool, str | None]:
+    def classify_admission(
+        self,
+        entry_id: str,
+        exact_sha: str,
+        *,
+        run_id: int,
+    ) -> tuple[bool, str | None]:
         """Observe whether a queued managed-production tuple remains admissible.
 
         Direct claims continue to use :meth:`validate_admission` and fail
@@ -784,7 +790,9 @@ class ManagedReleaseLedger:
         if entry is None or entry.status not in ACTIVE_STATUSES:
             return False, "managed-production-candidate-not-active"
         admitted_checkout = any(
-            binding["checkout_sha"] == exact_sha and binding["state"] in {"queued", "in_progress"}
+            binding["checkout_sha"] == exact_sha
+            and binding["run_id"] == str(run_id)
+            and binding["state"] in {"queued", "in_progress"}
             for binding in entry.ci_runs
         )
         if not admitted_checkout:

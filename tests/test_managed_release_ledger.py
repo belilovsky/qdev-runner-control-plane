@@ -29,6 +29,7 @@ def _ledger_path(tmp_path: Path) -> Path:
     path.write_bytes(_source_path().read_bytes())
     return path
 
+
 def _labels(run_id: str, attempt: str, job_name: str, profile: str) -> list[str]:
     return sorted(
         [
@@ -327,18 +328,27 @@ def test_qazgeo_ledger_classifies_fifo_admission_without_mutation(tmp_path: Path
     binding = _phase_bindings("pull_request", state="queued", conclusion=None)[0]
     _register(path, binding)
     ledger = ManagedReleaseLedger(path)
+    run_id = int(binding["run_id"])
 
-    assert ledger.classify_admission("qazgeo", PR_CHECKOUT_SHA) == (True, None)
-    assert ledger.classify_admission("missing", SOURCE_SHA) == (
+    assert ledger.classify_admission("qazgeo", PR_CHECKOUT_SHA, run_id=run_id) == (True, None)
+    assert ledger.classify_admission("missing", SOURCE_SHA, run_id=run_id) == (
         False,
         "managed-production-candidate-not-active",
     )
-    assert ledger.classify_admission("qazgeo", SOURCE_SHA) == (
+    assert ledger.classify_admission("qazgeo", SOURCE_SHA, run_id=run_id) == (
+        False,
+        "managed-production-candidate-tuple-not-admitted",
+    )
+    assert ledger.classify_admission("qazgeo", PR_CHECKOUT_SHA, run_id=run_id + 1) == (
         False,
         "managed-production-candidate-tuple-not-admitted",
     )
 
-    assert ManagedReleaseLedger(_source_path()).classify_admission("qazgeo", SOURCE_SHA) == (
+    assert ManagedReleaseLedger(_source_path()).classify_admission(
+        "qazgeo",
+        SOURCE_SHA,
+        run_id=run_id,
+    ) == (
         False,
         "managed-production-candidate-not-active",
     )

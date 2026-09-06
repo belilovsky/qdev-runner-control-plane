@@ -342,6 +342,8 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
     scripts/qdev_fixed_worker_recovery_dispatch.py
+    scripts/qdev_recovery_host_enrol_adapter.py
+    scripts/qdev_recovery_host_apply.py
     scripts/qdev_runner_recovery_host_agent.py
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
@@ -467,7 +469,7 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-94}"
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
@@ -1336,6 +1338,9 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/qdev_fixed_worker_recovery_dispatch.py" \
     /usr/local/sbin/qdev-fixed-worker-recovery-dispatch 0755 || return 1
+  atomic_install \
+    "$release/scripts/qdev_recovery_host_enrol_adapter.py" \
+    /usr/local/sbin/qdev-recovery-host-enrol 0755 || return 1
   atomic_install \
     "$release/scripts/provision_worker_recovery_bindings.py" \
     /usr/local/sbin/qdev-worker-recovery-bindings-provision 0755 || return 1

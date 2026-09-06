@@ -308,9 +308,7 @@ def _app(
         managed_registry_path=Path(__file__).parents[1] / "config" / "managed-registry.yml",
         admin_platform_ledger_path=admin_platform_ledger,
         admin_platform_receipt_root=admin_platform_receipts,
-        managed_release_ledger_path=(
-            managed_release_ledger_path or managed_release_ledger
-        ),
+        managed_release_ledger_path=(managed_release_ledger_path or managed_release_ledger),
         release_jobs_root=tmp_path / "release-jobs",
         release_host_dispatch_keys_file=tmp_path / "release-host-dispatch-keys.json",
         release_host_dispatch_claim_ttl_seconds=120,
@@ -336,8 +334,43 @@ def _managed_release_ledger(
     entry = document["entries"]["qazgeo"]
     entry["source_sha"] = source_sha
     entry["status"] = status
-    entry["ci_runs"] = [{"run_id": str(run_id), "state": "queued"}]
-    path = tmp_path / "managed-release-ledger.yml"
+    entry["registration"].update(
+        {
+            "state": "open",
+            "phase": "push",
+            "pr_verified": True,
+            "job_set_digest": None,
+        }
+    )
+    entry["ci_runs"] = [
+        {
+            "repository": "belilovsky/qazgeo",
+            "candidate_sha": source_sha,
+            "checkout_sha": source_sha,
+            "run_id": str(run_id),
+            "attempt": "1",
+            "job_id": "41",
+            "workflow_path": ".github/workflows/ci.yml",
+            "event": "push",
+            "ref": "refs/heads/main",
+            "head_branch": "main",
+            "profile": "qdev-ci-docker",
+            "labels": sorted(
+                [
+                    "self-hosted",
+                    "Linux",
+                    "X64",
+                    "qdev-ci-docker",
+                    qgeo_dynamic_job_label(str(run_id), "1", "test"),
+                ]
+            ),
+            "job_name": "test",
+            "state": "queued",
+            "conclusion": None,
+        }
+    ]
+    entry["ci"] = {"state": "ci_queued", "receipt_uri": None}
+    path = tmp_path / "custom-managed-release-ledger.yml"
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return path
 
@@ -1232,10 +1265,11 @@ def _heartbeat(
     scope_id: str | None = None,
     profiles: list[str] | None = None,
     effective_profiles: list[str] | None = None,
+    capacity_directive_id: str | None = None,
     concurrency: int = 1,
 ) -> dict[str, object]:
     worker_profiles = profiles or ["qdev-ci-docker"]
-    admitted_profiles = effective_profiles if effective_profiles is not None else ["qdev-ci-docker"]
+    admitted_profiles = effective_profiles if effective_profiles is not None else worker_profiles
     raw = {
         "allowed": True,
         "disk_used_pct": 87.0,
@@ -1262,7 +1296,7 @@ def _heartbeat(
                 "baseline_capacity": baseline,
                 "effective_capacity": baseline,
                 "effective_profiles": admitted_profiles if admitted else [],
-                "capacity_directive_id": None,
+                "capacity_directive_id": capacity_directive_id,
                 "configured_claim_scope_id": scope_id,
                 "concurrency": concurrency,
                 "slots_available": max(0, concurrency - active_jobs),
@@ -2205,7 +2239,7 @@ def test_direct_claim_of_superseded_managed_production_row_remains_fail_closed(
     _heartbeat(
         client,
         admitted=True,
-        disk_free_gib=40.0,
+        disk_free_gib=60.0,
         scope_id="srv1879763-primary",
     )
     _seed_pending_job(
@@ -2249,9 +2283,15 @@ def test_managed_production_unknown_run_is_fail_closed_but_does_not_block_fifo(
     client = _app(
         tmp_path,
         FakeGitHub(),
+        include_qgeo=True,
         managed_release_ledger_path=ledger_path,
     )
-    _heartbeat(client, admitted=True, scope_id="srv1879763-primary")
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=60.0,
+        scope_id="srv1879763-primary",
+    )
     _seed_pending_job(
         client,
         41,
@@ -2277,7 +2317,7 @@ def test_managed_production_unknown_run_is_fail_closed_but_does_not_block_fifo(
         },
     )
     assert direct.status_code == 409
-    assert direct.json()["detail"] == "managed production CI run is not admitted"
+    assert direct.json()["detail"] == "managed production provider binding is not admitted"
 
     issued = client.post(
         "/internal/v1/operations/jobs/42/claim-scope",
@@ -2612,6 +2652,7 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
     _heartbeat(
         client,
         admitted=True,
+        disk_free_gib=100.0,
         scope_id="srv1879763-primary",
         profiles=profiles,
     )
@@ -2629,18 +2670,16 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
     issued = client.post(
         "/internal/v1/operations/jobs/42/claim-scope",
         headers=OPERATOR_HEADERS,
-        json=base_request
-        | {"job_id": 42, "correlation_id": "cross-profile-rollover"},
+        json=base_request | {"job_id": 42, "correlation_id": "cross-profile-rollover"},
     )
     assert issued.status_code == 200
     client.app.state.store.set_status(42, "completed", "success")
     rollover = client.post(
         "/internal/v1/operations/jobs/43/claim-scope",
         headers=OPERATOR_HEADERS,
-        json=base_request
-        | {"job_id": 43, "correlation_id": "cross-profile-rollover"},
+        json=base_request | {"job_id": 43, "correlation_id": "cross-profile-rollover"},
     )
-    assert rollover.status_code == 200
+    assert rollover.status_code == 200, rollover.text
 
     # Reproduce the live constrained-capacity state only after the v2 scope
     # has retained tuples from both profiles.  The directive below admits the
@@ -2664,14 +2703,15 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
         duration_seconds=300,
         registered_profiles=tuple(profiles),
     )
-    worker = client.app.state.store.health()["workers"][0]
-    detail = json.loads(worker["detail_json"])
-    detail["capacity_directive_id"] = operation.operation_id
-    with client.app.state.store.connect() as connection:
-        connection.execute(
-            "UPDATE workers SET detail_json=? WHERE name=?",
-            (json.dumps(detail, separators=(",", ":")), WORKER_NAME),
-        )
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=100.0,
+        scope_id="srv1879763-primary",
+        profiles=profiles,
+        effective_profiles=["qdev-ci-browser"],
+        capacity_directive_id=operation.operation_id,
+    )
 
     claim = client.post(
         "/internal/v1/jobs/claim",

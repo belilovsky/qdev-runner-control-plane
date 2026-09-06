@@ -3368,9 +3368,7 @@ def create_app(
         for profile_name in policy.profiles:
             profile_queue, _ = admissible_profile_queue(profile_name)
             candidates, _ = durable_profile_heads(profile_queue, policy)
-            profile_heads.extend(
-                item for item in candidates if item["profile"] == profile_name
-            )
+            profile_heads.extend(item for item in candidates if item["profile"] == profile_name)
         _, unclassified = durable_profile_heads(pending_jobs, policy)
         return operation_store.receipt(
             {
