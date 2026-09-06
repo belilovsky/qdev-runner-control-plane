@@ -33,6 +33,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
         in script
     )
     assert "min_free_gib * 1048576" in script
+    assert "used > max_used && free <" in script
     assert "previous_public_image" in script
     assert "previous_internal_image" in script
     assert "compose -p qdev-runner" in script

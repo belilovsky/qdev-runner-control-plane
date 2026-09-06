@@ -435,7 +435,7 @@ awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" -v max_used="$max_disk_used_pct" \
   -v min_free_gib="$min_free_gib" -v min_mem_gib="$min_memory_gib" \
   -v max_load_per_cpu="$max_load_per_cpu" 'BEGIN {
-    if (used > max_used || free < (min_free_gib * 1048576) ||
+    if ((used > max_used && free < (min_free_gib * 1048576)) ||
         mem < (min_mem_gib * 1048576) || load15 > (max_load_per_cpu * cpus)) exit 1
   }' || {
     printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
