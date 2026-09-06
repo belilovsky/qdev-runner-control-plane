@@ -2801,13 +2801,25 @@ def create_app(
         x_qdev_worker_token: str | None = Header(default=None),
         x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any] | Response:
+        registered_profiles = tuple(request.profiles)
+        if request.claim_scope_id is not None:
+            # A capacity directive deliberately narrows the profiles sent in a
+            # claim request to one admitted profile.  A v2 scope can retain
+            # provider-terminal tuples from earlier profiles as it rolls
+            # forward, so its identity binding must be checked against the
+            # worker's durable registration rather than that temporary subset.
+            try:
+                registered_worker, _ = current_worker(request.worker_name)
+            except HTTPException as error:
+                raise HTTPException(status_code=403, detail="claim scope rejected") from error
+            registered_profiles = _json_strings(registered_worker.get("profiles_json"))
         try:
             claim_scope = resolve_claim_scope(
                 settings.claim_scopes_path,
                 request.claim_scope_id,
                 request.worker_name,
                 request.tier,
-                tuple(request.profiles),
+                registered_profiles,
             )
         except ClaimScopeError as error:
             LOGGER.warning("rejected claim scope for worker=%s: %s", request.worker_name, error)
