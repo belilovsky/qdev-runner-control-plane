@@ -94,9 +94,7 @@ def canonical_bytes(document: dict[str, Any]) -> bytes:
 
 
 def utc_timestamp(value: str) -> float:
-    if not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)", value
-    ):
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)", value):
         raise ValueError("CI timestamps must be UTC RFC3339")
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
@@ -118,12 +116,11 @@ def parse_binding(raw: bytes, *, now: float) -> FileApplyBinding:
             observation.runner_contract,
             observation.artifact,
         )
-        for ci, workflow in (
-            (quality, "quality.yml"), (contract, "qdev-runner-contract.yml")
-        ):
+        for ci, workflow in ((quality, "quality.yml"), (contract, "qdev-runner-contract.yml")):
             if (
                 ci.workflow != workflow
-                or ci.url != (
+                or ci.url
+                != (
                     f"https://github.com/{binding.repository}/actions/runs/"
                     f"{ci.run_id}/job/{ci.job_id}"
                 )
@@ -206,6 +203,7 @@ class FileApplyBridge:
             [dict[str, Any]], AbstractContextManager[NativeDispatchGuard]
         ],
         clock: Callable[[], float] = time.time,
+        previous_observation: dict[str, Any] | None = None,
     ) -> None:
         if not callable(dispatch_transaction):
             raise ReleaseLaneError("native durable dispatch transaction is required")
@@ -219,6 +217,9 @@ class FileApplyBridge:
         self._key = signing_key
         self._transaction = dispatch_transaction
         self._clock = clock
+        self._previous_observation = (
+            None if previous_observation is None else canonical_bytes(previous_observation)
+        )
 
     def _verify(self, raw: bytes) -> dict[str, Any]:
         now = self._clock()
@@ -291,14 +292,28 @@ class FileApplyBridge:
             expires_at=expires_at,
             nonce=nonce,
         )
+        expected_rollback = {
+            "source_sha": binding.expected_previous_sha,
+            "artifact_digest": f"sha256:{binding.snapshot_sha256}",
+            "artifact_ref": f"{self._lane.artifact_ref_prefix}@sha256:{binding.snapshot_sha256}",
+        }
+        if self._previous_observation is not None:
+            from qdev_runner.idp_file_runtime import IdPObservationError, native_receipt
+
+            try:
+                prior = native_receipt(json.loads(self._previous_observation), installed=True)
+            except IdPObservationError:
+                raise ReleaseLaneError("invalid previously accepted IdP observation") from None
+            expected_rollback = {key: prior[key] for key in expected_rollback}
+            # Snapshot-to-file association is independently checked by the fixed
+            # native journal adapter under its lock before it may yield a guard.
+            if expected_rollback["source_sha"] != binding.expected_previous_sha:
+                raise ReleaseLaneError("previous IdP observation source mismatch")
         if (
             claim != expected_claim
             or not claim["issued_at"] <= now + 30
             or not now < claim["expires_at"] <= claim["lease_expires_at"]
-            or claim["rollback_anchor"]["source_sha"] != binding.expected_previous_sha
-            or claim["rollback_anchor"]["artifact_digest"] != f"sha256:{binding.snapshot_sha256}"
-            or claim["rollback_anchor"]["artifact_ref"]
-            != f"{self._lane.artifact_ref_prefix}@sha256:{binding.snapshot_sha256}"
+            or claim["rollback_anchor"] != expected_rollback
             or any(
                 not re.fullmatch(pattern, claim[field])
                 for field, pattern in (

@@ -20,6 +20,8 @@ REPOSITORY = "belilovsky/id-qdev-run"
 ADAPTER = "idp-file-v1"
 ARTIFACT_PREFIX = "qdev/idp-release"
 PROVENANCE_SCHEMA = "qdev-idp-file-runtime-provenance-v1"
+ASSOCIATED_PROVENANCE_SCHEMA = "qdev-idp-file-runtime-provenance-v2"
+INSTALLED_MANIFEST = ".qdev-release-manifest.json"
 PREVIOUS_PROVENANCE = "observed_files_only_not_retroactive_ci"
 READINESS = {"identity": "ok", "native": "ok", "public": "ok"}
 PREFIX = [
@@ -182,6 +184,50 @@ def _images(value: Any) -> dict[str, str]:
         require(container not in dependencies)
         dependencies[container] = image
     return dependencies
+
+
+def _snapshot(value: Any, binding: dict[str, Any], manifest: dict[str, Any]) -> None:
+    require(
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "schema_version",
+            "snapshot_sha256",
+            "index",
+            "previous_component_manifest",
+        }
+    )
+    require(value["schema_version"] == "qdev-idp-file-snapshot-v1")
+    index, previous = value["index"], value["previous_component_manifest"]
+    require(isinstance(index, dict) and INSTALLED_MANIFEST in index)
+    require(value["snapshot_sha256"] == binding["snapshot_sha256"] == digest(index))
+    expected_names = set(manifest["components"]) | {INSTALLED_MANIFEST}
+    if previous is None:
+        require(index[INSTALLED_MANIFEST] is None)
+    else:
+        _manifest(
+            previous,
+            {
+                "source_sha": binding["expected_previous_sha"],
+                "manifest_sha256": digest(previous),
+            },
+        )
+        expected_names |= set(previous["components"])
+        require(index[INSTALLED_MANIFEST] == {"mode": 0o600, "sha256": digest(previous)})
+        for name, component in previous["components"].items():
+            require(index.get(name) == {key: component[key] for key in ("mode", "sha256")})
+        require(
+            all(
+                index.get(name) is None
+                for name in expected_names - set(previous["components"]) - {INSTALLED_MANIFEST}
+            )
+        )
+    require(set(index) == expected_names)
+    for name, item in index.items():
+        if item is not None:
+            require(isinstance(item, dict) and set(item) == {"mode", "sha256"})
+            require(hex_value(item["sha256"]) and type(item["mode"]) is int)
+            require(item["mode"] in ({0o600} if name == INSTALLED_MANIFEST else {0o644, 0o755}))
 
 
 def _events(observation: dict[str, Any], binding: dict[str, Any], installed: bool) -> list[Any]:
@@ -361,15 +407,25 @@ def _translate(observation: dict[str, Any], installed: bool) -> dict[str, Any]:
             "deployment",
         }
     )
+    v2 = observation.get("schema_version") in {
+        "qdev-idp-release-observation-v2",
+        "qdev-idp-prepared-observation-v2",
+    }
+    if v2:
+        specific.add("rollback_snapshot")
     require(set(observation) == common | specific)
     expected = (
         (
-            "qdev-idp-release-observation-v1",
+            "qdev-idp-release-observation-v2" if v2 else "qdev-idp-release-observation-v1",
             "installed_release_reobserved",
             "historical_binding_only_not_current_authorization",
         )
         if installed
-        else ("qdev-idp-prepared-observation-v1", "prepared_runtime_reobserved", "not_authorized")
+        else (
+            "qdev-idp-prepared-observation-v2" if v2 else "qdev-idp-prepared-observation-v1",
+            "prepared_runtime_reobserved",
+            "not_authorized",
+        )
     )
     require(
         tuple(observation[key] for key in ("schema_version", "status", "controller_admission"))
@@ -381,6 +437,8 @@ def _translate(observation: dict[str, Any], installed: bool) -> dict[str, Any]:
     require(binding["source_sha"] == observation["source_sha"])
     require(binding["transaction"] == observation["transaction"])
     count = _manifest(observation["component_manifest"], binding)
+    if v2:
+        _snapshot(observation["rollback_snapshot"], binding, observation["component_manifest"])
     dependencies = _images(observation["runtime_images"])
     events = _events(observation, binding, installed)
     if installed:
@@ -478,12 +536,43 @@ def native_receipt(
     installed: bool,
     expected_binding: bytes | None = None,
     now: float | None = None,
+    previous_observation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate retained content; caller must separately verify collector origin/freshness."""
     try:
         # Snapshot inputs so later caller mutation cannot alter the accepted receipt.
         observation = json.loads(canonical(observation))
         result = _translate(observation, installed)
+        if previous_observation is not None:
+            previous = json.loads(canonical(previous_observation))
+            prior = _translate(previous, True)
+            binding = _binding(observation, installed)
+            require(
+                observation.get("rollback_snapshot", {}).get("previous_component_manifest")
+                == previous["component_manifest"]
+            )
+            require(prior["source_sha"] == binding["expected_previous_sha"])
+            require(previous["transaction"] != observation["transaction"])
+            require(timestamp(previous["observed_at"]) <= timestamp(observation["observed_at"]))
+            require(previous["runtime_images"] == observation["runtime_images"])
+            previous_release = {
+                key: prior[key] for key in ("source_sha", "artifact_digest", "artifact_ref")
+            }
+            if not installed:
+                result.update(previous_release)
+                result["runtime_identity"] = {**previous_release, "measured": True}
+            result["artifact_provenance"].update(
+                {
+                    "schema": ASSOCIATED_PROVENANCE_SCHEMA,
+                    "rollback_association": {
+                        "schema": "qdev-idp-rollback-association-v1",
+                        "snapshot_sha256": binding["snapshot_sha256"],
+                        "previous_release": previous_release,
+                        "previous_observation_sha256": digest(previous),
+                        "previous_observation": previous,
+                    },
+                }
+            )
         if expected_binding is not None:
             require(canonical(_binding(observation, installed)) == expected_binding)
         if now is not None:
@@ -497,6 +586,7 @@ def validate_runtime_evidence(receipt: dict[str, Any], *, installed_only: bool =
     """Same validator on host and controller; hashes without content cannot pass."""
     try:
         provenance = receipt["artifact_provenance"]
+        associated = provenance.get("schema") == ASSOCIATED_PROVENANCE_SCHEMA
         require(
             isinstance(provenance, dict)
             and set(provenance)
@@ -506,12 +596,17 @@ def validate_runtime_evidence(receipt: dict[str, Any], *, installed_only: bool =
                 "observation_sha256",
                 "observation",
             }
+            | ({"rollback_association"} if associated else set())
         )
-        require(provenance["schema"] == PROVENANCE_SCHEMA)
+        require(provenance["schema"] in {PROVENANCE_SCHEMA, ASSOCIATED_PROVENANCE_SCHEMA})
         require(provenance["stage"] in {"prepared", "installed"})
         require(not installed_only or provenance["stage"] == "installed")
         expected = native_receipt(
-            provenance["observation"], installed=provenance["stage"] == "installed"
+            provenance["observation"],
+            installed=provenance["stage"] == "installed",
+            previous_observation=(
+                provenance["rollback_association"]["previous_observation"] if associated else None
+            ),
         )
         require(
             all(
@@ -530,13 +625,20 @@ def validate_runtime_evidence(receipt: dict[str, Any], *, installed_only: bool =
         if installed_only:
             binding = _binding(provenance["observation"], True)
             artifact = f"sha256:{binding['snapshot_sha256']}"
+            rollback = (
+                expected["artifact_provenance"]["rollback_association"]["previous_release"]
+                if associated
+                else {
+                    "source_sha": binding["expected_previous_sha"],
+                    "artifact_digest": artifact,
+                    "artifact_ref": f"{ARTIFACT_PREFIX}@{artifact}",
+                }
+            )
             require(
                 receipt.get("rollback")
                 == {
                     "verified": True,
-                    "source_sha": binding["expected_previous_sha"],
-                    "artifact_digest": artifact,
-                    "artifact_ref": f"{ARTIFACT_PREFIX}@{artifact}",
+                    **rollback,
                 }
             )
     except (ValueError, TypeError, KeyError, IndexError, AttributeError):

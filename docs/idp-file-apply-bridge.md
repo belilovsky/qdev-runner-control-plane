@@ -113,7 +113,8 @@ file replacement is bounded by that check, not presented as a distributed lock.
 
 `qdev_runner.idp_file_runtime` validates both native prepared and installed
 observations and retains their complete redacted content with its canonical
-digest in `qdev-idp-file-runtime-provenance-v1`. Host and controller use the same
+digest in `qdev-idp-file-runtime-provenance-v1`. A verified previous release is
+associated using `qdev-idp-file-runtime-provenance-v2`. Host and controller use the same
 validator. It checks the component manifest, exact CI tuples/download binding,
 transaction hash chain, phase-specific evidence, unchanged container identities,
 file and PostgreSQL capacity observations, disposable restore result, retained
@@ -125,11 +126,29 @@ the trust boundary: arbitrary JSON is not authenticated by these shape checks.
 Prepared files bind the **previous SHA and retained snapshot**, explicitly marked
 `observed_files_only_not_retroactive_ci`; installed files bind the candidate SHA
 and downloaded CI artifact. Neither observation establishes protected acceptance.
-The signed rollback anchor must match that exact native previous snapshot before
-any dispatch is consumed. This first-baseline path cannot silently replace an
-already known active artifact with a new snapshot digest. Subsequent release
-enrollment must explicitly reconcile the retained snapshot with the independently
-verified previous release identity; that association is not implemented here.
+The first-baseline signed rollback anchor must match that exact native previous
+snapshot before any dispatch is consumed. It cannot silently replace an already
+known active artifact with a new snapshot digest.
+
+For subsequent releases, native observation v2 includes `rollback_snapshot`: the
+canonical retained index and previous installed component manifest, reread from
+the actual retained blobs. It covers the union of old and new component paths,
+including removed files and the private installed manifest; new-only paths must
+have been absent. Private runtime configuration stays outside this observation.
+The controller loads the previous installed observation only from an exact
+`verified` completion in its protected native journal, verifies it, and rereads
+that association under the dispatch lock before admission. An active-state
+identity alone or a caller-selected observation is insufficient.
+
+The v2 provenance retains that raw previous observation and its digest, not its
+translated provenance or recursively embedded release history. Its manifest must
+match every previous snapshot component, SHA and unchanged container identity.
+The current snapshot retains its own digest; the prepared runtime and completion
+rollback anchor retain the previous CI archive identity. Installed runtime binds
+the new CI archive. Both host and controller recompute this association. Missing
+history, changed snapshot content, a substituted manifest or a downgraded receipt
+cannot redefine the existing rollback anchor. This is implemented source logic,
+not live enrollment or proof of any historical production release.
 
 ## Provider-backed CI observation (not release admission)
 
@@ -214,3 +233,7 @@ rehashed drift, wrong CI attempts, missing database capacity, failed restore,
 wrong profile and a conflicting known active artifact. They exercise the fixed
 adapter with the real host journal and lock, with synthetic controller/runtime
 sources; they are not IdP production evidence.
+Two-release tests also cover added/removed components, missing protected history,
+association drift under the lock, rehashed contradictory indexes, receipt
+downgrades and completion recovery without a second apply. Native collector
+tests independently hash actual temporary snapshot files before and after apply.
