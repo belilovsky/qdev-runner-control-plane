@@ -909,13 +909,9 @@ def test_active_runtime_lineage_rejects_unsafe_retry(
     )
     base_release_id = f"controller-v3-{CURRENT_SHA}"
     retry_release_id = f"{base_release_id}:retry-1"
-    results = [
-        {"release_id": base_release_id, "lane": "source", "outcome": "passed"}
-    ]
+    results = [{"release_id": base_release_id, "lane": "source", "outcome": "passed"}]
     if include_retry_source_evidence:
-        results.append(
-            {"release_id": retry_release_id, "lane": "source", "outcome": "passed"}
-        )
+        results.append({"release_id": retry_release_id, "lane": "source", "outcome": "passed"})
     entry = {
         "status": "candidate",
         "attempts": [
@@ -928,9 +924,7 @@ def test_active_runtime_lineage_rejects_unsafe_retry(
             {
                 "release_id": retry_release_id,
                 "source_sha": CURRENT_SHA,
-                "finished_at": (
-                    "2026-09-05T00:00:02Z" if terminal_state is not None else None
-                ),
+                "finished_at": ("2026-09-05T00:00:02Z" if terminal_state is not None else None),
                 "terminal_state": terminal_state,
             },
         ],

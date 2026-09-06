@@ -158,8 +158,7 @@ def _require_active_runtime_lineage(
     runtime_attempts = [
         attempt
         for attempt in attempts
-        if isinstance(attempt, dict)
-        and attempt.get("source_sha") == active_runtime_source_sha
+        if isinstance(attempt, dict) and attempt.get("source_sha") == active_runtime_source_sha
     ]
     if not runtime_attempts or any(
         attempt.get("terminal_state") not in {"blocked", "rolled_back"}
@@ -170,9 +169,7 @@ def _require_active_runtime_lineage(
         raise ControllerCandidateError(
             "active runtime is not an unambiguous terminal controller attempt"
         )
-    runtime_release_ids = {
-        cast(str, attempt["release_id"]) for attempt in runtime_attempts
-    }
+    runtime_release_ids = {cast(str, attempt["release_id"]) for attempt in runtime_attempts}
     source_proven_release_ids = {
         cast(str, result["release_id"])
         for result in results
