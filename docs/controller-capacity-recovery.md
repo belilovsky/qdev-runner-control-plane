@@ -44,9 +44,12 @@ cannot choose a host, service, executable, certificate or CA key.
      --reason 'restore existing dedicated Platform CI runner'
    ```
 
-   Save the returned `operation_id` and `request_fingerprint`. The controller
-   observes the unique same-name provider runner and refuses preparation when
-   it is busy, has active jobs, has a conflicting identity or no exact target.
+   Save the returned `operation_id` and `request_fingerprint`. For saved-
+   configuration recovery, the controller requires the unique same-name
+   provider runner. For replacement recovery, it accepts either that idle
+   runner or a signed observation that the name is absent and has no active
+   provider jobs. It refuses preparation when the runner is busy, has active
+   jobs or has a conflicting identity.
 4. Start the already installed one-shot service on the fixed target host:
 
    ```bash
@@ -61,9 +64,22 @@ cannot choose a host, service, executable, certificate or CA key.
    Each agent persists private native proof before reconciling it to the
    controller. A retry resumes pending reconciliation or returns idle; it does
    not repeat a completed mutation.
-5. Run controller acceptance and then read the exact transaction:
+5. Persist controller acceptance intent with the exact current default-branch
+   SHA. Then dispatch that exact intent with an authenticated owner identity;
+   the controller GitHub App deliberately has read-only Actions access for
+   correlation and never receives Contents or Actions-write permission:
 
    ```bash
+   qdev-runner-operator recovery-accept \
+     --operation-id OPERATION_ID \
+     --request-fingerprint REQUEST_FINGERPRINT \
+     --canary-head-sha EXACT_40_CHARACTER_DEFAULT_BRANCH_SHA
+   gh workflow run WORKFLOW --repo REPOSITORY --ref DEFAULT_BRANCH \
+     -f operation_id=OPERATION_ID \
+     -f dispatch_correlation=qdev-recovery-OPERATION_ID \
+     -f runner_label=qdev-job-recovery-OPERATION_ID
+   # QazStack self-hosted-recovery.yml additionally requires:
+   #   -f confirm_recovery=RECOVER_QAZSTACK_RUNNER
    qdev-runner-operator recovery-accept \
      --operation-id OPERATION_ID \
      --request-fingerprint REQUEST_FINGERPRINT
@@ -73,16 +89,20 @@ cannot choose a host, service, executable, certificate or CA key.
    ```
 
    Acceptance requires the expected permanent labels, GitHub `online` and
-   `busy=false`, zero active jobs, a controller-dispatched exact-default-SHA
-   canary on the same runner, and a successful provider-visible terminal job.
+   `busy=false`, zero active jobs, an owner-dispatched and
+   controller-correlated exact-default-SHA canary on the same runner, and a
+   successful provider-visible terminal job.
    Only `completed` or `already_completed` closes recovery. Replay the same
    prepare request and confirm `idempotent_replay=true` without a new mutation.
 
-The controller refuses recovery when active work is reported, when the target
-is not registered, when identity returned by the adapter does not exactly
-match the allowlist, or when the adapter is unavailable. Those outcomes are
-recorded as `active_work`, `target_unregistered`, `failed` or
-`access_blocked`; they must not be converted into a green workflow result.
+The controller refuses recovery when active work is reported, when a saved-
+configuration target is not registered, when identity returned by the adapter
+does not exactly match the allowlist, or when the adapter is unavailable. A
+missing replacement target is admitted only from the signed absence
+observation described above; it is never inferred from a timeout or stale
+heartbeat. Refusals are recorded as `active_work`, `target_unregistered`,
+`failed` or `access_blocked`; they must not be converted into a green workflow
+result.
 There is no direct SSH/systemd fallback and no manual mutation of FIFO jobs or
 leases. The production runner remains reserved for production operations.
 

@@ -66,6 +66,13 @@ def _sha256_hex(value: str, *, field: str) -> str:
     return normalized
 
 
+def _git_revision(value: str, *, field: str) -> str:
+    normalized = value.lower()
+    if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
+        raise ValueError(f"invalid {field}")
+    return normalized
+
+
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -331,6 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
         recovery_command = commands.add_parser(command_name, help=command_help)
         recovery_command.add_argument("--operation-id", required=True)
         recovery_command.add_argument("--request-fingerprint", required=True)
+        if command_name == "recovery-accept":
+            recovery_command.add_argument("--canary-head-sha")
 
     activate_controller = commands.add_parser(
         "activate-controller",
@@ -491,6 +500,11 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             "request_fingerprint": request_fingerprint,
             "provenance": _fresh_recovery_provenance(settings),
         }
+        if action == "accept" and arguments.canary_head_sha is not None:
+            action_body["canary_head_sha"] = _git_revision(
+                arguments.canary_head_sha,
+                field="canary head SHA",
+            )
         response = recovery_request(
             settings,
             method="POST",

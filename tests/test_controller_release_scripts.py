@@ -374,6 +374,59 @@ def test_recovery_binding_provisioner_accepts_active_prefixed_release_digest(
     }
 
 
+def test_installed_recovery_binding_provisioner_resolves_active_release(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    install_root = tmp_path / "usr" / "local"
+    script = install_root / "sbin" / "qdev-worker-recovery-bindings-provision"
+    script.parent.mkdir(parents=True)
+    script.write_text("installed helper", encoding="utf-8")
+    controller_root = tmp_path / "opt" / "qdev-runner-control-plane"
+    release = controller_root / "releases" / ("a" * 40)
+    (release / "src" / "qdev_runner").mkdir(parents=True)
+    (release / "scripts").mkdir()
+    (release / "src" / "qdev_runner" / "worker_recovery.py").write_text(
+        "POLICY_DIGEST = 'fixture'\n", encoding="utf-8"
+    )
+    (release / "scripts" / "install_qdev_runner_recovery_host_agent.sh").write_text(
+        "#!/bin/sh\n", encoding="utf-8"
+    )
+    active = controller_root / "current"
+    active.symlink_to(release)
+
+    assert helper._resolve_source_root(script, active) == release
+
+
+def test_installed_recovery_binding_provisioner_rejects_mutable_release(
+    tmp_path: Path,
+) -> None:
+    helper = _load_recovery_binding_provisioner()
+    script = tmp_path / "usr" / "local" / "sbin" / "helper"
+    script.parent.mkdir(parents=True)
+    script.write_text("installed helper", encoding="utf-8")
+    controller_root = tmp_path / "opt" / "qdev-runner-control-plane"
+    release = controller_root / "releases" / ("b" * 40)
+    (release / "src" / "qdev_runner").mkdir(parents=True)
+    (release / "scripts").mkdir()
+    (release / "src" / "qdev_runner" / "worker_recovery.py").write_text(
+        "POLICY_DIGEST = 'fixture'\n", encoding="utf-8"
+    )
+    (release / "scripts" / "install_qdev_runner_recovery_host_agent.sh").write_text(
+        "#!/bin/sh\n", encoding="utf-8"
+    )
+    release.chmod(0o777)
+    active = controller_root / "current"
+    active.symlink_to(release)
+
+    try:
+        helper._resolve_source_root(script, active)
+    except helper.ProvisionError as error:
+        assert str(error) == "active controller source tree is unsafe"
+    else:
+        raise AssertionError("mutable release was accepted")
+
+
 def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     activation = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")

@@ -440,13 +440,15 @@ def validate_envelope(
     ):
         raise AgentError("signed command request nonce is invalid")
     provider_id = command.get("provider_runner_id")
-    if not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0:
-        raise AgentError("signed command provider runner id is invalid")
-    if (
-        profile.expected_provider_runner_id is not None
-        and provider_id != profile.expected_provider_runner_id
+    if profile.recovery_action == "restore_saved_configuration":
+        if not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0:
+            raise AgentError("signed command provider runner id is invalid")
+        if provider_id != profile.expected_provider_runner_id:
+            raise AgentError("signed command provider runner id does not match saved identity")
+    elif provider_id is not None and (
+        not isinstance(provider_id, int) or isinstance(provider_id, bool) or provider_id <= 0
     ):
-        raise AgentError("signed command provider runner id does not match saved identity")
+        raise AgentError("signed command provider runner id is invalid")
     if command["expected_agent_certificate_sha256"] != _certificate_sha256(config.client_cert):
         raise AgentError("signed command is bound to another host-agent certificate")
     issued_at = _parse_time(command.get("issued_at"), "issued_at")

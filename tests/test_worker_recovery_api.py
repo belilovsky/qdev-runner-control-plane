@@ -62,6 +62,9 @@ class FakeRecoveryGitHub:
         self.status = "offline"
         self.busy = False
         self.active_job_ids: tuple[int, ...] = ()
+        self.runner_present = True
+        self.runner_name_active_job_ids: tuple[int, ...] = ()
+        self.runner_name_job_checks = 0
         self.observation_calls = 0
         self.registration_token_calls = 0
         self.dispatch_calls = 0
@@ -74,6 +77,8 @@ class FakeRecoveryGitHub:
     def repository_runners(self, installation_id: int, repository: str) -> list[dict[str, Any]]:
         assert installation_id == 71
         assert repository == self.target.repository
+        if not self.runner_present:
+            return []
         return [
             {
                 "id": self.runner_id,
@@ -82,6 +87,23 @@ class FakeRecoveryGitHub:
                 "busy": self.busy,
                 "labels": [{"name": label} for label in self.target.labels],
             }
+        ]
+
+    def runner_name_active_jobs(
+        self, installation_id: int, repository: str, runner_name: str
+    ) -> list[dict[str, Any]]:
+        assert installation_id == 71
+        assert repository == self.target.repository
+        assert runner_name == self.target.worker_name
+        self.runner_name_job_checks += 1
+        return [
+            {
+                "id": job_id,
+                "status": "in_progress",
+                "conclusion": None,
+                "runner_name": runner_name,
+            }
+            for job_id in self.runner_name_active_job_ids
         ]
 
     def observe_repository_runner(self, repository: str, runner_id: int) -> GitHubRunnerObservation:
@@ -626,6 +648,45 @@ def test_qazstack_registration_token_is_minted_only_for_agent_claim(
     assert REGISTRATION_TOKEN not in status.text
 
 
+def test_qazstack_absent_registration_prepares_signed_fresh_install(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    harness.github.runner_present = False
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-absent"),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    prepared = response.json()
+    assert prepared["provider_runner_id"] is None
+    assert prepared["state"] == "prepared"
+    assert harness.github.runner_name_job_checks == 1
+
+    envelope = _claim(harness, prepared, "qdev-qazstack-01")
+    assert envelope["command"]["provider_runner_id"] is None
+    assert envelope["command"]["registration_token"] == REGISTRATION_TOKEN
+
+
+def test_qazstack_absent_registration_rejects_active_named_job(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files, target_id="qdev-qazstack-01")
+    harness.github.runner_present = False
+    harness.github.runner_name_active_job_ids = (771,)
+
+    response = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body("qdev-qazstack-01", idempotency_key="recovery-qazstack-active-job"),
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert harness.github.runner_name_job_checks == 1
+
+
 def test_project_maps_released_completion_and_validates_target_lookup(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
@@ -650,7 +711,7 @@ def test_project_maps_released_completion_and_validates_target_lookup(
         )
 
 
-def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
+def test_accept_requires_owner_supplied_exact_canary_sha_and_never_dispatches(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
     harness = _harness(tmp_path, policy_files)
@@ -669,7 +730,6 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
     assert reconciled.status_code == 200
 
     harness.github.status = "online"
-    harness.github.dispatch_status_code = 500
     accept_body = {
         "schema": "qdev-runner-recovery-accept-v1",
         "operation_id": prepared["operation_id"],
@@ -682,11 +742,26 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
         headers=OPERATOR_HEADERS,
     )
     assert failed.status_code == 409
-    assert harness.github.dispatch_calls == 1
+    assert failed.json()["detail"] == "worker recovery request rejected"
+    assert harness.github.dispatch_calls == 0
+    assert harness.client.app.state.store.worker_recovery_canary(
+        prepared["operation_id"]
+    ) is None
+
+    accept_body["canary_head_sha"] = "5" * 40
+    pending = harness.client.post(
+        "/internal/v1/operations/worker-recovery/accept",
+        json=accept_body,
+        headers=OPERATOR_HEADERS,
+    )
+    assert pending.status_code == 200
+    assert pending.json()["state"] == "pending_canary"
+    assert harness.github.dispatch_calls == 0
 
     canary = harness.client.app.state.store.worker_recovery_canary(prepared["operation_id"])
     assert canary is not None
-    assert canary["phase"] == "dispatching"
+    assert canary["phase"] == "dispatch_intent"
+    assert canary["head_sha"] == "5" * 40
     assert canary["dispatched_at"] is None
 
     replay = harness.client.post(
@@ -696,4 +771,10 @@ def test_accept_fences_failed_dispatch_without_marking_or_retrying_it(
     )
     assert replay.status_code == 200
     assert replay.json()["state"] == "pending_canary"
-    assert harness.github.dispatch_calls == 1
+    assert harness.github.dispatch_calls == 0
+
+
+def test_platform_recovery_canary_targets_the_real_default_branch() -> None:
+    target = RECOVERY_TARGETS["qdev-platform-ci-187"]
+    assert target.ref == "master"
+    assert target.workflow == ".github/workflows/runner-smoke.yml"

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,7 +27,7 @@ from .models import (
 from .settings import BrokerSettings
 from .store import Store
 
-INTERFACE_VERSION = "qdev-worker-recovery-v1"
+INTERFACE_VERSION = "qdev-worker-recovery-v2"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -59,6 +60,7 @@ RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
         labels=("self-hosted", "Linux", "X64", "qdev-platform-ci"),
         action="restore_saved_configuration",
         workflow=".github/workflows/runner-smoke.yml",
+        ref="master",
     ),
     "qdev-qazstack-01": RecoveryTarget(
         target_id="qdev-qazstack-01",
@@ -74,7 +76,7 @@ RECOVERY_TARGETS: Mapping[RecoveryTargetId, RecoveryTarget] = {
 # canonical digest is provisioned to both controller and host agent; neither
 # side derives trust from a mutable source path or an HTTP request field.
 INTERFACE_MANIFEST: dict[str, Any] = {
-    "schema": "qdev-runner-recovery-interface-v1",
+    "schema": "qdev-runner-recovery-interface-v2",
     "interface_version": INTERFACE_VERSION,
     "canonical_json": {
         "sort_keys": True,
@@ -96,6 +98,12 @@ INTERFACE_MANIFEST: dict[str, Any] = {
         "command": "qdev-runner-recovery-agent-command-v1",
         "envelope": "qdev-runner-recovery-agent-envelope-v1",
         "reconcile": "qdev-runner-recovery-reconcile-v1",
+    },
+    "provider_runner_identity": {
+        "restore_saved_configuration": "required-positive-integer",
+        "replace_existing_registration": "positive-integer-or-observed-absent",
+        "absence_observation": "qdev-worker-provider-absence-observation-v1",
+        "absence_requires_zero_active_target_jobs": True,
     },
     "targets": {
         target_id: {
@@ -124,6 +132,11 @@ POLICY_MANIFEST: dict[str, Any] = {
             "canary": {
                 "workflow": target.workflow,
                 "ref": target.ref,
+                "dispatch_authority": "owner_operator",
+                "controller_provider_permissions": [
+                    "actions:read",
+                    "administration:write",
+                ],
                 "inputs": [
                     "operation_id",
                     "dispatch_correlation",
@@ -284,23 +297,51 @@ class WorkerRecoveryController:
 
         self._validate_provenance(request.provenance, release=release)
         self._require_no_claim_scope(target.worker_name)
-        runners, observed, provider_observation = self._observe_runner(
-            target, expected_labels=target.labels, status="offline", require_idle=True
-        )
-        if len([runner for runner in runners if runner["name"] == target.worker_name]) != 1:
-            raise WorkerRecoveryError("GitHub runner identity is not unique")
+        try:
+            runners, observed, provider_observation = self._observe_runner(
+                target, expected_labels=target.labels, status="offline", require_idle=True
+            )
+            provider_runner_id: int | None = int(observed["id"])
+            provider_observed_at = float(observed["observed_at"])
+        except WorkerRecoveryError as error:
+            if target.action != "replace_existing_registration":
+                raise
+            installation_id = self.github.repository_installation_id(target.repository)
+            runners = sorted(
+                (
+                    _runner_record(raw)
+                    for raw in self.github.repository_runners(installation_id, target.repository)
+                ),
+                key=lambda runner: int(runner["id"]),
+            )
+            if any(runner["name"] == target.worker_name for runner in runners):
+                raise error
+            active_jobs = self.github.runner_name_active_jobs(
+                installation_id, target.repository, target.worker_name
+            )
+            if active_jobs:
+                raise WorkerRecoveryError("absent GitHub runner still owns active jobs") from None
+            provider_runner_id = None
+            provider_observed_at = time.time()
+            provider_observation = {
+                "schema": "qdev-worker-provider-absence-observation-v1",
+                "repository": target.repository,
+                "worker_name": target.worker_name,
+                "runners": {"total_count": len(runners), "items": runners},
+                "active_target_jobs": {"total_count": 0, "items": []},
+            }
         proof_key = self._receipt_key()
         proof = self.store.issue_worker_provider_idle_proof(
             key=proof_key,
             worker_name=target.worker_name,
             repository=target.repository,
             labels=target.labels,
-            provider_runner_id=observed["id"],
-            provider_status="offline",
-            provider_busy=False,
+            provider_runner_id=provider_runner_id,
+            provider_status=None if provider_runner_id is None else "offline",
+            provider_busy=None if provider_runner_id is None else False,
             active_jobs=0,
             provider_observation=provider_observation,
-            observed_at=observed["observed_at"],
+            observed_at=provider_observed_at,
         )
         controller_receipt_id = _digest(
             {
@@ -328,9 +369,9 @@ class WorkerRecoveryController:
             policy_digest=self._policy_digest(),
             agent_release_digest=self._agent_release_digest(),
             controller_receipt_id=controller_receipt_id,
-            controller_observed_at=observed["observed_at"],
+            controller_observed_at=provider_observed_at,
             request_nonce=request.provenance.nonce,
-            requested_at=observed["observed_at"],
+            requested_at=provider_observed_at,
             proof_max_age_seconds=self.settings.recovery_proof_max_age_seconds,
         )
         return self._project(row, idempotent_replay=False)
@@ -447,7 +488,7 @@ class WorkerRecoveryController:
         release = self._configuration()
         self._validate_provenance(request.provenance, release=release)
         row = self._operation(request.operation_id, request.request_fingerprint)
-        self._require_current_row(row, release=release)
+        self._require_acceptance_row(row, release=release)
         self._require_operation_operator(row, operator_certificate_sha256)
         target = self._target_from_row(row)
         if row["state"] == "released":
@@ -459,7 +500,11 @@ class WorkerRecoveryController:
         # safely repeats accept while GitHub is still scheduling/running the
         # canary; provider ambiguity never causes an automatic redispatch.
         for _ in range(12):
-            progressed = self._advance_acceptance(row, target=target)
+            progressed = self._advance_acceptance(
+                row,
+                target=target,
+                canary_head_sha=request.canary_head_sha,
+            )
             current = self._operation(request.operation_id, request.request_fingerprint)
             if current["state"] == "released":
                 return self._project(current, idempotent_replay=False)
@@ -468,7 +513,13 @@ class WorkerRecoveryController:
             row = current
         raise WorkerRecoveryError("recovery acceptance exceeded its bounded transition count")
 
-    def _advance_acceptance(self, row: dict[str, Any], *, target: RecoveryTarget) -> bool:
+    def _advance_acceptance(
+        self,
+        row: dict[str, Any],
+        *,
+        target: RecoveryTarget,
+        canary_head_sha: str | None,
+    ) -> bool:
         operation_id = str(row["operation_id"])
         canary = self.store.worker_recovery_canary(operation_id)
         if canary is None:
@@ -482,9 +533,8 @@ class WorkerRecoveryController:
                 event="workflow_dispatch",
             )
             baseline = max((self._positive_id(run, "id") for run in runs), default=0)
-            head_sha = self.github.ref_sha(installation_id, target.repository, target.ref)
-            if head_sha is None:
-                raise WorkerRecoveryError("GitHub canary ref cannot be resolved")
+            if canary_head_sha is None:
+                raise WorkerRecoveryError("exact canary head SHA is required")
             if len([runner for runner in runners if runner["name"] == target.worker_name]) != 1:
                 raise WorkerRecoveryError("recovered GitHub runner identity is not unique")
             self.store.create_worker_recovery_canary_intent(
@@ -492,7 +542,7 @@ class WorkerRecoveryController:
                 repository=target.repository,
                 workflow=target.workflow,
                 ref=target.ref,
-                head_sha=head_sha,
+                head_sha=canary_head_sha,
                 baseline_run_id=baseline,
                 provider_runner_id=observed["id"],
                 provider_runner_name=target.worker_name,
@@ -505,27 +555,18 @@ class WorkerRecoveryController:
         temporary_label = str(canary["temporary_label"])
         dispatch_accepted = False
         if phase == "dispatch_intent":
+            # The controller persists the exact, secret-free intent first.  An
+            # authenticated owner dispatches that intent with repository-scoped
+            # credentials; the GitHub App only needs read access to correlate
+            # the exact run.  This avoids giving the controller a user token or
+            # broader Contents/Actions write permissions.
+            run = self._find_canary_run(target, canary)
+            if run is None:
+                return False
             claimed, may_dispatch = self.store.claim_worker_recovery_canary_dispatch(
                 operation_id=operation_id, expected_revision=revision
             )
             if may_dispatch:
-                installation_id = self.github.repository_installation_id(target.repository)
-                inputs = {
-                    "operation_id": operation_id,
-                    "dispatch_correlation": correlation,
-                    "runner_label": temporary_label,
-                }
-                if target.target_id == "qdev-qazstack-01":
-                    inputs["confirm_recovery"] = "RECOVERY"
-                result = self.github.dispatch_workflow(
-                    installation_id,
-                    target.repository,
-                    target.workflow,
-                    target.ref,
-                    inputs,
-                )
-                if result.get("status_code") != 204:
-                    raise WorkerRecoveryError("GitHub did not accept the canary dispatch")
                 dispatch_accepted = True
             canary = claimed
             phase = str(canary["phase"])
@@ -533,9 +574,9 @@ class WorkerRecoveryController:
 
         if phase == "dispatching":
             run = self._find_canary_run(target, canary)
-            # A successful dispatch response is provider evidence for the exact
-            # accepted input label.  A lost response remains dispatching until
-            # the correlated provider run appears; it is never redispatched.
+            # The correlated provider run is evidence that the owner dispatch
+            # used the exact accepted input tuple.  Until it appears, this
+            # transaction remains fenced and is never redispatched here.
             if run is None and not dispatch_accepted:
                 return False
             self.store.transition_worker_recovery_canary(
@@ -702,8 +743,12 @@ class WorkerRecoveryController:
             runners, observed, provider_observation = self._observe_recovered(
                 target, row, target.labels, require_idle=True, canary=canary
             )
-            initial_runner_id = int(row["provider_runner_id"])
-            prior_disposition = "same" if observed["id"] == initial_runner_id else "absent"
+            initial_runner_id = row["provider_runner_id"]
+            prior_disposition = (
+                "same"
+                if initial_runner_id is not None and observed["id"] == initial_runner_id
+                else "absent"
+            )
             proof = self.store.issue_worker_recovery_acceptance_proof(
                 key=self._receipt_key(),
                 operation_id=operation_id,
@@ -824,7 +869,7 @@ class WorkerRecoveryController:
             canary=canary,
         )
         matches = [runner for runner in runners if runner["name"] == target.worker_name]
-        prior_id = int(row["provider_runner_id"])
+        prior_id = row["provider_runner_id"]
         if len(matches) != 1:
             raise WorkerRecoveryError("recovered GitHub runner identity is not unique")
         if target.action == "restore_saved_configuration" and observed["id"] != prior_id:
@@ -1079,6 +1124,44 @@ class WorkerRecoveryController:
             operator_certificate=str(row["operator_certificate_sha256"]),
             release=release,
         )
+
+    def _require_acceptance_row(
+        self, row: dict[str, Any], *, release: dict[str, Any]
+    ) -> None:
+        """Allow a completed native mutation to finish after controller upgrade.
+
+        Native execution remains bound to its original immutable release.  Only
+        the provider/canary acceptance half may cross a release boundary, and
+        only when every non-release authority binding is still exact.  The
+        current signed provenance authenticates each acceptance attempt, while
+        the durable canary ledger binds the exact provider run and recovered
+        runner.  The original native operation receipt remains release-bound.
+        """
+
+        try:
+            self._require_current_row(row, release=release)
+            return
+        except WorkerRecoveryError:
+            pass
+        target = self._target_from_row(row)
+        try:
+            labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("recovery operation binding is invalid") from error
+        if (
+            row.get("state") != "completed"
+            or row.get("native_outcome") != "completed"
+            or row.get("worker_name") != target.worker_name
+            or row.get("repository") != target.repository
+            or labels != target.labels
+            or row.get("recovery_action") != target.action
+            or row.get("expected_agent_certificate_sha256")
+            != self._agent_certificate(target)
+            or row.get("interface_version") != INTERFACE_VERSION
+            or row.get("interface_digest") != INTERFACE_DIGEST
+            or row.get("agent_release_digest") != self._agent_release_digest()
+        ):
+            raise WorkerRecoveryError("recovery operation binding changed")
 
     @staticmethod
     def _target_from_row(row: dict[str, Any]) -> RecoveryTarget:

@@ -107,14 +107,19 @@ def test_ref_sha_rejects_non_exact_provider_revision(tmp_path: Path, sha: str) -
     ]
 
 
-def _replacement_command(*, expires_at: datetime, token_expires_at: datetime) -> dict[str, object]:
+def _replacement_command(
+    *,
+    expires_at: datetime,
+    token_expires_at: datetime,
+    provider_runner_id: int | None = 21,
+) -> dict[str, object]:
     return {
         "operation_id": "a" * 64,
         "request_fingerprint": "b" * 64,
         "target_id": "qdev-qazstack-01",
         "worker_name": "qdev-qazstack-01",
         "repository": "belilovsky/qazstack",
-        "provider_runner_id": 21,
+        "provider_runner_id": provider_runner_id,
         "labels": ("self-hosted", "Linux", "X64", "qdev-ci"),
         "recovery_action": "replace_existing_registration",
         "operator_certificate_sha256": "c" * 64,
@@ -158,3 +163,16 @@ def test_agent_command_may_expire_with_registration_token() -> None:
 
     assert command.registration_token is not None
     assert command.registration_token.get_secret_value() == "one-use-secret"
+
+
+def test_replacement_agent_command_allows_absent_provider_registration() -> None:
+    issued_at = datetime(2026, 9, 5, tzinfo=UTC)
+    command = RecoveryAgentCommand.model_validate(
+        _replacement_command(
+            expires_at=issued_at + timedelta(minutes=1),
+            token_expires_at=issued_at + timedelta(minutes=1),
+            provider_runner_id=None,
+        )
+    )
+
+    assert command.provider_runner_id is None

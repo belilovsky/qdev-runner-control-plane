@@ -16,7 +16,66 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+
+class ProvisionError(RuntimeError):
+    """Raised when a recovery binding cannot be provisioned safely."""
+
+
+ACTIVE_CONTROLLER_RELEASE = Path("/opt/qdev-runner-control-plane/current")
+
+
+def _has_binding_sources(root: Path) -> bool:
+    return (
+        (root / "src" / "qdev_runner" / "worker_recovery.py").is_file()
+        and (root / "scripts" / "install_qdev_runner_recovery_host_agent.sh").is_file()
+    )
+
+
+def _resolve_source_root(
+    script_path: Path = Path(__file__),
+    active_link: Path = ACTIVE_CONTROLLER_RELEASE,
+) -> Path:
+    """Resolve one immutable source tree for checkout and installed execution."""
+
+    checkout_root = script_path.resolve().parents[1]
+    if _has_binding_sources(checkout_root):
+        return checkout_root
+
+    try:
+        link_metadata = active_link.lstat()
+        releases_root = (active_link.parent / "releases").resolve(strict=True)
+        release_root = active_link.resolve(strict=True)
+        release_metadata = release_root.lstat()
+    except OSError as exc:
+        raise ProvisionError("active controller source tree is unavailable") from exc
+    expected_uid = os.geteuid()
+    if (
+        not stat.S_ISLNK(link_metadata.st_mode)
+        or link_metadata.st_uid != expected_uid
+        or not stat.S_ISDIR(release_metadata.st_mode)
+        or release_metadata.st_uid != expected_uid
+        or release_metadata.st_mode & 0o022
+        or release_root.parent != releases_root
+        or not re.fullmatch(r"[0-9a-f]{40}", release_root.name)
+        or not _has_binding_sources(release_root)
+    ):
+        raise ProvisionError("active controller source tree is unsafe")
+    for relative in (
+        Path("src/qdev_runner/worker_recovery.py"),
+        Path("scripts/install_qdev_runner_recovery_host_agent.sh"),
+    ):
+        metadata = (release_root / relative).lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != expected_uid
+            or metadata.st_mode & 0o022
+        ):
+            raise ProvisionError("active controller source tree is unsafe")
+    return release_root
+
+
+ROOT = _resolve_source_root()
 sys.path.insert(0, str(ROOT / "src"))
 
 from qdev_runner.worker_recovery import (  # noqa: E402
@@ -28,10 +87,6 @@ from qdev_runner.worker_recovery import (  # noqa: E402
 HEX = re.compile(r"^[0-9a-f]{64}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SECRET = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
-
-
-class ProvisionError(RuntimeError):
-    """Raised when a recovery binding cannot be provisioned safely."""
 
 
 def _private_values(path: Path) -> dict[str, str]:

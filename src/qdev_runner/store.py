@@ -241,6 +241,32 @@ def _validate_provider_observation(
     return observation, canonical, digest
 
 
+def _validate_provider_absence_observation(
+    value: object,
+    *,
+    repository: str,
+    worker_name: str,
+) -> tuple[dict[str, Any], str, str]:
+    observation, canonical, digest = _canonical_provider_observation(value)
+    try:
+        runners = _provider_runner_observations(observation)
+        active_target_jobs = _provider_observation_collection(observation, "active_target_jobs")
+    except ValueError as error:
+        raise ValueError("provider absence observation is invalid") from error
+    if (
+        set(observation)
+        != {"schema", "repository", "worker_name", "runners", "active_target_jobs"}
+        or observation["schema"] != "qdev-worker-provider-absence-observation-v1"
+        or observation["repository"] != repository
+        or observation["worker_name"] != worker_name
+        or any(runner["name"] == worker_name for runner in runners)
+        or active_target_jobs
+        or observation["active_target_jobs"]["total_count"] != 0
+    ):
+        raise ValueError("provider absence observation is invalid")
+    return observation, canonical, digest
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id INTEGER PRIMARY KEY,
@@ -376,7 +402,7 @@ CREATE TABLE IF NOT EXISTS worker_recovery_acceptances (
     worker_name TEXT NOT NULL,
     repository TEXT NOT NULL,
     labels_json TEXT NOT NULL,
-    prior_provider_runner_id INTEGER NOT NULL,
+    prior_provider_runner_id INTEGER,
     prior_provider_runner_disposition TEXT NOT NULL CHECK(
         prior_provider_runner_disposition IN ('same','absent')
     ),
@@ -672,6 +698,80 @@ class Store:
         if "provider_observation_json" not in acceptance_columns:
             connection.execute(
                 "ALTER TABLE worker_recovery_acceptances ADD COLUMN provider_observation_json TEXT"
+            )
+        acceptance_info = connection.execute(
+            "PRAGMA table_info(worker_recovery_acceptances)"
+        ).fetchall()
+        prior_provider_column = next(
+            (row for row in acceptance_info if row["name"] == "prior_provider_runner_id"),
+            None,
+        )
+        if prior_provider_column is not None and int(prior_provider_column["notnull"]) == 1:
+            connection.execute(
+                "ALTER TABLE worker_recovery_acceptances "
+                "RENAME TO worker_recovery_acceptances_legacy"
+            )
+            connection.execute(
+                """
+                CREATE TABLE worker_recovery_acceptances (
+                    proof_digest TEXT PRIMARY KEY,
+                    operation_id TEXT NOT NULL UNIQUE,
+                    worker_name TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    labels_json TEXT NOT NULL,
+                    prior_provider_runner_id INTEGER,
+                    prior_provider_runner_disposition TEXT NOT NULL CHECK(
+                        prior_provider_runner_disposition IN ('same','absent')
+                    ),
+                    provider_runner_id INTEGER NOT NULL,
+                    matching_runner_count INTEGER NOT NULL CHECK(matching_runner_count=1),
+                    provider_reconciliation_digest TEXT NOT NULL,
+                    provider_observation_json TEXT,
+                    provider_observed_at REAL NOT NULL,
+                    canary_repository TEXT NOT NULL,
+                    canary_workflow TEXT NOT NULL,
+                    canary_ref TEXT NOT NULL,
+                    canary_head_sha TEXT NOT NULL,
+                    canary_run_id INTEGER NOT NULL,
+                    canary_run_attempt INTEGER NOT NULL,
+                    canary_job_id INTEGER NOT NULL,
+                    canary_runner_id INTEGER NOT NULL,
+                    canary_status TEXT NOT NULL CHECK(canary_status='completed'),
+                    canary_conclusion TEXT NOT NULL CHECK(canary_conclusion='success'),
+                    canary_completed_at REAL NOT NULL,
+                    signature TEXT NOT NULL,
+                    accepted_at REAL NOT NULL,
+                    FOREIGN KEY(operation_id) REFERENCES worker_recoveries(operation_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO worker_recovery_acceptances (
+                    proof_digest, operation_id, worker_name, repository, labels_json,
+                    prior_provider_runner_id, prior_provider_runner_disposition,
+                    provider_runner_id, matching_runner_count,
+                    provider_reconciliation_digest, provider_observation_json,
+                    provider_observed_at, canary_repository, canary_workflow,
+                    canary_ref, canary_head_sha, canary_run_id, canary_run_attempt,
+                    canary_job_id, canary_runner_id, canary_status, canary_conclusion,
+                    canary_completed_at, signature, accepted_at
+                ) SELECT
+                    proof_digest, operation_id, worker_name, repository, labels_json,
+                    prior_provider_runner_id, prior_provider_runner_disposition,
+                    provider_runner_id, matching_runner_count,
+                    provider_reconciliation_digest, provider_observation_json,
+                    provider_observed_at, canary_repository, canary_workflow,
+                    canary_ref, canary_head_sha, canary_run_id, canary_run_attempt,
+                    canary_job_id, canary_runner_id, canary_status, canary_conclusion,
+                    canary_completed_at, signature, accepted_at
+                FROM worker_recovery_acceptances_legacy
+                """
+            )
+            connection.execute("DROP TABLE worker_recovery_acceptances_legacy")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS worker_recovery_acceptances_operation_idx "
+                "ON worker_recovery_acceptances(operation_id, accepted_at)"
             )
         canary_columns = {
             str(row["name"])
@@ -1394,9 +1494,9 @@ class Store:
         worker_name: str,
         repository: str,
         labels: tuple[str, ...],
-        provider_runner_id: int,
-        provider_status: str,
-        provider_busy: bool,
+        provider_runner_id: int | None,
+        provider_status: str | None,
+        provider_busy: bool | None,
         active_jobs: int,
         provider_observation: dict[str, Any],
         observed_at: float | None = None,
@@ -1410,35 +1510,59 @@ class Store:
         """
 
         target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
-        if (
+        common_invalid = (
             not isinstance(key, str)
             or not key
             or target is None
             or target["repository"] != repository
             or target["labels"] != labels
-            or isinstance(provider_runner_id, bool)
+            or isinstance(active_jobs, bool)
+            or not isinstance(active_jobs, int)
+            or active_jobs != 0
+        )
+        provider_is_absent = provider_runner_id is None
+        present_invalid = not provider_is_absent and (
+            isinstance(provider_runner_id, bool)
             or not isinstance(provider_runner_id, int)
             or provider_runner_id <= 0
             or provider_status != "offline"
             or provider_busy is not False
-            or isinstance(active_jobs, bool)
-            or not isinstance(active_jobs, int)
-            or active_jobs != 0
-        ):
+        )
+        absent_invalid = provider_is_absent and (
+            target is None
+            or target["recovery_action"] != "replace_existing_registration"
+            or provider_status is not None
+            or provider_busy is not None
+        )
+        if common_invalid or present_invalid or absent_invalid:
             raise ValueError("provider idle proof is invalid")
         try:
-            canonical_observation, _, provider_reconciliation_digest = (
-                _validate_provider_observation(
-                    provider_observation,
-                    schema="qdev-worker-provider-observation-v1",
-                    repository=repository,
-                    worker_name=worker_name,
-                    provider_runner_id=provider_runner_id,
-                    provider_status=provider_status,
-                    provider_busy=provider_busy,
-                    labels=labels,
+            if provider_is_absent:
+                canonical_observation, _, provider_reconciliation_digest = (
+                    _validate_provider_absence_observation(
+                        provider_observation,
+                        repository=repository,
+                        worker_name=worker_name,
+                    )
                 )
-            )
+                proof_schema = "qdev-worker-provider-idle-proof-v2"
+            else:
+                assert isinstance(provider_runner_id, int)
+                assert isinstance(provider_status, str)
+                assert isinstance(provider_busy, bool)
+                canonical_observation, _, provider_reconciliation_digest = (
+                    _validate_provider_observation(
+                        provider_observation,
+                        schema="qdev-worker-provider-observation-v1",
+                        repository=repository,
+                        worker_name=worker_name,
+                        provider_runner_id=provider_runner_id,
+                        provider_status=provider_status,
+                        provider_busy=provider_busy,
+                        labels=labels,
+                    )
+                )
+                proof_schema = "qdev-worker-provider-idle-proof-v1"
         except ValueError as error:
             raise ValueError("provider idle proof is invalid") from error
         timestamp = (
@@ -1447,7 +1571,7 @@ class Store:
             else _finite_recovery_number(observed_at, field="provider idle proof timestamp")
         )
         payload = {
-            "schema": "qdev-worker-provider-idle-proof-v1",
+            "schema": proof_schema,
             "worker_name": worker_name,
             "repository": repository,
             "labels": list(labels),
@@ -1522,29 +1646,49 @@ class Store:
         except ValueError as error:
             raise ValueError("provider idle proof is invalid") from error
         proof_age = now - observed_at
+        target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
+        provider_is_absent = proof.get("schema") == "qdev-worker-provider-idle-proof-v2"
         try:
-            _, _, provider_reconciliation_digest = _validate_provider_observation(
-                proof["provider_observation"],
-                schema="qdev-worker-provider-observation-v1",
-                repository=repository,
-                worker_name=worker_name,
-                provider_runner_id=proof["provider_runner_id"],
-                provider_status=proof["provider_status"],
-                provider_busy=proof["provider_busy"],
-                labels=labels,
-            )
+            if provider_is_absent:
+                _, _, provider_reconciliation_digest = _validate_provider_absence_observation(
+                    proof["provider_observation"],
+                    repository=repository,
+                    worker_name=worker_name,
+                )
+            else:
+                _, _, provider_reconciliation_digest = _validate_provider_observation(
+                    proof["provider_observation"],
+                    schema="qdev-worker-provider-observation-v1",
+                    repository=repository,
+                    worker_name=worker_name,
+                    provider_runner_id=proof["provider_runner_id"],
+                    provider_status=proof["provider_status"],
+                    provider_busy=proof["provider_busy"],
+                    labels=labels,
+                )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("provider idle proof is invalid") from error
+        provider_identity_is_valid = (
+            provider_is_absent
+            and target is not None
+            and target["recovery_action"] == "replace_existing_registration"
+            and proof["provider_runner_id"] is None
+            and proof["provider_status"] is None
+            and proof["provider_busy"] is None
+        ) or (
+            not provider_is_absent
+            and proof["schema"] == "qdev-worker-provider-idle-proof-v1"
+            and not isinstance(proof["provider_runner_id"], bool)
+            and isinstance(proof["provider_runner_id"], int)
+            and proof["provider_runner_id"] > 0
+            and proof["provider_status"] == "offline"
+            and proof["provider_busy"] is False
+        )
         if (
-            proof["schema"] != "qdev-worker-provider-idle-proof-v1"
-            or proof["worker_name"] != worker_name
+            proof["worker_name"] != worker_name
             or proof["repository"] != repository
             or proof["labels"] != list(labels)
-            or isinstance(proof["provider_runner_id"], bool)
-            or not isinstance(proof["provider_runner_id"], int)
-            or proof["provider_runner_id"] <= 0
-            or proof["provider_status"] != "offline"
-            or proof["provider_busy"] is not False
+            or not provider_identity_is_valid
             or isinstance(proof["active_jobs"], bool)
             or not isinstance(proof["active_jobs"], int)
             or proof["active_jobs"] != 0
@@ -1570,7 +1714,7 @@ class Store:
         worker_name: str,
         repository: str,
         labels: tuple[str, ...],
-        prior_provider_runner_id: int,
+        prior_provider_runner_id: int | None,
         prior_provider_runner_disposition: str,
         provider_runner_id: int,
         matching_runner_count: int,
@@ -1611,7 +1755,6 @@ class Store:
 
         target = _WORKER_RECOVERY_BINDINGS.get(worker_name)
         integer_values = (
-            prior_provider_runner_id,
             provider_runner_id,
             matching_runner_count,
             canary_run_id,
@@ -1621,13 +1764,14 @@ class Store:
             canary_runner_id,
         )
         valid_runner_transition = (
-            prior_provider_runner_disposition == "same"
+            prior_provider_runner_id is not None
+            and prior_provider_runner_disposition == "same"
             and provider_runner_id == prior_provider_runner_id
         ) or (
             target is not None
             and target["recovery_action"] == "replace_existing_registration"
             and prior_provider_runner_disposition == "absent"
-            and provider_runner_id != prior_provider_runner_id
+            and (prior_provider_runner_id is None or provider_runner_id != prior_provider_runner_id)
         )
         if (
             not isinstance(key, str)
@@ -1637,6 +1781,14 @@ class Store:
             or target is None
             or target["repository"] != repository
             or target["labels"] != labels
+            or (
+                prior_provider_runner_id is not None
+                and (
+                    isinstance(prior_provider_runner_id, bool)
+                    or not isinstance(prior_provider_runner_id, int)
+                    or prior_provider_runner_id <= 0
+                )
+            )
             or any(
                 isinstance(value, bool) or not isinstance(value, int) for value in integer_values
             )
@@ -1721,12 +1873,18 @@ class Store:
             observed_runners = _provider_runner_observations(canonical_observation)
         except ValueError as error:
             raise ValueError("worker recovery acceptance proof is invalid") from error
-        if prior_provider_runner_disposition == "absent" and any(
-            runner["id"] == prior_provider_runner_id for runner in observed_runners
+        if (
+            prior_provider_runner_id is not None
+            and prior_provider_runner_disposition == "absent"
+            and any(runner["id"] == prior_provider_runner_id for runner in observed_runners)
         ):
             raise ValueError("worker recovery acceptance proof is invalid")
         payload = {
-            "schema": "qdev-worker-recovery-acceptance-proof-v1",
+            "schema": (
+                "qdev-worker-recovery-acceptance-proof-v2"
+                if prior_provider_runner_id is None
+                else "qdev-worker-recovery-acceptance-proof-v1"
+            ),
             "operation_id": operation_id,
             "worker_name": worker_name,
             "repository": repository,
@@ -1782,7 +1940,7 @@ class Store:
         worker_name: str,
         repository: str,
         labels: tuple[str, ...],
-        prior_provider_runner_id: int,
+        prior_provider_runner_id: int | None,
         recovery_action: str,
         native_finalized_at: float,
         max_age_seconds: float | None,
@@ -1864,7 +2022,6 @@ class Store:
         expected_digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
         expected_signature = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
         integer_fields = (
-            "prior_provider_runner_id",
             "provider_runner_id",
             "matching_runner_count",
             "canary_run_id",
@@ -1877,13 +2034,29 @@ class Store:
             not isinstance(proof[name], bool) and isinstance(proof[name], int) and proof[name] > 0
             for name in integer_fields
         )
+        prior_provider_identity_is_valid = (
+            prior_provider_runner_id is None
+            and proof["schema"] == "qdev-worker-recovery-acceptance-proof-v2"
+            and proof["prior_provider_runner_id"] is None
+        ) or (
+            prior_provider_runner_id is not None
+            and proof["schema"] == "qdev-worker-recovery-acceptance-proof-v1"
+            and not isinstance(prior_provider_runner_id, bool)
+            and isinstance(prior_provider_runner_id, int)
+            and prior_provider_runner_id > 0
+            and proof["prior_provider_runner_id"] == prior_provider_runner_id
+        )
         runner_transition_is_valid = (
-            proof["prior_provider_runner_disposition"] == "same"
+            prior_provider_runner_id is not None
+            and proof["prior_provider_runner_disposition"] == "same"
             and proof["provider_runner_id"] == prior_provider_runner_id
         ) or (
             recovery_action == "replace_existing_registration"
             and proof["prior_provider_runner_disposition"] == "absent"
-            and proof["provider_runner_id"] != prior_provider_runner_id
+            and (
+                prior_provider_runner_id is None
+                or proof["provider_runner_id"] != prior_provider_runner_id
+            )
         )
         expected_temporary_label = _worker_recovery_temporary_label(operation_id)
         expected_dispatch_correlation = _worker_recovery_dispatch_correlation(operation_id)
@@ -1925,13 +2098,12 @@ class Store:
         now = time.time()
         age = now - observed_at
         if (
-            proof["schema"] != "qdev-worker-recovery-acceptance-proof-v1"
-            or proof["operation_id"] != operation_id
+            proof["operation_id"] != operation_id
             or proof["worker_name"] != worker_name
             or proof["repository"] != repository
             or proof["labels"] != list(labels)
             or not integers_are_valid
-            or proof["prior_provider_runner_id"] != prior_provider_runner_id
+            or not prior_provider_identity_is_valid
             or proof["matching_runner_count"] != 1
             or not runner_transition_is_valid
             or proof["provider_status"] != "online"
@@ -1975,7 +2147,8 @@ class Store:
             or not _SHA256_HEX.fullmatch(proof["signature"])
             or not hmac.compare_digest(proof["signature"], expected_signature)
             or (
-                proof["prior_provider_runner_disposition"] == "absent"
+                prior_provider_runner_id is not None
+                and proof["prior_provider_runner_disposition"] == "absent"
                 and any(runner["id"] == prior_provider_runner_id for runner in observed_runners)
             )
         ):
@@ -3172,7 +3345,11 @@ class Store:
                         worker_name=str(row["worker_name"]),
                         repository=str(row["repository"]),
                         labels=labels,
-                        prior_provider_runner_id=int(row["provider_runner_id"]),
+                        prior_provider_runner_id=(
+                            None
+                            if row["provider_runner_id"] is None
+                            else int(row["provider_runner_id"])
+                        ),
                         recovery_action=str(row["recovery_action"]),
                         native_finalized_at=float(row["native_finalized_at"]),
                         max_age_seconds=None,
@@ -3261,7 +3438,11 @@ class Store:
                         worker_name=str(row["worker_name"]),
                         repository=str(row["repository"]),
                         labels=labels,
-                        prior_provider_runner_id=int(row["provider_runner_id"]),
+                        prior_provider_runner_id=(
+                            None
+                            if row["provider_runner_id"] is None
+                            else int(row["provider_runner_id"])
+                        ),
                         recovery_action=str(row["recovery_action"]),
                         native_finalized_at=float(row["native_finalized_at"]),
                         max_age_seconds=proof_max_age_seconds,
@@ -3480,18 +3661,27 @@ class Store:
                 try:
                     permanent_labels = tuple(json.loads(str(row["labels_json"])))
                     stored_observation = json.loads(str(row["provider_observation_json"]))
-                    _, canonical_observation, recomputed_provider_digest = (
-                        _validate_provider_observation(
-                            stored_observation,
-                            schema="qdev-worker-provider-observation-v1",
-                            repository=str(row["repository"]),
-                            worker_name=worker_name,
-                            provider_runner_id=int(row["provider_runner_id"]),
-                            provider_status="offline",
-                            provider_busy=False,
-                            labels=permanent_labels,
+                    if row["provider_runner_id"] is None:
+                        _, canonical_observation, recomputed_provider_digest = (
+                            _validate_provider_absence_observation(
+                                stored_observation,
+                                repository=str(row["repository"]),
+                                worker_name=worker_name,
+                            )
                         )
-                    )
+                    else:
+                        _, canonical_observation, recomputed_provider_digest = (
+                            _validate_provider_observation(
+                                stored_observation,
+                                schema="qdev-worker-provider-observation-v1",
+                                repository=str(row["repository"]),
+                                worker_name=worker_name,
+                                provider_runner_id=int(row["provider_runner_id"]),
+                                provider_status="offline",
+                                provider_busy=False,
+                                labels=permanent_labels,
+                            )
+                        )
                 except (TypeError, ValueError, json.JSONDecodeError) as error:
                     raise ValueError(
                         "native recovery provider reconciliation binding is invalid"
