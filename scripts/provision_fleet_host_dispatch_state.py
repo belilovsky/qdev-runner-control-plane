@@ -16,6 +16,27 @@ SECRET_ROOT = CONFIG_ROOT / "host-dispatch-secrets"
 KEY_MAP = CONFIG_ROOT / "release-host-dispatch-keys.json"
 ENROLMENT_REGISTRY = CONFIG_ROOT / "release-host-enrolment-targets.json"
 RECOVERY_REGISTRY = CONFIG_ROOT / "fleet-worker-recovery-targets.json"
+RECOVERY_ADAPTER = "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch"
+RECOVERY_TARGETS: dict[str, dict[str, object]] = {
+    "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187": {
+        "worker_name": "qdev-platform-ci-187",
+        "target_id": "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187",
+        "service_unit": (
+            "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187.service"
+        ),
+        "host_binding": "controller-registry",
+        "labels": ["self-hosted", "Linux", "X64", "qdev-platform-ci"],
+        "adapter_path": RECOVERY_ADAPTER,
+    },
+    "actions.runner.belilovsky-qazstack.qdev-qazstack-01": {
+        "worker_name": "qdev-qazstack-01",
+        "target_id": "actions.runner.belilovsky-qazstack.qdev-qazstack-01",
+        "service_unit": "actions.runner.belilovsky-qazstack.qdev-qazstack-01.service",
+        "host_binding": "controller-registry",
+        "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
+        "adapter_path": RECOVERY_ADAPTER,
+    },
+}
 HOST_IDENTITIES = (
     "qdev-host-agent:ortcom-production-controller",
     "qdev-host-agent:cmnt-rolling-controller",
@@ -99,6 +120,26 @@ def _read_or_create_registry(path: Path, schema: str) -> None:
         raise ProvisionError(f"invalid private controller registry: {path.name}")
 
 
+def _reconcile_recovery_registry() -> None:
+    _read_or_create_registry(RECOVERY_REGISTRY, "qdev-fleet-worker-recovery-targets-v1")
+    document = json.loads(RECOVERY_REGISTRY.read_text(encoding="utf-8"))
+    targets = document["targets"]
+    if set(targets) - set(RECOVERY_TARGETS):
+        raise ProvisionError("worker recovery registry contains an unknown target")
+    for target_id, expected in RECOVERY_TARGETS.items():
+        existing = targets.get(target_id)
+        if existing is not None and existing != expected:
+            raise ProvisionError("worker recovery registry target conflicts with policy")
+    if targets != RECOVERY_TARGETS:
+        _atomic_json(
+            RECOVERY_REGISTRY,
+            {
+                "schema": "qdev-fleet-worker-recovery-targets-v1",
+                "targets": RECOVERY_TARGETS,
+            },
+        )
+
+
 def _slug(identity: str) -> str:
     return identity.replace(":", "-").replace("/", "-")
 
@@ -158,7 +199,7 @@ def main() -> int:
         mapping[identity] = str(secret_path)
     _atomic_json(KEY_MAP, mapping)
     _read_or_create_registry(ENROLMENT_REGISTRY, "qdev-release-host-enrolment-targets-v1")
-    _read_or_create_registry(RECOVERY_REGISTRY, "qdev-fleet-worker-recovery-targets-v1")
+    _reconcile_recovery_registry()
     print("fleet_host_dispatch_state=ready identities=4")
     return 0
 

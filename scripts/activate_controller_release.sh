@@ -273,6 +273,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_controller_activation_adapter.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
+    scripts/qdev_fixed_worker_recovery_dispatch.py
     scripts/qdev_runner_recovery_host_agent.py
     scripts/install_qdev_runner_recovery_host_agent.sh
     scripts/issue_scoped_worker_certificate.sh
@@ -1171,6 +1172,9 @@ install_fleet_host_dispatch() {
   install -o root -g root -m 0755 -- \
     "$script_root/scripts/qdev_fleet_worker_recovery_adapter.py" \
     /usr/local/sbin/qdev-fleet-worker-recovery
+  install -o root -g root -m 0755 -- \
+    "$script_root/scripts/qdev_fixed_worker_recovery_dispatch.py" \
+    /usr/local/sbin/qdev-fixed-worker-recovery-dispatch
   install -o root -g root -m 0755 -- \
     "$release/scripts/provision_worker_recovery_bindings.py" \
     /usr/local/sbin/qdev-worker-recovery-bindings-provision
