@@ -165,21 +165,28 @@ def _require_active_runtime_lineage(
         for attempt in attempts
         if isinstance(attempt, dict)
         and attempt.get("source_sha") == active_runtime_source_sha
-        and attempt.get("terminal_state") in {"blocked", "rolled_back"}
-        and isinstance(attempt.get("finished_at"), str)
     ]
-    if len(runtime_attempts) != 1:
+    if not runtime_attempts or any(
+        attempt.get("terminal_state") not in {"blocked", "rolled_back"}
+        or not isinstance(attempt.get("finished_at"), str)
+        or not isinstance(attempt.get("release_id"), str)
+        for attempt in runtime_attempts
+    ):
         raise ControllerCandidateError(
             "active runtime is not an unambiguous terminal controller attempt"
         )
-    runtime_release_id = runtime_attempts[0].get("release_id")
-    if not isinstance(runtime_release_id, str) or not any(
-        result.get("release_id") == runtime_release_id
-        and result.get("lane") == "source"
-        and result.get("outcome") == "passed"
+    runtime_release_ids = {
+        cast(str, attempt["release_id"]) for attempt in runtime_attempts
+    }
+    passing_source_release_ids = {
+        cast(str, result["release_id"])
         for result in results
         if isinstance(result, dict)
-    ):
+        and result.get("release_id") in runtime_release_ids
+        and result.get("lane") == "source"
+        and result.get("outcome") == "passed"
+    }
+    if passing_source_release_ids != runtime_release_ids:
         raise ControllerCandidateError(
             "active runtime controller attempt has no passing source evidence"
         )
