@@ -240,6 +240,43 @@ def test_prepare_controller_candidate_advances_retry_sequence(tmp_path: Path) ->
     assert snapshot["active_candidate"] == result["candidate"]
 
 
+def test_prepare_controller_candidate_accepts_repeated_terminal_runtime_attempts(
+    tmp_path: Path,
+) -> None:
+    state, _, ledger, receipts, signer_root = _initialize(tmp_path)
+    for source_sha in (INTERMEDIATE_SHA, NEXT_SHA, CURRENT_SHA, LATER_SHA):
+        result = prepare_controller_candidate(
+            source_sha=source_sha,
+            expected_current_source_sha=CURRENT_SHA,
+            receipt_key=RECEIPT_KEY,
+            ledger_path=ledger,
+            receipt_root=receipts,
+            signer_state_root=signer_root,
+        )
+
+    assert result["candidate"]["source_sha"] == LATER_SHA
+    _, snapshot = state.current()
+    entry = snapshot["entries"][0]
+    runtime_attempts = [
+        attempt
+        for attempt in entry["attempts"]
+        if attempt["source_sha"] == CURRENT_SHA
+    ]
+    assert [attempt["terminal_state"] for attempt in runtime_attempts] == [
+        "blocked",
+        "blocked",
+    ]
+    assert all(
+        any(
+            result["release_id"] == attempt["release_id"]
+            and result["lane"] == "source"
+            and result["outcome"] == "passed"
+            for result in entry["results"]
+        )
+        for attempt in runtime_attempts
+    )
+
+
 def test_prepare_controller_candidate_rejects_matching_source_on_wrong_ref(
     tmp_path: Path,
 ) -> None:

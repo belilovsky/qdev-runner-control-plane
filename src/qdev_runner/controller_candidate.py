@@ -178,15 +178,17 @@ def _require_active_runtime_lineage(
     runtime_release_ids = {
         cast(str, attempt["release_id"]) for attempt in runtime_attempts
     }
-    passing_source_release_ids = {
+    source_proven_release_ids = {
         cast(str, result["release_id"])
         for result in results
         if isinstance(result, dict)
-        and result.get("release_id") in runtime_release_ids
+        and isinstance(result.get("release_id"), str)
         and result.get("lane") == "source"
         and result.get("outcome") == "passed"
     }
-    if passing_source_release_ids != runtime_release_ids:
+    if len(runtime_release_ids) != len(runtime_attempts) or not runtime_release_ids.issubset(
+        source_proven_release_ids
+    ):
         raise ControllerCandidateError(
             "active runtime controller attempt has no passing source evidence"
         )
