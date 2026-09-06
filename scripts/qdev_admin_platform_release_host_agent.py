@@ -1709,8 +1709,12 @@ def _recover_pending(
     active: dict[str, str],
     rollback: dict[str, str],
     pending: dict[str, Any],
+    *,
+    observe_current: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reconcile one durable operation without repeating a native mutation."""
+    if observe_current is not None and not callable(observe_current):
+        raise AgentError("native recovery observation must be a trusted callable")
     release_id = pending.get("release_id")
     lease_id = pending.get("lease_id")
     fence = pending.get("fence")
@@ -1759,7 +1763,10 @@ def _recover_pending(
         )
         raise ControllerOutcomeUnresolved(reason)
 
-    current_native = native_receipt(profile, current=True)
+    current_native = (
+        native_receipt(profile, current=True)
+        if observe_current is None else observe_current()
+    )
     current_release = _native_release(current_native, profile)
     try:
         state = _controller_status(
@@ -2226,6 +2233,23 @@ class JournaledFileApplyGuard:
         self._active = False
 
 
+@dataclass(frozen=True)
+class FileApplyObservations:
+    """Fixed-adapter readers, never serialized claims or supplied receipt flags.
+
+    The IdP adapter must use its already-locked native reader. Re-entering its
+    CLI/dispatch here would attempt to acquire the same global lock again.
+    Every result still passes the compiled profile's exact runtime validator.
+    """
+
+    before_apply: Callable[[], dict[str, Any]]
+    after_apply: Callable[[], dict[str, Any]]
+
+    def __post_init__(self) -> None:
+        if not callable(self.before_apply) or not callable(self.after_apply):
+            raise AgentError("file apply observations must be trusted callables")
+
+
 class JournaledFileApplyTransaction:
     """In-process bridge factory using the existing host operation journal.
 
@@ -2236,14 +2260,29 @@ class JournaledFileApplyTransaction:
     Unknown outcomes remain pending for explicit native reconciliation.
     """
 
-    def __init__(self, config: Config, profile: Profile, job: dict[str, Any]) -> None:
+    def __init__(
+        self, config: Config, profile: Profile, job: dict[str, Any], *,
+        observations: FileApplyObservations | None = None,
+    ) -> None:
+        if observations is not None and type(observations) is not FileApplyObservations:
+            raise AgentError("file apply observations must come from the fixed native adapter")
         self._config, self._profile = config, profile
         self._job = _canonical_bytes(job)
+        self._observations = observations
 
     @contextmanager
     def __call__(self, claim: dict[str, Any]) -> Iterator[JournaledFileApplyGuard]:
         config, profile = self._config, self._profile
         job = json.loads(self._job)
+        observations = self._observations
+        before_apply = (
+            (lambda: native_receipt(profile, current=True))
+            if observations is None else observations.before_apply
+        )
+        after_apply = (
+            (lambda: native_receipt(profile, current=True))
+            if observations is None else observations.after_apply
+        )
         if claim != job.get("dispatch_claim"):
             raise AgentError("file apply claim differs from the native signed job")
         with _acquire_lock(profile.lock_path) as lock:
@@ -2265,7 +2304,7 @@ class JournaledFileApplyTransaction:
             context = _operation_context(
                 profile, candidate, active, rollback, nonce, lease_expires_at, rollback_anchor
             )
-            _validate_native_runtime(native_receipt(profile, current=True), profile, active)
+            _validate_native_runtime(before_apply(), profile, active)
 
             def check() -> None:
                 # The signed lifetime is never renewed locally. The authenticated
@@ -2289,13 +2328,15 @@ class JournaledFileApplyTransaction:
                 guard.assert_current()
                 yield guard
                 guard.assert_current()
-                _validate_native_runtime(native_receipt(profile, current=True), profile, candidate)
+                _validate_native_runtime(after_apply(), profile, candidate)
                 # Reuse durable completion and restart handling, including lost
                 # controller responses and state-file writes, without a second DB.
                 pending = _pending_operation(profile)
                 if pending is None:
                     raise AgentError("file apply lost its durable native operation")
-                result = _recover_pending(config, profile, active, rollback, pending)
+                result = _recover_pending(
+                    config, profile, active, rollback, pending, observe_current=after_apply
+                )
                 if result["status"] != "verified":
                     raise AgentError("file apply native completion was not verified")
             finally:

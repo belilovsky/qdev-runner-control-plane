@@ -63,9 +63,18 @@ for this boundary. It snapshots the job, holds the native `flock`, validates the
 signed job and current rollback/runtime, rejects consumed nonces and pending
 operations, and writes into the existing fsynced hash-chain journal. Every guard
 check rereads the current job through the authenticated controller status path
-with the exact lease and fence. After apply it independently invokes the native
-receipt dispatcher and reuses `_recover_pending` to finish completion/state
-recording, including reconciliation after an uncertain controller response.
+with the exact lease and fence. It reuses `_recover_pending` to finish
+completion/state recording, including reconciliation after an uncertain
+controller response. Existing dispatcher-based profiles retain their default
+native receipt inspection. A locked in-process adapter instead supplies
+`FileApplyObservations(before_apply=..., after_apply=...)`: the first reader
+measures the prepared previous runtime, and the second measures the installed
+candidate. The latter is called again for fresh reconciliation evidence, not
+cached from the first post-apply observation. Every document still passes the
+same exact compiled-profile runtime/provenance validation before it can affect
+completion. A reader failure or drift cannot fall back to a subprocess or to
+an earlier successful observation. Explicit recovery accepts a fixed
+`observe_current` reader for the same reason.
 It never invokes the native release or rollback dispatcher itself.
 
 This is still a generic source adapter, not a compiled IdP profile or installed
@@ -80,7 +89,14 @@ native context manager, do not become successful apply results.
 
 Lock ordering: IdP native global lock first, controller dispatch/journal lock
 second. The controller transaction must not re-enter IdP dispatch or acquire its
-native global lock again. Native bundle/helper integrity and storage/current SHA
+native global lock again. In particular, an IdP adapter must supply these
+in-process readers instead of using the default receipt dispatcher. The verified
+IdP helper's `controller_adapter(reader)` provides its already-locked
+`observe_prepared()` / `observe_installed()` capability; a fixed controller
+adapter must validate and translate those **actual** native observations into
+typed IdP evidence. These callbacks are code-only capabilities, not JSON fields,
+CLI paths or authorization envelopes. Their Python type is not proof of
+provider provenance. Native bundle/helper integrity and storage/current SHA
 checks remain with the IdP wrapper. A local host lock does not freeze remote
 revocation. The existing controller cannot replace an active job implicitly;
 explicit revocation is observed on the next guard check. Each individual atomic
@@ -95,6 +111,9 @@ file replacement is bounded by that check, not presented as a distributed lock.
    IdP global lock and its verified in-process helper, typed native runtime/rollback
    receipts and explicit inspect/reconciliation. No source from the IdP caller
    may supply or replace the controller transaction, profile or protected key.
+   IdP evidence must not be represented by invented AVDS/QAK provenance: the
+   code-only observation path deliberately does not add an IdP profile or waive
+   existing runtime validation. It is not yet a completed IdP host adapter.
 3. Normal source-bound release and exact-target enrollment must install the adapter
    and select its protected key/material references. None are installed here.
 
@@ -105,3 +124,8 @@ death without exception unwinding. They verify replay denial and native recovery
 without a second apply. Native runtime inspection and controller HTTP responses
 are controlled test sources; these tests do not establish live admission,
 production deployment or acceptance. No workflow dispatch is added.
+In-process observation tests additionally assert the real controller lock at
+each read, forbid any receipt subprocess, reject failed/unmeasured/drifting
+observations at all three boundaries and recover lost completion without a
+second apply. Their measured-runtime documents remain test fixtures for existing
+profiles, not IdP production evidence.

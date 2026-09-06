@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import hmac
 import importlib.util
@@ -1241,6 +1242,160 @@ def test_file_apply_native_journal_completes_and_rejects_replay(file_apply_host)
         host["factory"](host["job"]["dispatch_claim"]),
     ):
         pytest.fail("replay yielded")
+
+
+@pytest.fixture
+def in_process_file_apply(file_apply_host, monkeypatch: pytest.MonkeyPatch):
+    host = file_apply_host
+    calls = []
+
+    def observe(phase):
+        # The real controller journal lock must remain held for both native
+        # observation phases and for the fresh reconciliation observation.
+        with (
+            AGENT._acquire_lock(host["profile"].lock_path) as competing,
+            pytest.raises(BlockingIOError),
+        ):
+            fcntl.flock(competing.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        calls.append(phase)
+        return _native_receipt(host["profile"], host["runtime"])
+
+    def no_dispatcher(*_args, **_kwargs):
+        pytest.fail("in-process observation re-entered native dispatcher")
+
+    monkeypatch.setattr(AGENT, "native_receipt", no_dispatcher)
+    readers = AGENT.FileApplyObservations(
+        before_apply=lambda: observe("prepared"),
+        after_apply=lambda: observe("installed"),
+    )
+    host["factory"] = AGENT.JournaledFileApplyTransaction(
+        host["config"], host["profile"], host["job"], observations=readers
+    )
+    host["observations"], host["observation_calls"] = readers, calls
+    return host
+
+
+def test_file_apply_uses_locked_in_process_readers_through_completion(in_process_file_apply):
+    host = in_process_file_apply
+    with host["factory"](host["job"]["dispatch_claim"]):
+        assert host["observation_calls"] == ["prepared"]
+        host["runtime"] = host["candidate"]
+    assert host["observation_calls"] == ["prepared", "installed", "installed"]
+    assert host["controller"] == "verified"
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("phase", ["prepared", "installed", "reconciliation"])
+@pytest.mark.parametrize("defect", ["source_drift", "unmeasured", "failure"])
+def test_file_apply_in_process_observation_fails_closed(
+    in_process_file_apply, phase: str, defect: str,
+) -> None:
+    host = in_process_file_apply
+    calls = 0
+    original = host["observations"]
+
+    def observe(current_phase):
+        nonlocal calls
+        calls += 1
+        document = (
+            original.before_apply() if current_phase == "prepared" else original.after_apply()
+        )
+        selected = current_phase if calls < 3 else "reconciliation"
+        if selected == phase:
+            if defect == "failure":
+                raise RuntimeError("native reader unavailable")
+            if defect == "source_drift":
+                document["runtime_identity"]["source_sha"] = "9" * 40
+            else:
+                document["runtime_identity"]["measured"] = False
+        return document
+
+    factory = AGENT.JournaledFileApplyTransaction(
+        host["config"], host["profile"], host["job"],
+        observations=AGENT.FileApplyObservations(
+            before_apply=lambda: observe("prepared"),
+            after_apply=lambda: observe("installed"),
+        ),
+    )
+    with (
+        pytest.raises((AGENT.AgentError, RuntimeError)),
+        factory(host["job"]["dispatch_claim"]),
+    ):
+        host["runtime"] = host["candidate"]
+    assert host["controller"] == "dispatched"
+    assert host["completion"] is None
+    pending = AGENT._pending_operation(host["profile"])
+    if phase == "prepared":
+        assert pending is None and host["runtime"] == host["active"]
+    else:
+        assert pending is not None
+        with (
+            pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+            factory(host["job"]["dispatch_claim"]),
+        ):
+            pytest.fail("failed observation permitted a second apply")
+
+
+def test_file_apply_in_process_reconciles_lost_completion_without_second_apply(
+    in_process_file_apply, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = in_process_file_apply
+    original = AGENT._resolve_completion_outcome
+
+    def lost(*_args, **_kwargs):
+        raise AGENT.ControllerOutcomeUnresolved("injected lost completion")
+
+    monkeypatch.setattr(AGENT, "_resolve_completion_outcome", lost)
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="lost completion"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        host["runtime"] = host["candidate"]
+    pending = AGENT._pending_operation(host["profile"])
+    assert pending is not None
+    assert pending["phases"][-1] == "completion_unresolved"
+    with (
+        pytest.raises(AGENT.ControllerOutcomeUnresolved, match="reconciliation"),
+        host["factory"](host["job"]["dispatch_claim"]),
+    ):
+        pytest.fail("lost completion allowed a second apply")
+    monkeypatch.setattr(AGENT, "_resolve_completion_outcome", original)
+    with AGENT._acquire_lock(host["profile"].lock_path) as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = AGENT._recover_pending(
+            host["config"], host["profile"], host["active"], host["rollback"], pending,
+            observe_current=host["observations"].after_apply,
+        )
+    assert result["status"] == "verified"
+    assert host["observation_calls"] == ["prepared", "installed", "installed", "installed"]
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("value", [{"measured": True}, False, "dispatcher", (lambda: {})])
+def test_file_apply_rejects_untyped_observations(file_apply_host, value) -> None:
+    host = file_apply_host
+    with pytest.raises(AGENT.AgentError, match="fixed native adapter"):
+        AGENT.JournaledFileApplyTransaction(
+            host["config"], host["profile"], host["job"], observations=value
+        )
+    assert AGENT._pending_operation(host["profile"]) is None
+
+
+@pytest.mark.parametrize("field", ["before_apply", "after_apply"])
+def test_file_apply_observations_reject_serialized_receipts(field: str) -> None:
+    arguments = {"before_apply": lambda: {}, "after_apply": lambda: {}}
+    arguments[field] = {"measured": True}
+    with pytest.raises(AGENT.AgentError, match="trusted callables"):
+        AGENT.FileApplyObservations(**arguments)
+
+
+def test_recovery_rejects_serialized_native_observation(file_apply_host):
+    host = file_apply_host
+    with pytest.raises(AGENT.AgentError, match="trusted callable"):
+        AGENT._recover_pending(
+            host["config"], host["profile"], host["active"], host["rollback"], {},
+            observe_current={"measured": True},
+        )
 
 
 def test_file_apply_holds_real_lock_and_immutable_job(file_apply_host) -> None:
