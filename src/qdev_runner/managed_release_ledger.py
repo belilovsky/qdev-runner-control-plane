@@ -209,7 +209,7 @@ def _validate_binding(
     if not isinstance(labels, list) or labels != expected_labels:
         raise ManagedReleaseLedgerError("managed release CI labels are invalid")
     if phase == "pull_request":
-        if _PR_REF.fullmatch(binding["ref"]) is None or binding["checkout_sha"] == source_sha:
+        if _PR_REF.fullmatch(binding["ref"]) is None:
             raise ManagedReleaseLedgerError("managed release pull request identity is invalid")
     elif phase == "push":
         if (

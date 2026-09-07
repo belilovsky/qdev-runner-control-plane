@@ -176,7 +176,6 @@ def test_first_exact_pr_binding_opens_dynamic_candidate_and_is_idempotent(
     ("field", "value", "error"),
     [
         ("repository", "attacker/qazgeo", "candidate identity"),
-        ("checkout_sha", SOURCE_SHA, "pull request identity"),
         ("ref", "refs/heads/main", "pull request identity"),
         ("event", "push", "main push identity"),
         ("profile", "qdev-ci-browser", "profile"),
@@ -192,6 +191,20 @@ def test_registration_rejects_foreign_or_forged_binding(
 
     with pytest.raises(ManagedReleaseLedgerError, match=error):
         _register(path, binding)
+
+
+def test_registration_accepts_exact_pr_head_checkout_sha(tmp_path: Path) -> None:
+    path = _ledger_path(tmp_path)
+    binding = _phase_bindings("pull_request", state="queued", conclusion=None)[0]
+    binding["checkout_sha"] = SOURCE_SHA
+
+    result = _register(path, binding)
+    entry = ManagedReleaseLedger(path).entries[0]
+
+    assert result["binding"]["checkout_sha"] == SOURCE_SHA
+    assert entry.source_sha == SOURCE_SHA
+    assert entry.registration_phase == "pull_request"
+    assert entry.registration_state == "open"
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "forged", "duplicate"])

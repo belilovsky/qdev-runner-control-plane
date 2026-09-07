@@ -923,7 +923,9 @@ _QGEO_PROVIDER_JOB_NAMES = {
 }
 
 
-def _qgeo_bindings(phase: str) -> tuple[dict[str, object], ...]:
+def _qgeo_bindings(
+    phase: str, *, pr_checkout_sha: str = QGEO_PR_CHECKOUT_SHA
+) -> tuple[dict[str, object], ...]:
     event_offset = 0 if phase == "pull_request" else 1000
     workflow_run_ids = {
         ".github/workflows/ci.yml": 41001 + event_offset,
@@ -935,7 +937,7 @@ def _qgeo_bindings(phase: str) -> tuple[dict[str, object], ...]:
         for job_name, profile in jobs.items():
             job_id += 1
             run_id = workflow_run_ids[workflow_path]
-            checkout_sha = QGEO_PR_CHECKOUT_SHA if phase == "pull_request" else QGEO_SOURCE_SHA
+            checkout_sha = pr_checkout_sha if phase == "pull_request" else QGEO_SOURCE_SHA
             head_branch = QGEO_PR_BRANCH if phase == "pull_request" else "main"
             ref = "refs/pull/63/merge" if phase == "pull_request" else "refs/heads/main"
             bindings.append(
@@ -968,8 +970,14 @@ def _qgeo_bindings(phase: str) -> tuple[dict[str, object], ...]:
 
 
 class QGeoFakeGitHub:
-    def __init__(self, *, phase: str = "pull_request") -> None:
+    def __init__(
+        self,
+        *,
+        phase: str = "pull_request",
+        pr_checkout_sha: str = QGEO_PR_CHECKOUT_SHA,
+    ) -> None:
         self.phase = phase
+        self.pr_checkout_sha = pr_checkout_sha
         self.run_status = "completed"
         self.run_conclusion: str | None = "success"
         self.job_status = "completed"
@@ -980,7 +988,7 @@ class QGeoFakeGitHub:
 
     @property
     def bindings(self) -> tuple[dict[str, object], ...]:
-        return _qgeo_bindings(self.phase)
+        return _qgeo_bindings(self.phase, pr_checkout_sha=self.pr_checkout_sha)
 
     def _binding_for_run(self, run_id: int) -> dict[str, object]:
         return next(binding for binding in self.bindings if binding["run_id"] == run_id)
@@ -1282,7 +1290,7 @@ def test_qgeo_ci_reconcile_rejects_extra_provider_job(tmp_path: Path) -> None:
     assert response.json()["detail"] == "GitHub job set is not exact"
 
 
-def test_qgeo_ci_registration_rejects_non_success_and_synthetic_sha_forgery(
+def test_qgeo_ci_registration_accepts_exact_pr_head_and_rejects_non_success(
     tmp_path: Path,
 ) -> None:
     github = QGeoFakeGitHub()
@@ -1297,14 +1305,46 @@ def test_qgeo_ci_registration_rejects_non_success_and_synthetic_sha_forgery(
     )
     assert neutral.status_code == 409
 
-    github.job_overrides.clear()
-    github.run_overrides[int(binding["run_id"])] = {"head_sha": QGEO_SOURCE_SHA}
-    forged = client.post(
+    github = QGeoFakeGitHub(pr_checkout_sha=QGEO_SOURCE_SHA)
+    exact_head_path = tmp_path / "exact-head"
+    exact_head_path.mkdir()
+    client = _app(exact_head_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    exact_head = client.post(
         "/internal/v1/operations/releases/qazgeo/ci-registration",
         json=_qgeo_registration_body(binding),
         headers=OPERATOR_HEADERS,
     )
-    assert forged.status_code == 409
+    assert exact_head.status_code == 200, exact_head.text
+
+
+def test_qgeo_ci_registration_rejects_foreign_pr_head_repository(tmp_path: Path) -> None:
+    github = QGeoFakeGitHub()
+    client = _app(tmp_path, github=github, include_qgeo=True)
+    binding = github.bindings[0]
+    _seed_qgeo_jobs(client, (binding,))
+    github.run_overrides[int(binding["run_id"])] = {
+        "pull_requests": [
+            {
+                "number": 63,
+                "head": {
+                    "sha": QGEO_SOURCE_SHA,
+                    "ref": QGEO_PR_BRANCH,
+                    "repo": {"full_name": "attacker/qazgeo"},
+                },
+                "base": {"ref": "main"},
+            }
+        ]
+    }
+
+    rejected = client.post(
+        "/internal/v1/operations/releases/qazgeo/ci-registration",
+        json=_qgeo_registration_body(binding),
+        headers=OPERATOR_HEADERS,
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "managed CI binding was rejected"
 
 
 def _seed_stale_running_job(client: TestClient) -> float:
