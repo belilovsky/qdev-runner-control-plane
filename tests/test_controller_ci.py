@@ -223,6 +223,18 @@ def test_pr_preserves_provider_merge_when_computed_field_is_pending(
         CI.validate_context("managed", environment, MERGE_SHA)
 
 
+def test_pr_accepts_provider_regenerated_merge_ref(tmp_path: Path) -> None:
+    environment = context(tmp_path, "pull_request")
+    path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(path.read_text())
+    event["pull_request"]["merge_commit_sha"] = "3" * 40
+    path.write_text(json.dumps(event))
+    environment.update({"QDEV_MANAGED_CI": "true", "RUNNER_NAME": "qdev-ephemeral-1"})
+    binding = CI.validate_context("managed", environment, SHA)
+    assert binding["checkout_sha"] == SHA
+    assert binding["provider_merge_sha"] == MERGE_SHA
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -237,7 +249,7 @@ def test_pr_preserves_provider_merge_when_computed_field_is_pending(
         ("pull_request.base.ref", "wrong"),
         ("pull_request.base.sha", "short"),
         ("pull_request.head", None),
-        ("pull_request.merge_commit_sha", "3" * 40),
+        ("pull_request.merge_commit_sha", "short"),
         ("pull_request.number", 100),
         ("number", True),
         ("action", "closed"),

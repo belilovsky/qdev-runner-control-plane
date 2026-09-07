@@ -472,6 +472,21 @@ def test_controller_compose_project_is_namespaced() -> None:
     )
 
 
+def test_controller_activation_seeds_mutable_managed_release_ledger_once() -> None:
+    script = _activation_script()
+
+    assert 'managed_release_state_root="/var/lib/qdev-runner/managed-release-state"' in script
+    assert '"$managed_release_state_root" \\' in script
+    assert 'if [[ ! -e "$canonical_managed_release_ledger" ]]; then' in script
+    assert (
+        'install -o "$runtime_uid" -g "$runtime_gid" -m 0600 -- \\\n'
+        "      /etc/qdev-runner/managed-release-ledger.yml \\\n"
+        '      "$canonical_managed_release_ledger"'
+    ) in script
+    assert 'chown "$runtime_uid:$runtime_gid" -- "$canonical_managed_release_ledger"' in script
+    assert 'ManagedReleaseLedger(Path(__import__("sys").argv[1]))' in script
+
+
 def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
     provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
     helper = (ROOT / "scripts/provision_worker_recovery_bindings.py").read_text(encoding="utf-8")

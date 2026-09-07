@@ -15,6 +15,7 @@ operations_root="${QDEV_OPERATIONS_ROOT:-/var/lib/qdev-runner/operations}"
 release_jobs_root="${QDEV_RELEASE_JOBS_ROOT:-/var/lib/qdev-runner/release-jobs}"
 broker_state_root="/var/lib/qdev-runner/broker-state"
 control_state_root="/var/lib/qdev-runner/control-state"
+managed_release_state_root="/var/lib/qdev-runner/managed-release-state"
 admin_platform_receipt_root="/var/lib/qdev-runner/admin-platform-receipts"
 artifact_root="/var/lib/qdev-runner/artifacts"
 controller_activation_root="/var/lib/qdev-runner/controller-activation"
@@ -390,6 +391,7 @@ for durable_root in \
   "$release_jobs_root" \
   "$broker_state_root" \
   "$control_state_root" \
+  "$managed_release_state_root" \
     "$admin_platform_receipt_root" \
     "$controller_activation_root" \
     "$artifact_root"; do
@@ -1465,10 +1467,11 @@ canonicalize_state_link() {
 
 prepare_broker_state() {
   local legacy_database canonical_database source_path
-  local canonical_claims legacy_claims candidate
+  local canonical_claims canonical_managed_release_ledger legacy_claims candidate
   legacy_database=/var/lib/qdev-runner/broker.db
   canonical_database="$broker_state_root/broker.db"
   canonical_claims="$control_state_root/claim-scopes.json"
+  canonical_managed_release_ledger="$managed_release_state_root/managed-release-ledger.yml"
 
   # SQLite must be quiescent before its database is relocated.  Stopping only
   # the two brokers leaves the registry and every worker untouched.
@@ -1549,6 +1552,29 @@ prepare_broker_state() {
   canonicalize_state_link \
     /etc/qdev-runner/claim-scopes.json "$canonical_claims" \
     /var/lib/qdev-runner/control-state/claim-scopes.json || return 1
+
+  # The packaged file is an immutable seed.  The internal broker appends
+  # provider-bound CI state to a separate durable copy, which must survive
+  # controller upgrades and rollbacks.  Seed only the first installation;
+  # never replace an existing authoritative ledger with a release snapshot.
+  if [[ ! -e "$canonical_managed_release_ledger" ]]; then
+    install -o "$runtime_uid" -g "$runtime_gid" -m 0600 -- \
+      /etc/qdev-runner/managed-release-ledger.yml \
+      "$canonical_managed_release_ledger"
+  fi
+  if [[ ! -f "$canonical_managed_release_ledger" ||
+        -L "$canonical_managed_release_ledger" ]]; then
+    printf 'canonical managed-release ledger is not a regular file\n' >&2
+    return 1
+  fi
+  chown "$runtime_uid:$runtime_gid" -- "$canonical_managed_release_ledger"
+  chmod 0600 -- "$canonical_managed_release_ledger"
+  PYTHONPATH="$release/src" python3 -c \
+    'from pathlib import Path; from qdev_runner.managed_release_ledger import ManagedReleaseLedger; ManagedReleaseLedger(Path(__import__("sys").argv[1]))' \
+    "$canonical_managed_release_ledger" || {
+    printf 'canonical managed-release ledger is invalid\n' >&2
+    return 1
+  }
 }
 
 rollback() {
