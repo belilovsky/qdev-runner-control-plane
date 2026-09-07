@@ -555,7 +555,6 @@ def _qgeo_run_identity(
             or head.get("sha") != candidate_sha
             or head.get("ref") != head_branch
             or base.get("ref") != "main"
-            or checkout_sha == candidate_sha
         ):
             raise _QGeoCIObservationError("GitHub pull request identity is invalid")
         head_repository = head.get("repo")
