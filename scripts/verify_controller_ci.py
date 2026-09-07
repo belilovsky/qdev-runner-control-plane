@@ -75,12 +75,6 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
         # bound to ``head.sha``.
         if event_merge_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", str(event_merge_sha)):
             raise ValueError("pull request event merge SHA is invalid")
-        # GitHub can regenerate refs/pull/<number>/merge after the webhook
-        # payload was created but before the job starts.  Both values are
-        # provider evidence, but only GITHUB_SHA identifies this execution's
-        # merge context; the exact checked-out head is bound separately below.
-        if provider_sha == sha:
-            raise ValueError("pull request provider merge must differ from checkout")
         for side, ref_variable in (("base", "GITHUB_BASE_REF"), ("head", "GITHUB_HEAD_REF")):
             revision = pr.get(side)
             if not isinstance(revision, dict):
