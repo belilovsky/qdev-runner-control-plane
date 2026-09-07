@@ -470,7 +470,9 @@ def verify_recovery_claim_receipt(
         raise ControllerRecoveryArtifactError(
             "controller claim receipt expiry is invalid"
         ) from error
-    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    # A claim scope is short-lived authorization to execute the exact provider
+    # job. Its signed receipt remains durable evidence of that issuance after
+    # expiry; the immutable tuple below prevents reuse for another build.
     expected = {
         "repository": CONTROLLER_REPOSITORY,
         "run_id": exact_run,
@@ -499,7 +501,6 @@ def verify_recovery_claim_receipt(
         or not isinstance(exact_scope_job, dict)
         or any(exact_scope_job.get(field) != value for field, value in expected.items())
         or expires_at.tzinfo is None
-        or expires_at.astimezone(UTC) <= observed_at
     ):
         raise ControllerRecoveryArtifactError("controller claim receipt is not exact")
     receipt_id = verified["receipt_id"]
