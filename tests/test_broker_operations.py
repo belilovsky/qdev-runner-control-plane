@@ -2664,7 +2664,11 @@ def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
         admitted=True,
         scope_id=scope_id,
         profiles=["qdev-ci-docker"],
-        disk_free_gib=50.0,
+        # The signed directive below lowers the baseline 30 GiB floor to
+        # 4.5 GiB. With a 20 GiB profile reservation, this exact scoped claim
+        # is admissible at 25 GiB and would be rejected if Store.claim()
+        # accidentally reapplied the heartbeat's baseline floor.
+        disk_free_gib=25.0,
     )
     _seed_pending_job(client, 41, "stale-capacity-candidate")
     _seed_pending_job(

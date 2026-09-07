@@ -983,9 +983,18 @@ class Store:
         head_sha: str | None = None,
         primary_max_age_seconds: int = 90,
         claim_scope: ClaimScope | None = None,
+        authorized_min_disk_free_gib: float | None = None,
         fifo_skip_job_ids: frozenset[int] = frozenset(),
         fifo_skip_guard: Callable[[frozenset[int]], frozenset[int]] | None = None,
     ) -> dict[str, Any] | None:
+        if authorized_min_disk_free_gib is not None and (
+            claim_scope is None
+            or claim_scope.schema != SCHEMA_V2
+            or isinstance(authorized_min_disk_free_gib, bool)
+            or not math.isfinite(authorized_min_disk_free_gib)
+            or authorized_min_disk_free_gib < 0
+        ):
+            raise ValueError("authorized capacity floor requires an exact v2 claim scope")
         if fifo_skip_job_ids and (claim_scope is None or claim_scope.schema != SCHEMA_V2):
             raise ValueError("FIFO skips require an exact v2 claim scope")
         now = time.time()
@@ -1031,6 +1040,8 @@ class Store:
                     )
                     observed_disk_free_gib = float(raw_capacity["disk_free_gib"])
                     observed_min_disk_free_gib = float(worker_detail["min_disk_free_gib"])
+                    if authorized_min_disk_free_gib is not None:
+                        observed_min_disk_free_gib = authorized_min_disk_free_gib
                     concurrency = int(worker_detail["concurrency"])
                     slots_available = int(worker_detail["slots_available"])
                 except (
