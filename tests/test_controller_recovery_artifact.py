@@ -368,6 +368,20 @@ def test_recovery_claim_receipt_binds_controller_signature_and_exact_job() -> No
         )
 
 
+def test_recovery_claim_receipt_remains_historical_evidence_after_scope_expiry() -> None:
+    receipt = _claim_receipt()
+    nonce = verify_recovery_claim_receipt(
+        receipt,
+        receipt_key=RECEIPT_KEY,
+        source_sha=SOURCE_SHA,
+        run_id=101,
+        job_id=202,
+        attempt=1,
+        now=NOW + timedelta(days=1),
+    )
+    assert nonce == f"controller-claim:{receipt['receipt_id']}"
+
+
 def test_signer_binds_mature_current_status_and_config_snapshot(tmp_path: Path) -> None:
     config_root = _config_root(tmp_path)
     config_digest = candidate_config_digest(config_root)
