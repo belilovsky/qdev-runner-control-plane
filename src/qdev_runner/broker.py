@@ -3879,6 +3879,13 @@ def create_app(
             claim_scope=claim_scope,
             repository=repository,
             head_sha=head_sha,
+            authorized_min_disk_free_gib=(
+                active_directive.min_disk_free_gib
+                if active_directive is not None
+                and claim_scope is not None
+                and claim_scope.schema == SCHEMA_V2
+                else None
+            ),
             fifo_skip_job_ids=fifo_skip_job_ids,
             fifo_skip_guard=fifo_skip_guard,
         )

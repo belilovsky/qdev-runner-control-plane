@@ -383,6 +383,22 @@ def test_controller_rollback_reuses_existing_images() -> None:
     assert "QDEV_CONTROLLER_NO_BUILD=true" in script
     assert "QDEV_CONTROLLER_ROLLBACK=true" in script
     assert 'QDEV_CONTROLLER_EXPECTED_CURRENT_REVISION="$current_revision"' in script
+    assert (
+        'current_public_saved_ref="qdev-runner-controller-anchor-public:$current_revision"'
+        in script
+    )
+    assert (
+        'current_internal_saved_ref="qdev-runner-controller-anchor-internal:$current_revision"'
+        in script
+    )
+    assert 'docker image tag "$current_public_image_id" "$current_public_saved_ref"' in script
+    assert 'docker image tag "$current_internal_image_id" "$current_internal_saved_ref"' in script
+    activation_call = script.index('"$script_dir/activate_controller_release.sh" "$target"')
+    reverse_anchor = script.index('python3 - "$rollback_anchor_path" "$current_revision"')
+    assert activation_call < reverse_anchor
+    assert "os.replace(temporary_name, target_path)" in script
+    assert "os.chown(temporary_name, 0, 0)" in script
+    assert "os.chmod(temporary_name, 0o600)" in script
     assert 'rollback_anchor_path="${QDEV_CONTROLLER_ROLLBACK_ANCHOR:-' in activation
     assert "qdev-controller-rollback-anchor-v1" in activation
     assert "metadata.st_uid != 0" in activation
@@ -454,6 +470,21 @@ def test_controller_compose_project_is_namespaced() -> None:
         )
         == 1
     )
+
+
+def test_controller_activation_seeds_mutable_managed_release_ledger_once() -> None:
+    script = _activation_script()
+
+    assert 'managed_release_state_root="/var/lib/qdev-runner/managed-release-state"' in script
+    assert '"$managed_release_state_root" \\' in script
+    assert 'if [[ ! -e "$canonical_managed_release_ledger" ]]; then' in script
+    assert (
+        'install -o "$runtime_uid" -g "$runtime_gid" -m 0600 -- \\\n'
+        "      /etc/qdev-runner/managed-release-ledger.yml \\\n"
+        '      "$canonical_managed_release_ledger"'
+    ) in script
+    assert 'chown "$runtime_uid:$runtime_gid" -- "$canonical_managed_release_ledger"' in script
+    assert 'ManagedReleaseLedger(Path(__import__("sys").argv[1]))' in script
 
 
 def test_recovery_binding_provisioner_is_installed_without_exposing_secrets() -> None:
