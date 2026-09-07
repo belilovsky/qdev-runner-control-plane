@@ -861,6 +861,52 @@ def test_reserve_waits_when_primary_has_profile_headroom(tmp_path: Path) -> None
     )
 
 
+def test_scoped_reserve_does_not_wait_for_primary_bound_to_other_scope(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "broker.db")
+    assert store.enqueue(job(repository="belilovsky/avds"))
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 64,
+            "min_disk_free_gib": 30,
+            "configured_claim_scope_id": "different-immutable-scope",
+        },
+    )
+    scope = ClaimScope(
+        scope_id="avds-recovery-100",
+        worker_name="reserve-1",
+        tier="reserve",
+        repository="belilovsky/avds",
+        head_sha="a" * 40,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        jobs=(
+            ScopedJob(
+                100,
+                "qdev-ci",
+                repository="belilovsky/avds",
+                run_id=200,
+                attempt=1,
+                exact_sha="a" * 40,
+            ),
+        ),
+        schema=SCHEMA_V2,
+    )
+    _admit_scoped_worker(store, scope)
+
+    claimed = store.claim("reserve-1", ("qdev-ci",), tier="reserve", claim_scope=scope)
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
+
+
 def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

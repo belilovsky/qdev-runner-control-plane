@@ -938,6 +938,7 @@ class Store:
         profile_disk_mb: int | None = None,
         repository_min_disk_free_gib: float | None = None,
         repository_max_concurrency: int | None = None,
+        require_unscoped_worker: bool = False,
     ) -> bool:
         rows = connection.execute(
             """
@@ -950,6 +951,8 @@ class Store:
             if self._worker_fenced(connection, str(row["name"])):
                 continue
             detail = json.loads(row["detail_json"])
+            if require_unscoped_worker and detail.get("configured_claim_scope_id"):
+                continue
             worker_profiles = {str(item).lower() for item in json.loads(row["profiles_json"])}
             if profile is not None and profile.lower() not in worker_profiles:
                 continue
@@ -1232,6 +1235,9 @@ class Store:
                     profile_disk_mb=required_disk_mb,
                     repository_min_disk_free_gib=minimum_free_gib,
                     repository_max_concurrency=maximum_concurrency,
+                    require_unscoped_worker=(
+                        claim_scope is not None and claim_scope.schema == SCHEMA_V2
+                    ),
                 ):
                     connection.execute("COMMIT")
                     return None
