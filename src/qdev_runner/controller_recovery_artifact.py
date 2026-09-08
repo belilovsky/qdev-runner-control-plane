@@ -48,6 +48,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _WORKFLOW = ".github/workflows/runner-smoke.yml"
+_HOSTED_WORKFLOW = ".github/workflows/controller-recovery-build.yml"
 _CONFIG_FILES = {
     "repos.json": Path("inventory/repos.json"),
     "profiles.yml": Path("config/profiles.yml"),
@@ -361,8 +362,8 @@ def reconcile_workflow_identity(
     run_id: int,
     job_id: int,
     attempt: int,
-    admission_nonce: str,
-    idempotency_key: str,
+    admission_nonce: str | None = None,
+    idempotency_key: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     """Validate exact provider facts and create a short-lived recovery identity."""
@@ -371,11 +372,57 @@ def reconcile_workflow_identity(
     exact_run = _require_positive_int(run_id, "run ID")
     exact_job = _require_positive_int(job_id, "job ID")
     exact_attempt = _require_positive_int(attempt, "attempt")
+    if run.get("path") == _HOSTED_WORKFLOW:
+        actor = run.get("actor")
+        repository = run.get("repository")
+        if (
+            run.get("id") != exact_run
+            or run.get("run_attempt") != exact_attempt
+            or run.get("event") != "workflow_dispatch"
+            or run.get("head_sha") != exact_sha
+            or run.get("head_branch") != "main"
+            or run.get("conclusion") != "success"
+            or not isinstance(actor, Mapping)
+            or actor.get("login") != CONTROLLER_REPOSITORY.split("/")[0]
+            or not isinstance(repository, Mapping)
+            or repository.get("full_name") != CONTROLLER_REPOSITORY
+            or job.get("id") != exact_job
+            or job.get("run_id") != exact_run
+            or job.get("run_attempt") != exact_attempt
+            or job.get("head_sha") != exact_sha
+            or job.get("name") != "controller-recovery-build"
+            or job.get("conclusion") != "success"
+            or job.get("labels") != ["ubuntu-latest"]
+            or admission_nonce is not None
+        ):
+            raise ControllerRecoveryArtifactError("hosted recovery workflow identity is not exact")
+        observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+        return {
+            "issuer": "https://api.github.com",
+            "subject": f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main",
+            "workflow_ref": f"{CONTROLLER_REPOSITORY}/{_HOSTED_WORKFLOW}@refs/heads/main",
+            "event": "workflow_dispatch",
+            "ref": "refs/heads/main",
+            "run_id": exact_run,
+            "job_id": exact_job,
+            "attempt": exact_attempt,
+            "reconciled_at": observed_at.isoformat().replace("+00:00", "Z"),
+            "head_sha": exact_sha,
+            "job_name": "controller-recovery-build",
+            "labels": ["ubuntu-latest"],
+            "owner_recovery": True,
+            "execution_lane": "github-hosted-recovery-build",
+            "expected_sha": exact_sha,
+            "idempotency_key": f"hosted-recovery:{exact_run}:{exact_job}:{exact_attempt}",
+            "issued_at": observed_at.isoformat().replace("+00:00", "Z"),
+            "expires_at": (observed_at + timedelta(minutes=15)).isoformat().replace("+00:00", "Z"),
+            "conclusion": "success",
+        }
     for value, label in (
         (admission_nonce, "admission nonce"),
         (idempotency_key, "idempotency key"),
     ):
-        if _IDENTIFIER.fullmatch(value) is None:
+        if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
             raise ControllerRecoveryArtifactError(f"{label} is invalid")
     repository = run.get("repository")
     repository_name = repository.get("full_name") if isinstance(repository, Mapping) else None
@@ -516,7 +563,7 @@ def reconcile_artifact(
     image_scan_path: Path,
     output_directory: Path,
     workflow_identity: Mapping[str, object],
-    claim_receipt_path: Path,
+    claim_receipt_path: Path | None = None,
 ) -> Path:
     """Write provenance and a manifest for exact locally measured bytes."""
 
@@ -577,7 +624,8 @@ def reconcile_artifact(
     shutil.copyfile(security_scans_path, output_scans)
     shutil.copyfile(source_scan_path, output_source_scan)
     shutil.copyfile(image_scan_path, output_image_scan)
-    shutil.copyfile(claim_receipt_path, output_claim_receipt)
+    if claim_receipt_path is not None:
+        shutil.copyfile(claim_receipt_path, output_claim_receipt)
     entrypoint_digest = fingerprint_release_tree(release_root, require_root_owner=False)
     provenance = {
         "schema": ARTIFACT_PROVENANCE_SCHEMA,
@@ -592,9 +640,10 @@ def reconcile_artifact(
         "security_scans_sha256": _sha256(output_scans),
         "source_scan_sha256": _sha256(output_source_scan),
         "image_scan_sha256": _sha256(output_image_scan),
-        "claim_receipt_sha256": _sha256(output_claim_receipt),
         "workflow_identity": dict(workflow_identity),
     }
+    if claim_receipt_path is not None:
+        provenance["claim_receipt_sha256"] = _sha256(output_claim_receipt)
     provenance_path = output_directory / "controller-provenance.json"
     provenance_path.write_bytes(_canonical(provenance) + b"\n")
 
@@ -614,9 +663,10 @@ def reconcile_artifact(
         "security_scans": descriptor(output_scans),
         "source_scan": descriptor(output_source_scan),
         "image_scan": descriptor(output_image_scan),
-        "claim_receipt": descriptor(output_claim_receipt),
         "provenance": descriptor(provenance_path),
     }
+    if claim_receipt_path is not None:
+        manifest["claim_receipt"] = descriptor(output_claim_receipt)
     manifest_path = output_directory / "controller-artifact-manifest.json"
     manifest_path.write_bytes(_canonical(manifest) + b"\n")
     try:

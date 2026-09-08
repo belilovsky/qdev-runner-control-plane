@@ -23,6 +23,7 @@ from qdev_runner.controller_recovery_artifact import (
     trivy_high_critical_count,
     verify_recovery_claim_receipt,
 )
+from qdev_runner.github import GitHubAppClient, GitHubError
 
 
 def _run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[bytes]:
@@ -208,6 +209,19 @@ def build(args: argparse.Namespace) -> dict[str, object]:
 
 def reconcile(args: argparse.Namespace) -> dict[str, object]:
     token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        app_id = os.environ.get("QDEV_GITHUB_APP_ID", "")
+        key_path = os.environ.get("QDEV_GITHUB_APP_PRIVATE_KEY", "")
+        if not app_id or not key_path:
+            raise ControllerRecoveryArtifactError("GitHub reconciliation identity is unavailable")
+        client = GitHubAppClient(app_id=app_id, private_key_path=Path(key_path))
+        try:
+            installation = client.repository_installation_id("belilovsky/qdev-runner-control-plane")
+            token = client.installation_token(installation)
+        except GitHubError as error:
+            raise ControllerRecoveryArtifactError("GitHub App reconciliation failed") from error
+        finally:
+            client.close()
     run = github_json(
         f"/repos/belilovsky/qdev-runner-control-plane/actions/runs/{args.run_id}", token=token
     )
@@ -223,16 +237,21 @@ def reconcile(args: argparse.Namespace) -> dict[str, object]:
     ]
     if len(matches) != 1:
         raise ControllerRecoveryArtifactError("exact GitHub workflow job is unavailable")
-    claim_receipt_path = args.claim_receipt.resolve(strict=True)
-    claim_receipt = _json(claim_receipt_path, "controller claim receipt")
-    admission_nonce = verify_recovery_claim_receipt(
-        claim_receipt,
-        receipt_key=_receipt_key(args.controller_receipt_key.resolve(strict=True)),
-        source_sha=args.source_sha,
-        run_id=args.run_id,
-        job_id=args.job_id,
-        attempt=args.attempt,
-    )
+    claim_receipt_path = None
+    admission_nonce = None
+    if args.claim_receipt is not None:
+        if args.controller_receipt_key is None:
+            raise ControllerRecoveryArtifactError("controller receipt key is required")
+        claim_receipt_path = args.claim_receipt.resolve(strict=True)
+        claim_receipt = _json(claim_receipt_path, "controller claim receipt")
+        admission_nonce = verify_recovery_claim_receipt(
+            claim_receipt,
+            receipt_key=_receipt_key(args.controller_receipt_key.resolve(strict=True)),
+            source_sha=args.source_sha,
+            run_id=args.run_id,
+            job_id=args.job_id,
+            attempt=args.attempt,
+        )
     identity = reconcile_workflow_identity(
         run,
         matches[0],
@@ -296,9 +315,9 @@ def parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("--run-id", type=int, required=True)
     reconcile_parser.add_argument("--job-id", type=int, required=True)
     reconcile_parser.add_argument("--attempt", type=int, required=True)
-    reconcile_parser.add_argument("--claim-receipt", type=Path, required=True)
-    reconcile_parser.add_argument("--controller-receipt-key", type=Path, required=True)
-    reconcile_parser.add_argument("--idempotency-key", required=True)
+    reconcile_parser.add_argument("--claim-receipt", type=Path)
+    reconcile_parser.add_argument("--controller-receipt-key", type=Path)
+    reconcile_parser.add_argument("--idempotency-key")
     reconcile_parser.set_defaults(handler=reconcile)
 
     sign_parser = commands.add_parser("sign-envelope")
