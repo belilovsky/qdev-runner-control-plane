@@ -298,6 +298,65 @@ def test_inspect_docker_archive_rejects_unsafe_or_ambiguous_layers(
         )
 
 
+def _hosted_workflow() -> tuple[dict[str, object], dict[str, object]]:
+    run, job = _workflow()
+    run.update(
+        {
+            "path": ".github/workflows/controller-recovery-build.yml",
+            "head_branch": "main",
+            "actor": {"login": "belilovsky"},
+        }
+    )
+    job.update({"name": "controller-recovery-build", "labels": ["ubuntu-latest"]})
+    return run, job
+
+
+def test_hosted_recovery_requires_no_self_hosted_claim() -> None:
+    run, job = _hosted_workflow()
+    identity = reconcile_workflow_identity(
+        run,
+        job,
+        source_sha=SOURCE_SHA,
+        run_id=101,
+        job_id=202,
+        attempt=1,
+        now=NOW,
+    )
+    assert identity["execution_lane"] == "github-hosted-recovery-build"
+    assert "admission_nonce" not in identity
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("run", "head_branch", "unreviewed"),
+        ("run", "actor", {"login": "untrusted"}),
+        ("run", "head_sha", "0" * 40),
+        ("run", "event", "pull_request"),
+        ("job", "conclusion", "failure"),
+        ("job", "labels", ["self-hosted"]),
+        ("job", "run_id", 999),
+    ],
+)
+def test_hosted_recovery_rejects_non_exact_provider_facts(
+    target: str,
+    field: str,
+    value: object,
+) -> None:
+    run, job = _hosted_workflow()
+    (run if target == "run" else job)[field] = value
+    with pytest.raises(ControllerRecoveryArtifactError):
+        reconcile_workflow_identity(
+            run,
+            job,
+            source_sha=SOURCE_SHA,
+            run_id=101,
+            job_id=202,
+            attempt=1,
+            now=NOW,
+        )
+
+
 def test_reconcile_workflow_identity_requires_exact_provider_job() -> None:
     run, job = _workflow()
     identity = reconcile_workflow_identity(

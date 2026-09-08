@@ -670,6 +670,51 @@ def _recovery_workflow_identity(*, now: datetime) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("tamper", [None, "expired", "expected_sha", "labels", "ref"])
+def test_hosted_artifact_requires_fresh_exact_identity(tmp_path: Path, tamper: str | None) -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    identity = _recovery_workflow_identity(now=now)
+    identity.pop("admission_nonce")
+    identity.update(
+        {
+            "workflow_ref": (
+                f"{CONTROLLER_REPOSITORY}/.github/workflows/"
+                "controller-recovery-build.yml@refs/heads/main"
+            ),
+            "subject": f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main",
+            "ref": "refs/heads/main",
+            "job_name": "controller-recovery-build",
+            "labels": ["ubuntu-latest"],
+            "execution_lane": "github-hosted-recovery-build",
+            "idempotency_key": "hosted-recovery:101:202:1",
+            "issued_at": identity["reconciled_at"],
+        }
+    )
+    if tamper == "expected_sha":
+        identity[tamper] = "0" * 40
+    elif tamper == "labels":
+        identity[tamper] = ["self-hosted"]
+    elif tamper == "ref":
+        identity[tamper] = "refs/heads/other"
+    manifest, _ = _artifact_bundle(tmp_path, workflow_identity=identity)
+    if tamper:
+        with pytest.raises(ControllerActivationError):
+            verify_controller_artifact_manifest(
+                manifest,
+                require_root_owner=False,
+                now=now + timedelta(hours=1) if tamper == "expired" else now,
+            )
+    else:
+        assert (
+            verify_controller_artifact_manifest(
+                manifest,
+                require_root_owner=False,
+                now=now,
+            ).source_sha
+            == NEW.source_sha
+        )
+
+
 def test_artifact_manifest_accepts_fresh_exact_recovery_identity(tmp_path: Path) -> None:
     now = datetime(2026, 9, 6, 12, tzinfo=UTC)
     manifest, _ = _artifact_bundle(

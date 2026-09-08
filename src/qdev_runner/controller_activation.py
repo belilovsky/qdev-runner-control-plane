@@ -2193,9 +2193,11 @@ def verify_controller_artifact_manifest(
         "expires_at",
         "conclusion",
     }
+    hosted_identity_fields = recovery_identity_fields - {"admission_nonce"}
     if not isinstance(workflow_identity, dict) or set(workflow_identity) not in {
         frozenset(normal_identity_fields),
         frozenset(recovery_identity_fields),
+        frozenset(hosted_identity_fields),
     }:
         raise ControllerActivationError("controller artifact workflow identity is invalid")
     common_identity_invalid = (
@@ -2229,6 +2231,41 @@ def verify_controller_artifact_manifest(
             )
         ):
             raise ControllerActivationError("controller artifact workflow identity is invalid")
+    elif set(workflow_identity) == hosted_identity_fields:
+        issued_at = _parse_time(workflow_identity.get("issued_at"), "hosted recovery issued_at")
+        expires_at = _parse_time(workflow_identity.get("expires_at"), "hosted recovery expires_at")
+        observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+        run_id = workflow_identity["run_id"]
+        job_id = workflow_identity["job_id"]
+        attempt = workflow_identity["attempt"]
+        if (
+            claim_receipt_raw is not None
+            or "claim_receipt_sha256" in provenance
+            or workflow_identity.get("issuer") != "https://api.github.com"
+            or workflow_identity.get("event") != "workflow_dispatch"
+            or workflow_identity.get("ref") != "refs/heads/main"
+            or workflow_identity.get("head_sha") != source_sha
+            or workflow_identity.get("expected_sha") != source_sha
+            or workflow_identity.get("job_name") != "controller-recovery-build"
+            or workflow_identity.get("labels") != ["ubuntu-latest"]
+            or workflow_identity.get("conclusion") != "success"
+            or workflow_identity.get("owner_recovery") is not True
+            or workflow_identity.get("execution_lane") != "github-hosted-recovery-build"
+            or workflow_identity["subject"] != f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"
+            or workflow_identity["workflow_ref"]
+            != (
+                f"{CONTROLLER_REPOSITORY}/.github/workflows/"
+                "controller-recovery-build.yml@refs/heads/main"
+            )
+            or workflow_identity.get("idempotency_key")
+            != f"hosted-recovery:{run_id}:{job_id}:{attempt}"
+            or expires_at <= issued_at
+            or expires_at - issued_at > MAX_ENVELOPE_TTL
+            or reconciled_at != issued_at
+            or issued_at > observed_at + MAX_CLOCK_SKEW
+            or expires_at <= observed_at
+        ):
+            raise ControllerActivationError("hosted controller recovery identity is invalid")
     else:
         if claim_receipt_raw is None or claim_receipt_digest is None:
             raise ControllerActivationError(
