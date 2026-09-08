@@ -491,8 +491,7 @@ def test_standalone_verifier_emits_the_qazlake_stdout_contract(tmp_path: Path) -
 
 def test_schema_is_dedicated_and_matches_fixed_payload_shape() -> None:
     schema_path = (
-        Path(__file__).parents[1]
-        / "docs/schemas/qdev-qazpipe-water-provenance-v1.schema.json"
+        Path(__file__).parents[1] / "docs/schemas/qdev-qazpipe-water-provenance-v1.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert schema["$id"].endswith("qdev-qazpipe-water-provenance-v1.schema.json")

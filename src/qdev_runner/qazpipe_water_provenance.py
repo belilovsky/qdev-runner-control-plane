@@ -636,9 +636,12 @@ def _consume_verified_receipt(
                 connection.execute("PRAGMA trusted_schema=OFF")
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.execute("BEGIN IMMEDIATE")
-                if connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name = ?", (_REPLAY_TABLE,)
-                ).fetchone() is None:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name = ?", (_REPLAY_TABLE,)
+                    ).fetchone()
+                    is None
+                ):
                     connection.execute(_REPLAY_TABLE_SQL)
                 _validate_replay_store_schema(connection)
                 try:
