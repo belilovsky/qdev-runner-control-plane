@@ -139,15 +139,13 @@ def test_installer_supports_broker_and_github_hosted_artifact_identities(tmp_pat
     load_installer().install(root)
     uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
     assert "${QDEV_REPOSITORY}/${QDEV_HEAD_SHA}/${QDEV_JOB_ID}" in uploader
-    assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}/${github_job_id}" in uploader
-    assert "QDEV_GITHUB_JOB_NAME" in uploader
-    assert "actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" in uploader
+    assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}/${GITHUB_RUN_ID:?}" in uploader
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in uploader
     assert "X-QDev-GitHub-OIDC" in uploader
     assert "[A-Za-z0-9._-]{0,127}" in uploader
 
 
-def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> None:
+def test_hosted_artifact_upload_uses_the_bound_workflow_run_id(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     load_installer().install(root)
     uploader = root / ".github/scripts/qdev-upload-artifact.sh"
@@ -162,10 +160,6 @@ def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> N
         "set -euo pipefail\n"
         'printf \'%s\\n\' "$*" >> "${QDEV_TEST_CAPTURE:?}"\n'
         'case "$*" in\n'
-        "  *'/actions/runs/'*) printf '%s' "
-        '\'{"jobs":[{"name":"artifact-upload","id":987,"run_id":123,\''
-        '\'"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",\''
-        '\'"status":"in_progress"}]}\' ;;\n'
         "  *'oidc.example.test'*) printf '%s' '{\"value\":\"oidc-token\"}' ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -192,11 +186,9 @@ def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> N
         "QDEV_TEST_CAPTURE": str(capture),
         "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.example.test/token",
         "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
-        "GITHUB_TOKEN": "github-token",
         "GITHUB_REPOSITORY": "owner/repository",
         "GITHUB_RUN_ID": "123",
         "GITHUB_SHA": "a" * 40,
-        "QDEV_GITHUB_JOB_NAME": "artifact-upload",
         "QDEV_ARTIFACT_URL": "https://ci.example.test/artifacts",
     }
     result = subprocess.run(  # noqa: S603
@@ -208,9 +200,8 @@ def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> N
     )
     assert result.returncode == 0, result.stderr
     calls = capture.read_text(encoding="utf-8")
-    assert "/actions/runs/123/jobs?per_page=100" in calls
-    assert "/owner/repository/" + ("a" * 40) + "/987/receipt.tar.gz" in calls
-    assert "/owner/repository/" + ("a" * 40) + "/123/receipt.tar.gz" not in calls
+    assert "/actions/runs/123/jobs?per_page=100" not in calls
+    assert "/owner/repository/" + ("a" * 40) + "/123/receipt.tar.gz" in calls
 
 
 def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> None:
