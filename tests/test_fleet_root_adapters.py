@@ -761,6 +761,24 @@ def test_fixed_worker_dispatch_fails_closed_before_service_start_when_enrol_fail
     }
 
 
+def test_host_enrol_uses_agent_command_signer_not_operator_receipt_key() -> None:
+    payload = HOST_ENROL._config(
+        "qazstack",
+        SHA,
+        DIGEST,
+        DIGEST,
+        DIGEST,
+        "v1",
+        "a" * 64,
+        {"QDEV_OPERATOR_RECEIPT_KEY": "operator-receipt-key"},
+        {"QDEV_RECOVERY_AGENT_SIGNING_KEY": "agent-command-key"},
+    ).decode()
+    values = dict(line.split("=", 1) for line in payload.splitlines())
+    assert values["QDEV_RECOVERY_COMMAND_VERIFICATION_KEY"] == "agent-command-key"
+    assert values["QDEV_RECOVERY_RECONCILE_SIGNING_KEY"] == "agent-command-key"
+    assert "operator-receipt-key" not in payload
+
+
 def test_host_enrol_response_is_exact_and_private_values_are_not_returned() -> None:
     expected = {
         "profile": "platform",

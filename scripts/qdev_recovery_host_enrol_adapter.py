@@ -190,7 +190,7 @@ def _config(
         "QDEV_RECOVERY_AGENT_CERT": "/etc/qdev-runner-recovery/mtls/agent-cert.pem",
         "QDEV_RECOVERY_AGENT_KEY": "/etc/qdev-runner-recovery/mtls/agent-key.pem",
         "QDEV_RECOVERY_CONTROLLER_CA": "/etc/qdev-runner-recovery/mtls/ca.pem",
-        "QDEV_RECOVERY_COMMAND_VERIFICATION_KEY": broker["QDEV_OPERATOR_RECEIPT_KEY"],
+        "QDEV_RECOVERY_COMMAND_VERIFICATION_KEY": recovery["QDEV_RECOVERY_AGENT_SIGNING_KEY"],
         "QDEV_RECOVERY_RECONCILE_SIGNING_KEY": recovery["QDEV_RECOVERY_AGENT_SIGNING_KEY"],
         "QDEV_RECOVERY_STATE_PATH": f"/var/lib/qdev-runner-recovery/{profile}-state.json",
         "QDEV_RECOVERY_LOCK_PATH": f"/run/qdev-runner-recovery/{profile}.lock",
