@@ -175,9 +175,10 @@ def _github_api_base() -> str:
 
 def _job_list(repository: str, run_id: int) -> list[dict[str, Any]]:
     token = _required("GITHUB_TOKEN")
+    attempt = _positive_int(_required("GITHUB_RUN_ATTEMPT"), "GITHUB_RUN_ATTEMPT")
     endpoint = (
         f"{_github_api_base()}/repos/{urllib.parse.quote(repository, safe='/')}"
-        f"/actions/runs/{run_id}/jobs?per_page=100"
+        f"/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
     )
     body = _json_request(
         endpoint,
@@ -193,6 +194,9 @@ def _job_list(repository: str, run_id: int) -> list[dict[str, Any]]:
     jobs = [job for job in body["jobs"] if isinstance(job, dict)]
     if len(jobs) != len(body["jobs"]):
         raise BootstrapValidationError("GitHub jobs response contains invalid entries")
+    total = body.get("total_count")
+    if isinstance(total, bool) or not isinstance(total, int) or total != len(jobs):
+        raise BootstrapValidationError("GitHub jobs response is incomplete")
     return jobs
 
 
@@ -207,6 +211,7 @@ def resolve_job_id(repository: str, run_id: int, *, expected_name: str) -> int:
     if not _SAFE_JOB_NAME.fullmatch(expected_name):
         raise BootstrapValidationError("bootstrap job name is invalid")
     source_sha = _source_sha()
+    attempt = _positive_int(_required("GITHUB_RUN_ATTEMPT"), "GITHUB_RUN_ATTEMPT")
     jobs = _job_list(repository, run_id)
     matching = [job for job in jobs if job.get("name") == expected_name]
     if len(matching) != 1:
@@ -217,6 +222,8 @@ def resolve_job_id(repository: str, run_id: int, *, expected_name: str) -> int:
         raise BootstrapValidationError("GitHub returned an invalid numeric job ID")
     if (
         str(job.get("run_id")) != str(run_id)
+        or type(job.get("run_attempt")) is not int
+        or job.get("run_attempt") != attempt
         or job.get("head_sha") != source_sha
         or job.get("status") not in {"queued", "in_progress", "completed"}
     ):

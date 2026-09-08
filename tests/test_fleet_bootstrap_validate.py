@@ -18,6 +18,7 @@ def _job(**overrides: object) -> dict[str, object]:
     result: dict[str, object] = {
         "id": 9001,
         "run_id": 42,
+        "run_attempt": 3,
         "name": "bootstrap",
         "head_sha": "a" * 40,
         "status": "in_progress",
@@ -29,6 +30,7 @@ def _job(**overrides: object) -> dict[str, object]:
 
 def _prepare(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
     monkeypatch.delenv("BOOTSTRAP_JOB_ID", raising=False)
     monkeypatch.setattr(validator, "_job_list", lambda repository, run_id: [_job()])
 
@@ -39,6 +41,38 @@ def test_resolve_job_id_binds_numeric_job_to_current_attempt(
     _prepare(monkeypatch)
 
     assert validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap") == 9001
+
+
+@pytest.mark.parametrize("attempt", [None, 1, 2, 4, True, "3"])
+def test_resolve_job_rejects_other_or_invalid_attempt(
+    monkeypatch: pytest.MonkeyPatch, attempt: object
+) -> None:
+    _prepare(monkeypatch)
+    monkeypatch.setattr(
+        validator, "_job_list", lambda repository, run_id: [_job(run_attempt=attempt)]
+    )
+    with pytest.raises(validator.BootstrapValidationError, match="does not match"):
+        validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap")
+
+
+@pytest.mark.parametrize("total", [0, 1, 2, None, True])
+def test_job_list_is_attempt_scoped_and_complete(
+    monkeypatch: pytest.MonkeyPatch, total: object
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com")
+
+    def response(url: str, **kwargs: object) -> dict[str, object]:
+        assert url.endswith("/repos/owner/repo/actions/runs/42/attempts/3/jobs?per_page=100")
+        return {"jobs": [_job()], "total_count": total}
+
+    monkeypatch.setattr(validator, "_json_request", response)
+    if type(total) is int and total == 1:
+        assert validator._job_list("owner/repo", 42) == [_job()]
+    else:
+        with pytest.raises(validator.BootstrapValidationError, match="incomplete"):
+            validator._job_list("owner/repo", 42)
 
 
 def test_oidc_url_accepts_only_github_oidc_hosts() -> None:

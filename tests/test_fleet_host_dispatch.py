@@ -129,8 +129,16 @@ def _bridge(
     adapter = tmp_path / "fixed-root-adapter"
     adapter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     adapter.chmod(0o700)
-    uid = os.geteuid()
-    gid = os.getegid()
+    # Bind fixtures to the metadata actually assigned by the temporary
+    # filesystem.  Darwin can inherit /private/tmp's group for children even
+    # when it differs from the process effective group.  This preserves the
+    # production ownership checks instead of weakening them for tests.
+    metadata = incoming.stat()
+    uid = metadata.st_uid
+    gid = metadata.st_gid
+    assert all(
+        path.stat().st_uid == uid and path.stat().st_gid == gid for path in (processing, results)
+    )
     spool = FleetHostDispatchSpool(
         incoming,
         results,
@@ -165,16 +173,15 @@ def test_missing_bridge_is_access_blocked_then_available_bridge_queues(
 ) -> None:
     policy_path, lanes_path, policy = _policy_files(tmp_path)
     del policy_path, lanes_path
-    uid = os.geteuid()
-    gid = os.getegid()
     incoming = tmp_path / "spool" / "incoming"
     results = tmp_path / "spool" / "results"
+    # Roots are deliberately absent for the first submission.
     spool = FleetHostDispatchSpool(
         incoming,
         results,
-        runtime_uid=uid,
-        runtime_gid=gid,
-        result_uid=uid,
+        runtime_uid=os.geteuid(),
+        runtime_gid=os.getegid(),
+        result_uid=os.geteuid(),
     )
     request = _request(policy)
 
@@ -191,6 +198,17 @@ def test_missing_bridge_is_access_blocked_then_available_bridge_queues(
     results.mkdir()
     incoming.chmod(0o700)
     results.chmod(0o750)
+    metadata = incoming.stat()
+    uid = metadata.st_uid
+    gid = metadata.st_gid
+    assert results.stat().st_uid == uid and results.stat().st_gid == gid
+    spool = FleetHostDispatchSpool(
+        incoming,
+        results,
+        runtime_uid=uid,
+        runtime_gid=gid,
+        result_uid=results.stat().st_uid,
+    )
     queued = spool.submit(
         policy=policy,
         store=_store(tmp_path, "bridge-online-001"),

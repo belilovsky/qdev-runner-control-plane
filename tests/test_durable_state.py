@@ -20,8 +20,18 @@ def _spec(tmp_path: Path, *, mode: int = 0o600) -> StateFileSpec:
     archive_root = root / "archive"
     for path in (legacy_root, canonical_root, archive_root):
         path.mkdir(mode=0o700)
-    uid = os.getuid()
-    gid = os.getgid()
+    # macOS may inherit the group of /private/tmp rather than the process
+    # effective group for pytest's nested temporary directories.  Bind this
+    # fixture to the actual safe metadata it created; production still uses
+    # its explicit configured uid/gid and the negative tests retain coverage
+    # for mismatches.
+    metadata = legacy_root.stat()
+    uid = metadata.st_uid
+    gid = metadata.st_gid
+    assert all(
+        path.stat().st_uid == uid and path.stat().st_gid == gid
+        for path in (canonical_root, archive_root)
+    )
     return StateFileSpec(
         name="test",
         legacy_path=legacy_root / "state.json",
@@ -82,7 +92,7 @@ def test_migration_rejects_unsafe_file_and_link_permissions(tmp_path: Path) -> N
     _write(spec.canonical_path, b"canonical\n", spec.file_mode)
     spec.legacy_path.symlink_to(spec.canonical_path)
     if hasattr(os, "lchown"):
-        os.lchown(spec.legacy_path, os.getuid(), os.getgid())
+        os.lchown(spec.legacy_path, spec.file_uid, spec.file_gid)
     assert migrate_state_file(spec) is None
 
 

@@ -1,4 +1,4 @@
-name: Fleet bootstrap validation
+name: Fleet bootstrap handoff
 
 on:
   workflow_dispatch:
@@ -10,7 +10,6 @@ on:
         options:
           - activate-controller
           - enrol-host-agent
-          - restore-existing-worker
       controller_revision:
         description: "Exact pushed controller source SHA; activation/enrolment only"
         required: false
@@ -35,12 +34,8 @@ on:
         description: "Required only for enrol-host-agent"
         required: false
         type: string
-      worker_name:
-        description: "Required only for restore-existing-worker"
-        required: false
-        type: string
       idempotency_key:
-        description: "One-time operation key (8-128 characters)"
+        description: "Opaque correlation key (8-128 characters); server derives operation identity"
         required: true
         type: string
       claim_ttl_seconds:
@@ -59,8 +54,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: fleet-bootstrap-validate
+  submit:
+    name: fleet-bootstrap-submit
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -81,13 +76,30 @@ jobs:
           BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST: ${{ inputs.controller_internal_image_digest }}
           BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST: ${{ inputs.activation_envelope_digest }}
           BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
-          BOOTSTRAP_WORKER_NAME: ${{ inputs.worker_name }}
           BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           BOOTSTRAP_CLAIM_TTL_SECONDS: ${{ inputs.claim_ttl_seconds }}
-          BOOTSTRAP_JOB_NAME: fleet-bootstrap-validate
+          BOOTSTRAP_JOB_NAME: fleet-bootstrap-submit
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
         run: python scripts/fleet_bootstrap_validate.py
+      - name: Submit typed bootstrap handoff
+        env:
+          BOOTSTRAP_ACTION: ${{ inputs.action }}
+          BOOTSTRAP_CONTROLLER_REVISION: ${{ inputs.controller_revision }}
+          BOOTSTRAP_CONTROLLER_RELEASE_DIGEST: ${{ inputs.controller_release_digest }}
+          BOOTSTRAP_CONTROLLER_IMAGE_DIGEST: ${{ inputs.controller_image_digest }}
+          BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST: ${{ inputs.controller_internal_image_digest }}
+          BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST: ${{ inputs.activation_envelope_digest }}
+          BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
+          BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
+          BOOTSTRAP_CLAIM_TTL_SECONDS: ${{ inputs.claim_ttl_seconds }}
+          BOOTSTRAP_JOB_NAME: fleet-bootstrap-submit
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python scripts/fleet_bootstrap_handoff.py

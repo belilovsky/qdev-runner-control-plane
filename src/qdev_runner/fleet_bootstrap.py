@@ -397,6 +397,74 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap OIDC scope is invalid")
 
 
+def validate_github_bootstrap_observation(
+    policy: FleetBootstrapPolicy,
+    request: FleetBootstrapRequest,
+    run: dict[str, Any],
+    jobs: list[dict[str, Any]],
+) -> None:
+    """Bind one bootstrap request to the GitHub App's observed job attempt.
+
+    A valid Actions OIDC token proves which workflow made a request, but it
+    does not carry the numeric GitHub job identifier.  The broker therefore
+    observes the exact run and its attempt through the GitHub App before it
+    lets the root-owned dispatcher see the request.  This deliberately accepts
+    only the two controller bootstrap actions: worker restoration remains a
+    separate controller-managed lifecycle operation.
+
+    The function is pure so that the HTTP ingress cannot mistake a partial or
+    caller-supplied observation for provider evidence.
+    """
+
+    if request.action not in {"activate-controller", "enrol-host-agent"}:
+        raise FleetBootstrapError("bootstrap ingress action is not allowed")
+
+    expected_ref = f"refs/heads/{policy.identity.branch}"
+
+    def require_exact_int(value: object, expected: int) -> bool:
+        return type(value) is int and value == expected
+
+    def require_pending_or_successful(record: dict[str, Any], *, kind: str) -> None:
+        status = record.get("status")
+        if status not in {"queued", "in_progress", "completed"}:
+            raise FleetBootstrapError(f"GitHub bootstrap {kind} status is incomplete")
+        if status == "completed" and record.get("conclusion") != "success":
+            raise FleetBootstrapError(f"GitHub bootstrap {kind} did not succeed")
+
+    repository = run.get("repository")
+    if (
+        not isinstance(repository, dict)
+        or repository.get("full_name") != policy.identity.repository
+    ):
+        raise FleetBootstrapError("GitHub bootstrap repository is invalid")
+    if (
+        not require_exact_int(run.get("id"), request.run_id)
+        or not require_exact_int(run.get("run_attempt"), request.attempt)
+        or run.get("head_sha") != request.source_sha
+        or run.get("event") != "workflow_dispatch"
+        or run.get("path") != policy.identity.workflow
+        or run.get("ref") != expected_ref
+        or run.get("head_branch") != policy.identity.branch
+    ):
+        raise FleetBootstrapError("GitHub bootstrap run identity is invalid")
+    require_pending_or_successful(run, kind="run")
+
+    if not isinstance(jobs, list) or not jobs or any(not isinstance(job, dict) for job in jobs):
+        raise FleetBootstrapError("GitHub bootstrap jobs are incomplete")
+    observed_jobs = [job for job in jobs if require_exact_int(job.get("id"), request.job_id)]
+    if len(observed_jobs) != 1:
+        raise FleetBootstrapError("GitHub bootstrap job identity is ambiguous")
+    job = observed_jobs[0]
+    if (
+        not require_exact_int(job.get("run_id"), request.run_id)
+        or not require_exact_int(job.get("run_attempt"), request.attempt)
+        or job.get("head_sha") != request.source_sha
+        or job.get("head_branch") != policy.identity.branch
+    ):
+        raise FleetBootstrapError("GitHub bootstrap job identity is invalid")
+    require_pending_or_successful(job, kind="job")
+
+
 def bootstrap_request_fingerprint(request: FleetBootstrapRequest) -> str:
     """Return the stable digest used to make one bootstrap request idempotent."""
 
@@ -405,6 +473,39 @@ def bootstrap_request_fingerprint(request: FleetBootstrapRequest) -> str:
         payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def bootstrap_ingress_operation_key(
+    policy: FleetBootstrapPolicy, request: FleetBootstrapRequest
+) -> str:
+    """Derive the one durable ingress operation identity from verified facts.
+
+    The GitHub workflow may provide an opaque correlation value, but it must
+    never choose the file/key used to deduplicate a privileged operation.  The
+    broker derives that key after binding the request to the policy and the
+    exact GitHub run/job/attempt/SHA tuple.  A changed activation tuple for
+    the same authenticated operation therefore reaches the same durable
+    record and is rejected by its request-fingerprint check.
+    """
+
+    if request.action not in {"activate-controller", "enrol-host-agent"}:
+        raise FleetBootstrapError("bootstrap ingress action is not allowed")
+    policy.validate(request)
+    payload = {
+        "schema": "qdev-fleet-bootstrap-ingress-operation-key-v1",
+        "repository": policy.identity.repository,
+        "workflow": policy.identity.workflow,
+        "branch": policy.identity.branch,
+        "source_sha": request.source_sha,
+        "run_id": request.run_id,
+        "job_id": request.job_id,
+        "attempt": request.attempt,
+        "action": request.action,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "github-" + hashlib.sha256(canonical).hexdigest()
 
 
 def bootstrap_request_fingerprints(request: FleetBootstrapRequest) -> frozenset[str]:
