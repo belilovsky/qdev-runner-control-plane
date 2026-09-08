@@ -10,6 +10,7 @@ it refuses to replace a key or binding with different material.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import hashlib
 import json
 import os
@@ -124,10 +125,8 @@ def _write_once(path: Path, payload: bytes, *, mode: int) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         if temporary_name is not None:
-            try:
+            with suppress(FileNotFoundError):
                 Path(temporary_name).unlink()
-            except FileNotFoundError:
-                pass
 
 
 def provision() -> dict[str, str]:
