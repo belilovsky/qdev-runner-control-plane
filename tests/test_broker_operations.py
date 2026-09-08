@@ -760,6 +760,37 @@ def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) 
     )
 
 
+def test_pending_reports_private_lane_is_closed_before_mtls_or_release_state(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    settings: BrokerSettings = client.app.state.settings
+    root_lanes = Path(__file__).resolve().parents[1] / "config" / "release-lanes.yml"
+    settings.release_lanes_path.write_bytes(root_lanes.read_bytes())
+    digest = "sha256:" + "e" * 64
+    response = client.post(
+        "/internal/v1/releases/qdev-release-rp",
+        json={
+            "schema": "qdev-controller-release-request-v1",
+            "release_lane": "qdev-release-rp",
+            "project_id": "rp",
+            "placement": "vps-apps-148",
+            "source_sha": "8" * 40,
+            "artifact_digest": digest,
+            "artifact_ref": f"registry.ci.qdev.run/belilovsky/ipos@{digest}",
+            "candidate_receipt": {},
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "release lane is pending external enrolment"
+    assert not hasattr(client.app.state, "release_store")
+
+    status = client.get("/internal/v1/releases/qdev-release-rp/not-issued")
+    assert status.status_code == 409
+    assert status.json()["detail"] == "release lane is pending external enrolment"
+    assert not hasattr(client.app.state, "release_store")
+
+
 def test_certificate_bound_release_lane_ignores_spoofed_identity_header(tmp_path: Path) -> None:
     client = _app(tmp_path)
     settings = client.app.state.settings
@@ -1788,7 +1819,7 @@ def test_admin_platform_audit_is_mtls_protected_and_binds_registry_to_ledger(
     assert payload["kind"] == "admin-platform-audit"
     assert payload["active_candidate"] == "controller"
     assert payload["admission"]["claim_scope"] == "controller-signed-only"
-    assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v3"
+    assert payload["managed_registry"]["schema"] == "qdev-managed-registry-v4"
     assert payload["admin_platform_ledger"]["schema"] == "qdev-admin-platform-ledger-v3"
 
 

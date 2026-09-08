@@ -1,4 +1,4 @@
-schema_version: qdev-managed-registry-v3
+schema_version: qdev-managed-registry-v4
 entries:
   avds-admin-shell:
     project_id: avds-admin-shell
@@ -78,3 +78,33 @@ entries:
     host_identity: qdev-release-agent:qazgeo-app-runtime
     owner: QazGeo
     admission_ledger: managed-production
+  rp-reports-private:
+    # This is a source-scoped admission specification, not a repository-wide
+    # managed record. Generic IPOS CI remains outside this entry.
+    project_id: rp
+    kind: service
+    repository: belilovsky/ipos
+    canonical_ref: main
+    artifact_repository: belilovsky/ipos
+    allowed_profiles: [qdev-ci-docker]
+    native_release_profile: reports-private-signed-profile-v1
+    runtime_endpoints: [https://rp.qdev.run/health]
+    owner: IPOS reports-private
+    admission_ledger: controller-claim
+    source_scope: reports-private
+    source_paths:
+      - qdev-reports-private.json
+      - qdev-rp-platform.json
+      - Dockerfile.reports
+      - docker-compose.reports.yml
+      - deploy/build-reports.sh
+      - deploy/publish-reports-image.sh
+    activation:
+      state: pending_external_enrolment
+      prerequisites:
+        - release-client-mtls-certificate
+        - host-agent-mtls-certificate
+        - host-capacity-receipt
+        - immutable-rollback-receipt
+        - signed-host-profile
+        - private-runtime-identity

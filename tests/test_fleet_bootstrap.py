@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
@@ -90,6 +91,22 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
     assert target.target_id == ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187")
     assert target.service_unit.endswith(".service")
     assert target.host_binding == "controller-registry"
+
+
+def test_pending_reports_private_lane_cannot_become_bootstrap_target(tmp_path: Path) -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    with pytest.raises(FleetBootstrapError, match="allowlisted"):
+        policy.release_lane("qdev-release-rp")
+
+    # Even an accidental future allowlist edit cannot turn the pending source
+    # contract into a host-enrolment target before external evidence exists.
+    document = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+    document["enrolment"]["lanes"].append("qdev-release-rp")
+    scoped_policy_path = tmp_path / "fleet-bootstrap.yml"
+    scoped_policy_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    policy = FleetBootstrapPolicy(scoped_policy_path, RELEASE_LANES)
+    with pytest.raises(FleetBootstrapError, match="unavailable"):
+        policy.release_lane("qdev-release-rp")
 
 
 @pytest.mark.parametrize(
