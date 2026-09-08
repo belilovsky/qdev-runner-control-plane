@@ -417,16 +417,16 @@ def test_every_lane_uses_full_shared_suite() -> None:
         for step in normal["jobs"]["verify"]["steps"]
         if "scripts/verify_controller_ci.py" in step.get("run", "")
     )
-    assert normal_step["run"].endswith("--lane managed")
+    assert normal_step["run"].endswith("--lane github-hosted")
     assert normal_step["env"] == {
-        "QDEV_EXPECTED_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
-        "QDEV_MANAGED_CI": "true",
+        "QDEV_EXPECTED_SHA": "${{ github.event.pull_request.head.sha || github.sha }}"
     }
-    assert "self-hosted" in normal["jobs"]["verify"]["runs-on"]
+    assert normal["jobs"]["verify"]["runs-on"] == "ubuntu-latest"
     assert (
-        "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-verify"
-        in normal["jobs"]["verify"]["runs-on"]
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in normal["jobs"]["verify"]["if"]
     )
+    assert "primary_self_hosted_workflows" not in (ROOT / ".github/qdev-runner.yml").read_text()
 
 
 def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> None:
@@ -460,9 +460,9 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
 def test_runner_contract_push_is_limited_to_default_branch() -> None:
     workflow = (ROOT / ".github/workflows/qdev-runner-contract.yml").read_text()
     assert "push:\n    branches:\n      - main" in workflow
-    assert "runs-on:" in workflow
-    assert "- self-hosted" in workflow
-    assert "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-contract" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "self-hosted" not in workflow
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
 
 
 def test_runtime_gate_cannot_resolve_missing_dependencies_from_dev_environment() -> None:
