@@ -10,12 +10,12 @@ it refuses to replace a key or binding with different material.
 
 from __future__ import annotations
 
-from contextlib import suppress
 import hashlib
 import json
 import os
 import stat
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
