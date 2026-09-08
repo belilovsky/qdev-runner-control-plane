@@ -35,6 +35,7 @@ FIXED_RECOVERY = _load("qdev_fixed_worker_recovery_dispatch")
 HOST_ENROL = _load("qdev_recovery_host_enrol_adapter")
 HOST_APPLY = _load("qdev_recovery_host_apply")
 PROVISION = _load("provision_fleet_host_dispatch_state")
+ACTIVATION_TRUST = _load("provision_controller_activation_trust")
 
 
 def _request(action: str) -> dict[str, Any]:
@@ -271,7 +272,10 @@ def test_activation_adapter_resolves_core_raw_digest_assets(
     envelopes.mkdir(parents=True)
     artifacts.mkdir()
     public_key = tmp_path / "activation.pub"
+    admission_key = tmp_path / "admission.pub"
+    binding_path = tmp_path / "activation-binding.json"
     public_key.write_text("trusted-key", encoding="utf-8")
+    admission_key.write_text("trusted-key", encoding="utf-8")
     transaction_id = "transaction-0001"
     manifest_digest = "3" * 64
     policy_digest = "4" * 64
@@ -295,8 +299,28 @@ def test_activation_adapter_resolves_core_raw_digest_assets(
     for path in (envelope_path, manifest_path):
         path.chmod(0o600)
     public_key.chmod(0o644)
+    admission_key.chmod(0o644)
+    binding_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-activation-trust-binding-v1",
+                "binding": "controller-registry",
+                "authority": "controller-admission",
+                "source_path": str(admission_key),
+                "source_sha256": "sha256:"
+                + hashlib.sha256(admission_key.read_bytes()).hexdigest(),
+                "activation_public_key_path": str(public_key),
+                "activation_public_key_sha256": "sha256:"
+                + hashlib.sha256(public_key.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    binding_path.chmod(0o644)
     monkeypatch.setattr(ACTIVATION, "ACTIVATION_ASSETS_ROOT", assets)
     monkeypatch.setattr(ACTIVATION, "ACTIVATION_PUBLIC_KEY", public_key)
+    monkeypatch.setattr(ACTIVATION, "ADMISSION_PUBLIC_KEY", admission_key)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_TRUST_BINDING", binding_path)
     original_lstat = Path.lstat
 
     def root_owned(path: Path) -> Any:
@@ -313,6 +337,46 @@ def test_activation_adapter_resolves_core_raw_digest_assets(
         policy_digest,
         transaction_id,
     )
+
+
+def test_activation_adapter_rejects_unbound_or_different_activation_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission_key = tmp_path / "admission.pub"
+    activation_key = tmp_path / "activation.pub"
+    binding_path = tmp_path / "activation-binding.json"
+    admission_key.write_text("admission-key", encoding="utf-8")
+    activation_key.write_text("different-key", encoding="utf-8")
+    binding_path.write_text("{}", encoding="utf-8")
+    for path in (admission_key, activation_key, binding_path):
+        path.chmod(0o644)
+    monkeypatch.setattr(ACTIVATION, "ADMISSION_PUBLIC_KEY", admission_key)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_PUBLIC_KEY", activation_key)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_TRUST_BINDING", binding_path)
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+    with pytest.raises(ACTIVATION.AdapterError, match="activation_trust_binding_invalid"):
+        ACTIVATION._activation_public_key()
+
+
+def test_activation_trust_binding_is_fixed_to_controller_admission_key() -> None:
+    admission_key = b"-----BEGIN PUBLIC KEY-----\nexample\n-----END PUBLIC KEY-----\n"
+    binding = ACTIVATION_TRUST._binding(admission_key)
+
+    assert binding == {
+        "schema": "qdev-controller-activation-trust-binding-v1",
+        "binding": "controller-registry",
+        "authority": "controller-admission",
+        "source_path": "/etc/qdev-runner/admission/ed25519-public.pem",
+        "source_sha256": "sha256:" + hashlib.sha256(admission_key).hexdigest(),
+        "activation_public_key_path": "/etc/qdev-runner/trust/controller-activation-ed25519.pub",
+        "activation_public_key_sha256": "sha256:" + hashlib.sha256(admission_key).hexdigest(),
+    }
 
 
 def test_enrolment_adapter_rejects_extra_request_fields_and_registry_drift(

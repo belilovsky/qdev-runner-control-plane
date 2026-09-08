@@ -24,6 +24,7 @@ install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane
 install -d -o root -g root -m 0755 /opt/qdev-runner-control-plane/releases
 install -d -o root -g root -m 0755 /etc/qdev-runner
 install -d -o root -g root -m 0700 /etc/qdev-runner/admission
+install -d -o root -g root -m 0755 /etc/qdev-runner/trust
 install -d -o root -g root -m 0700 /etc/qdev-runner/qazcoop-release-signing
 install -d -o root -g root -m 0700 /run/qdev-controller
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
@@ -60,6 +61,8 @@ install -o root -g root -m 0755 scripts/bootstrap_admin_platform_ledger_v3.py \
   /usr/local/sbin/qdev-admin-platform-ledger-bootstrap
 install -o root -g root -m 0755 scripts/qdev_controller_activation_adapter.py \
   /usr/local/sbin/qdev-controller-activate
+install -o root -g root -m 0755 scripts/provision_controller_activation_trust.py \
+  /usr/local/sbin/qdev-controller-activation-trust-provision
 install -o root -g root -m 0755 scripts/qdev_release_host_agent_enrol_adapter.py \
   /usr/local/sbin/qdev-release-host-agent-enrol
 install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
@@ -82,6 +85,9 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
 PYTHONPATH="$PWD/src" python3 scripts/provision_qazcoop_release_signing_key.py
+if [[ -f /etc/qdev-runner/admission/ed25519-public.pem ]]; then
+  /usr/local/sbin/qdev-controller-activation-trust-provision
+fi
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path

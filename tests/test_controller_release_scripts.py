@@ -210,8 +210,13 @@ def test_controller_provisions_root_owned_admission_signer() -> None:
     wrapper = (ROOT / "scripts/qdev_controller_admission_host.sh").read_text(encoding="utf-8")
 
     assert "/etc/qdev-runner/admission" in provisioning
+    assert "/etc/qdev-runner/trust" in provisioning
     assert "/run/qdev-controller" in provisioning
     assert "/usr/local/sbin/qdev-controller-admission" in provisioning
+    assert "qdev-controller-activation-trust-provision" in provisioning
+    assert "provision_controller_activation_trust.py" in provisioning
+    assert "qdev-controller-activation-trust-provision" in activation
+    assert "provision_controller_activation_trust.py" in activation
     assert "scripts/qdev_controller_admission_host.sh" in activation
     assert '--snapshot "dispatcher=/usr/local/sbin/qdev-controller-admission"' in activation
     assert 'atomic_install "$release/scripts/qdev_controller_admission_host.sh"' in activation
