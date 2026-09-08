@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -44,6 +45,9 @@ jobs:
             --release-root . --output "$RUNNER_TEMP/controller-recovery-build" \
             --confirm-non-production-build-host
       - name: Deliver through authenticated QDev artifact store
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QDEV_GITHUB_JOB_NAME: controller-recovery-build
         run: |
           cd "$RUNNER_TEMP"
           bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
