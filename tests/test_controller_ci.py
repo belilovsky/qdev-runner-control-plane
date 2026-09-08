@@ -457,6 +457,28 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
     }
 
 
+def test_controller_recovery_build_retains_a_verified_bootstrap_artifact() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/controller-recovery-build.yml").read_text()
+    )
+    job = workflow["jobs"]["controller-recovery-build"]
+    steps = job["steps"]
+    retain = next(
+        step for step in steps if step.get("name") == "Retain sealed recovery material in GitHub"
+    )
+    delivery = next(
+        step for step in steps if step.get("name") == "Deliver through authenticated QDev artifact store"
+    )
+    limitation = next(
+        step for step in steps if step.get("name") == "Record QDev delivery limitation"
+    )
+    assert retain["uses"] == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    assert retain["with"]["retention-days"] == 7
+    assert delivery["id"] == "qdev_delivery"
+    assert delivery["continue-on-error"] is True
+    assert limitation["if"] == "steps.qdev_delivery.outcome == 'failure'"
+
+
 def test_runner_contract_push_is_limited_to_default_branch() -> None:
     workflow = (ROOT / ".github/workflows/qdev-runner-contract.yml").read_text()
     assert "push:\n    branches:\n      - main" in workflow

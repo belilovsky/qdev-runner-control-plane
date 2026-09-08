@@ -51,7 +51,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Deliver through authenticated QDev artifact store
+        id: qdev_delivery
+        continue-on-error: true
         run: |
           cd "$RUNNER_TEMP"
           bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
             controller-recovery-build controller-recovery-build
+      - name: Record QDev delivery limitation
+        if: steps.qdev_delivery.outcome == 'failure'
+        run: |
+          message='QDev artifact delivery is unavailable; the retained GitHub recovery artifact remains eligible only for later exact provider reconciliation.'
+          printf '%s\n' "$message"
+          printf '%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"

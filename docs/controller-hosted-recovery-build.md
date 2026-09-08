@@ -12,8 +12,9 @@ Scanner versions are pinned and their release checksums verified. The QDev store
 is the normal recovery transport. The GitHub artifact exists only to break a
 controller-store bootstrap failure after the build and scans have passed; it is
 not an activation identity or a substitute for reconciliation. Failed builds or
-scans never produce usable recovery material, and a failed delivery never yields
-a successful recovery identity.
+scans never produce usable recovery material. A failed QDev delivery is recorded
+as a transport limitation; it does not invalidate a retained artifact whose
+build, scan and provider identity are later verified exactly.
 
 Reconcile the downloaded artifact using `controller_recovery_artifact.py reconcile`
 with the exact successful run, job, attempt and source SHA. The reconciler checks
@@ -27,7 +28,9 @@ nonce. Reconciliation creates a 15-minute identity; the normal offline-signed
 activation envelope, artifact verification, capacity checks and rollback apply.
 When the QDev delivery has failed because the running controller cannot yet
 accept hosted artifacts, download only the retained artifact from that exact
-workflow run and reconcile it with the same provider metadata checks. Do not use
-an artifact from another run, branch, repository, source SHA, or job attempt.
+successful workflow run and reconcile it with the same provider metadata checks.
+Do not use an artifact from another run, branch, repository, source SHA, or job
+attempt. A delivery limitation is not evidence that the QDev store accepted the
+archive.
 Activate only through the existing controller release wrapper, then verify live
 source and health before restoring worker admission and queued product checks.
