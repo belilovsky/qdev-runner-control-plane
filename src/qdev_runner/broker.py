@@ -5000,36 +5000,6 @@ def create_app(
                 path_suite = _safe_segment(artifact_suite)
             except HTTPException:
                 raise HTTPException(status_code=422, detail="invalid test suite") from None
-        job = store.job(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="job not found")
-        if x_qdev_artifact_token:
-            if not artifact_job_is_active(job, full_name, safe_sha, job_id):
-                raise HTTPException(status_code=401, detail="artifact credentials expired")
-            expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
-            if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
-                raise HTTPException(status_code=401, detail="artifact authentication failed")
-        else:
-            try:
-                github_actions_oidc_verifier.verify(
-                    x_qdev_github_oidc or "",
-                    repository=full_name,
-                    sha=safe_sha,
-                    run_id=int(job.get("run_id") or 0),
-                )
-            except GitHubActionsOIDCError as error:
-                raise HTTPException(
-                    status_code=401, detail="artifact OIDC authentication failed"
-                ) from error
-            if not artifact_job_is_active(job, full_name, safe_sha, job_id):
-                raise HTTPException(status_code=401, detail="artifact credentials expired")
-        raw_content_length = request.headers.get("content-length")
-        try:
-            content_length = int(raw_content_length) if raw_content_length is not None else None
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail="invalid content length") from error
-        if content_length is not None and content_length < 0:
-            raise HTTPException(status_code=400, detail="invalid content length")
         report_format = (x_qdev_test_format or "").strip().lower()
         suffix = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
         if not report_format:
@@ -5042,6 +5012,44 @@ def create_app(
             or x_qdev_test_suite
             or x_qdev_test_workflow
         )
+        job = store.job(job_id)
+        if job is None:
+            if x_qdev_artifact_token or report_like:
+                raise HTTPException(status_code=404, detail="job not found")
+        if x_qdev_artifact_token:
+            assert job is not None
+            if not artifact_job_is_active(job, full_name, safe_sha, job_id):
+                raise HTTPException(status_code=401, detail="artifact credentials expired")
+            expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
+            if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+                raise HTTPException(status_code=401, detail="artifact authentication failed")
+        else:
+            # GitHub-hosted jobs do not enter the controller queue and cannot
+            # receive a worker token.  Their OIDC identity is still bound to
+            # the exact repository, commit and GitHub workflow run in the
+            # legacy artifact path.  A queued job, when present, remains the
+            # stronger source of that run identifier and active lease state.
+            oidc_run_id = int(job.get("run_id") or 0) if job is not None else job_id
+            try:
+                github_actions_oidc_verifier.verify(
+                    x_qdev_github_oidc or "",
+                    repository=full_name,
+                    sha=safe_sha,
+                    run_id=oidc_run_id,
+                )
+            except GitHubActionsOIDCError as error:
+                raise HTTPException(
+                    status_code=401, detail="artifact OIDC authentication failed"
+                ) from error
+            if job is not None and not artifact_job_is_active(job, full_name, safe_sha, job_id):
+                raise HTTPException(status_code=401, detail="artifact credentials expired")
+        raw_content_length = request.headers.get("content-length")
+        try:
+            content_length = int(raw_content_length) if raw_content_length is not None else None
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid content length") from error
+        if content_length is not None and content_length < 0:
+            raise HTTPException(status_code=400, detail="invalid content length")
         maximum = (
             MAX_REPORT_BYTES if report_like else min(settings.max_artifact_bytes, 250 * 1024 * 1024)
         )
@@ -5053,6 +5061,41 @@ def create_app(
         digest = hashlib.sha256(body).hexdigest()
         if not x_qdev_sha256 or not secrets.compare_digest(x_qdev_sha256, digest):
             raise HTTPException(status_code=422, detail="artifact checksum mismatch")
+        if not report_like:
+            # Keep ordinary release archives out of the test-result pipeline.
+            # They have no test suite or controller job, but their OIDC
+            # identity has already been bound above.  The fixed path segment
+            # prevents a generic artifact from acquiring a synthetic suite.
+            generic_attempt = artifact_attempt or 1
+            generic_suite = "artifact"
+            target = (
+                settings.artifact_root
+                / owner
+                / repo
+                / safe_sha
+                / str(job_id)
+                / str(generic_attempt)
+                / generic_suite
+                / safe_name
+            )
+            target_existed = target.exists()
+            if target_existed:
+                existing_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                if not secrets.compare_digest(existing_digest, digest):
+                    raise HTTPException(status_code=409, detail="conflicting artifact for this path")
+            if not target_existed:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_suffix(target.suffix + ".tmp")
+                temporary.write_bytes(body)
+                os.chmod(temporary, 0o600)
+                temporary.replace(target)
+            return {
+                "schema": "qdev-artifact-v1",
+                "sha256": digest,
+                "size": len(body),
+                "report": None,
+            }
+        assert job is not None
         try:
             job_payload = json.loads(str(job["payload_json"]))
         except (TypeError, json.JSONDecodeError) as error:
