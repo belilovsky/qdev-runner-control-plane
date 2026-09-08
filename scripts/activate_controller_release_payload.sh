@@ -341,6 +341,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qmt_native_release_adapter.py
     scripts/qdev_controller_activation_adapter.py
+    scripts/provision_controller_activation_trust.py
     scripts/qdev_release_host_agent_enrol_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
     scripts/qdev_fixed_worker_recovery_dispatch.py
