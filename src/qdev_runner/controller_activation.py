@@ -1871,6 +1871,12 @@ def fingerprint_release_tree(
         for child in children:
             relative = relative_directory / child.name
             relative_text = relative.as_posix()
+            # ``.git`` is checkout transport metadata, not executable release
+            # material. Its contents differ between GitHub Actions and a
+            # root-owned host checkout, so including it would make an otherwise
+            # identical release impossible to reconcile.
+            if relative_directory == Path() and child.name == ".git":
+                continue
             if (
                 not child.name
                 or child.name in {".", ".."}

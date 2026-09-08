@@ -467,9 +467,17 @@ def test_historical_controller_rollback_does_not_require_or_replace_admission_wr
 def test_controller_compose_project_is_namespaced() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     service = (ROOT / "deploy/qdev-runner-broker.service").read_text(encoding="utf-8")
+    starter = (ROOT / "scripts/start_controller_broker.sh").read_text(encoding="utf-8")
+    provision = (ROOT / "scripts/provision_controller.sh").read_text(encoding="utf-8")
+    activation = _activation_script()
 
     assert compose.startswith("name: qdev-runner\n")
-    assert service.count("--project-name qdev-runner") == 2
+    assert "ExecStart=/usr/local/sbin/qdev-start-controller-broker" in service
+    assert "--build" not in service
+    assert "qdev-start-controller-broker" in provision
+    assert "qdev-start-controller-broker" in activation
+    assert "QDEV_CONTROLLER_IMAGE_REF=\"$reference\"" in starter
+    assert "--no-build --no-deps broker-public broker-internal" in starter
     # Only the internal broker can mutate the durable managed-release ledger.
     assert (
         compose.count(

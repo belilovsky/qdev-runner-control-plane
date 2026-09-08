@@ -73,6 +73,8 @@ install -o root -g root -m 0755 scripts/qdev_recovery_host_enrol_adapter.py \
   /usr/local/sbin/qdev-recovery-host-enrol
 install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision
+install -o root -g root -m 0755 scripts/start_controller_broker.sh \
+  /usr/local/sbin/qdev-start-controller-broker
 install -o root -g root -m 0755 scripts/provision_worker_recovery_bindings.py \
   /usr/local/sbin/qdev-worker-recovery-bindings-provision
 /usr/local/sbin/qdev-fleet-host-dispatch-state-provision

@@ -1376,6 +1376,9 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/provision_fleet_host_dispatch_state.py" \
     /usr/local/sbin/qdev-fleet-host-dispatch-state-provision 0755 || return 1
+  atomic_install \
+    "$release/scripts/start_controller_broker.sh" \
+    /usr/local/sbin/qdev-start-controller-broker 0755 || return 1
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision || return 1
   atomic_install \
     "$release/deploy/qdev-fleet-host-dispatch.service" \

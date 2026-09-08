@@ -818,6 +818,19 @@ def test_release_tree_fingerprint_rejects_links_and_writable_entries(tmp_path: P
         fingerprint_release_tree(release, require_root_owner=False)
 
 
+def test_release_tree_fingerprint_ignores_checkout_metadata(tmp_path: Path) -> None:
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "entrypoint.sh").write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+    baseline = fingerprint_release_tree(release, require_root_owner=False)
+
+    checkout = release / ".git"
+    checkout.mkdir()
+    (checkout / "config").write_text("different checkout transport\\n", encoding="utf-8")
+
+    assert fingerprint_release_tree(release, require_root_owner=False) == baseline
+
+
 def test_signed_envelope_rejects_tampering_expiry_and_excessive_ttl() -> None:
     now = datetime(2026, 9, 5, 1, tzinfo=UTC)
     document = _envelope_document(now=now)
