@@ -65,6 +65,18 @@ def declare_release_registry_workflow(root: Path, name: str = "deploy.yml") -> N
     )
 
 
+def declare_github_artifact_recovery_workflow(
+    root: Path, name: str = "controller-recovery-build.yml"
+) -> None:
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8")
+        + "github_artifact_recovery_workflows:\n"
+        + f"  - {name}\n",
+        encoding="utf-8",
+    )
+
+
 GOOD_WORKFLOW = """jobs:
   test:
     runs-on:
@@ -382,6 +394,44 @@ jobs:
     assert result.returncode == 1
     assert "github-cache" in result.stdout
     assert "ghcr" not in result.stdout
+
+
+def test_declared_manual_recovery_allows_only_pinned_artifact_upload(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/controller-recovery-build.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+""",
+        encoding="utf-8",
+    )
+    declare_github_artifact_recovery_workflow(root)
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_declared_manual_recovery_rejects_artifact_download(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/controller-recovery-build.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+""",
+        encoding="utf-8",
+    )
+    declare_github_artifact_recovery_workflow(root)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "github-artifact" in result.stdout
 
 
 def test_release_registry_workflow_applies_to_its_local_composite_actions(

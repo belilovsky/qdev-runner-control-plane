@@ -30,7 +30,10 @@ if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.f
 
 Third-party actions are pinned to full commit SHAs. GitHub cache, GitHub
 Artifacts, GitHub Packages, and GHCR are not CI dependencies; evidence and
-images use the QDev artifact and immutable registry services. Job credentials
+images use the QDev artifact and immutable registry services. A declared manual
+controller recovery build may retain already-scanned sealed output in GitHub
+only to recover a failed QDev artifact-store bootstrap. That output remains
+unusable until exact provider and cryptographic reconciliation. Job credentials
 exist only in the disposable runner environment and are removed with the job.
 
 Keep `.github/qdev-runner.yml`, this document, the root `AGENTS.md` policy, and
