@@ -26,6 +26,8 @@ STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.js
 ACTIVATION_STATUS_PATH = Path("/var/lib/qdev-runner/controller-activation/activation-status.json")
 ACTIVATION_ASSETS_ROOT = Path("/var/lib/qdev-runner/controller-activation")
 ACTIVATION_PUBLIC_KEY = Path("/etc/qdev-runner/trust/controller-activation-ed25519.pub")
+ACTIVATION_TRUST_BINDING = Path("/etc/qdev-runner/trust/controller-activation-trust-binding.json")
+ADMISSION_PUBLIC_KEY = Path("/etc/qdev-runner/admission/ed25519-public.pem")
 SCHEMA = "qdev-fleet-bootstrap-adapter-result-v2"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v2"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -262,6 +264,43 @@ def _private_file(path: Path, *, mode: int | None = None) -> Path:
     return path
 
 
+def _activation_public_key() -> Path:
+    """Resolve the activation verifier only through the admitted key binding.
+
+    The activation key is deliberately not a caller-selected file.  It is a
+    byte-for-byte copy of the controller admission public key, bound by a
+    root-owned record installed by the fixed provisioning helper.  Keeping the
+    binding separate from the request prevents a controller policy entry from
+    silently retargeting activation to an unrelated local key.
+    """
+
+    public_key = _private_file(ACTIVATION_PUBLIC_KEY)
+    admission_key = _private_file(ADMISSION_PUBLIC_KEY)
+    binding_path = _private_file(ACTIVATION_TRUST_BINDING)
+    try:
+        public_key_bytes = public_key.read_bytes()
+        admission_key_bytes = admission_key.read_bytes()
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdapterError("activation_trust_binding_unavailable") from exc
+    expected = {
+        "schema": "qdev-controller-activation-trust-binding-v1",
+        "binding": "controller-registry",
+        "authority": "controller-admission",
+        "source_path": str(ADMISSION_PUBLIC_KEY),
+        "source_sha256": "sha256:" + hashlib.sha256(admission_key_bytes).hexdigest(),
+        "activation_public_key_path": str(ACTIVATION_PUBLIC_KEY),
+        "activation_public_key_sha256": "sha256:" + hashlib.sha256(public_key_bytes).hexdigest(),
+    }
+    if (
+        not isinstance(binding, dict)
+        or binding != expected
+        or public_key_bytes != admission_key_bytes
+    ):
+        raise AdapterError("activation_trust_binding_invalid")
+    return public_key
+
+
 def _read_status() -> tuple[str, str, str, str]:
     try:
         metadata = STATUS_PATH.lstat()
@@ -478,7 +517,7 @@ def _activation_assets(request: dict[str, Any]) -> tuple[Path, Path, Path, str, 
     manifest_path = _private_file(
         ACTIVATION_ASSETS_ROOT / "artifacts" / f"{manifest_digest}.json", mode=0o600
     )
-    public_key = _private_file(ACTIVATION_PUBLIC_KEY)
+    public_key = _activation_public_key()
     return envelope_path, manifest_path, public_key, candidate_policy_digest, transaction_id
 
 

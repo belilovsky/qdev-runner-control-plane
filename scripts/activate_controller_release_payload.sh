@@ -1338,6 +1338,12 @@ install_fleet_host_dispatch() {
     "$release/scripts/qdev_controller_activation_adapter.py" \
     /usr/local/sbin/qdev-controller-activate 0755 || return 1
   atomic_install \
+    "$release/scripts/provision_controller_activation_trust.py" \
+    /usr/local/sbin/qdev-controller-activation-trust-provision 0755 || return 1
+  if [[ -f /etc/qdev-runner/admission/ed25519-public.pem ]]; then
+    /usr/local/sbin/qdev-controller-activation-trust-provision || return 1
+  fi
+  atomic_install \
     "$release/scripts/qdev_release_host_agent_enrol_adapter.py" \
     /usr/local/sbin/qdev-release-host-agent-enrol 0755 || return 1
   atomic_install \
