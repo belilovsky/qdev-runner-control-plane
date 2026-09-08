@@ -652,6 +652,17 @@ if [[ "$material_phase" == external-guard-reconciling ||
   external_guard_reconciliation_started=true
 fi
 
+cleanup_qazcoop_guard_temporary() {
+  [[ -n "$qazcoop_guard_temporary" ]] || return 0
+  if [[ ! "$qazcoop_guard_temporary" =~ ^/tmp/qazcoop-release-guard\.[A-Za-z0-9]+$ ||
+        -L "$qazcoop_guard_temporary" ]]; then
+    printf 'QazCoop temporary bundle path is invalid\n' >&2
+    return 1
+  fi
+  rm -rf -- "$qazcoop_guard_temporary" || return 1
+  qazcoop_guard_temporary=""
+}
+
 cleanup_activation_payload() {
   local status=$?
   trap - EXIT
@@ -664,6 +675,7 @@ cleanup_activation_payload() {
       status=1
     fi
   fi
+  cleanup_qazcoop_guard_temporary || status=1
   rm -f -- "$release_status_backup"
   exit "$status"
 }

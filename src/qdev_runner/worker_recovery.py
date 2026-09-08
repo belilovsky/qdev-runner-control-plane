@@ -466,11 +466,12 @@ class WorkerRecoveryController:
             or row.get("repository") != target.repository
             or labels != target.labels
             or row.get("recovery_action") != target.action
-            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
             or row.get("interface_version") != INTERFACE_VERSION
             or row.get("interface_digest") != INTERFACE_DIGEST
         ):
             raise WorkerRecoveryError("recovery operation binding changed")
+        # Cancelling an uninvoked fence grants no agent execution. Rotation must
+        # not trap the old fence; fresh prepare binds the replacement certificate.
         if str(row.get("state")) != "prepared":
             raise WorkerRecoveryError("only a prepared recovery fence may be superseded")
         if any(
