@@ -189,9 +189,12 @@ def test_hosted_oidc_uploads_generic_archive_without_controller_job(
     assert response.status_code == 200, response.text
     assert response.json()["report"] is None
     assert verifier.calls == [("valid-oidc", "belilovsky/qazpolit", SHA, run_id)]
-    assert settings.artifact_root.joinpath(
-        "belilovsky", "qazpolit", SHA, str(run_id), "1", "artifact", "qazpolit-release.tar.gz"
-    ).read_bytes() == body
+    assert (
+        settings.artifact_root.joinpath(
+            "belilovsky", "qazpolit", SHA, str(run_id), "1", "artifact", "qazpolit-release.tar.gz"
+        ).read_bytes()
+        == body
+    )
 
 
 def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
