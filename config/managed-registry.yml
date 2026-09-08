@@ -78,3 +78,16 @@ entries:
     host_identity: qdev-release-agent:qazgeo-app-runtime
     owner: QazGeo
     admission_ledger: managed-production
+  qazagents:
+    project_id: qazagents
+    kind: service
+    repository: belilovsky/qazagents
+    canonical_ref: main
+    artifact_repository: qazagents-static
+    allowed_profiles: [qdev-ci, qdev-ci-browser]
+    native_release_profile: qazagents-static-release-v1
+    runtime_endpoints: [https://qazagents.qdev.run/health.json, https://qazagents.qdev.run/readiness.json, https://qazagents.qdev.run/release.json, https://qazagents.qdev.run/skills/index.json]
+    rollback_reference: controller-verified immutable QazAgents static rollback receipt
+    host_identity: qdev-release-agent:qazagents-static-runtime
+    owner: QazAgents
+    admission_ledger: managed-production

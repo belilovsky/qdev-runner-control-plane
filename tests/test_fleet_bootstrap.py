@@ -92,6 +92,19 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
     assert target.host_binding == "controller-registry"
 
 
+def test_bootstrap_policy_allows_qazagents_static_enrolment_without_a_host_target() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    request = _request(
+        action="enrol-host-agent",
+        release_lane="qdev-release-qazagents-static",
+    )
+    policy.validate(request)
+    lane = policy.release_lane("qdev-release-qazagents-static")
+    assert lane.project_id == "qazagents"
+    assert lane.placement == "qazagents-static-runtime"
+    assert lane.native_host_adapter == "qazagents-static-release-v1"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

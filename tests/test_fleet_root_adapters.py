@@ -100,6 +100,19 @@ def _enrolment_target() -> dict[str, str]:
     }
 
 
+def _qazagents_enrolment_target() -> dict[str, str]:
+    """A public logical target; private adapter registration is intentionally absent."""
+
+    return {
+        "release_lane": "qdev-release-qazagents-static",
+        "project_id": "qazagents",
+        "placement": "qazagents-static-runtime",
+        "host_agent_mtls_identity": "qdev-host-agent:qazagents-static-runtime",
+        "native_host_adapter": "qazagents-static-release-v1",
+        "rollback_reference": "controller-verified immutable QazAgents static rollback receipt",
+    }
+
+
 def _recovery_target() -> dict[str, Any]:
     return {
         "worker_name": "qdev-platform-ci-187",
@@ -438,6 +451,43 @@ def test_enrolment_adapter_rejects_extra_request_fields_and_registry_drift(
     )
     with pytest.raises(ENROLMENT.AdapterError, match="target_value_invalid"):
         ENROLMENT._parse()
+
+
+def test_qazagents_enrolment_is_access_blocked_without_private_mapping(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _qazagents_enrolment_target()
+    request = _bootstrap_request("enrol-host-agent")
+    request["release_lane"] = target["release_lane"]
+    envelope = {
+        "schema": "qdev-fleet-bootstrap-adapter-request-v2",
+        "request": request,
+        "target": target,
+    }
+    monkeypatch.setattr(
+        ENROLMENT.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())),
+    )
+    monkeypatch.setattr(ENROLMENT.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        ENROLMENT,
+        "_controller_rollback",
+        lambda _request: (SHA, DIGEST, IMAGE_DIGEST, IMAGE_DIGEST, 7),
+    )
+    monkeypatch.setattr(
+        ENROLMENT,
+        "_read_private_json",
+        lambda _path: {"schema": "qdev-release-host-enrolment-targets-v1", "targets": {}},
+    )
+
+    assert ENROLMENT.main() == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["schema"] == "qdev-fleet-bootstrap-adapter-result-v2"
+    assert response["status"] == "access_blocked"
+    assert response["release_lane"] == target["release_lane"]
+    assert response["host_agent_mtls_identity"] == target["host_agent_mtls_identity"]
+    assert response["result"] == {"error_code": "target_unregistered"}
 
 
 class _PrivateRegistry:

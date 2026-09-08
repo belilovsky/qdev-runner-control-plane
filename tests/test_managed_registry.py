@@ -10,7 +10,7 @@ def _registry_path() -> Path:
     return Path(__file__).parents[1] / "config" / "managed-registry.yml"
 
 
-def test_managed_registry_separates_admin_wave_from_qazgeo_production() -> None:
+def test_managed_registry_separates_admin_wave_qazgeo_and_qazagents_static() -> None:
     registry = ManagedRegistry(_registry_path())
     total = registry.entry_for_repository("belilovsky/total-kz")
     assert total is not None
@@ -29,6 +29,19 @@ def test_managed_registry_separates_admin_wave_from_qazgeo_production() -> None:
         "https://qgeo.tech/health/ready",
         "https://qgeo.tech/health/quality",
     )
+    qazagents = registry.entry_for_repository("belilovsky/qazagents")
+    assert qazagents is not None
+    assert qazagents.admission_ledger == "managed-production"
+    assert qazagents.native_release_profile == "qazagents-static-release-v1"
+    assert qazagents.runtime_endpoints == (
+        "https://qazagents.qdev.run/health.json",
+        "https://qazagents.qdev.run/readiness.json",
+        "https://qazagents.qdev.run/release.json",
+        "https://qazagents.qdev.run/skills/index.json",
+    )
+    assert registry.validate_claim_if_managed("belilovsky/qazagents", "qdev-ci") == qazagents
+    with pytest.raises(ManagedRegistryError, match="profile"):
+        registry.validate_claim_if_managed("belilovsky/qazagents", "qdev-ci-docker")
 
 
 def test_managed_registry_rejects_secret_fields_and_profile_drift(tmp_path: Path) -> None:
