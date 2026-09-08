@@ -162,7 +162,10 @@ def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> N
         "set -euo pipefail\n"
         "printf '%s\\n' \"$*\" >> \"${QDEV_TEST_CAPTURE:?}\"\n"
         "case \"$*\" in\n"
-        "  *'/actions/runs/'*) printf '%s' '{\"jobs\":[{\"name\":\"artifact-upload\",\"id\":987,\"run_id\":123,\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"in_progress\"}]}' ;;\n"
+        "  *'/actions/runs/'*) printf '%s' "
+        "'{\"jobs\":[{\"name\":\"artifact-upload\",\"id\":987,\"run_id\":123,'"
+        "'\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",'"
+        "'\"status\":\"in_progress\"}]}' ;;\n"
         "  *'oidc.example.test'*) printf '%s' '{\"value\":\"oidc-token\"}' ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -197,7 +200,7 @@ def test_hosted_artifact_upload_resolves_the_numeric_job_id(tmp_path: Path) -> N
         "QDEV_ARTIFACT_URL": "https://ci.example.test/artifacts",
     }
     result = subprocess.run(  # noqa: S603
-        ["bash", str(uploader), "receipt", str(artifact)],
+        ["/usr/bin/env", "bash", str(uploader), "receipt", str(artifact)],
         check=False,
         capture_output=True,
         text=True,
