@@ -219,7 +219,11 @@ def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
         },
     )
     assert response.status_code == 401
-    assert not settings.artifact_root.exists()
+    target = settings.artifact_root.joinpath(
+        "belilovsky", "qazpolit", SHA, "34184945942", "1", "artifact", "qazpolit-release.tar.gz"
+    )
+    assert not target.exists()
+    assert list(settings.artifact_root.rglob("*")) == []
 
 
 def test_hosted_oidc_test_report_still_requires_a_controller_job(
