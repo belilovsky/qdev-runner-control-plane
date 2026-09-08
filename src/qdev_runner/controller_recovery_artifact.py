@@ -275,7 +275,9 @@ def inspect_docker_archive(
             layers = descriptor.get("Layers")
             if (
                 not isinstance(config_name, str)
-                or not re.fullmatch(r"[0-9a-f]{64}\.json", config_name)
+                or not re.fullmatch(
+                    r"(?:[0-9a-f]{64}\.json|blobs/sha256/[0-9a-f]{64})", config_name
+                )
                 or not isinstance(layers, list)
                 or not layers
             ):
@@ -292,6 +294,24 @@ def inspect_docker_archive(
                 layer_member = member_by_name.get(layer_name)
                 if layer_member is None or not layer_member.isfile():
                     raise ControllerRecoveryArtifactError("controller image layer is unavailable")
+                if layer_name.startswith("blobs/"):
+                    if re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", layer_name) is None:
+                        raise ControllerRecoveryArtifactError(
+                            "controller image layer digest is invalid"
+                        )
+                    layer_stream = bundle.extractfile(layer_member)
+                    if layer_stream is None:
+                        raise ControllerRecoveryArtifactError(
+                            "controller image layer is unavailable"
+                        )
+                    digest = hashlib.sha256()
+                    with layer_stream:
+                        while chunk := layer_stream.read(1024 * 1024):
+                            digest.update(chunk)
+                    if layer_name != f"blobs/sha256/{digest.hexdigest()}":
+                        raise ControllerRecoveryArtifactError(
+                            "controller image layer digest is invalid"
+                        )
                 _inspect_layer_archive(bundle, layer_member)
             config_member = member_by_name.get(config_name)
             if (
@@ -305,7 +325,7 @@ def inspect_docker_archive(
                 raise ControllerRecoveryArtifactError("controller image config is unavailable")
             config_raw = config_stream.read()
             image_digest = hashlib.sha256(config_raw).hexdigest()
-            if config_name != f"{image_digest}.json":
+            if config_name not in {f"{image_digest}.json", f"blobs/sha256/{image_digest}"}:
                 raise ControllerRecoveryArtifactError("controller image config digest is invalid")
             config = _strict_json(config_raw, "controller image config")
             labels = config.get("config", {}).get("Labels") if isinstance(config, dict) else None
