@@ -21,7 +21,6 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-
 ADMISSION_PUBLIC_KEY = Path("/etc/qdev-runner/admission/ed25519-public.pem")
 TRUST_ROOT = Path("/etc/qdev-runner/trust")
 ACTIVATION_PUBLIC_KEY = TRUST_ROOT / "controller-activation-ed25519.pub"
