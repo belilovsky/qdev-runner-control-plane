@@ -40,6 +40,7 @@ HOST_IDENTITIES = (
     "qdev-host-agent:cmnt-rolling-controller",
     "qdev-host-agent:total-qdev-origin",
     "qdev-host-agent:qazposter-production-controller",
+    "qdev-host-agent:qazgeo-app-runtime",
 )
 
 
@@ -198,7 +199,7 @@ def main() -> int:
     _atomic_json(KEY_MAP, mapping)
     _read_or_create_registry(ENROLMENT_REGISTRY, "qdev-release-host-enrolment-targets-v1")
     _reconcile_recovery_registry()
-    print("fleet_host_dispatch_state=ready identities=4")
+    print(f"fleet_host_dispatch_state=ready identities={len(HOST_IDENTITIES)}")
     return 0
 
 
