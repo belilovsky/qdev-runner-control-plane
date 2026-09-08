@@ -307,8 +307,7 @@ def test_activation_adapter_resolves_core_raw_digest_assets(
                 "binding": "controller-registry",
                 "authority": "controller-admission",
                 "source_path": str(admission_key),
-                "source_sha256": "sha256:"
-                + hashlib.sha256(admission_key.read_bytes()).hexdigest(),
+                "source_sha256": "sha256:" + hashlib.sha256(admission_key.read_bytes()).hexdigest(),
                 "activation_public_key_path": str(public_key),
                 "activation_public_key_sha256": "sha256:"
                 + hashlib.sha256(public_key.read_bytes()).hexdigest(),

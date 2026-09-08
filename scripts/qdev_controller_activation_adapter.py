@@ -26,9 +26,7 @@ STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.js
 ACTIVATION_STATUS_PATH = Path("/var/lib/qdev-runner/controller-activation/activation-status.json")
 ACTIVATION_ASSETS_ROOT = Path("/var/lib/qdev-runner/controller-activation")
 ACTIVATION_PUBLIC_KEY = Path("/etc/qdev-runner/trust/controller-activation-ed25519.pub")
-ACTIVATION_TRUST_BINDING = Path(
-    "/etc/qdev-runner/trust/controller-activation-trust-binding.json"
-)
+ACTIVATION_TRUST_BINDING = Path("/etc/qdev-runner/trust/controller-activation-trust-binding.json")
 ADMISSION_PUBLIC_KEY = Path("/etc/qdev-runner/admission/ed25519-public.pem")
 SCHEMA = "qdev-fleet-bootstrap-adapter-result-v2"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v2"
@@ -292,8 +290,7 @@ def _activation_public_key() -> Path:
         "source_path": str(ADMISSION_PUBLIC_KEY),
         "source_sha256": "sha256:" + hashlib.sha256(admission_key_bytes).hexdigest(),
         "activation_public_key_path": str(ACTIVATION_PUBLIC_KEY),
-        "activation_public_key_sha256": "sha256:"
-        + hashlib.sha256(public_key_bytes).hexdigest(),
+        "activation_public_key_sha256": "sha256:" + hashlib.sha256(public_key_bytes).hexdigest(),
     }
     if (
         not isinstance(binding, dict)
