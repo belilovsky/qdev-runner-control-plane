@@ -1379,6 +1379,9 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/start_controller_broker.sh" \
     /usr/local/sbin/qdev-start-controller-broker 0755 || return 1
+  atomic_install \
+    "$release/deploy/qdev-runner-broker.service" \
+    /etc/systemd/system/qdev-runner-broker.service 0644 || return 1
   /usr/local/sbin/qdev-fleet-host-dispatch-state-provision || return 1
   atomic_install \
     "$release/deploy/qdev-fleet-host-dispatch.service" \

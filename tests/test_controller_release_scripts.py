@@ -476,6 +476,7 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert "--build" not in service
     assert "qdev-start-controller-broker" in provision
     assert "qdev-start-controller-broker" in activation
+    assert '"$release/deploy/qdev-runner-broker.service"' in activation
     assert "QDEV_CONTROLLER_IMAGE_REF=\"$reference\"" in starter
     assert "--no-build --no-deps broker-public broker-internal" in starter
     # Only the internal broker can mutate the durable managed-release ledger.
