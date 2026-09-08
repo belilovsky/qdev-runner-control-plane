@@ -609,8 +609,9 @@ def test_status_and_accept_are_bound_to_the_preparing_operator_certificate(
     assert not_ready.status_code == 409
 
 
+@pytest.mark.parametrize("rotated_agent", [False, True])
 def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
-    tmp_path: Path, policy_files: tuple[Path, Path]
+    tmp_path: Path, policy_files: tuple[Path, Path], rotated_agent: bool
 ) -> None:
     harness = _harness(tmp_path, policy_files)
     prepared = harness.client.post(
@@ -631,6 +632,14 @@ def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
                 prepared["operation_id"],
             ),
         )
+
+    if rotated_agent:
+        with Store(harness.settings.database_path).connect() as connection:
+            connection.execute(
+                "UPDATE worker_recoveries SET expected_agent_certificate_sha256=? "
+                "WHERE operation_id=?",
+                ("e" * 64, prepared["operation_id"]),
+            )
 
     wrong_owner = harness.client.post(
         "/internal/v1/operations/worker-recovery/supersede",
@@ -658,6 +667,12 @@ def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
     )
     assert fresh.status_code == 200, fresh.text
     assert fresh.json()["state"] == "prepared"
+    with Store(harness.settings.database_path).connect() as connection:
+        new_certificate = connection.execute(
+            "SELECT expected_agent_certificate_sha256 FROM worker_recoveries WHERE operation_id=?",
+            (fresh.json()["operation_id"],),
+        ).fetchone()[0]
+    assert new_certificate == PLATFORM_AGENT_CERTIFICATE
 
 
 def test_platform_claim_and_reconcile_have_exact_signed_shapes_and_replay(
