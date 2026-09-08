@@ -146,3 +146,58 @@ def test_build_request_derives_controller_tuple_from_running_source(
     assert request.run_id == 42
     assert request.job_id == 9001
     assert request.attempt == 3
+
+
+@pytest.mark.parametrize(
+    "unexpected_field",
+    [
+        None,
+        "BOOTSTRAP_CONTROLLER_REVISION",
+        "BOOTSTRAP_CONTROLLER_RELEASE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_IMAGE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST",
+        "BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST",
+        "BOOTSTRAP_RELEASE_LANE",
+    ],
+)
+def test_worker_restore_has_no_activation_tuple(
+    monkeypatch: pytest.MonkeyPatch, unexpected_field: str | None
+) -> None:
+    policy = validator.FleetBootstrapPolicy(
+        ROOT / "config" / "fleet-bootstrap.yml",
+        ROOT / "config" / "release-lanes.yml",
+    )
+    for name in (
+        "BOOTSTRAP_CONTROLLER_REVISION",
+        "BOOTSTRAP_CONTROLLER_RELEASE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_IMAGE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST",
+        "BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST",
+        "BOOTSTRAP_RELEASE_LANE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", policy.identity.repository)
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    monkeypatch.setenv("BOOTSTRAP_JOB_NAME", "bootstrap")
+    monkeypatch.setenv("BOOTSTRAP_ACTION", "restore-existing-worker")
+    monkeypatch.setenv("BOOTSTRAP_WORKER_NAME", "qdev-qazstack-01")
+    monkeypatch.setattr(validator, "resolve_job_id", lambda *args, **kwargs: 9001)
+
+    def unexpected_release_hash(root: Path) -> str:
+        pytest.fail("worker restoration must not compute an activation release")
+
+    monkeypatch.setattr(validator, "controller_release_digest", unexpected_release_hash)
+    if unexpected_field:
+        monkeypatch.setenv(unexpected_field, "unexpected")
+        with pytest.raises(validator.BootstrapValidationError, match="fields are invalid"):
+            validator.build_request(policy)
+        return
+
+    request = validator.build_request(policy)
+    assert request.worker_name == "qdev-qazstack-01"
+    assert request.controller_revision is None
+    assert request.controller_release_digest is None
+    assert request.source_sha == "b" * 40
+    assert request.attempt == 3

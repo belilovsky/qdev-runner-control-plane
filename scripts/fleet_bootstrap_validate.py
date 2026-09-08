@@ -238,9 +238,11 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
     expected_job_name = _required("BOOTSTRAP_JOB_NAME")
     job_id = resolve_job_id(repository, run_id, expected_name=expected_job_name)
     source_sha = _source_sha()
+    action = _required("BOOTSTRAP_ACTION")
+    restoring_worker = action == "restore-existing-worker"
     raw: dict[str, Any] = {
         "schema": REQUEST_SCHEMA,
-        "action": _required("BOOTSTRAP_ACTION"),
+        "action": action,
         "source_sha": source_sha,
         "run_id": run_id,
         "job_id": job_id,
@@ -249,8 +251,19 @@ def build_request(policy: FleetBootstrapPolicy) -> FleetBootstrapRequest:
             os.environ.get("BOOTSTRAP_CLAIM_TTL_SECONDS", "900"),
             "BOOTSTRAP_CLAIM_TTL_SECONDS",
         ),
-        "controller_revision": source_sha,
-        "controller_release_digest": controller_release_digest(ROOT),
+        # Worker restoration has no activation tuple. Preserve explicitly
+        # supplied values so shape validation rejects them, rather than
+        # silently accepting a mixed activation/restoration request.
+        "controller_revision": (
+            os.environ.get("BOOTSTRAP_CONTROLLER_REVISION") or None
+            if restoring_worker
+            else source_sha
+        ),
+        "controller_release_digest": (
+            os.environ.get("BOOTSTRAP_CONTROLLER_RELEASE_DIGEST") or None
+            if restoring_worker
+            else controller_release_digest(ROOT)
+        ),
         "controller_image_digest": os.environ.get("BOOTSTRAP_CONTROLLER_IMAGE_DIGEST") or None,
         "controller_internal_image_digest": (
             os.environ.get("BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST") or None
