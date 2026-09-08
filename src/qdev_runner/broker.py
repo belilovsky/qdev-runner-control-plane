@@ -5013,9 +5013,8 @@ def create_app(
             or x_qdev_test_workflow
         )
         job = store.job(job_id)
-        if job is None:
-            if x_qdev_artifact_token or report_like:
-                raise HTTPException(status_code=404, detail="job not found")
+        if job is None and (x_qdev_artifact_token or report_like):
+            raise HTTPException(status_code=404, detail="job not found")
         if x_qdev_artifact_token:
             assert job is not None
             if not artifact_job_is_active(job, full_name, safe_sha, job_id):
@@ -5082,7 +5081,9 @@ def create_app(
             if target_existed:
                 existing_digest = hashlib.sha256(target.read_bytes()).hexdigest()
                 if not secrets.compare_digest(existing_digest, digest):
-                    raise HTTPException(status_code=409, detail="conflicting artifact for this path")
+                    raise HTTPException(
+                        status_code=409, detail="conflicting artifact for this path"
+                    )
             if not target_existed:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temporary = target.with_suffix(target.suffix + ".tmp")

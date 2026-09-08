@@ -57,7 +57,7 @@ class FakeGitHub:
 
 
 class RecordingOIDCVerifier:
-    def __init__(self, *, accepted_token: str = "valid-oidc") -> None:
+    def __init__(self, *, accepted_token: str = "valid-oidc") -> None:  # noqa: S107
         self.accepted_token = accepted_token
         self.calls: list[tuple[str, str, str, int]] = []
 
