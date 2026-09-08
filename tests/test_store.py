@@ -80,6 +80,32 @@ def test_enqueue_is_idempotent(tmp_path: Path) -> None:
     assert store.health()["jobs"]["pending"] == 1
 
 
+def test_coverage_baseline_is_immutable_and_idempotent(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    values = {
+        "repository": "belilovsky/private-repo",
+        "ref": "main",
+        "metric": "line",
+        "scope": "src",
+        "commit_sha": "a" * 40,
+        "covered": 7,
+        "denominator": 10,
+        "measured_at": "2026-09-04T00:00:00Z",
+    }
+    first, idempotent = store.record_coverage_baseline(**values)
+    assert first["percentage"] == 70.0
+    assert idempotent is False
+    duplicate, idempotent = store.record_coverage_baseline(**values)
+    assert duplicate["id"] == first["id"]
+    assert idempotent is True
+    try:
+        store.record_coverage_baseline(**{**values, "covered": 8})
+    except ValueError as error:
+        assert "conflicting" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("conflicting baseline was accepted")
+
+
 def test_store_repairs_invalid_legacy_queue_timestamp_from_workflow_payload(tmp_path: Path) -> None:
     database = tmp_path / "broker.db"
     store = Store(database)

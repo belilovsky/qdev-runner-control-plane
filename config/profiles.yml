@@ -71,6 +71,9 @@ profiles:
     # Public repositories may run trusted same-repository PR branches. The
     # broker still rejects every cross-repository/fork PR by repository ID.
     allow_public_pr: true
+    # A successful execution receipt remains incomplete until the controller
+    # has persisted both its JUnit result and Cobertura coverage source.
+    required_test_report_formats: [junit, cobertura]
   qdev-ci-browser:
     labels: [self-hosted, Linux, X64, qdev-ci-browser]
     # The pinned browser runner image is 1.35 GiB.  A 5 GiB job reservation

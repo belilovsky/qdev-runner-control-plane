@@ -46,6 +46,31 @@ def test_profile_requires_complete_labels(policy_files: tuple[Path, Path]) -> No
         policy.profile_for_labels("belilovsky/private-repo", ["self-hosted", "qdev-ci"])
 
 
+def test_profile_validates_required_native_report_formats(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    document = yaml.safe_load(profiles.read_text(encoding="utf-8"))
+    profile = document["profiles"]["qdev-ci"]
+    profile["required_test_report_formats"] = ["cobertura", "junit"]
+    profiles.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    assert Policy(inventory, profiles).profiles["qdev-ci"].required_test_report_formats == (
+        "cobertura",
+        "junit",
+    )
+
+    profile["required_test_report_formats"] = ["junit", "junit"]
+    profiles.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    with pytest.raises(PolicyError, match="duplicate"):
+        Policy(inventory, profiles)
+
+    profile["required_test_report_formats"] = ["not-a-report"]
+    profiles.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    with pytest.raises(PolicyError, match="unsupported"):
+        Policy(inventory, profiles)
+
+
 def test_public_fork_is_rejected(policy_files: tuple[Path, Path]) -> None:
     inventory, profiles = policy_files
     policy = Policy(inventory, profiles)
@@ -98,6 +123,29 @@ def test_private_pull_request_is_allowed(policy_files: tuple[Path, Path]) -> Non
         "belilovsky/private-repo", ["self-hosted", "Linux", "X64", "qdev-ci"]
     )
     policy.authorize_run("belilovsky/private-repo", selected, {"event": "pull_request"})
+
+
+def test_catalog_includes_critical_scenarios_from_required_suites(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    data = json.loads(inventory.read_text(encoding="utf-8"))
+    data["repositories"][0]["quality"] = {
+        "suites": [
+            {
+                "id": "unit",
+                "required": True,
+                "critical_scenarios": ["login", "isolation"],
+            },
+            {"id": "optional", "required": False, "critical_scenarios": ["nice-to-have"]},
+        ]
+    }
+    inventory.write_text(json.dumps(data), encoding="utf-8")
+
+    policy = Policy(inventory, profiles)
+    catalog = policy.test_catalog()
+    assert catalog[0]["required_suites"] == ["unit"]
+    assert catalog[0]["critical_scenarios_required"] == ["isolation", "login"]
 
 
 def test_repository_profile_disk_override_is_exact(policy_files: tuple[Path, Path]) -> None:

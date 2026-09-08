@@ -7,11 +7,19 @@ from typing import Any
 
 import yaml
 
-from .models import Profile, RepositoryPolicy
+from .models import Profile, RepositoryPolicy, TestWorkflowRegistration
 
 
 class PolicyError(RuntimeError):
     pass
+
+
+_SUPPORTED_TEST_REPORT_FORMATS = frozenset({"qdev-test-run", "json", "junit", "lcov", "cobertura"})
+
+
+def _normalise_workflow_path(value: Any) -> str:
+    path = str(value or "").replace("\\", "/").strip()
+    return path[2:] if path.startswith("./") else path
 
 
 class Policy:
@@ -20,7 +28,65 @@ class Policy:
         profiles_data = yaml.safe_load(profiles_path.read_text(encoding="utf-8"))
         self.repositories: dict[str, RepositoryPolicy] = {}
         repository_ids: set[int] = set()
+        self._catalog: list[dict[str, Any]] = []
         for item in inventory["repositories"]:
+            workflow_paths: list[str] = []
+            for workflow in item.get("workflow_files", []):
+                path = (
+                    workflow
+                    if isinstance(workflow, str)
+                    else workflow.get("path")
+                    if isinstance(workflow, dict)
+                    else None
+                )
+                if isinstance(path, str) and path.strip():
+                    workflow_paths.append(_normalise_workflow_path(path))
+            registrations: list[TestWorkflowRegistration] = []
+            registration_present = "test_workflows" in item
+            raw_registrations = item.get("test_workflows", [])
+            if raw_registrations is None:
+                raw_registrations = []
+            if not isinstance(raw_registrations, list):
+                raise PolicyError(f"test_workflows must be a list for {item.get('full_name')}")
+            for raw in raw_registrations:
+                if isinstance(raw, str):
+                    raw = {"path": raw}
+                if not isinstance(raw, dict):
+                    raise PolicyError(
+                        f"test_workflows entries must be objects for {item.get('full_name')}"
+                    )
+                path = _normalise_workflow_path(raw.get("path"))
+                if not path:
+                    raise PolicyError(
+                        f"test_workflows entry is missing path for {item.get('full_name')}"
+                    )
+                suites_raw = raw.get("suites", ())
+                if isinstance(suites_raw, str):
+                    suites_raw = [suites_raw]
+                if not isinstance(suites_raw, (list, tuple)):
+                    raise PolicyError(f"test_workflows.suites is invalid for {path}")
+                suites = tuple(
+                    sorted({str(value).strip() for value in suites_raw if str(value).strip()})
+                )
+                profile_raw = raw.get("profile")
+                profile = str(profile_raw).strip() if profile_raw is not None else None
+                refs_raw = raw.get("refs", raw.get("allowed_refs", ()))
+                if isinstance(refs_raw, str):
+                    refs_raw = [refs_raw]
+                if not isinstance(refs_raw, (list, tuple)):
+                    raise PolicyError(f"test_workflows.refs is invalid for {path}")
+                refs = tuple(
+                    sorted({str(value).strip() for value in refs_raw if str(value).strip()})
+                )
+                registrations.append(
+                    TestWorkflowRegistration(
+                        path=path,
+                        suites=suites,
+                        profile=profile,
+                        refs=refs,
+                        required=bool(raw.get("required", True)),
+                    )
+                )
             policy = RepositoryPolicy(
                 full_name=item["full_name"],
                 repository_id=int(item["id"]),
@@ -28,6 +94,9 @@ class Policy:
                 archived=bool(item["archived"]),
                 default_branch=item["default_branch"],
                 profiles=tuple(item.get("profiles", ["qdev-ci"])),
+                workflows=tuple(sorted(set(workflow_paths))),
+                test_workflows=tuple(sorted(registrations, key=lambda value: value.path)),
+                workflow_registration_present=registration_present,
             )
             repository_key = policy.full_name.casefold()
             if repository_key in self.repositories:
@@ -36,9 +105,34 @@ class Policy:
                 raise PolicyError(f"duplicate repository id in inventory: {policy.repository_id}")
             self.repositories[repository_key] = policy
             repository_ids.add(policy.repository_id)
+            if not policy.archived:
+                self._catalog.append(self._catalog_entry(item, policy))
 
         self.profiles: dict[str, Profile] = {}
         for name, data in profiles_data["profiles"].items():
+            raw_required_formats = data.get("required_test_report_formats", ())
+            if raw_required_formats is None:
+                raw_required_formats = ()
+            if not isinstance(raw_required_formats, (list, tuple)):
+                raise PolicyError(f"required_test_report_formats must be a list for profile {name}")
+            required_formats: list[str] = []
+            for raw_format in raw_required_formats:
+                if not isinstance(raw_format, str) or not raw_format.strip():
+                    raise PolicyError(
+                        "required_test_report_formats contains an invalid format "
+                        f"for profile {name}"
+                    )
+                report_format = raw_format.strip().lower()
+                if report_format not in _SUPPORTED_TEST_REPORT_FORMATS:
+                    raise PolicyError(
+                        "required_test_report_formats contains an unsupported format for "
+                        f"profile {name}: {report_format}"
+                    )
+                required_formats.append(report_format)
+            if len(required_formats) != len(set(required_formats)):
+                raise PolicyError(
+                    f"required_test_report_formats contains a duplicate for profile {name}"
+                )
             self.profiles[name] = Profile(
                 name=name,
                 labels=tuple(data["labels"]),
@@ -48,6 +142,7 @@ class Policy:
                 pids_limit=int(data["resources"]["pids_limit"]),
                 timeout_minutes=int(data["timeout_minutes"]),
                 allow_public_pr=bool(data.get("allow_public_pr", False)),
+                required_test_report_formats=tuple(sorted(required_formats)),
             )
 
         self.repository_profile_disk_mb: dict[tuple[str, str], int] = {}
@@ -65,8 +160,8 @@ class Policy:
                 raise PolicyError(f"repository admission overrides must be a mapping: {full_name}")
             for profile_name, raw_disk_mb in profile_overrides.items():
                 profile_key = str(profile_name)
-                profile = self.profiles.get(profile_key)
-                if profile is None or profile_key not in repository.profiles:
+                selected_profile: Profile | None = self.profiles.get(profile_key)
+                if selected_profile is None or profile_key not in repository.profiles:
                     raise PolicyError(
                         "repository admission override selects a disallowed profile: "
                         f"{full_name}/{profile_name}"
@@ -79,8 +174,8 @@ class Policy:
                 # A repository override is combined with the worker's hard
                 # free-space floor, so the reservation may follow a measured
                 # small workload without weakening the independent floor.
-                minimum_disk_mb = min(profile.disk_mb, 4 * 1024)
-                if not minimum_disk_mb <= raw_disk_mb < profile.disk_mb:
+                minimum_disk_mb = min(selected_profile.disk_mb, 4 * 1024)
+                if not minimum_disk_mb <= raw_disk_mb < selected_profile.disk_mb:
                     raise PolicyError(
                         "repository admission override must be below the profile default "
                         f"and at least {minimum_disk_mb} MiB: {full_name}/{profile_name}"
@@ -140,6 +235,107 @@ class Policy:
                         f"repository maximum concurrency must be a positive integer: {full_name}"
                     )
                 self.repository_max_concurrency[repository_name] = raw_concurrency
+
+    @staticmethod
+    def _catalog_entry(item: dict[str, Any], policy: RepositoryPolicy) -> dict[str, Any]:
+        quality_value = item.get("quality")
+        quality: dict[str, Any] = quality_value if isinstance(quality_value, dict) else {}
+        raw_suites = quality.get("suites", item.get("suites", ()))
+        if isinstance(raw_suites, dict):
+            raw_suites = [raw_suites]
+        suites: list[str] = []
+        if isinstance(raw_suites, (list, tuple)):
+            for raw_suite in raw_suites:
+                if isinstance(raw_suite, str):
+                    suite_id, suite_required = raw_suite.strip(), True
+                elif isinstance(raw_suite, dict):
+                    suite_id = str(raw_suite.get("id") or raw_suite.get("name") or "").strip()
+                    suite_required = bool(raw_suite.get("required", True))
+                else:
+                    suite_id, suite_required = "", False
+                if suite_id and suite_required:
+                    suites.append(suite_id)
+        registered_suites = [
+            suite
+            for registration in policy.test_workflows
+            if registration.required
+            for suite in registration.suites
+        ]
+        required_suites = suites or sorted(set(registered_suites))
+        commands_value = quality.get("commands")
+        commands: dict[str, Any] = commands_value if isinstance(commands_value, dict) else {}
+        legacy_command = commands.get("test")
+        configured = bool(required_suites or legacy_command or policy.test_workflows)
+        if not required_suites and legacy_command:
+            required_suites = ["legacy"]
+        suite_critical: list[str] = []
+        required_suite_ids = set(required_suites)
+        if isinstance(raw_suites, (list, tuple)):
+            for raw_suite in raw_suites:
+                if not isinstance(raw_suite, dict):
+                    continue
+                suite_id = str(raw_suite.get("id") or raw_suite.get("name") or "").strip()
+                if (
+                    not suite_id
+                    or suite_id not in required_suite_ids
+                    or raw_suite.get("required", True) is False
+                ):
+                    continue
+                values = raw_suite.get(
+                    "critical_scenarios", raw_suite.get("critical_scenarios_required", ())
+                )
+                if isinstance(values, dict):
+                    values = list(values)
+                if isinstance(values, str):
+                    values = [values]
+                if isinstance(values, (list, tuple)):
+                    suite_critical.extend(
+                        str(value).strip() for value in values if str(value).strip()
+                    )
+        coverage_value = quality.get("coverage")
+        coverage: dict[str, Any] = coverage_value if isinstance(coverage_value, dict) else {}
+        minimum = coverage.get(
+            "minimum", quality.get("coverage_minimum", item.get("coverage_minimum"))
+        )
+        try:
+            minimum_value = float(minimum) if minimum is not None else None
+        except (TypeError, ValueError):
+            minimum_value = None
+        critical = quality.get(
+            "critical_scenarios",
+            quality.get("critical_scenarios_required", item.get("critical_scenarios_required", ())),
+        )
+        if isinstance(critical, dict):
+            critical = list(critical)
+        if isinstance(critical, str):
+            critical = [critical]
+        critical_values = (
+            [str(value).strip() for value in critical]
+            if isinstance(critical, (list, tuple))
+            else []
+        )
+        critical_values.extend(suite_critical)
+        current_sha = (
+            item.get("current_sha")
+            or item.get("head_sha")
+            or item.get("default_sha")
+            or quality.get("current_sha")
+        )
+        return {
+            "project_id": item.get("project_id", item.get("id")),
+            "repository": policy.full_name,
+            "private": policy.private,
+            "default_branch": policy.default_branch,
+            "configured": configured,
+            "required_suites": sorted(set(required_suites)),
+            "current_sha": str(current_sha).lower() if current_sha else None,
+            "coverage_required": bool(coverage.get("required", minimum is not None)),
+            "coverage_minimum": minimum_value,
+            "critical_scenarios_required": sorted(set(value for value in critical_values if value)),
+        }
+
+    def test_catalog(self) -> list[dict[str, Any]]:
+        return [dict(entry) for entry in self._catalog]
 
     def repository(self, full_name: str, repository_id: int | None = None) -> RepositoryPolicy:
         repo = self.repositories.get(full_name.casefold())
@@ -214,3 +410,43 @@ class Policy:
             raise PolicyError(
                 "public fork pull requests are not authorized for self-hosted execution"
             )
+
+    def test_workflow(
+        self,
+        full_name: str,
+        workflow: str,
+        *,
+        suite: str | None = None,
+        profile: str | None = None,
+        ref: str | None = None,
+    ) -> TestWorkflowRegistration | None:
+        repo = self.repository(full_name)
+        normalized_workflow = _normalise_workflow_path(workflow)
+        if repo.workflow_registration_present:
+            entry = next(
+                (item for item in repo.test_workflows if item.path == normalized_workflow),
+                None,
+            )
+            if entry is None:
+                raise PolicyError(f"test workflow is not registered for {full_name}: {workflow}")
+            if suite and entry.suites and suite not in entry.suites:
+                raise PolicyError(f"suite is not registered for {full_name}: {suite}")
+            if profile and entry.profile and profile != entry.profile:
+                raise PolicyError(f"profile is not registered for {full_name}: {profile}")
+            if ref and entry.refs and ref not in entry.refs:
+                raise PolicyError(f"ref is not registered for {full_name}: {ref}")
+            return entry
+        if repo.workflows and normalized_workflow not in repo.workflows:
+            raise PolicyError(f"test workflow is not registered for {full_name}: {workflow}")
+        return None
+
+    def authorize_test_workflow(
+        self,
+        full_name: str,
+        workflow: str,
+        *,
+        suite: str | None = None,
+        profile: str | None = None,
+        ref: str | None = None,
+    ) -> None:
+        self.test_workflow(full_name, workflow, suite=suite, profile=profile, ref=ref)
