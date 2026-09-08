@@ -17,6 +17,7 @@ INSTALLER = ROOT / "scripts/apply_repository_policy.py"
 PIN_ACTIONS = ROOT / "scripts/pin_workflow_actions.py"
 REWRITE_DEPENDENCIES = ROOT / "scripts/rewrite_github_dependencies.py"
 REWRITE_SELECTORS = ROOT / "scripts/rewrite_runner_selectors.py"
+GUARD_PUBLIC_FORKS = ROOT / "scripts/guard_public_fork_jobs.py"
 MIGRATION_BRANCH = "codex/self-hosted-runner-v1"
 POLICY_BRANCH = "codex/qdev-runner-policy-v1"
 MANAGED_PATHS = {
@@ -24,6 +25,7 @@ MANAGED_PATHS = {
     ".github/QDEV_RUNNERS.md",
     ".github/scripts/qdev-runner-policy.py",
     ".github/scripts/qdev-upload-artifact.sh",
+    ".github/scripts/qdev-upload-test-report.sh",
     ".github/workflows/qdev-runner-contract.yml",
 }
 
@@ -147,6 +149,7 @@ def rollout(repo: dict[str, Any], *, prepare_only: bool = False) -> dict[str, An
             )
             run([sys.executable, str(REWRITE_DEPENDENCIES), *paths], cwd=checkout)
             run([sys.executable, str(PIN_ACTIONS), *paths], cwd=checkout)
+            run([sys.executable, str(GUARD_PUBLIC_FORKS), *paths], cwd=checkout)
         run(
             [
                 sys.executable,

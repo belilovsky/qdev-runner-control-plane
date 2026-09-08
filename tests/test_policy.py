@@ -100,6 +100,29 @@ def test_private_pull_request_is_allowed(policy_files: tuple[Path, Path]) -> Non
     policy.authorize_run("belilovsky/private-repo", selected, {"event": "pull_request"})
 
 
+def test_catalog_includes_critical_scenarios_from_required_suites(
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    data = json.loads(inventory.read_text(encoding="utf-8"))
+    data["repositories"][0]["quality"] = {
+        "suites": [
+            {
+                "id": "unit",
+                "required": True,
+                "critical_scenarios": ["login", "isolation"],
+            },
+            {"id": "optional", "required": False, "critical_scenarios": ["nice-to-have"]},
+        ]
+    }
+    inventory.write_text(json.dumps(data), encoding="utf-8")
+
+    policy = Policy(inventory, profiles)
+    catalog = policy.test_catalog()
+    assert catalog[0]["required_suites"] == ["unit"]
+    assert catalog[0]["critical_scenarios_required"] == ["isolation", "login"]
+
+
 def test_repository_profile_disk_override_is_exact(policy_files: tuple[Path, Path]) -> None:
     inventory, profiles = policy_files
     add_repository_disk_override(
