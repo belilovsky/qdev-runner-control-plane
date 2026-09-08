@@ -454,6 +454,7 @@ def test_historical_controller_rollback_does_not_require_or_replace_admission_wr
     ].split("\n  )", 1)[0]
     assert "qdev_controller_admission_host.sh" not in base_required
     assert "scripts/qdev_controller_admission_host.sh" in forward_required
+    assert "scripts/provision_controller_activation_trust.py" in forward_required
     assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
     assert (
         'if [[ "$rollback_mode" != true ]]; then\n'
