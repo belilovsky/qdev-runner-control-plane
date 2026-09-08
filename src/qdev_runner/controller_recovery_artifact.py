@@ -339,6 +339,58 @@ def inspect_docker_archive(
                 }
             ):
                 raise ControllerRecoveryArtifactError("controller image OCI labels are not exact")
+            if "index.json" in member_by_name:
+
+                def read_oci_json(name: str) -> tuple[bytes, dict[str, Any]]:
+                    member = member_by_name.get(name)
+                    if member is None or not member.isfile() or member.size > _MAX_JSON_MEMBER:
+                        raise ControllerRecoveryArtifactError("OCI identity member is invalid")
+                    stream = bundle.extractfile(member)
+                    if stream is None:
+                        raise ControllerRecoveryArtifactError("OCI identity member is unavailable")
+                    raw = stream.read()
+                    value = _strict_json(raw, "OCI identity")
+                    if not isinstance(value, dict):
+                        raise ControllerRecoveryArtifactError("OCI identity is invalid")
+                    return raw, value
+
+                _, index = read_oci_json("index.json")
+                entries = index.get("manifests")
+                if (
+                    not isinstance(entries, list)
+                    or len(entries) != 1
+                    or not isinstance(entries[0], dict)
+                ):
+                    raise ControllerRecoveryArtifactError("OCI index must identify one image")
+                entry = entries[0]
+                manifest_digest = entry.get("digest")
+                if (
+                    not isinstance(manifest_digest, str)
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", manifest_digest) is None
+                ):
+                    raise ControllerRecoveryArtifactError("OCI manifest digest is invalid")
+                raw, oci_manifest = read_oci_json("blobs/sha256/" + manifest_digest[7:])
+                oci_layers = oci_manifest.get("layers")
+                oci_config = oci_manifest.get("config")
+                if (
+                    hashlib.sha256(raw).hexdigest() != manifest_digest[7:]
+                    or entry.get("size") != len(raw)
+                    or not isinstance(oci_config, dict)
+                    or oci_config.get("digest") != "sha256:" + image_digest
+                    or oci_config.get("size") != len(config_raw)
+                    or not isinstance(oci_layers, list)
+                    or len(oci_layers) != len(layer_names)
+                    or any(
+                        not isinstance(item, dict)
+                        or item.get("digest") != "sha256:" + name.removeprefix("blobs/sha256/")
+                        or item.get("size") != member_by_name[name].size
+                        for item, name in zip(oci_layers, layer_names, strict=True)
+                    )
+                ):
+                    raise ControllerRecoveryArtifactError(
+                        "OCI manifest does not bind verified image"
+                    )
+                image_digest = manifest_digest[7:]
             unpacked_size = sum(member.size for member in members if member.isfile())
     except (OSError, tarfile.TarError) as error:
         raise ControllerRecoveryArtifactError("controller image archive is unavailable") from error

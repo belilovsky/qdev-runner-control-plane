@@ -114,6 +114,8 @@ def _archive(
     unsafe_layer_type: bool = False,
     oci_layout: bool = False,
     corrupt_blob: bool = False,
+    oci_index: bool = False,
+    wrong_oci_config: bool = False,
 ) -> str:
     config = json.dumps(
         {
@@ -149,9 +151,63 @@ def _archive(
         _add_tar_bytes(bundle, "manifest.json", manifest)
         _add_tar_bytes(bundle, config_name, config)
         _add_tar_bytes(bundle, layer_name, layer + b"tampered" if corrupt_blob else layer)
+        if oci_index:
+            oci = json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "config": {
+                        "digest": "sha256:" + ("0" * 64 if wrong_oci_config else config_digest),
+                        "size": len(config),
+                    },
+                    "layers": [
+                        {
+                            "digest": "sha256:" + hashlib.sha256(layer).hexdigest(),
+                            "size": len(layer),
+                        }
+                    ],
+                }
+            ).encode()
+            image_digest = hashlib.sha256(oci).hexdigest()
+            _add_tar_bytes(bundle, "blobs/sha256/" + image_digest, oci)
+            _add_tar_bytes(
+                bundle,
+                "index.json",
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": [
+                            {
+                                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                "digest": "sha256:" + image_digest,
+                                "size": len(oci),
+                            }
+                        ],
+                    }
+                ).encode(),
+            )
         if unsafe:
             _add_tar_bytes(bundle, "../escape", b"unsafe")
-    return config_digest
+    return image_digest if oci_index else config_digest
+
+
+def test_containerd_identity_binds_verified_config_and_layers(tmp_path: Path) -> None:
+    archive = tmp_path / "oci.tar"
+    expected = _archive(archive, oci_layout=True, oci_index=True)
+    actual, _ = inspect_docker_archive(
+        archive, expected_source_sha=SOURCE_SHA, expected_policy_digest=POLICY_DIGEST
+    )
+    assert actual == expected
+
+
+def test_containerd_identity_rejects_foreign_config(tmp_path: Path) -> None:
+    archive = tmp_path / "oci.tar"
+    _archive(archive, oci_layout=True, oci_index=True, wrong_oci_config=True)
+    with pytest.raises(ControllerRecoveryArtifactError, match="does not bind"):
+        inspect_docker_archive(
+            archive, expected_source_sha=SOURCE_SHA, expected_policy_digest=POLICY_DIGEST
+        )
 
 
 def test_inspect_docker_archive_rejects_corrupt_oci_blob(tmp_path: Path) -> None:
