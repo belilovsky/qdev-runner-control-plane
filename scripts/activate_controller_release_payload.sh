@@ -394,7 +394,6 @@ for durable_root in \
   "$control_state_root" \
   "$managed_release_state_root" \
     "$admin_platform_receipt_root" \
-    "$controller_activation_root" \
     "$artifact_root"; do
   install -d -o "$runtime_uid" -g "$runtime_gid" -m 0700 -- "$durable_root"
   if [[ "$(stat -c %u -- "$durable_root")" != "$runtime_uid" ||
@@ -403,6 +402,9 @@ for durable_root in \
     exit 73
   fi
 done
+
+# The host activation CLI owns this state; the rootless broker only reads it.
+install -d -o root -g "$runtime_gid" -m 0750 -- "$controller_activation_root"
 
 # The request/result bridge is deliberately split by ownership.  Results and
 # in-flight markers are outside the broker container lifecycle, so recreating
