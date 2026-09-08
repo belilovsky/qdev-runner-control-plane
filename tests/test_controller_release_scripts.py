@@ -598,6 +598,20 @@ def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     assert "controller durable-state parent ownership or permissions are unsafe" in activation
 
 
+def test_activation_status_is_read_only_and_private_to_internal_broker() -> None:
+    compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
+    public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
+    internal = compose.split("  broker-internal:", 1)[1].split("  registry:", 1)[0]
+    directory = "/var/lib/qdev-runner/controller-activation"
+
+    # Directory binding observes atomic status replacement without pinning an inode.
+    assert f"QDEV_CONTROLLER_ACTIVATION_STATUS: {directory}/activation-status.json" in internal
+    assert f"- {directory}:{directory}:ro\n" in internal
+    assert f"{directory}/activation-status.json:" not in compose
+    assert directory not in public
+    assert "QDEV_CONTROLLER_ACTIVATION_STATUS" not in public
+
+
 def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
 

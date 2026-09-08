@@ -112,6 +112,7 @@ services:
       # atomically; a single-file bind would pin the old inode.
       QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
       QDEV_ADMIN_PLATFORM_LEDGER: /var/lib/qdev-runner/admin-platform-state/admin-platform-ledger.yml
+      QDEV_CONTROLLER_ACTIVATION_STATUS: /var/lib/qdev-runner/controller-activation/activation-status.json
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
       - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro
@@ -130,6 +131,7 @@ services:
       - /var/lib/qdev-runner/managed-release-state:/var/lib/qdev-runner/managed-release-state
       - /var/lib/qdev-runner/controller-status:/var/lib/qdev-runner/controller-status:ro
       - /var/lib/qdev-runner/admin-platform-state:/var/lib/qdev-runner/admin-platform-state:ro
+      - /var/lib/qdev-runner/controller-activation:/var/lib/qdev-runner/controller-activation:ro
       - /var/lib/qdev-runner/release-jobs:/var/lib/qdev-runner/release-jobs
       - /var/lib/qdev-runner/fleet-host-dispatch/incoming:/var/lib/qdev-runner/fleet-host-dispatch/incoming
       - /var/lib/qdev-runner/fleet-host-dispatch/results:/var/lib/qdev-runner/fleet-host-dispatch/results:ro
