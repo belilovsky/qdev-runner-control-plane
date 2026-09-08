@@ -223,6 +223,7 @@ def workflow_violations(
     release_runners: set[str],
     release_registry_workflows: set[str],
     recovery_workflows: set[str],
+    github_artifact_recovery_workflows: set[str],
     primary_self_hosted_workflows: set[str],
     allow_hosted: bool,
 ) -> list[str]:
@@ -235,6 +236,11 @@ def workflow_violations(
     blocks = job_blocks(lines)
     allow_ghcr = allow_hosted and path.name in release_registry_workflows
     is_recovery_workflow = allow_hosted and path.name in recovery_workflows
+    is_github_artifact_recovery_workflow = (
+        allow_hosted
+        and path.name in github_artifact_recovery_workflows
+        and is_manual_only_workflow(lines)
+    )
     is_primary_self_hosted_workflow = (
         allow_hosted and path.name in primary_self_hosted_workflows
     )
@@ -262,6 +268,11 @@ def workflow_violations(
             errors.append(f"{rel}:{number}: hosted-runner")
         for marker, kind in FORBIDDEN.items():
             if kind == "ghcr" and allow_ghcr:
+                continue
+            if (
+                marker == "actions/upload-artifact@"
+                and is_github_artifact_recovery_workflow
+            ):
                 continue
             if marker.lower() in line.lower():
                 errors.append(f"{rel}:{number}: {kind}")
@@ -351,6 +362,7 @@ def check_repository(root: Path) -> list[str]:
     release_runners: set[str] = set()
     release_registry_workflows: set[str] = set()
     recovery_workflows: set[str] = set()
+    github_artifact_recovery_workflows: set[str] = set()
     primary_self_hosted_workflows: set[str] = set()
     allow_hosted = False
     contract = root / ".github/qdev-runner.yml"
@@ -388,6 +400,9 @@ def check_repository(root: Path) -> list[str]:
         release_runners.update(contract_list(text, "release_runners"))
         release_registry_workflows.update(contract_list(text, "release_registry_workflows"))
         recovery_workflows.update(contract_list(text, "recovery_workflows"))
+        github_artifact_recovery_workflows.update(
+            contract_list(text, "github_artifact_recovery_workflows")
+        )
         primary_self_hosted_workflows.update(
             contract_list(text, "primary_self_hosted_workflows")
         )
@@ -397,6 +412,8 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: recovery-workflows-requires-v2")
         if release_registry_workflows and not allow_hosted:
             errors.append(".github/qdev-runner.yml:1: release-registry-requires-v2")
+        if github_artifact_recovery_workflows and not allow_hosted:
+            errors.append(".github/qdev-runner.yml:1: github-artifact-recovery-requires-v2")
         for workflow_name in sorted(release_registry_workflows):
             if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
                 errors.append(
@@ -427,6 +444,11 @@ def check_repository(root: Path) -> list[str]:
         errors.append(
             ".github/qdev-runner.yml:1: recovery-workflow-missing " + workflow_name
         )
+    for workflow_name in sorted(github_artifact_recovery_workflows - available_workflows):
+        errors.append(
+            ".github/qdev-runner.yml:1: github-artifact-recovery-workflow-missing "
+            + workflow_name
+        )
     for workflow_name in sorted(primary_self_hosted_workflows - available_workflows):
         errors.append(
             ".github/qdev-runner.yml:1: primary-self-hosted-workflow-missing "
@@ -441,6 +463,7 @@ def check_repository(root: Path) -> list[str]:
                 release_runners,
                 release_registry_workflows,
                 recovery_workflows,
+                github_artifact_recovery_workflows,
                 primary_self_hosted_workflows,
                 allow_hosted,
             )

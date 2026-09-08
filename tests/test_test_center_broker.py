@@ -9,6 +9,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import artifact_token, create_app
+from qdev_runner.github_oidc import GitHubActionsOIDCError
 from qdev_runner.models import QueuedJob
 from qdev_runner.settings import BrokerSettings
 from qdev_runner.store import Store
@@ -53,6 +54,17 @@ class FakeGitHub:
 
     def ref_sha(self, installation_id: int, repository: str, ref: str) -> str:
         return self.sha
+
+
+class RecordingOIDCVerifier:
+    def __init__(self, *, accepted_token: str = "valid-oidc") -> None:  # noqa: S107
+        self.accepted_token = accepted_token
+        self.calls: list[tuple[str, str, str, int]] = []
+
+    def verify(self, token: str, *, repository: str, sha: str, run_id: int) -> None:
+        self.calls.append((token, repository, sha, run_id))
+        if token != self.accepted_token:
+            raise GitHubActionsOIDCError("token rejected")
 
 
 def _app_settings(
@@ -148,6 +160,98 @@ def _claimed_client(
     assert store.claim("worker-1", ("qdev-ci",)) is not None
     fake = github or FakeGitHub()
     return settings, store, TestClient(create_app(settings, store=store, github=fake)), fake
+
+
+def test_hosted_oidc_uploads_generic_archive_without_controller_job(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings = _app_settings(tmp_path, policy_files)
+    store = Store(settings.database_path)
+    verifier = RecordingOIDCVerifier()
+    client = TestClient(
+        create_app(
+            settings,
+            store=store,
+            github=FakeGitHub(),
+            github_actions_oidc_verifier=verifier,
+        )
+    )
+    run_id = 34184945942
+    body = b"portable-release-archive"
+    response = client.put(
+        f"/artifacts/belilovsky/qazpolit/{SHA}/{run_id}/qazpolit-release.tar.gz",
+        content=body,
+        headers={
+            "X-Qdev-GitHub-OIDC": "valid-oidc",
+            "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["report"] is None
+    assert verifier.calls == [("valid-oidc", "belilovsky/qazpolit", SHA, run_id)]
+    assert (
+        settings.artifact_root.joinpath(
+            "belilovsky", "qazpolit", SHA, str(run_id), "1", "artifact", "qazpolit-release.tar.gz"
+        ).read_bytes()
+        == body
+    )
+
+
+def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings = _app_settings(tmp_path, policy_files)
+    verifier = RecordingOIDCVerifier()
+    body = b"portable-release-archive"
+    response = TestClient(
+        create_app(
+            settings,
+            store=Store(settings.database_path),
+            github=FakeGitHub(),
+            github_actions_oidc_verifier=verifier,
+        )
+    ).put(
+        f"/artifacts/belilovsky/qazpolit/{SHA}/34184945942/qazpolit-release.tar.gz",
+        content=body,
+        headers={
+            "X-Qdev-GitHub-OIDC": "invalid-oidc",
+            "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
+        },
+    )
+    assert response.status_code == 401
+    target = settings.artifact_root.joinpath(
+        "belilovsky", "qazpolit", SHA, "34184945942", "1", "artifact", "qazpolit-release.tar.gz"
+    )
+    assert not target.exists()
+    assert list(settings.artifact_root.rglob("*")) == []
+
+
+def test_hosted_oidc_test_report_still_requires_a_controller_job(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings = _app_settings(tmp_path, policy_files)
+    verifier = RecordingOIDCVerifier()
+    body = json.dumps(_test_report(), separators=(",", ":")).encode()
+    response = TestClient(
+        create_app(
+            settings,
+            store=Store(settings.database_path),
+            github=FakeGitHub(),
+            github_actions_oidc_verifier=verifier,
+        )
+    ).put(
+        f"/artifacts/belilovsky/private-repo/{SHA}/200/1/unit/qdev-test-run.json",
+        content=body,
+        headers={
+            "X-Qdev-GitHub-OIDC": "valid-oidc",
+            "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
+            "X-Qdev-Test-Format": "qdev-test-run",
+            "X-Qdev-Test-Suite": "unit",
+            "X-Qdev-Test-Workflow": WORKFLOW,
+        },
+    )
+    assert response.status_code == 404
+    assert verifier.calls == []
 
 
 def test_registered_report_is_idempotent_and_empty_pass_is_rejected(
