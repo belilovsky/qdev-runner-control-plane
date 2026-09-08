@@ -81,10 +81,11 @@ contract are in `docs/github-actions-operating-model.md`.
 
 ### Repository CI source evidence
 
-This repository has a bounded `primary_self_hosted_workflows` exception in
-`.github/qdev-runner.yml`. Its normal `CI` workflow therefore reports the
-`controller` lane, not `hosted`. The explicit manual recovery lane remains
-separate, and all lanes run the same complete native checks.
+The normal `CI` and `qdev-runner-contract` checks use the GitHub-hosted
+lane declared in `.github/qdev-runner.yml`. The QDev pool is reserved for the
+explicit owner-dispatched `runner-smoke` recovery lane. GitHub-hosted checks do
+not receive the controller-issued short-lived artifact credential, so this
+repository's ordinary CI is not registered as a native test-report source.
 
 For an internal pull request, checkout and verification use the exact head SHA
 from the provider event, with matching base/head repository IDs and branch
@@ -93,6 +94,15 @@ refs. The execution receipt preserves GitHub's separate provider merge SHA;
 remain bound to the exact provider SHA. Missing or conflicting provenance is
 an error. A native CI receipt is unsigned execution evidence, not controller
 admission, an image scan, or a runtime activation receipt.
+
+For a registered `qdev-ci` test workflow, the controller derives the required
+native reports from `config/profiles.yml`. The current controller profile
+requires both the JUnit result and Cobertura coverage source. A successful
+execution is recorded as `incomplete` until both immutable source reports are
+present; it cannot satisfy readiness as a passed test result. Source reports
+are keyed by the exact provider repository, SHA, workflow, run, attempt, job
+and path. An identical redelivery is idempotent in either delivery order, and
+a changed report at the same identity is rejected.
 
 ## Repository onboarding
 

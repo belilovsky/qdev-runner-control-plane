@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://platform.qdev.run/schemas/qdev-test-run-v1.json",
+  "title": "QDev normalized test run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "project",
+    "repository",
+    "commit_sha",
+    "suite",
+    "workflow",
+    "job_id",
+    "attempt",
+    "execution",
+    "result",
+    "coverage",
+    "critical_scenarios",
+    "reports",
+    "flags"
+  ],
+  "properties": {
+    "schema": {"const": "qdev-test-run-v1"},
+    "contract_version": {"const": 1},
+    "project": {"type": "string", "minLength": 1, "maxLength": 256},
+    "repository": {
+      "type": "string",
+      "pattern": "^[^/\\s]+/[^/\\s]+$",
+      "maxLength": 256
+    },
+    "commit_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+    "suite": {"type": "string", "minLength": 1, "maxLength": 128},
+    "workflow": {"type": "string", "minLength": 1, "maxLength": 256},
+    "job_id": {"type": "integer", "minimum": 1},
+    "attempt": {"type": "integer", "minimum": 1},
+    "run_id": {"type": "integer", "minimum": 1},
+    "repository_id": {"type": "integer", "minimum": 1},
+    "project_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+    "runner": {"type": "string", "minLength": 1, "maxLength": 256},
+    "host": {"type": "string", "minLength": 1, "maxLength": 256},
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "started_at", "finished_at", "status"],
+      "properties": {
+        "environment": {"type": "string", "minLength": 1, "maxLength": 128},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": ["string", "null"], "format": "date-time"},
+        "status": {
+          "enum": ["queued", "running", "completed", "error", "timeout", "cancelled"]
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "total", "executed", "failed", "skipped"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "not_run"]},
+        "total": {"type": "integer", "minimum": 0},
+        "executed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0}
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {
+          "status": {"enum": ["measured", "unknown"]},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 64},
+          "covered": {"type": "integer", "minimum": 0},
+          "denominator": {"type": "integer", "minimum": 1},
+          "percentage": {"type": "number", "minimum": 0, "maximum": 100}
+        }
+      }
+    },
+    "critical_scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "status": {"enum": ["passed", "failed", "not_run"]}
+        }
+      }
+    },
+    "reports": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "format", "sha256", "size"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 512},
+          "format": {"type": "string", "minLength": 1, "maxLength": 32},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size": {"type": "integer", "minimum": 0, "maximum": 10485760},
+          "url": {"type": "string", "maxLength": 1024}
+        }
+      }
+    },
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flaky", "quarantined"],
+      "properties": {
+        "flaky": {"type": "boolean"},
+        "quarantined": {"type": "boolean"},
+        "quarantine_reason": {"type": "string", "maxLength": 256},
+        "quarantine_owner": {"type": "string", "maxLength": 256},
+        "quarantine_until": {"type": "string", "maxLength": 256}
+      }
+    }
+  }
+}
