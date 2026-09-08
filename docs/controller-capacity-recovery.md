@@ -1,5 +1,23 @@
 # Existing CI worker recovery
 
+## Provider-terminal pending queue entries
+
+If a missed provider completion leaves a job pending, use the existing signed
+operator recovery with `--pending-terminal-only`. It requires the exact
+provider run/job/attempt/SHA and a completed job with a known conclusion.
+Queued and running provider jobs are rejected; no cancellation, requeue or
+priority change occurs. The conditional update refuses a concurrent worker
+claim and preserves the original FIFO timestamp and provider conclusion.
+
+```bash
+qdev-runner-operator recover-stale JOB_ID --pending-terminal-only \
+  --owner qdev-fleet-operations --reason 'reconcile missed provider completion'
+```
+
+Save and verify the signed receipt before proceeding to the next queue entry.
+An already completed local row is rejected without mutation; its original
+receipt remains the evidence of reconciliation.
+
 This runbook covers the only supported recovery path for the two registered
 workers used by the Markdown-first release:
 

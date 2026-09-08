@@ -261,6 +261,7 @@ class ControllerClaimRequest(BaseModel):
 
 
 class StaleJobRecoveryRequest(BaseModel):
+    pending_terminal_only: bool = False
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
@@ -3495,8 +3496,14 @@ def create_app(
             ),
             None,
         )
+        if row is None and request.pending_terminal_only:
+            row = store.job(job_id)
+            if row is None or row["status"] != "pending":
+                raise HTTPException(status_code=409, detail="job is not pending")
         if row is None:
             raise HTTPException(status_code=409, detail="job is not stale")
+        if request.pending_terminal_only and row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="job is not pending")
         immutable_job = _stale_job_tuple(row)
         installation_id = int(row["installation_id"])
         repository = str(row["repository"])
@@ -3525,7 +3532,29 @@ def create_app(
                 )
             provider_status = str(remote_job.get("status") or "unknown")
             provider_conclusion = remote_job.get("conclusion")
-            if provider_status == "completed":
+            if request.pending_terminal_only:
+                terminal_conclusions = {
+                    "success",
+                    "failure",
+                    "neutral",
+                    "cancelled",
+                    "skipped",
+                    "timed_out",
+                    "action_required",
+                    "stale",
+                    "startup_failure",
+                }
+                if (
+                    provider_status != "completed"
+                    or provider_conclusion not in terminal_conclusions
+                ):
+                    raise HTTPException(status_code=409, detail="provider job is not terminal")
+                if not store.complete_pending_from_provider(job_id, str(provider_conclusion)):
+                    raise HTTPException(
+                        status_code=409, detail="pending job changed during reconciliation"
+                    )
+                action = "pending-completed-from-provider"
+            elif provider_status == "completed":
                 conclusion = str(provider_conclusion or "unknown")
                 store.complete_from_webhook(job_id, conclusion)
                 action = "completed-from-provider"
