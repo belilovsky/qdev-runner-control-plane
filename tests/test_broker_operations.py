@@ -1905,6 +1905,84 @@ def test_github_oidc_bootstrap_ingress_rejects_missing_auth_drift_and_caller_kno
     )
 
 
+@pytest.mark.parametrize(
+    "spoofed_header",
+    (
+        "X-QDev-Operator-Token",
+        "X-QDev-mTLS-Identity",
+        "X-QDev-Worker-Token",
+        "X-QDev-Claim-Scope-Id",
+        "X-QDev-Recovery-Agent-Signature",
+        "X-QDev-Release-Identity",
+        "X-QDev-Future-Context",
+    ),
+)
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent",
+    ),
+)
+def test_github_oidc_bootstrap_ingress_rejects_any_spoofed_qdev_context_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spoofed_header: str,
+    path: str,
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        path,
+        json=_bootstrap_ingress_body(),
+        headers={
+            "X-QDev-GitHub-OIDC": "test-oidc-token",
+            spoofed_header: "spoofed-context",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "fleet bootstrap OIDC authentication failed"
+    assert verifier.calls == []
+    assert github.calls == []
+    assert not list(incoming.iterdir())
+
+
+def test_github_oidc_bootstrap_ingress_rejects_duplicate_oidc_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        json=_bootstrap_ingress_body(),
+        headers=[
+            ("X-QDev-GitHub-OIDC", "first-token"),
+            ("X-QDev-GitHub-OIDC", "second-token"),
+        ],
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "fleet bootstrap OIDC authentication failed"
+    assert verifier.calls == []
+    assert github.calls == []
+    assert not list(incoming.iterdir())
+
+
 def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

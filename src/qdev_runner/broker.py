@@ -3287,6 +3287,34 @@ def create_app(
             "execution": execution.as_dict(),
         }
 
+    def require_fleet_bootstrap_ingress_oidc(raw_request: Request) -> str:
+        """Accept exactly the one OIDC header allowed at the public bridge.
+
+        The edge removes privileged ``X-QDev-*`` headers before proxying the
+        typed GitHub Actions ingress.  Enforce the same narrow boundary here:
+        a deployment or proxy regression must not turn an inbound context
+        header into authority at this endpoint.  In particular, do not accept
+        duplicate OIDC fields, since a proxy and the application could select
+        different values from a repeated header.
+        """
+
+        allowed_header = "x-qdev-github-oidc"
+        for header_name in raw_request.headers:
+            lowered_header_name = header_name.lower()
+            if lowered_header_name.startswith("x-qdev-") and lowered_header_name != allowed_header:
+                raise HTTPException(
+                    status_code=401,
+                    detail="fleet bootstrap OIDC authentication failed",
+                )
+
+        oidc_values = raw_request.headers.getlist(allowed_header)
+        if len(oidc_values) != 1 or not oidc_values[0] or oidc_values[0] != oidc_values[0].strip():
+            raise HTTPException(
+                status_code=401,
+                detail="fleet bootstrap OIDC authentication failed",
+            )
+        return oidc_values[0]
+
     @app.post("/internal/v1/operations/fleet-bootstrap/activate-controller")
     def activate_controller(
         request: FleetBootstrapOperationRequest,
@@ -3316,23 +3344,23 @@ def create_app(
     @app.post("/internal/v1/ingress/fleet-bootstrap/activate-controller")
     def ingress_activate_controller(
         request: FleetBootstrapIngressRequest,
-        x_qdev_github_oidc: str | None = Header(default=None),
+        raw_request: Request,
     ) -> dict[str, Any]:
         return run_fleet_bootstrap_ingress(
             "activate-controller",
             request,
-            x_qdev_github_oidc,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
         )
 
     @app.post("/internal/v1/ingress/fleet-bootstrap/enrol-host-agent")
     def ingress_enrol_host_agent(
         request: FleetBootstrapIngressRequest,
-        x_qdev_github_oidc: str | None = Header(default=None),
+        raw_request: Request,
     ) -> dict[str, Any]:
         return run_fleet_bootstrap_ingress(
             "enrol-host-agent",
             request,
-            x_qdev_github_oidc,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
         )
 
     @app.post("/internal/v1/operations/releases/qazgeo/ci-registration")

@@ -46,7 +46,10 @@ _ROUTES = {
     "activate-controller": "/internal/v1/ingress/fleet-bootstrap/activate-controller",
     "enrol-host-agent": "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent",
 }
-_INGRESS_ORIGIN = "https://worker.ci.qdev.run"
+# GitHub-hosted Actions cannot present the worker mTLS certificate.  The
+# narrowly typed public edge ingress is the only allowlisted bridge; it keeps
+# the OIDC assertion intact for the broker's independent verification.
+_INGRESS_ORIGIN = "https://ci.qdev.run"
 _INGRESS_RESPONSE_FIELDS = frozenset({"schema", "correlation_id", "execution"})
 _EXECUTION_FIELDS = frozenset(
     {

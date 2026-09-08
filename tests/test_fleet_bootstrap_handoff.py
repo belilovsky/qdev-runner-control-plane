@@ -89,10 +89,10 @@ def test_handoff_uses_fixed_allowlisted_origin_despite_environment_override(
     monkeypatch.setenv("QDEV_FLEET_BOOTSTRAP_INGRESS_ORIGIN", "https://untrusted.example")
 
     assert module.ingress_endpoint("activate-controller") == (
-        "https://worker.ci.qdev.run/internal/v1/ingress/fleet-bootstrap/activate-controller"
+        "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/activate-controller"
     )
     assert module.ingress_endpoint("enrol-host-agent") == (
-        "https://worker.ci.qdev.run/internal/v1/ingress/fleet-bootstrap/enrol-host-agent"
+        "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/enrol-host-agent"
     )
     with pytest.raises(module.BootstrapHandoffError, match="not allowed"):
         module.ingress_endpoint("restore-existing-worker")
