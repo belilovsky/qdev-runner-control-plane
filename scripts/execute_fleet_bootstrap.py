@@ -3,8 +3,9 @@
 
 This entrypoint is for the privileged controller host/container only.  The
 GitHub validation workflow must never run it: it has no CA/private-key access,
-and this command requires a controller-observed no-active-work count plus a
-controller-installed recovery adapter.
+and this command requires a controller-installed activation adapter. Worker
+recovery is available only through the managed recovery protocol, which
+observes provider activity itself rather than trusting a caller's count.
 """
 
 from __future__ import annotations
@@ -26,9 +27,7 @@ from qdev_runner.fleet_bootstrap import (
 )
 from qdev_runner.fleet_bootstrap_executor import (
     BootstrapExecution,
-    RecoveryExecution,
     execute_bootstrap_operation,
-    execute_existing_worker_recovery,
 )
 from qdev_runner.fleet_host_dispatch import (
     DEFAULT_CONTROLLER_STATUS,
@@ -76,18 +75,10 @@ def run(argv: list[str] | None = None) -> int:
     try:
         request = _request(arguments.request)
         policy = FleetBootstrapPolicy(arguments.policy, arguments.release_lanes)
-        result: BootstrapExecution | RecoveryExecution
+        result: BootstrapExecution
         if request.action == "restore-existing-worker":
-            if arguments.active_jobs is None:
-                raise FleetBootstrapError("worker recovery requires active job observation")
-            result = execute_existing_worker_recovery(
-                policy=policy,
-                store=BootstrapOperationStore(arguments.operation_state),
-                request=request,
-                idempotency_key=arguments.idempotency_key,
-                active_jobs=arguments.active_jobs,
-                timeout_seconds=arguments.timeout_seconds,
-                receipt_path=arguments.receipt,
+            raise FleetBootstrapError(
+                "legacy worker recovery is retired; use the controller-managed recovery protocol"
             )
         else:
             if arguments.active_jobs is not None:
