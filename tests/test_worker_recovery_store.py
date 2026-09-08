@@ -664,6 +664,38 @@ def test_recovery_evidence_must_still_be_fresh_when_agent_invocation_starts(
     assert current["state"] == "prepared"
 
 
+def test_supersede_prepared_recovery_refuses_any_native_execution_evidence(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    admitted = store.begin_worker_recovery(**_begin_arguments())
+    superseded = store.supersede_prepared_worker_recovery(
+        admitted["operation_id"],
+        admitted["request_fingerprint"],
+        reason="superseded_prepared_release",
+    )
+    assert superseded["state"] == "released"
+    assert superseded["release_reason"] == "superseded_prepared_release"
+    assert superseded["supersede_note"] == "superseded_prepared_release"
+
+    second = store.begin_worker_recovery(
+        **_begin_arguments(
+            idempotency_key="recovery-platform-0002",
+            request_nonce="nonce-platform-0002",
+            controller_receipt_id="2" * 64,
+        )
+    )
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE worker_recoveries SET invoked_at=? WHERE operation_id=?",
+            (time.time(), second["operation_id"]),
+        )
+    with pytest.raises(ValueError, match="uninvoked prepared fence"):
+        store.supersede_prepared_worker_recovery(
+            second["operation_id"],
+            second["request_fingerprint"],
+            reason="superseded_prepared_release",
+        )
+
+
 def test_recovery_rejects_unregistered_target_and_unbound_provider_reconciliation(
     tmp_path: Path,
 ) -> None:

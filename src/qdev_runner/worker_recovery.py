@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -22,6 +23,7 @@ from .models import (
     RecoveryReconcileRequest,
     RecoveryRequestProvenance,
     RecoveryStatusRequest,
+    RecoverySupersedeRequest,
     RecoveryTargetId,
 )
 from .settings import BrokerSettings
@@ -39,6 +41,19 @@ class WorkerRecoveryError(RuntimeError):
 
 class WorkerRecoveryConfigurationError(WorkerRecoveryError):
     """Recovery is unavailable because its immutable bindings are incomplete."""
+
+
+def _finite_recovery_timestamp(value: object) -> float:
+    """Return a durable recovery timestamp or reject an unsafe release decision."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("worker recovery timestamp is invalid")
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("worker recovery timestamp is invalid") from error
+    if not math.isfinite(timestamp):
+        raise ValueError("worker recovery timestamp is invalid")
+    return timestamp
 
 
 @dataclass(frozen=True)
@@ -429,6 +444,86 @@ class WorkerRecoveryController:
         self._require_current_row(row, release=release)
         self._require_operation_operator(row, operator_certificate_sha256)
         return self._project(row, idempotent_replay=False)
+
+    def supersede(
+        self,
+        request: RecoverySupersedeRequest,
+        *,
+        operator_certificate_sha256: str,
+    ) -> RecoveryOperationResponse:
+        """Retire a stale, never-invoked fence without granting execution."""
+        release = self._configuration()
+        self._validate_provenance(request.provenance, release=release)
+        row = self._operation(request.operation_id, request.request_fingerprint)
+        self._require_operation_operator(row, operator_certificate_sha256)
+        target = self._target_from_row(row)
+        try:
+            labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise WorkerRecoveryError("recovery operation binding is invalid") from error
+        if (
+            row.get("worker_name") != target.worker_name
+            or row.get("repository") != target.repository
+            or labels != target.labels
+            or row.get("recovery_action") != target.action
+            or row.get("expected_agent_certificate_sha256") != self._agent_certificate(target)
+            or row.get("interface_version") != INTERFACE_VERSION
+            or row.get("interface_digest") != INTERFACE_DIGEST
+        ):
+            raise WorkerRecoveryError("recovery operation binding changed")
+        if str(row.get("state")) != "prepared":
+            raise WorkerRecoveryError("only a prepared recovery fence may be superseded")
+        if any(
+            row.get(field) is not None
+            for field in (
+                "invoked_at",
+                "native_outcome",
+                "native_outcome_digest",
+                "agent_identity",
+                "reconciled_at",
+                "native_outcome_signature",
+                "agent_certificate_sha256",
+                "native_outcome_observed_at",
+                "native_finalized_at",
+                "accepted_provider_runner_id",
+                "acceptance_proof_digest",
+                "released_at",
+                "acceptance_proof_signature",
+                "acceptance_reconciliation_digest",
+                "acceptance_observed_at",
+                "canary_run_id",
+                "canary_job_id",
+                "canary_attempt",
+                "canary_head_sha",
+                "canary_runner_id",
+                "canary_status",
+                "canary_conclusion",
+                "canary_completed_at",
+            )
+        ):
+            raise WorkerRecoveryError("recovery fence has native execution evidence")
+        if (
+            row.get("controller_revision") == release["revision"]
+            and row.get("controller_release_digest") == release["release_digest"]
+        ):
+            raise WorkerRecoveryError("current-controller recovery fence cannot be superseded")
+        timestamps = (
+            row.get("controller_observed_at"),
+            row.get("requested_at"),
+            row.get("provider_observed_at"),
+        )
+        try:
+            newest = max(_finite_recovery_timestamp(value) for value in timestamps)
+        except ValueError as error:
+            raise WorkerRecoveryError("recovery fence timestamps are invalid") from error
+        if time.time() - newest <= self.settings.recovery_proof_max_age_seconds:
+            raise WorkerRecoveryError("recovery fence evidence is still fresh")
+        # The next prepare obtains a fresh provider observation and cannot
+        # reuse this row's proof.
+        updated = self.store.supersede_prepared_worker_recovery(
+            request.operation_id, request.request_fingerprint, reason=request.reason
+        )
+        return self._project(updated, idempotent_replay=False)
 
     def claim(
         self,
@@ -1108,6 +1203,13 @@ class WorkerRecoveryController:
         elif state == "released":
             if native_outcome == "not_applied":
                 projected = "not_applied"
+            elif (
+                native_outcome is None
+                and row.get("release_reason") == "superseded_prepared_release"
+            ):
+                projected = "superseded"
+            elif native_outcome is None:
+                raise WorkerRecoveryError("released recovery lacks a terminal native outcome")
             else:
                 projected = "already_completed" if idempotent_replay else "completed"
         elif native_outcome in {"failed", "ambiguous"}:

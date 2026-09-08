@@ -387,7 +387,9 @@ CREATE TABLE IF NOT EXISTS worker_recoveries (
     canary_status TEXT,
     canary_conclusion TEXT,
     canary_completed_at REAL,
-    released_at REAL
+    released_at REAL,
+    release_reason TEXT,
+    supersede_note TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS worker_recovery_active_idx
     ON worker_recoveries(worker_name) WHERE state!='released';
@@ -733,6 +735,8 @@ class Store:
             "canary_conclusion": "TEXT",
             "canary_completed_at": "REAL",
             "released_at": "REAL",
+            "release_reason": "TEXT",
+            "supersede_note": "TEXT",
         }
         for name, sql_type in recovery_additions.items():
             if name not in recovery_columns:
@@ -3766,6 +3770,67 @@ class Store:
                 updated = connection.execute(
                     "SELECT * FROM worker_recoveries WHERE idempotency_key=?",
                     (idempotency_key,),
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert updated is not None
+                return dict(updated)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def supersede_prepared_worker_recovery(
+        self, operation_id: str, request_fingerprint: str, *, reason: str
+    ) -> dict[str, Any]:
+        """Atomically release a prepared fence which has never reached an agent.
+
+        The caller is responsible for verifying stale controller provenance.
+        This method deliberately refuses every sign of a native invocation.
+        """
+        if not (_SHA256_HEX.fullmatch(operation_id) and _SHA256_HEX.fullmatch(request_fingerprint)):
+            raise ValueError("worker recovery operation identity is invalid")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("worker recovery supersede reason is invalid")
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM worker_recoveries "
+                    "WHERE operation_id=? AND request_fingerprint=?",
+                    (operation_id, request_fingerprint),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("worker recovery transaction changed")
+                forbidden = (
+                    "invoked_at",
+                    "native_outcome",
+                    "native_outcome_digest",
+                    "agent_identity",
+                    "reconciled_at",
+                    "native_outcome_signature",
+                    "agent_certificate_sha256",
+                    "native_outcome_observed_at",
+                    "native_finalized_at",
+                    "accepted_provider_runner_id",
+                    "acceptance_proof_digest",
+                    "released_at",
+                    "release_reason",
+                    "supersede_note",
+                )
+                if row["state"] != "prepared" or any(row[field] is not None for field in forbidden):
+                    raise ValueError("worker recovery is not an uninvoked prepared fence")
+                now = time.time()
+                cursor = connection.execute(
+                    "UPDATE worker_recoveries SET state='released',updated_at=?,released_at=?,"
+                    "release_reason='superseded_prepared_release',supersede_note=? "
+                    "WHERE operation_id=? AND request_fingerprint=? AND state='prepared' "
+                    "AND invoked_at IS NULL "
+                    "AND native_outcome IS NULL AND released_at IS NULL",
+                    (now, now, reason.strip(), operation_id, request_fingerprint),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("worker recovery transaction changed")
+                updated = connection.execute(
+                    "SELECT * FROM worker_recoveries WHERE operation_id=?", (operation_id,)
                 ).fetchone()
                 connection.execute("COMMIT")
                 assert updated is not None
