@@ -322,18 +322,20 @@ def activate_link(args: argparse.Namespace) -> dict[str, Any]:
     value = _load(args.directory)
     link = args.link
     target = args.target.resolve(strict=True)
-    releases = link.parent.resolve(strict=True)
+    parent = link.parent.resolve(strict=True)
+    _safe_directory(parent)
+    releases = parent / "releases" if (parent / "releases").exists() else parent
     _safe_directory(releases)
     _safe_directory(target)
     if target.parent != releases:
         raise MaterialError("activation link target is outside the release root")
-    temporary = releases / f".{link.name}.{value['transaction_id']}.tmp"
+    temporary = parent / f".{link.name}.{value['transaction_id']}.tmp"
     if temporary.exists() or temporary.is_symlink():
         temporary.unlink()
     try:
         temporary.symlink_to(target)
         os.replace(temporary, link)
-        _fsync_directory(releases)
+        _fsync_directory(parent)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

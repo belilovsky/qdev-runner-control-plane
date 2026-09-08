@@ -168,6 +168,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert '"$control_state_root" \\\n' in script
     assert '"$admin_platform_receipt_root" \\\n' in script
     assert '"$artifact_root"; do' in script
+    assert '"$controller_activation_root" \\\n' not in script
+    assert 'install -d -o root -g "$runtime_gid" -m 0750 -- "$controller_activation_root"' in script
     assert 'stat -c %u -- "$durable_root"' in script
     assert 'stat -c %g -- "$durable_root"' in script
     assert "ensure_artifact_token_key()" in script

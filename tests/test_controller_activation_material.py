@@ -184,6 +184,23 @@ def test_material_installs_and_flips_release_projection_atomically(
     assert link.resolve() == target.resolve()
 
 
+def test_material_flips_nested_release_and_rejects_foreign_target(
+    material: ModuleType, tmp_path: Path
+) -> None:
+    directory, _ = _prepare(material, tmp_path)
+    root = tmp_path / "controller"
+    target = root / "releases" / ("4" * 40)
+    target.mkdir(parents=True)
+    link = root / "current"
+    material.activate_link(argparse.Namespace(directory=directory, link=link, target=target))
+    assert link.resolve() == target.resolve()
+    outside = root / "foreign"
+    outside.mkdir()
+    with pytest.raises(material.MaterialError, match="outside the release root"):
+        material.activate_link(argparse.Namespace(directory=directory, link=link, target=outside))
+    assert link.resolve() == target.resolve()
+
+
 def test_material_rejects_install_source_outside_signed_release(
     material: ModuleType, tmp_path: Path
 ) -> None:
