@@ -9,6 +9,7 @@ description = "Ephemeral self-hosted GitHub Actions runner broker for the qdev p
 requires-python = ">=3.12"
 dependencies = [
   "cryptography>=50,<51",
+  "defusedxml>=0.7.1,<1",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
@@ -18,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "coverage>=7.10,<8",
   "mypy>=1.17,<2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",

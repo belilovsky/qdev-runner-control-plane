@@ -426,6 +426,10 @@ def test_every_lane_uses_full_shared_suite() -> None:
         "github.event.pull_request.head.repo.full_name == github.repository"
         in normal["jobs"]["verify"]["if"]
     )
+    assert not any(
+        "qdev-upload-test-report.sh" in step.get("run", "")
+        for step in normal["jobs"]["verify"]["steps"]
+    )
     assert "primary_self_hosted_workflows" not in (ROOT / ".github/qdev-runner.yml").read_text()
 
 
@@ -454,6 +458,20 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
     assert verify["env"] == {
         "QDEV_EXPECTED_SHA": "${{ inputs.expected_sha }}",
         "QDEV_OWNER_RECOVERY": "${{ inputs.owner_recovery }}",
+    }
+    uploader = next(
+        step
+        for step in workflow["jobs"]["runner-smoke"]["steps"]
+        if "qdev-upload-test-report.sh" in step.get("run", "")
+    )
+    assert uploader["if"] == "always()"
+    assert uploader["env"] == {
+        "QDEV_TEST_SUITE": "controller",
+        "QDEV_TEST_ATTEMPT": "${{ github.run_attempt }}",
+        "QDEV_TEST_WORKFLOW": ".github/workflows/runner-smoke.yml",
+        "QDEV_TEST_PROFILE": "qdev-ci",
+        "QDEV_TEST_JUNIT": "artifacts/controller/junit.xml",
+        "QDEV_TEST_COBERTURA": "artifacts/controller/coverage.xml",
     }
 
 

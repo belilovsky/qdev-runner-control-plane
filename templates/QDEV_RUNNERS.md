@@ -1,19 +1,12 @@
 # QDev GitHub Actions execution
 
-Paid GitHub-hosted compute is the normal execution path. The centralized,
-ephemeral QDev runner pool is the explicit recovery path when the hosted
-compute or billing lane is unavailable. Both paths still depend on GitHub as
-the workflow orchestrator and on the GitHub API.
+The centralized, ephemeral QDev runner pool is the primary execution path.
+Paid GitHub-hosted compute is not a fallback: a capacity failure must remain
+visible as `runner_blocked` infrastructure state. GitHub remains the workflow
+orchestrator and API provider.
 
-Normal jobs use a static GitHub-hosted selector:
-
-```yaml
-runs-on: ubuntu-latest
-```
-
-Do not use a dynamic selector as an implicit fallback. A queued job cannot
-reliably change pools after dispatch. Keep a separately dispatchable recovery
-workflow or reusable workflow and record which lane ran the exact SHA.
+Every test-only job uses a static self-hosted selector and a unique lease label;
+do not use a dynamic selector as an implicit fallback.
 
 ## Recovery labels
 
@@ -103,8 +96,18 @@ and is removed with the runner container and private env-file after the job.
 - Upload transient evidence through `.github/scripts/qdev-upload-artifact.sh`.
   Artifact names must start with an ASCII letter or digit and contain only
   letters, digits, `.`, `_`, or `-` (maximum 128 characters).
-  Artifacts are addressed by repository, SHA, and job, checked with SHA-256,
-  and retained according to `.github/qdev-runner.yml`.
+- Publish test evidence after the native test command with
+  `.github/scripts/qdev-upload-test-report.sh`. The workflow must run that
+  step with `if: always()` so assertion failures still upload their JUnit
+  report. Set `QDEV_TEST_JUNIT` to the generated JUnit file and optionally set
+  `QDEV_TEST_LCOV` or `QDEV_TEST_COBERTURA`; an already-normalized
+  `qdev-test-run-v1` receipt remains supported through `QDEV_TEST_REPORT`.
+  Pass the registered `QDEV_TEST_SUITE`, workflow and profile, and use the
+  short-lived `QDEV_ARTIFACT_TOKEN`, repository, SHA and numeric job identity
+  injected by the controller. The helper is not a test runner and never
+  accepts arbitrary commands or sends worker credentials to a browser.
+  Artifacts are addressed by repository, SHA, job, attempt and suite, checked
+  with SHA-256, and retained according to `.github/qdev-runner.yml`.
 - Push OCI images required by CI to `registry.ci.qdev.run`; deployment images
   and rollback digests retain their product-specific release policy.
 - A v2 repository that must publish or resolve protected deployment images in
@@ -128,10 +131,8 @@ Keep `.github/qdev-runner.yml`, this document, the root `AGENTS.md` policy, and
 python3 .github/scripts/qdev-runner-policy.py --root .
 ```
 
-The required `qdev-runner-contract` check runs on GitHub-hosted compute. QDev
-self-hosted profiles may appear only in filenames declared under
-`recovery_workflows`, and those workflows must be manual-only. The separate
-`runner-smoke` workflow proves the QDev recovery path. New repositories
+The required `qdev-runner-contract` check runs on the self-hosted QDev pool.
+The separate manual `runner-smoke` workflow proves the recovery path. New repositories
 must be registered through the canonical starter bundle in
 `belilovsky/qdev-runner-control-plane`; do not register a standalone runner.
 

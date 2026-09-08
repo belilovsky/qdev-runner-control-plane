@@ -64,3 +64,29 @@ jobs:
           QDEV_EXPECTED_SHA: ${{ inputs.expected_sha }}
           QDEV_OWNER_RECOVERY: ${{ inputs.owner_recovery }}
         run: python scripts/verify_controller_ci.py --lane controller-recovery
+      - name: Generate native test reports
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/controller
+          set +e
+          python -m coverage run -m pytest -q --junitxml=artifacts/controller/junit.xml
+          test_status=$?
+          python -m coverage xml -o artifacts/controller/coverage.xml
+          coverage_status=$?
+          set -e
+          if [ "$coverage_status" -ne 0 ] && [ "$test_status" -eq 0 ]; then
+            test_status="$coverage_status"
+          fi
+          exit "$test_status"
+      - name: Upload native test reports
+        if: always()
+        env:
+          QDEV_TEST_SUITE: controller
+          QDEV_TEST_ATTEMPT: ${{ github.run_attempt }}
+          QDEV_TEST_WORKFLOW: .github/workflows/runner-smoke.yml
+          QDEV_TEST_PROFILE: qdev-ci
+          QDEV_TEST_JUNIT: artifacts/controller/junit.xml
+          QDEV_TEST_COBERTURA: artifacts/controller/coverage.xml
+        run: .github/scripts/qdev-upload-test-report.sh
