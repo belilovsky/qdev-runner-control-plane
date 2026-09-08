@@ -333,6 +333,8 @@ if [[ "$rollback_mode" != true ]]; then
     src/qdev_runner/controller_candidate.py
     scripts/bootstrap_admin_platform_ledger_v3.py
     scripts/prepare_controller_candidate.py
+    src/qdev_runner/controller_activation_assets.py
+    scripts/controller_activation_assets.py
     scripts/dispatch_fleet_bootstrap.py
     scripts/build_qazcoop_release_guard_bundle.py
     scripts/install_qazcoop_release_guard.py
@@ -1352,6 +1354,9 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/qdev_controller_activation_adapter.py" \
     /usr/local/sbin/qdev-controller-activate 0755 || return 1
+  atomic_install \
+    "$release/scripts/controller_activation_assets.py" \
+    /usr/local/sbin/qdev-controller-activation-assets 0755 || return 1
   atomic_install \
     "$release/scripts/provision_controller_activation_trust.py" \
     /usr/local/sbin/qdev-controller-activation-trust-provision 0755 || return 1

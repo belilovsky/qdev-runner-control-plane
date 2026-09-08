@@ -61,6 +61,8 @@ install -o root -g root -m 0755 scripts/bootstrap_admin_platform_ledger_v3.py \
   /usr/local/sbin/qdev-admin-platform-ledger-bootstrap
 install -o root -g root -m 0755 scripts/qdev_controller_activation_adapter.py \
   /usr/local/sbin/qdev-controller-activate
+install -o root -g root -m 0755 scripts/controller_activation_assets.py \
+  /usr/local/sbin/qdev-controller-activation-assets
 install -o root -g root -m 0755 scripts/provision_controller_activation_trust.py \
   /usr/local/sbin/qdev-controller-activation-trust-provision
 install -o root -g root -m 0755 scripts/qdev_release_host_agent_enrol_adapter.py \

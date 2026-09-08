@@ -35,8 +35,10 @@ def _copy_release(tmp_path: Path) -> Path:
     for new_runtime_module in (
         Path("src/qdev_runner/controller_release.py"),
         Path("src/qdev_runner/controller_candidate.py"),
+        Path("src/qdev_runner/controller_activation_assets.py"),
         Path("src/qdev_runner/durable_state.py"),
         Path("scripts/prepare_controller_candidate.py"),
+        Path("scripts/controller_activation_assets.py"),
         Path("src/qdev_runner/controller_recovery_artifact.py"),
         Path("scripts/controller_recovery_artifact.py"),
     ):

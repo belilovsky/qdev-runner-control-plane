@@ -113,6 +113,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
     assert "scripts/prepare_controller_candidate.py" in script
     assert "src/qdev_runner/controller_candidate.py" in script
+    assert "src/qdev_runner/controller_activation_assets.py" in script
+    assert "scripts/controller_activation_assets.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
@@ -127,6 +129,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-runner-recovery-platform.service" in script
     assert "deploy/qdev-runner-recovery-qazstack.service" in script
     assert "/usr/local/sbin/qdev-controller-activate" in script
+    assert "/usr/local/sbin/qdev-controller-activation-assets" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
     assert "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch" in script
@@ -457,6 +460,8 @@ def test_historical_controller_rollback_does_not_require_or_replace_admission_wr
     assert "qdev_controller_admission_host.sh" not in base_required
     assert "scripts/qdev_controller_admission_host.sh" in forward_required
     assert "scripts/provision_controller_activation_trust.py" in forward_required
+    assert "src/qdev_runner/controller_activation_assets.py" in forward_required
+    assert "scripts/controller_activation_assets.py" in forward_required
     assert "scripts/build_qazcoop_release_guard_bundle.py" in forward_required
     assert (
         'if [[ "$rollback_mode" != true ]]; then\n'
@@ -482,8 +487,10 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert 'activation_cli=(env "PYTHONDONTWRITEBYTECODE=1"' in activation
     activation_cli = (ROOT / "scripts/controller_activation.py").read_text(encoding="utf-8")
     recovery_cli = (ROOT / "scripts/controller_recovery_artifact.py").read_text(encoding="utf-8")
+    assets_cli = (ROOT / "scripts/controller_activation_assets.py").read_text(encoding="utf-8")
     assert "sys.dont_write_bytecode = True" in activation_cli
     assert "sys.dont_write_bytecode = True" in recovery_cli
+    assert "sys.dont_write_bytecode = True" in assets_cli
     # Only the internal broker can mutate the durable managed-release ledger.
     assert (
         compose.count(
