@@ -264,7 +264,8 @@ class FleetBootstrapPolicy:
         if name not in self._allowed_lanes:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
         try:
-            return self._release_lanes.lane(name)
+            lane = self._release_lanes.lane(name)
+            return self._release_lanes.require_active(lane)
         except Exception as exc:
             raise FleetBootstrapError("bootstrap release lane is unavailable") from exc
 

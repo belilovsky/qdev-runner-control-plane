@@ -1,4 +1,4 @@
-schema_version: qdev-release-lanes-v2
+schema_version: qdev-release-lanes-v3
 lanes:
   qdev-release-qaz-tours:
     project_id: qaz-tours
@@ -144,3 +144,31 @@ lanes:
       - https://qgeo.tech/health/quality
     rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
     required_readiness: [db, postgis, martin, photon, redis, app]
+  qdev-release-rp:
+    # The host facts deliberately remain absent until a reviewed enrollment
+    # supplies them. This record cannot create a job, claim, or host dispatch.
+    project_id: rp
+    placement: vps-apps-148
+    artifact_repository: belilovsky/ipos
+    canonical_repository: belilovsky/ipos
+    artifact_ref_prefix: registry.ci.qdev.run/belilovsky/ipos
+    native_host_adapter: reports-private-signed-profile-v1
+    runtime_endpoints: [https://rp.qdev.run/health]
+    managed_registry_entry: rp-reports-private
+    source_scope: reports-private
+    source_paths:
+      - qdev-reports-private.json
+      - qdev-rp-platform.json
+      - Dockerfile.reports
+      - docker-compose.reports.yml
+      - deploy/build-reports.sh
+      - deploy/publish-reports-image.sh
+    activation:
+      state: pending_external_enrolment
+      prerequisites:
+        - release-client-mtls-certificate
+        - host-agent-mtls-certificate
+        - host-capacity-receipt
+        - immutable-rollback-receipt
+        - signed-host-profile
+        - private-runtime-identity

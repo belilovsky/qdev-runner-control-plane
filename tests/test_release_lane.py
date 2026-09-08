@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from qdev_runner.release_lane import (
     HOST_HEARTBEAT_SCHEMA,
     REQUEST_SCHEMA,
     RUNTIME_RECEIPT_SCHEMA,
+    SCOPED_CONTROLLER_CLAIM_SCHEMA,
     HostHeartbeatRequest,
     ReleaseAdmissionRequest,
     ReleaseLaneError,
@@ -29,6 +31,17 @@ LANES_PATH = ROOT / "config" / "release-lanes.yml"
 QGEO_SHA = "9" * 40
 QGEO_DIGEST = "sha256:" + "a" * 64
 QGEO_REF = f"registry.ci.qdev.run/belilovsky/qazgeo@{QGEO_DIGEST}"
+RP_SHA = "8" * 40
+RP_DIGEST = "sha256:" + "e" * 64
+RP_REF = f"registry.ci.qdev.run/belilovsky/ipos@{RP_DIGEST}"
+RP_SOURCE_PATHS = (
+    "qdev-reports-private.json",
+    "qdev-rp-platform.json",
+    "Dockerfile.reports",
+    "docker-compose.reports.yml",
+    "deploy/build-reports.sh",
+    "deploy/publish-reports-image.sh",
+)
 ROLLBACK_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
 ROLLBACK_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
 ROLLBACK_REF = f"registry.ci.qdev.run/belilovsky/qazgeo@{ROLLBACK_DIGEST}"
@@ -38,6 +51,57 @@ TEST_NOW = 2_000_000_000
 
 def _qgeo_lane():
     return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-qazgeo")
+
+
+def _rp_lane():
+    return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-rp")
+
+
+def _reviewed_rp_lane():
+    """Test the future signed binding without changing the pending config."""
+    return replace(
+        _rp_lane(),
+        activation_state="active",
+        client_mtls_identity="qdev-release-client:rp-test",
+        host_agent_mtls_identity="qdev-host-agent:rp-test",
+        minimum_free_gib=20,
+        heartbeat_ttl_seconds=90,
+        rollback_reference="test-rollback-anchor",
+        required_readiness=("private",),
+    )
+
+
+def _rp_candidate_request(
+    *, source_paths: tuple[str, ...] = RP_SOURCE_PATHS
+) -> ReleaseAdmissionRequest:
+    return ReleaseAdmissionRequest.model_validate(
+        {
+            "schema": REQUEST_SCHEMA,
+            "release_lane": "qdev-release-rp",
+            "project_id": "rp",
+            "placement": "vps-apps-148",
+            "source_sha": RP_SHA,
+            "artifact_digest": RP_DIGEST,
+            "artifact_ref": RP_REF,
+            "candidate_receipt": {
+                "schema": "qdev-release-candidate-receipt-v1",
+                "status": "passed",
+                "source_sha": RP_SHA,
+                "artifact_digest": RP_DIGEST,
+                "artifact_ref": RP_REF,
+                "repository": "belilovsky/ipos",
+                "workflow": "Reports private release",
+                "job": "build-reports",
+                "run_id": 123,
+                "job_id": 456,
+                "attempt": 1,
+                "runner_profile": "qdev-ci-docker",
+                "managed_registry_entry": "rp-reports-private",
+                "source_scope": "reports-private",
+                "source_paths": list(source_paths),
+            },
+        }
+    )
 
 
 def _qgeo_dependency_identity() -> dict[str, dict[str, object]]:
@@ -267,6 +331,59 @@ def test_release_policy_parses_and_validates_certificate_bindings(tmp_path: Path
     document["lanes"]["qdev-release-qazgeo"]["client_certificate_sha256"] = "not-a-fingerprint"
     path.write_text(yaml.safe_dump(document), encoding="utf-8")
     with pytest.raises(ReleaseLaneError, match="certificate binding"):
+        ReleaseLanePolicy(path)
+
+
+def test_reports_private_pending_lane_cannot_touch_state_or_active_shared_host(
+    tmp_path: Path,
+) -> None:
+    lane = _rp_lane()
+    assert lane.is_scoped
+    assert lane.activation_state == "pending_external_enrolment"
+    assert lane.client_mtls_identity == ""
+    assert lane.host_agent_mtls_identity == ""
+    assert lane.rollback_reference == ""
+
+    with pytest.raises(ReleaseLaneError, match="pending external enrolment"):
+        validate_candidate(_rp_candidate_request(), lane)
+
+    store = ReleaseStore(tmp_path / "release-state")
+    with pytest.raises(ReleaseLaneError, match="pending external enrolment"):
+        store.admit(_rp_candidate_request(), lane, now=TEST_NOW)
+    assert not (store.jobs_root / "qdev-release-rp.json").exists()
+    assert not (store.operations_root / "qdev-release-rp.jsonl").exists()
+
+    policy = ReleaseLanePolicy(LANES_PATH)
+    # RP's pending record shares the declared placement without changing the
+    # single active lane already used by the enrolled host agent.
+    assert policy.lane_for_placement("vps-apps-148").name == "qdev-release-qaz-fund"
+    with pytest.raises(ReleaseLaneError, match="pending external enrolment"):
+        policy.lane_for_host("vps-apps-148", "qdev-release-rp")
+
+
+def test_reports_private_controller_claim_binds_exact_source_scope_after_review() -> None:
+    """A test-only reviewed lane proves the future contract without activation."""
+    lane = _reviewed_rp_lane()
+    request = _rp_candidate_request()
+    validate_candidate(request, lane)
+    _sign_request(request, lane)
+    assert request.controller_claim is not None
+    assert request.controller_claim["schema"] == SCOPED_CONTROLLER_CLAIM_SCHEMA
+    assert request.controller_claim["scope"]["source_scope"] == "reports-private"
+    assert request.controller_claim["scope"]["source_paths"] == list(RP_SOURCE_PATHS)
+    validate_controller_claim(request, lane, signing_key=SIGNING_KEY, now=TEST_NOW)
+
+    changed_paths = RP_SOURCE_PATHS[:-1]
+    with pytest.raises(ReleaseLaneError, match="source scope"):
+        validate_candidate(_rp_candidate_request(source_paths=changed_paths), lane)
+
+
+def test_reports_private_lane_rejects_fabricated_active_config(tmp_path: Path) -> None:
+    document = yaml.safe_load(LANES_PATH.read_text(encoding="utf-8"))
+    document["lanes"]["qdev-release-rp"]["activation"]["state"] = "active"
+    path = tmp_path / "release-lanes.yml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(ReleaseLaneError, match="pending admission"):
         ReleaseLanePolicy(path)
 
 

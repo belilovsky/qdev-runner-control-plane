@@ -47,6 +47,9 @@ _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 _CI_SCOPE_VALUE = re.compile(r"^[\w][\w .:/\-\u2013]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 _CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_SCOPE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_SOURCE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+_PENDING_ENROLMENT = "pending_external_enrolment"
 QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
 _QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
 _QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
@@ -97,7 +100,9 @@ HOST_HEARTBEAT_SCHEMA = "qdev-release-host-agent-heartbeat-v1"
 RUNTIME_RECEIPT_SCHEMA = "qdev-controller-release-runtime-receipt-v1"
 ROLLBACK_RECEIPT_SCHEMA = "qdev-controller-release-rollback-receipt-v1"
 CONTROLLER_CLAIM_SCHEMA = "qdev-controller-release-claim-v3"
+SCOPED_CONTROLLER_CLAIM_SCHEMA = "qdev-controller-release-claim-v4"
 HOST_DISPATCH_CLAIM_SCHEMA = "qdev-controller-host-dispatch-claim-v2"
+SCOPED_HOST_DISPATCH_CLAIM_SCHEMA = "qdev-controller-host-dispatch-claim-v3"
 OPERATION_JOURNAL_SCHEMA = "qdev-controller-release-operation-v3"
 _JOURNAL_GENESIS = "0" * 64
 _CONTROLLER_CLAIM_MAX_TTL_SECONDS = 300
@@ -177,6 +182,16 @@ class ReleaseLane:
     required_readiness: tuple[str, ...]
     client_certificate_sha256: str | None = None
     host_agent_certificate_sha256: str | None = None
+    managed_registry_entry: str | None = None
+    source_scope: str | None = None
+    source_paths: tuple[str, ...] = ()
+    activation_state: str = "active"
+    activation_prerequisites: tuple[str, ...] = ()
+
+    @property
+    def is_scoped(self) -> bool:
+        """Whether this is a source-scoped pending release contract."""
+        return self.source_scope is not None
 
 
 class ReleaseLanePolicy:
@@ -188,7 +203,11 @@ class ReleaseLanePolicy:
         if not isinstance(document, dict) or set(document) != {"schema_version", "lanes"}:
             raise ReleaseLaneError("release lane policy shape is invalid")
         schema_version = document["schema_version"]
-        if schema_version not in {"qdev-release-lanes-v1", "qdev-release-lanes-v2"}:
+        if schema_version not in {
+            "qdev-release-lanes-v1",
+            "qdev-release-lanes-v2",
+            "qdev-release-lanes-v3",
+        }:
             raise ReleaseLaneError("release lane policy schema is invalid")
         raw_lanes = document["lanes"]
         if not isinstance(raw_lanes, dict) or not raw_lanes:
@@ -199,135 +218,9 @@ class ReleaseLanePolicy:
                 raise ReleaseLaneError("release lane name is invalid")
             if not isinstance(raw, dict):
                 raise ReleaseLaneError("release lane entry is invalid")
-            legacy_expected = {
-                "project_id",
-                "placement",
-                "client_mtls_identity",
-                "host_agent_mtls_identity",
-                "minimum_free_gib",
-                "heartbeat_ttl_seconds",
-                "artifact_repository",
-            }
-            v2_expected = legacy_expected | {
-                "canonical_repository",
-                "artifact_ref_prefix",
-                "native_host_adapter",
-                "runtime_endpoints",
-                "rollback_reference",
-                "required_readiness",
-            }
-            optional = {"client_certificate_sha256", "host_agent_certificate_sha256"}
-            # A v2 policy may retain a pre-existing lane whose source binding
-            # has not yet been verified. Treat only the exact legacy shape as
-            # compatibility data; new Admin Platform lanes must be complete v2
-            # records and cannot silently lose their bindings.
-            is_legacy_entry = set(raw) - optional == legacy_expected
-            expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
-            if schema_version == "qdev-release-lanes-v2" and is_legacy_entry:
-                if name not in LEGACY_COMPATIBILITY_LANES:
-                    raise ReleaseLaneError(
-                        "legacy release lane is not an explicit compatibility lane"
-                    )
-                expected = legacy_expected
-            # Certificate fingerprints are an optional additive enrollment
-            # binding.  They may accompany either the complete v2 shape or an
-            # explicitly allowlisted legacy lane, but no other fields are
-            # accepted.
-            if set(raw) - expected - optional or not expected <= set(raw):
-                raise ReleaseLaneError("release lane fields are invalid")
-            try:
-                minimum_free_gib = float(raw["minimum_free_gib"])
-                heartbeat_ttl_seconds = int(raw["heartbeat_ttl_seconds"])
-            except (TypeError, ValueError) as exc:
-                raise ReleaseLaneError("release lane capacity fields are invalid") from exc
-            values = (
-                raw["project_id"],
-                raw["placement"],
-                raw["client_mtls_identity"],
-                raw["host_agent_mtls_identity"],
-                raw["artifact_repository"],
-            )
-            certificate_values: dict[str, str | None] = {}
-            for field in optional:
-                value = raw.get(field)
-                if value is not None:
-                    if not isinstance(value, str) or _CERTIFICATE_SHA256.fullmatch(value) is None:
-                        raise ReleaseLaneError("release lane certificate binding is invalid")
-                    certificate_values[field] = value
-                else:
-                    certificate_values[field] = None
-            if (
-                not all(isinstance(value, str) and value for value in values)
-                or minimum_free_gib < 1
-                or not 30 <= heartbeat_ttl_seconds <= 900
-                or not _is_artifact_repository(raw["artifact_repository"])
-            ):
-                raise ReleaseLaneError("release lane values are invalid")
-            if schema_version == "qdev-release-lanes-v1" or is_legacy_entry:
-                canonical_repository: str | None = None
-                artifact_ref_prefix = f"registry.ci.qdev.run/{raw['artifact_repository']}"
-                native_host_adapter = "legacy-compose-v1"
-                runtime_endpoints: tuple[str, ...] = ()
-                rollback_reference = "legacy-controller-state"
-                required_readiness = ("qazgeo",)
-            else:
-                raw_endpoints = raw["runtime_endpoints"]
-                raw_readiness = raw["required_readiness"]
-                if (
-                    not isinstance(raw["canonical_repository"], str)
-                    or not _CANONICAL_REPOSITORY.fullmatch(raw["canonical_repository"])
-                    or not isinstance(raw["artifact_ref_prefix"], str)
-                    or not _ARTIFACT_PREFIX.fullmatch(raw["artifact_ref_prefix"])
-                    or not isinstance(raw["native_host_adapter"], str)
-                    or not _NATIVE_ADAPTER.fullmatch(raw["native_host_adapter"])
-                    or not isinstance(raw_endpoints, list)
-                    or not raw_endpoints
-                    or not all(
-                        isinstance(endpoint, str)
-                        and endpoint.startswith("https://")
-                        and "#" not in endpoint
-                        for endpoint in raw_endpoints
-                    )
-                    or not isinstance(raw["rollback_reference"], str)
-                    or not raw["rollback_reference"].strip()
-                    or not isinstance(raw_readiness, list)
-                    or not raw_readiness
-                    or len(raw_readiness) != len(set(raw_readiness))
-                    or not all(
-                        isinstance(item, str) and _READINESS_SEGMENT.fullmatch(item)
-                        for item in raw_readiness
-                    )
-                ):
-                    raise ReleaseLaneError("release lane v2 values are invalid")
-                canonical_repository = raw["canonical_repository"]
-                artifact_ref_prefix = raw["artifact_ref_prefix"]
-                native_host_adapter = raw["native_host_adapter"]
-                runtime_endpoints = tuple(raw_endpoints)
-                rollback_reference = raw["rollback_reference"].strip()
-                required_readiness = tuple(raw_readiness)
-                if name == "qdev-release-total" and (
-                    canonical_repository != "belilovsky/total-kz"
-                    or any("total.kz" in endpoint for endpoint in runtime_endpoints)
-                ):
-                    raise ReleaseLaneError("Total lane must bind only total.qdev.run")
-            lanes[name] = ReleaseLane(
-                name=name,
-                project_id=str(raw["project_id"]),
-                placement=str(raw["placement"]),
-                client_mtls_identity=str(raw["client_mtls_identity"]),
-                host_agent_mtls_identity=str(raw["host_agent_mtls_identity"]),
-                minimum_free_gib=minimum_free_gib,
-                heartbeat_ttl_seconds=heartbeat_ttl_seconds,
-                artifact_repository=str(raw["artifact_repository"]),
-                canonical_repository=canonical_repository,
-                artifact_ref_prefix=artifact_ref_prefix,
-                native_host_adapter=native_host_adapter,
-                runtime_endpoints=runtime_endpoints,
-                rollback_reference=rollback_reference,
-                required_readiness=required_readiness,
-                client_certificate_sha256=certificate_values["client_certificate_sha256"],
-                host_agent_certificate_sha256=certificate_values["host_agent_certificate_sha256"],
-            )
+            lane = _parse_release_lane(name, raw, schema_version)
+            if lane is not None:
+                lanes[name] = lane
         self._lanes = lanes
 
     def lane(self, name: str) -> ReleaseLane:
@@ -336,20 +229,281 @@ class ReleaseLanePolicy:
             raise ReleaseLaneError("release lane is not allowlisted")
         return lane
 
+    def require_active(self, lane: ReleaseLane) -> ReleaseLane:
+        """Refuse every deployment edge until external enrolment is evidenced."""
+        return require_active_lane(lane)
+
     def lane_for_host(self, placement: str, release_lane: str | None = None) -> ReleaseLane:
         if release_lane is not None:
             lane = self.lane(release_lane)
             if lane.placement != placement:
                 raise ReleaseLaneError("release lane does not match host placement")
-            return lane
-        matches = [lane for lane in self._lanes.values() if lane.placement == placement]
+            return self.require_active(lane)
+        # A pending, source-scoped record is deliberately not a host admission.
+        # It must therefore not make an established single-lane placement
+        # ambiguous for the already-enrolled host agent.
+        matches = [
+            lane
+            for lane in self._lanes.values()
+            if lane.placement == placement and lane.activation_state == "active"
+        ]
         if len(matches) != 1:
             raise ReleaseLaneError("release lane must be explicit for shared placement")
-        return matches[0]
+        return self.require_active(matches[0])
 
     def lane_for_placement(self, placement: str) -> ReleaseLane:
         """Compatibility lookup for deployments with a unique host placement."""
         return self.lane_for_host(placement)
+
+
+def _parse_release_lane(
+    name: str, raw: dict[str, Any], schema_version: object
+) -> ReleaseLane | None:
+    legacy_expected = {
+        "project_id",
+        "placement",
+        "client_mtls_identity",
+        "host_agent_mtls_identity",
+        "minimum_free_gib",
+        "heartbeat_ttl_seconds",
+        "artifact_repository",
+    }
+    v2_expected = legacy_expected | {
+        "canonical_repository",
+        "artifact_ref_prefix",
+        "native_host_adapter",
+        "runtime_endpoints",
+        "rollback_reference",
+        "required_readiness",
+    }
+    pending_expected = {
+        "project_id",
+        "placement",
+        "artifact_repository",
+        "canonical_repository",
+        "artifact_ref_prefix",
+        "native_host_adapter",
+        "runtime_endpoints",
+        "managed_registry_entry",
+        "source_scope",
+        "source_paths",
+        "activation",
+    }
+    optional = {"client_certificate_sha256", "host_agent_certificate_sha256"}
+    if schema_version == "qdev-release-lanes-v3" and set(raw) == pending_expected:
+        return _parse_pending_release_lane(name, raw)
+
+    is_legacy_entry = set(raw) - optional == legacy_expected
+    expected = legacy_expected if schema_version == "qdev-release-lanes-v1" else v2_expected
+    if schema_version in {"qdev-release-lanes-v2", "qdev-release-lanes-v3"} and is_legacy_entry:
+        if name not in LEGACY_COMPATIBILITY_LANES:
+            raise ReleaseLaneError("legacy release lane is not an explicit compatibility lane")
+        expected = legacy_expected
+    if set(raw) - expected - optional or not expected <= set(raw):
+        raise ReleaseLaneError("release lane fields are invalid")
+
+    try:
+        minimum_free_gib = float(raw["minimum_free_gib"])
+        heartbeat_ttl_seconds = int(raw["heartbeat_ttl_seconds"])
+    except (TypeError, ValueError) as exc:
+        raise ReleaseLaneError("release lane capacity fields are invalid") from exc
+    values = (
+        raw["project_id"],
+        raw["placement"],
+        raw["client_mtls_identity"],
+        raw["host_agent_mtls_identity"],
+        raw["artifact_repository"],
+    )
+    certificate_values: dict[str, str | None] = {}
+    for field in optional:
+        value = raw.get(field)
+        if value is not None:
+            if not isinstance(value, str) or _CERTIFICATE_SHA256.fullmatch(value) is None:
+                raise ReleaseLaneError("release lane certificate binding is invalid")
+            certificate_values[field] = value
+        else:
+            certificate_values[field] = None
+    if (
+        not all(isinstance(value, str) and value for value in values)
+        or minimum_free_gib < 1
+        or not 30 <= heartbeat_ttl_seconds <= 900
+        or not _is_artifact_repository(raw["artifact_repository"])
+    ):
+        raise ReleaseLaneError("release lane values are invalid")
+    if schema_version == "qdev-release-lanes-v1" or is_legacy_entry:
+        canonical_repository: str | None = None
+        artifact_ref_prefix = f"registry.ci.qdev.run/{raw['artifact_repository']}"
+        native_host_adapter = "legacy-compose-v1"
+        runtime_endpoints: tuple[str, ...] = ()
+        rollback_reference = "legacy-controller-state"
+        required_readiness = ("qazgeo",)
+    else:
+        canonical_repository, artifact_ref_prefix, native_host_adapter, runtime_endpoints = (
+            _parse_bound_lane_values(raw)
+        )
+        raw_readiness = raw["required_readiness"]
+        if (
+            not isinstance(raw["rollback_reference"], str)
+            or not raw["rollback_reference"].strip()
+            or not _valid_readiness(raw_readiness)
+        ):
+            raise ReleaseLaneError("release lane v2 values are invalid")
+        rollback_reference = raw["rollback_reference"].strip()
+        required_readiness = tuple(raw_readiness)
+        if name == "qdev-release-total" and (
+            canonical_repository != "belilovsky/total-kz"
+            or any("total.kz" in endpoint for endpoint in runtime_endpoints)
+        ):
+            raise ReleaseLaneError("Total lane must bind only total.qdev.run")
+    return ReleaseLane(
+        name=name,
+        project_id=str(raw["project_id"]),
+        placement=str(raw["placement"]),
+        client_mtls_identity=str(raw["client_mtls_identity"]),
+        host_agent_mtls_identity=str(raw["host_agent_mtls_identity"]),
+        minimum_free_gib=minimum_free_gib,
+        heartbeat_ttl_seconds=heartbeat_ttl_seconds,
+        artifact_repository=str(raw["artifact_repository"]),
+        canonical_repository=canonical_repository,
+        artifact_ref_prefix=artifact_ref_prefix,
+        native_host_adapter=native_host_adapter,
+        runtime_endpoints=runtime_endpoints,
+        rollback_reference=rollback_reference,
+        required_readiness=required_readiness,
+        client_certificate_sha256=certificate_values["client_certificate_sha256"],
+        host_agent_certificate_sha256=certificate_values["host_agent_certificate_sha256"],
+    )
+
+
+def _parse_pending_release_lane(name: str, raw: dict[str, Any]) -> ReleaseLane:
+    canonical_repository, artifact_ref_prefix, native_host_adapter, runtime_endpoints = (
+        _parse_bound_lane_values(raw)
+    )
+    source_scope = raw["source_scope"]
+    source_paths = raw["source_paths"]
+    activation = raw["activation"]
+    if (
+        not isinstance(raw["project_id"], str)
+        or not raw["project_id"].strip()
+        or not isinstance(raw["placement"], str)
+        or not raw["placement"].strip()
+        or not _is_artifact_repository(raw["artifact_repository"])
+        or not isinstance(raw["managed_registry_entry"], str)
+        or not _SEGMENT.fullmatch(raw["managed_registry_entry"])
+        or not isinstance(source_scope, str)
+        or not _SOURCE_SCOPE.fullmatch(source_scope)
+        or not _valid_source_paths(source_paths)
+        or not _valid_pending_activation(activation)
+    ):
+        raise ReleaseLaneError("release lane pending admission is invalid")
+    return ReleaseLane(
+        name=name,
+        project_id=str(raw["project_id"]),
+        placement=str(raw["placement"]),
+        # The source contract intentionally contains no unverified host facts.
+        # These absent values can never traverse require_active().
+        client_mtls_identity="",
+        host_agent_mtls_identity="",
+        minimum_free_gib=0,
+        heartbeat_ttl_seconds=0,
+        artifact_repository=str(raw["artifact_repository"]),
+        canonical_repository=canonical_repository,
+        artifact_ref_prefix=artifact_ref_prefix,
+        native_host_adapter=native_host_adapter,
+        runtime_endpoints=runtime_endpoints,
+        rollback_reference="",
+        required_readiness=(),
+        managed_registry_entry=str(raw["managed_registry_entry"]),
+        source_scope=source_scope,
+        source_paths=tuple(source_paths),
+        activation_state=_PENDING_ENROLMENT,
+        activation_prerequisites=tuple(activation["prerequisites"]),
+    )
+
+
+def _parse_bound_lane_values(raw: dict[str, Any]) -> tuple[str, str, str, tuple[str, ...]]:
+    raw_endpoints = raw["runtime_endpoints"]
+    if (
+        not isinstance(raw["canonical_repository"], str)
+        or not _CANONICAL_REPOSITORY.fullmatch(raw["canonical_repository"])
+        or not isinstance(raw["artifact_ref_prefix"], str)
+        or not _ARTIFACT_PREFIX.fullmatch(raw["artifact_ref_prefix"])
+        or not isinstance(raw["native_host_adapter"], str)
+        or not _NATIVE_ADAPTER.fullmatch(raw["native_host_adapter"])
+        or not isinstance(raw_endpoints, list)
+        or not raw_endpoints
+        or not all(
+            isinstance(endpoint, str) and endpoint.startswith("https://") and "#" not in endpoint
+            for endpoint in raw_endpoints
+        )
+    ):
+        raise ReleaseLaneError("release lane v2 values are invalid")
+    return (
+        raw["canonical_repository"],
+        raw["artifact_ref_prefix"],
+        raw["native_host_adapter"],
+        tuple(raw_endpoints),
+    )
+
+
+def _valid_readiness(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and len(value) == len(set(value))
+        and all(isinstance(item, str) and _READINESS_SEGMENT.fullmatch(item) for item in value)
+    )
+
+
+def _valid_source_paths(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and len(value) == len(set(value))
+        and all(
+            isinstance(item, str)
+            and _SOURCE_PATH.fullmatch(item)
+            and not item.startswith("/")
+            and all(part not in {"", ".", ".."} for part in item.split("/"))
+            for item in value
+        )
+    )
+
+
+def _valid_pending_activation(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"state", "prerequisites"}
+        and value.get("state") == _PENDING_ENROLMENT
+        and isinstance(value.get("prerequisites"), list)
+        and bool(value["prerequisites"])
+        and len(value["prerequisites"]) == len(set(value["prerequisites"]))
+        and all(
+            isinstance(item, str) and _SEGMENT.fullmatch(item) for item in value["prerequisites"]
+        )
+    )
+
+
+def require_active_lane(lane: ReleaseLane) -> ReleaseLane:
+    """Fail closed before a lane can touch a host or durable release state.
+
+    A pending source-scoped record is an admission specification, not a
+    deployment entitlement.  Keeping this guard module-level makes direct
+    callers of the validation and durable-state helpers follow the same
+    activation boundary as the HTTP broker.
+    """
+    if lane.activation_state != "active":
+        raise ReleaseLaneError("release lane is pending external enrolment")
+    if (
+        not lane.client_mtls_identity
+        or not lane.host_agent_mtls_identity
+        or lane.minimum_free_gib < 1
+        or not 30 <= lane.heartbeat_ttl_seconds <= 900
+        or not lane.rollback_reference
+        or not lane.required_readiness
+    ):
+        raise ReleaseLaneError("release lane activation contract is incomplete")
+    return lane
 
 
 def _is_sha(value: object) -> bool:
@@ -643,6 +797,7 @@ def _validate_qgeo_candidate_evidence(
 
 
 def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
+    require_active_lane(lane)
     if request.schema_name != REQUEST_SCHEMA:
         raise ReleaseLaneError("release request schema is invalid")
     if request.release_lane != lane.name:
@@ -681,6 +836,9 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         "release_version",
         "migration_receipt_digest",
         "contract_digest",
+        "managed_registry_entry",
+        "source_scope",
+        "source_paths",
     }
     if (
         not isinstance(receipt, dict)
@@ -738,6 +896,18 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
                 raise ReleaseLaneError("candidate CI scope value is invalid")
         if receipt.get("runner_profile") not in _RUNNER_PROFILES:
             raise ReleaseLaneError("candidate runner profile is not allowlisted")
+    scoped_fields = {"managed_registry_entry", "source_scope", "source_paths"}
+    if lane.is_scoped:
+        if (
+            lane.managed_registry_entry is None
+            or not scoped_fields.issubset(receipt)
+            or receipt.get("managed_registry_entry") != lane.managed_registry_entry
+            or receipt.get("source_scope") != lane.source_scope
+            or receipt.get("source_paths") != list(lane.source_paths)
+        ):
+            raise ReleaseLaneError("candidate source scope does not match managed lane")
+    elif scoped_fields.intersection(receipt):
+        raise ReleaseLaneError("candidate source scope is not valid for this lane")
     if lane.project_id == "qazgeo":
         _validate_qgeo_candidate_evidence(
             receipt.get("evidence"),
@@ -765,6 +935,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
 
 def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]:
     """Return immutable candidate evidence covered by the host dispatch claim."""
+    require_active_lane(lane)
     receipt = job.get("candidate_receipt")
     if not isinstance(receipt, dict):
         raise ReleaseLaneError("release job has no candidate receipt")
@@ -796,6 +967,7 @@ def controller_claim_payload(
     nonce: str | None = None,
 ) -> dict[str, Any]:
     """Return the canonical fields covered by a controller-signed claim."""
+    require_active_lane(lane)
     receipt = request.candidate_receipt
     existing = request.controller_claim
     if isinstance(existing, dict):
@@ -832,8 +1004,16 @@ def controller_claim_payload(
         "attempt": receipt.get("attempt"),
         "runner_profile": receipt.get("runner_profile"),
     }
+    if lane.is_scoped:
+        scope.update(
+            {
+                "managed_registry_entry": lane.managed_registry_entry,
+                "source_scope": lane.source_scope,
+                "source_paths": list(lane.source_paths),
+            }
+        )
     payload: dict[str, Any] = {
-        "schema": CONTROLLER_CLAIM_SCHEMA,
+        "schema": SCOPED_CONTROLLER_CLAIM_SCHEMA if lane.is_scoped else CONTROLLER_CLAIM_SCHEMA,
         "release_lane": lane.name,
         "project_id": lane.project_id,
         "placement": lane.placement,
@@ -864,6 +1044,7 @@ def validate_controller_claim(
     The key is read only from controller process configuration.  It is never
     accepted in the request, so a product cannot self-authorise a release.
     """
+    require_active_lane(lane)
     if signing_key is None:
         if lane.canonical_repository is not None:
             raise ReleaseLaneError("controller claim key is unavailable for managed lane")
@@ -887,7 +1068,7 @@ def validate_controller_claim(
     if claim != expected or not isinstance(signature, str):
         raise ReleaseLaneError("controller-signed claim does not bind release tuple")
     scope = claim.get("scope")
-    if not isinstance(scope, dict) or set(scope) != {
+    expected_scope_fields = {
         "repository",
         "workflow",
         "job",
@@ -896,7 +1077,10 @@ def validate_controller_claim(
         "job_id",
         "attempt",
         "runner_profile",
-    }:
+    }
+    if lane.is_scoped:
+        expected_scope_fields |= {"managed_registry_entry", "source_scope", "source_paths"}
+    if not isinstance(scope, dict) or set(scope) != expected_scope_fields:
         raise ReleaseLaneError("controller-signed claim scope is invalid")
     current = int(time.time() if now is None else now)
     if lane.canonical_repository is not None and (
@@ -915,6 +1099,13 @@ def validate_controller_claim(
         )
     ):
         raise ReleaseLaneError("controller-signed claim scope is invalid")
+    if lane.is_scoped and (
+        lane.managed_registry_entry is None
+        or scope.get("managed_registry_entry") != lane.managed_registry_entry
+        or scope.get("source_scope") != lane.source_scope
+        or scope.get("source_paths") != list(lane.source_paths)
+    ):
+        raise ReleaseLaneError("controller-signed claim source scope is invalid")
     if (
         not isinstance(issued_at, int)
         or isinstance(issued_at, bool)
@@ -944,6 +1135,7 @@ def host_dispatch_claim_payload(
     nonce: str,
 ) -> dict[str, Any]:
     """Build the exact controller-to-host claim for one managed operation."""
+    require_active_lane(lane)
     receipt = job.get("candidate_receipt")
     if not isinstance(receipt, dict):
         raise ReleaseLaneError("release job has no candidate CI identity")
@@ -966,7 +1158,9 @@ def host_dispatch_claim_payload(
     artifact_digest = job.get("artifact_digest")
     artifact_ref = job.get("artifact_ref")
     claim: dict[str, Any] = {
-        "schema": HOST_DISPATCH_CLAIM_SCHEMA,
+        "schema": SCOPED_HOST_DISPATCH_CLAIM_SCHEMA
+        if lane.is_scoped
+        else HOST_DISPATCH_CLAIM_SCHEMA,
         "repository": receipt.get("repository"),
         "workflow": receipt.get("workflow"),
         "job": receipt.get("job"),
@@ -991,6 +1185,14 @@ def host_dispatch_claim_payload(
         "expires_at": expires_at,
         "nonce": nonce,
     }
+    if lane.is_scoped:
+        claim.update(
+            {
+                "managed_registry_entry": lane.managed_registry_entry,
+                "source_scope": lane.source_scope,
+                "source_paths": list(lane.source_paths),
+            }
+        )
     if (
         claim["repository"] != lane.canonical_repository
         or not _is_sha(claim["exact_sha"])
@@ -1022,6 +1224,15 @@ def host_dispatch_claim_payload(
             lane,
         )
         or not isinstance(claim["candidate_evidence"], dict)
+        or (
+            lane.is_scoped
+            and (
+                lane.managed_registry_entry is None
+                or claim.get("managed_registry_entry") != lane.managed_registry_entry
+                or claim.get("source_scope") != lane.source_scope
+                or claim.get("source_paths") != list(lane.source_paths)
+            )
+        )
     ):
         raise ReleaseLaneError("host dispatch claim cannot bind the managed job")
     return claim
@@ -1033,6 +1244,7 @@ def sign_host_dispatch_claim(claim: dict[str, Any], *, signing_key: str | bytes 
 
 
 def validate_host_heartbeat(request: HostHeartbeatRequest, lane: ReleaseLane) -> None:
+    require_active_lane(lane)
     if (
         request.schema_name != HOST_HEARTBEAT_SCHEMA
         or request.release_lane != lane.name
@@ -1134,6 +1346,7 @@ def validate_runtime_receipt(
     artifact_ref: str,
     rollback_anchor: dict[str, Any] | None = None,
 ) -> None:
+    require_active_lane(lane)
     expected = {
         "schema",
         "status",
@@ -1264,6 +1477,7 @@ def validate_native_runtime_receipt(
     artifact_ref: str,
 ) -> None:
     """Validate product-native identity and runtime evidence for release or rollback."""
+    require_active_lane(lane)
     base = {
         "schema",
         "project_id",
@@ -1750,6 +1964,7 @@ class ReleaseStore:
         identity: str,
         now: float | None = None,
     ) -> dict[str, Any]:
+        require_active_lane(lane)
         if identity != lane.host_agent_mtls_identity:
             raise ReleaseLaneError("host-agent mTLS identity does not match managed lane")
         validate_host_heartbeat(request, lane)
@@ -1793,10 +2008,12 @@ class ReleaseStore:
         return record
 
     def fresh_agent(self, lane: ReleaseLane, *, now: float | None = None) -> dict[str, Any] | None:
+        require_active_lane(lane)
         with self._lock(lane.name):
             return self._fresh_agent_unlocked(lane, now=now)
 
     def active_job(self, lane: ReleaseLane) -> dict[str, Any] | None:
+        require_active_lane(lane)
         with self._lock(lane.name):
             return self._active_job_unlocked(lane)
 
@@ -1808,6 +2025,7 @@ class ReleaseStore:
         now: int | None = None,
         lease_ttl_seconds: int = _RELEASE_LEASE_DEFAULT_TTL_SECONDS,
     ) -> tuple[dict[str, Any], bool]:
+        require_active_lane(lane)
         validate_candidate(request, lane)
         current_time = int(time.time() if now is None else now)
         if lane.canonical_repository is not None and (
@@ -1919,6 +2137,7 @@ class ReleaseStore:
         now: float | None = None,
         claim_ttl_seconds: int = 120,
     ) -> dict[str, Any] | None:
+        require_active_lane(lane)
         with self._lock(lane.name):
             job = self._active_job_unlocked(lane)
             if job is None:
@@ -2020,6 +2239,7 @@ class ReleaseStore:
         fence: str | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
+        require_active_lane(lane)
         with self._lock(lane.name):
             job = self._job_unlocked(lane)
             if job is None or job.get("release_id") != release_id:
@@ -2088,6 +2308,7 @@ class ReleaseStore:
         now: float | None = None,
     ) -> dict[str, Any]:
         """Record an idempotent native rollback acknowledgement."""
+        require_active_lane(lane)
         with self._lock(lane.name):
             job = self._job_unlocked(lane)
             if job is None or job.get("release_id") != release_id:
@@ -2180,6 +2401,7 @@ class ReleaseStore:
             return job
 
     def job(self, lane: ReleaseLane, release_id: str) -> dict[str, Any] | None:
+        require_active_lane(lane)
         with self._lock(lane.name):
             job = self._job_unlocked(lane)
             if job is None or job.get("release_id") != release_id:

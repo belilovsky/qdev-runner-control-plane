@@ -1893,6 +1893,27 @@ def create_app(
                 status_code=503, detail="managed registry is unavailable"
             ) from error
 
+    def active_release_lane(policy_value: ReleaseLanePolicy, lane_name: str) -> ReleaseLane:
+        """Resolve an active lane before exposing any release endpoint edge.
+
+        A pending source-scoped admission record is intentionally observable in
+        the controller configuration but cannot be mistaken for an enrolled
+        client or host.  Check this before mTLS so callers receive the factual
+        pending state instead of an invented credential failure.
+        """
+        try:
+            lane = policy_value.lane(lane_name)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release lane is not allowlisted"
+            ) from error
+        try:
+            return policy_value.require_active(lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=409, detail="release lane is pending external enrolment"
+            ) from error
+
     def admin_platform_ledger() -> AdminPlatformLedger:
         try:
             return AdminPlatformLedger(
@@ -2158,12 +2179,47 @@ def create_app(
             )
 
     def validate_managed_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
-        """Require the controller's complete CI ledger before a QGeo release.
+        """Bind managed candidates to controller-owned evidence before admission.
 
-        The candidate receipt is an input to admission, never an authority of
-        its own.  QGeo's provider run/job/attempt bindings and terminal state
-        live in the managed ledger loaded by the controller.
+        A candidate receipt is an input to admission, never an authority of
+        its own.  Scoped records additionally bind the release profile and
+        exact source paths without changing ordinary CI for a shared
+        repository.  QGeo's provider run/job/attempt bindings and terminal
+        state remain in its separate managed ledger.
         """
+
+        if lane.is_scoped:
+            receipt = request.candidate_receipt
+            source_paths = receipt.get("source_paths")
+            if (
+                not isinstance(source_paths, list)
+                or any(not isinstance(path, str) for path in source_paths)
+                or lane.managed_registry_entry is None
+                or lane.source_scope is None
+            ):
+                raise HTTPException(status_code=422, detail="release candidate was rejected")
+            try:
+                entry = managed_registry().validate_release_scope(
+                    entry_id=lane.managed_registry_entry,
+                    repository=str(receipt.get("repository", "")),
+                    profile=str(receipt.get("runner_profile", "")),
+                    source_scope=lane.source_scope,
+                    source_paths=tuple(source_paths),
+                )
+            except ManagedRegistryError as error:
+                raise HTTPException(
+                    status_code=409, detail="managed release scope is not admitted"
+                ) from error
+            if (
+                entry.project_id != lane.project_id
+                or entry.native_release_profile != lane.native_host_adapter
+                or entry.artifact_repository != lane.artifact_repository
+                or entry.runtime_endpoints != lane.runtime_endpoints
+            ):
+                raise HTTPException(
+                    status_code=409, detail="managed release scope does not match lane"
+                )
+            return
 
         if lane.project_id != "qazgeo":
             return
@@ -2683,12 +2739,7 @@ def create_app(
         x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
-        try:
-            lane = policy_value.lane(lane_name)
-        except ReleaseLaneError as error:
-            raise HTTPException(
-                status_code=404, detail="release lane is not allowlisted"
-            ) from error
+        lane = active_release_lane(policy_value, lane_name)
         require_release_mtls(
             x_qdev_mtls_identity,
             lane.client_mtls_identity,
@@ -2727,12 +2778,7 @@ def create_app(
         x_qdev_client_certificate_sha256: str | None = Header(default=None),
     ) -> dict[str, Any]:
         policy_value = release_policy()
-        try:
-            lane = policy_value.lane(lane_name)
-        except ReleaseLaneError as error:
-            raise HTTPException(
-                status_code=404, detail="release lane is not allowlisted"
-            ) from error
+        lane = active_release_lane(policy_value, lane_name)
         require_release_mtls(
             x_qdev_mtls_identity,
             lane.client_mtls_identity,
