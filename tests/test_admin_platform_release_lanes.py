@@ -377,6 +377,7 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
         "qdev-release-cmnt": "cmnt",
         "qdev-release-total": "total",
         "qdev-release-qazposter": "qazposter",
+        "qdev-release-qazagents-static": "qazagents",
     }
     for lane_name, registry_name in names.items():
         lane = policy.lane(lane_name)
@@ -385,6 +386,19 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
         assert lane.canonical_repository == entry["repository"]
         assert list(lane.runtime_endpoints) == entry["runtime_endpoints"]
         assert lane.rollback_reference == entry["rollback_reference"]
+
+
+def test_qazagents_static_lane_is_separate_from_qgeo_container_contract() -> None:
+    policy = ReleaseLanePolicy(ROOT / "config/release-lanes.yml")
+    lane = policy.lane("qdev-release-qazagents-static")
+    assert lane.project_id == "qazagents"
+    assert lane.artifact_repository == "qazagents-static"
+    assert lane.native_host_adapter == "qazagents-static-release-v1"
+    assert "qgeo" not in lane.native_host_adapter
+    assert lane.required_readiness == ("native", "public", "identity")
+    assert all(
+        endpoint.startswith("https://qazagents.qdev.run/") for endpoint in lane.runtime_endpoints
+    )
 
 
 def test_controller_managed_claim_dispatch_and_nonce_are_bound_and_expiring(

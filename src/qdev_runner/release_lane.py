@@ -90,6 +90,67 @@ _QGEO_PREFLIGHT_EVIDENCE_FIELDS = frozenset(
         "heartbeat_received_at",
     }
 )
+_QAZAGENTS_ARTIFACT_PROVENANCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "artifact_digest",
+        "archive_sha256",
+        "payload_sha256",
+        "skills_manifest_sha256",
+        "release_manifest_sha256",
+    }
+)
+_QAZAGENTS_RUNTIME_PROVENANCE_FIELDS = _QAZAGENTS_ARTIFACT_PROVENANCE_FIELDS - {
+    "status",
+    "source_sha",
+    "artifact_digest",
+}
+_QAZAGENTS_CI_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "run_ids", "job_set_digest", "release_evidence_sha256"}
+)
+_QAZAGENTS_ARTIFACT_EVIDENCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "artifact_digest",
+        "artifact_ref",
+        "archive_sha256",
+        "payload_sha256",
+    }
+)
+_QAZAGENTS_STATIC_EVIDENCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "digest",
+        "manifest",
+        "skills_manifest_sha256",
+        "release_manifest_sha256",
+    }
+)
+_QAZAGENTS_SBOM_EVIDENCE_FIELDS = frozenset(
+    {"status", "source_sha", "digest", "format", "artifact_digest"}
+)
+_QAZAGENTS_SECURITY_EVIDENCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "source_scan_digest",
+        "archive_scan_digest",
+        "artifact_digest",
+    }
+)
+_QAZAGENTS_PREFLIGHT_EVIDENCE_FIELDS = frozenset(
+    {
+        "status",
+        "source_sha",
+        "release_lane",
+        "placement",
+        "heartbeat_digest",
+        "heartbeat_received_at",
+    }
+)
 
 REQUEST_SCHEMA = "qdev-controller-release-request-v1"
 RECEIPT_SCHEMA = "qdev-controller-release-receipt-v1"
@@ -642,6 +703,195 @@ def _validate_qgeo_candidate_evidence(
         raise ReleaseLaneError("managed candidate preflight evidence is invalid")
 
 
+def qazagents_candidate_evidence_digest(evidence: object) -> str:
+    """Bind the complete QazAgents static evidence envelope into a claim."""
+
+    if not isinstance(evidence, dict):
+        raise ReleaseLaneError("QazAgents candidate evidence is incomplete")
+    return f"sha256:{canonical_json_sha256(evidence)}"
+
+
+def qazagents_artifact_provenance_from_evidence(evidence: object) -> dict[str, str]:
+    """Project the archive provenance an admitted QazAgents host must prove."""
+
+    provenance = evidence.get("provenance") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != _QAZAGENTS_ARTIFACT_PROVENANCE_FIELDS
+        or provenance.get("status") != "passed"
+        or not _is_sha(provenance.get("source_sha"))
+        or not _is_digest(provenance.get("artifact_digest"))
+        or not isinstance(provenance.get("archive_sha256"), str)
+        or _HEX64.fullmatch(provenance["archive_sha256"]) is None
+        or not isinstance(provenance.get("payload_sha256"), str)
+        or _HEX64.fullmatch(provenance["payload_sha256"]) is None
+        or not _is_digest(provenance.get("skills_manifest_sha256"))
+        or not _is_digest(provenance.get("release_manifest_sha256"))
+    ):
+        raise ReleaseLaneError("QazAgents candidate provenance evidence is invalid")
+    return {field: str(provenance[field]) for field in sorted(_QAZAGENTS_RUNTIME_PROVENANCE_FIELDS)}
+
+
+def _qazagents_static_bundle_from_evidence(evidence: object) -> dict[str, str]:
+    static = evidence.get("static") if isinstance(evidence, dict) else None
+    if (
+        not isinstance(static, dict)
+        or set(static) != _QAZAGENTS_STATIC_EVIDENCE_FIELDS
+        or static.get("status") != "passed"
+        or not _is_sha(static.get("source_sha"))
+        or not _is_digest(static.get("digest"))
+        or not isinstance(static.get("manifest"), str)
+        or not static["manifest"].strip()
+        or "\x00" in static["manifest"]
+        or static["manifest"].startswith("/")
+        or any(part in {"", ".", ".."} for part in static["manifest"].split("/"))
+        or not _is_digest(static.get("skills_manifest_sha256"))
+        or not _is_digest(static.get("release_manifest_sha256"))
+    ):
+        raise ReleaseLaneError("QazAgents candidate static evidence is invalid")
+    return {
+        "digest": str(static["digest"]),
+        "manifest": str(static["manifest"]),
+        "skills_manifest_sha256": str(static["skills_manifest_sha256"]),
+        "release_manifest_sha256": str(static["release_manifest_sha256"]),
+    }
+
+
+def _validate_qazagents_candidate_evidence(
+    evidence: object,
+    *,
+    source_sha: str,
+    artifact_digest: str,
+    artifact_ref: str,
+    archive_sha256: str,
+    payload_sha256: str,
+    release_lane: str,
+    placement: str,
+) -> None:
+    """Validate QazAgents static archive, manifest, and release provenance.
+
+    This is deliberately independent from the QGeo container path: a static
+    archive must bind its archive bytes and both emitted manifests, while the
+    host mapping itself remains private and is never supplied by this receipt.
+    """
+
+    required = {"ci", "artifact", "static", "sbom", "provenance", "security", "preflight"}
+    if not isinstance(evidence, dict) or set(evidence) != required:
+        raise ReleaseLaneError("QazAgents candidate evidence is incomplete")
+
+    ci = evidence["ci"]
+    if (
+        not isinstance(ci, dict)
+        or set(ci) != _QAZAGENTS_CI_EVIDENCE_FIELDS
+        or ci.get("status") != "passed"
+        or ci.get("source_sha") != source_sha
+        or not isinstance(ci.get("run_ids"), list)
+        or not ci["run_ids"]
+        or any(
+            not isinstance(run_id, str) or not re.fullmatch(r"[1-9][0-9]{0,31}", run_id)
+            for run_id in ci["run_ids"]
+        )
+        or len(set(ci["run_ids"])) != len(ci["run_ids"])
+        or not isinstance(ci.get("job_set_digest"), str)
+        or _HEX64.fullmatch(ci["job_set_digest"]) is None
+        or not isinstance(ci.get("release_evidence_sha256"), str)
+        or _HEX64.fullmatch(ci["release_evidence_sha256"]) is None
+    ):
+        raise ReleaseLaneError("QazAgents candidate CI evidence is invalid")
+
+    artifact = evidence["artifact"]
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != _QAZAGENTS_ARTIFACT_EVIDENCE_FIELDS
+        or artifact.get("status") != "passed"
+        or artifact.get("source_sha") != source_sha
+        or artifact.get("artifact_digest") != artifact_digest
+        or artifact.get("artifact_ref") != artifact_ref
+        or artifact.get("archive_sha256") != archive_sha256
+        or artifact.get("payload_sha256") != payload_sha256
+    ):
+        raise ReleaseLaneError("QazAgents archive evidence does not bind candidate")
+
+    static = _qazagents_static_bundle_from_evidence(evidence)
+    if evidence["static"].get("source_sha") != source_sha or not static:
+        raise ReleaseLaneError("QazAgents candidate static evidence is invalid")
+
+    sbom = evidence["sbom"]
+    if (
+        not isinstance(sbom, dict)
+        or set(sbom) != _QAZAGENTS_SBOM_EVIDENCE_FIELDS
+        or sbom.get("status") != "passed"
+        or sbom.get("source_sha") != source_sha
+        or not _is_digest(sbom.get("digest"))
+        or sbom.get("format") != "SPDX-2.3"
+        or sbom.get("artifact_digest") != artifact_digest
+    ):
+        raise ReleaseLaneError("QazAgents candidate SBOM evidence is invalid")
+
+    provenance = evidence["provenance"]
+    runtime_provenance = qazagents_artifact_provenance_from_evidence(evidence)
+    if (
+        provenance.get("source_sha") != source_sha
+        or provenance.get("artifact_digest") != artifact_digest
+        or provenance.get("archive_sha256") != archive_sha256
+        or provenance.get("payload_sha256") != payload_sha256
+        or provenance.get("skills_manifest_sha256") != static["skills_manifest_sha256"]
+        or provenance.get("release_manifest_sha256") != static["release_manifest_sha256"]
+        or not runtime_provenance
+    ):
+        raise ReleaseLaneError("QazAgents candidate provenance evidence is invalid")
+
+    security = evidence["security"]
+    if (
+        not isinstance(security, dict)
+        or set(security) != _QAZAGENTS_SECURITY_EVIDENCE_FIELDS
+        or security.get("status") != "passed"
+        or security.get("source_sha") != source_sha
+        or not _is_digest(security.get("source_scan_digest"))
+        or not _is_digest(security.get("archive_scan_digest"))
+        or security.get("artifact_digest") != artifact_digest
+    ):
+        raise ReleaseLaneError("QazAgents candidate security evidence is invalid")
+
+    preflight = evidence["preflight"]
+    if (
+        not isinstance(preflight, dict)
+        or set(preflight) != _QAZAGENTS_PREFLIGHT_EVIDENCE_FIELDS
+        or preflight.get("status") != "passed"
+        or preflight.get("source_sha") != source_sha
+        or preflight.get("release_lane") != release_lane
+        or preflight.get("placement") != placement
+        or not _is_digest(preflight.get("heartbeat_digest"))
+        or not isinstance(preflight.get("heartbeat_received_at"), (int, float))
+        or isinstance(preflight.get("heartbeat_received_at"), bool)
+        or float(preflight["heartbeat_received_at"]) <= 0
+    ):
+        raise ReleaseLaneError("QazAgents candidate preflight evidence is invalid")
+
+
+def _validate_qazagents_dependency_identity(value: object, lane: ReleaseLane) -> None:
+    if value != {"static_host_adapter": lane.native_host_adapter}:
+        raise ReleaseLaneError("runtime QazAgents static host adapter identity is invalid")
+
+
+def _validate_qazagents_static_bundle(value: object) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"digest", "manifest", "skills_manifest_sha256", "release_manifest_sha256"}
+        or not _is_digest(value.get("digest"))
+        or not isinstance(value.get("manifest"), str)
+        or not value["manifest"].strip()
+        or "\x00" in value["manifest"]
+        # Static manifests are artifact-relative.  A host path would claim a
+        # private deployment target that this controller does not own.
+        or value["manifest"].startswith("/")
+        or any(part in {"", ".", ".."} for part in value["manifest"].split("/"))
+        or not _is_digest(value.get("skills_manifest_sha256"))
+        or not _is_digest(value.get("release_manifest_sha256"))
+    ):
+        raise ReleaseLaneError("runtime QazAgents static bundle evidence is invalid")
+
+
 def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> None:
     if request.schema_name != REQUEST_SCHEMA:
         raise ReleaseLaneError("release request schema is invalid")
@@ -747,6 +997,19 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
             release_lane=lane.name,
             placement=lane.placement,
         )
+    elif lane.project_id == "qazagents":
+        if receipt.get("artifact_type") != "http-archive":
+            raise ReleaseLaneError("QazAgents candidate must be an immutable HTTP archive")
+        _validate_qazagents_candidate_evidence(
+            receipt.get("evidence"),
+            source_sha=request.source_sha,
+            artifact_digest=request.artifact_digest,
+            artifact_ref=request.artifact_ref,
+            archive_sha256=str(receipt.get("archive_sha256", "")),
+            payload_sha256=str(receipt.get("payload_sha256", "")),
+            release_lane=lane.name,
+            placement=lane.placement,
+        )
     qmt_fields = {"release_version", "migration_receipt_digest", "contract_digest"}
     if lane.project_id == "kaztilshi":
         if not qmt_fields.issubset(receipt):
@@ -776,6 +1039,14 @@ def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]
         evidence["artifact_provenance"] = qgeo_artifact_provenance_from_evidence(
             receipt.get("evidence")
         )
+    elif lane.project_id == "qazagents":
+        source_evidence = receipt.get("evidence")
+        evidence = {
+            "schema": "qdev-qazagents-static-candidate-evidence-v1",
+            "candidate_receipt_sha256": evidence["candidate_receipt_sha256"],
+            "artifact_provenance": qazagents_artifact_provenance_from_evidence(source_evidence),
+            "static_bundle": _qazagents_static_bundle_from_evidence(source_evidence),
+        }
     elif lane.project_id == "kaztilshi":
         evidence = {
             "schema": QMT_CANDIDATE_EVIDENCE_SCHEMA,
@@ -847,6 +1118,10 @@ def controller_claim_payload(
     }
     if lane.project_id == "qazgeo":
         payload["candidate_evidence_digest"] = qgeo_candidate_evidence_digest(
+            receipt.get("evidence")
+        )
+    elif lane.project_id == "qazagents":
+        payload["candidate_evidence_digest"] = qazagents_candidate_evidence_digest(
             receipt.get("evidence")
         )
     return payload
@@ -1100,6 +1375,19 @@ def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None
         ):
             raise ReleaseLaneError("runtime QGeo artifact provenance is invalid")
         return
+    if lane.project_id == "qazagents":
+        if set(provenance) != _QAZAGENTS_RUNTIME_PROVENANCE_FIELDS:
+            raise ReleaseLaneError("runtime QazAgents artifact provenance fields are invalid")
+        if (
+            not isinstance(provenance.get("archive_sha256"), str)
+            or _HEX64.fullmatch(provenance["archive_sha256"]) is None
+            or not isinstance(provenance.get("payload_sha256"), str)
+            or _HEX64.fullmatch(provenance["payload_sha256"]) is None
+            or not _is_digest(provenance.get("skills_manifest_sha256"))
+            or not _is_digest(provenance.get("release_manifest_sha256"))
+        ):
+            raise ReleaseLaneError("runtime QazAgents artifact provenance is invalid")
+        return
     if lane.project_id == "kaztilshi":
         expected = {
             "candidate_receipt_sha256",
@@ -1170,8 +1458,9 @@ def validate_runtime_receipt(
     evidence_fields = {"runtime_identity", "dependency_identity", "artifact_provenance"}
     if lane.canonical_repository is not None and not evidence_fields.issubset(receipt):
         raise ReleaseLaneError("runtime identity evidence is required for managed release lanes")
-    if lane.project_id == "qazgeo" and "static_bundle" not in receipt:
-        raise ReleaseLaneError("runtime static bundle evidence is required for QGeo")
+    if lane.project_id in {"qazgeo", "qazagents"} and "static_bundle" not in receipt:
+        product_name = "QazAgents" if lane.project_id == "qazagents" else "QGeo"
+        raise ReleaseLaneError(f"runtime static bundle evidence is required for {product_name}")
     if evidence_fields.intersection(receipt):
         if not evidence_fields.issubset(receipt):
             raise ReleaseLaneError("runtime identity evidence is incomplete")
@@ -1207,6 +1496,8 @@ def validate_runtime_receipt(
                 source_sha=source_sha,
                 artifact_ref=artifact_ref,
             )
+        elif lane.project_id == "qazagents":
+            _validate_qazagents_dependency_identity(dependency_identity, lane)
         elif (
             not isinstance(dependency_identity, dict)
             or not dependency_identity
@@ -1219,7 +1510,9 @@ def validate_runtime_receipt(
         _validate_artifact_provenance(receipt["artifact_provenance"], lane)
     if "static_bundle" in receipt:
         static_bundle = receipt["static_bundle"]
-        if (
+        if lane.project_id == "qazagents":
+            _validate_qazagents_static_bundle(static_bundle)
+        elif (
             not isinstance(static_bundle, dict)
             or not _is_digest(static_bundle.get("digest"))
             or not isinstance(static_bundle.get("manifest"), str)
@@ -1274,10 +1567,11 @@ def validate_native_runtime_receipt(
         "readiness",
     }
     evidence = {"runtime_identity", "dependency_identity", "artifact_provenance"}
+    required_evidence = evidence | ({"static_bundle"} if lane.project_id == "qazagents" else set())
     if (
         not isinstance(receipt, dict)
         or not base.issubset(receipt)
-        or set(receipt) - base - evidence
+        or set(receipt) - base - required_evidence
         or receipt.get("schema") != "qdev-admin-platform-native-receipt-v1"
         or receipt.get("project_id") != lane.project_id
         or receipt.get("native_host_adapter") != lane.native_host_adapter
@@ -1291,7 +1585,7 @@ def validate_native_runtime_receipt(
         readiness.get(name) != "ok" for name in lane.required_readiness
     ):
         raise ReleaseLaneError("native runtime readiness is incomplete")
-    if lane.canonical_repository is not None and not evidence.issubset(receipt):
+    if lane.canonical_repository is not None and not required_evidence.issubset(receipt):
         raise ReleaseLaneError("native runtime evidence is required for managed release lanes")
     if evidence.intersection(receipt):
         if not evidence.issubset(receipt):
@@ -1328,6 +1622,8 @@ def validate_native_runtime_receipt(
                 source_sha=source_sha,
                 artifact_ref=artifact_ref,
             )
+        elif lane.project_id == "qazagents":
+            _validate_qazagents_dependency_identity(dependencies, lane)
         elif (
             not isinstance(dependencies, dict)
             or not dependencies
@@ -1337,6 +1633,8 @@ def validate_native_runtime_receipt(
         ):
             raise ReleaseLaneError("native dependency identity is incomplete")
         _validate_artifact_provenance(receipt["artifact_provenance"], lane)
+    if lane.project_id == "qazagents":
+        _validate_qazagents_static_bundle(receipt["static_bundle"])
 
 
 class ReleaseStore:
@@ -2063,6 +2361,23 @@ class ReleaseStore:
                 if receipt.get("artifact_provenance") != expected_provenance:
                     raise ReleaseLaneError(
                         "runtime artifact provenance does not match candidate evidence"
+                    )
+            elif lane.project_id == "qazagents":
+                candidate_evidence = job.get("candidate_receipt", {}).get("evidence", {})
+                expected_static = _qazagents_static_bundle_from_evidence(candidate_evidence)
+                actual_static = receipt.get("static_bundle")
+                if not isinstance(actual_static, dict) or any(
+                    actual_static.get(field) != value for field, value in expected_static.items()
+                ):
+                    raise ReleaseLaneError(
+                        "runtime QazAgents static bundle does not match candidate evidence"
+                    )
+                expected_provenance = qazagents_artifact_provenance_from_evidence(
+                    candidate_evidence
+                )
+                if receipt.get("artifact_provenance") != expected_provenance:
+                    raise ReleaseLaneError(
+                        "runtime QazAgents artifact provenance does not match candidate evidence"
                     )
             job["status"] = "verified"
             job["verified_at"] = time.time() if now is None else now

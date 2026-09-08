@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import hmac
 import json
@@ -17,10 +18,13 @@ from qdev_runner.release_lane import (
     ReleaseLanePolicy,
     ReleaseStore,
     controller_claim_payload,
+    qazagents_artifact_provenance_from_evidence,
+    qazagents_candidate_evidence_digest,
     qgeo_candidate_evidence_digest,
     validate_candidate,
     validate_controller_claim,
     validate_host_heartbeat,
+    validate_native_runtime_receipt,
     validate_runtime_receipt,
 )
 
@@ -34,10 +38,150 @@ ROLLBACK_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca63
 ROLLBACK_REF = f"registry.ci.qdev.run/belilovsky/qazgeo@{ROLLBACK_DIGEST}"
 SIGNING_KEY = "controller-claim-test-key-32-bytes!!"
 TEST_NOW = 2_000_000_000
+QAZAGENTS_SHA = "1" * 40
+QAZAGENTS_DIGEST = "sha256:" + "2" * 64
+QAZAGENTS_REF = f"registry.ci.qdev.run/qazagents-static@{QAZAGENTS_DIGEST}"
+QAZAGENTS_ARCHIVE_SHA256 = "3" * 64
+QAZAGENTS_PAYLOAD_SHA256 = "4" * 64
+QAZAGENTS_ROLLBACK_SHA = "5" * 40
+QAZAGENTS_ROLLBACK_DIGEST = "sha256:" + "6" * 64
+QAZAGENTS_ROLLBACK_REF = f"registry.ci.qdev.run/qazagents-static@{QAZAGENTS_ROLLBACK_DIGEST}"
 
 
 def _qgeo_lane():
     return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-qazgeo")
+
+
+def _qazagents_lane():
+    return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-qazagents-static")
+
+
+def _qazagents_evidence() -> dict:
+    return {
+        "ci": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "run_ids": ["33838251934", "33838251867"],
+            "job_set_digest": "7" * 64,
+            "release_evidence_sha256": "8" * 64,
+        },
+        "artifact": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "artifact_digest": QAZAGENTS_DIGEST,
+            "artifact_ref": QAZAGENTS_REF,
+            "archive_sha256": QAZAGENTS_ARCHIVE_SHA256,
+            "payload_sha256": QAZAGENTS_PAYLOAD_SHA256,
+        },
+        "static": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "digest": "sha256:" + "9" * 64,
+            "manifest": "release-manifest.json",
+            "skills_manifest_sha256": "sha256:" + "a" * 64,
+            "release_manifest_sha256": "sha256:" + "b" * 64,
+        },
+        "sbom": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "digest": "sha256:" + "c" * 64,
+            "format": "SPDX-2.3",
+            "artifact_digest": QAZAGENTS_DIGEST,
+        },
+        "provenance": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "artifact_digest": QAZAGENTS_DIGEST,
+            "archive_sha256": QAZAGENTS_ARCHIVE_SHA256,
+            "payload_sha256": QAZAGENTS_PAYLOAD_SHA256,
+            "skills_manifest_sha256": "sha256:" + "a" * 64,
+            "release_manifest_sha256": "sha256:" + "b" * 64,
+        },
+        "security": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "source_scan_digest": "sha256:" + "d" * 64,
+            "archive_scan_digest": "sha256:" + "e" * 64,
+            "artifact_digest": QAZAGENTS_DIGEST,
+        },
+        "preflight": {
+            "status": "passed",
+            "source_sha": QAZAGENTS_SHA,
+            "release_lane": "qdev-release-qazagents-static",
+            "placement": "qazagents-static-runtime",
+            "heartbeat_digest": "sha256:" + "f" * 64,
+            "heartbeat_received_at": 1.0,
+        },
+    }
+
+
+def _qazagents_candidate_request(*, evidence: dict | None = None) -> ReleaseAdmissionRequest:
+    return ReleaseAdmissionRequest.model_validate(
+        {
+            "schema": REQUEST_SCHEMA,
+            "release_lane": "qdev-release-qazagents-static",
+            "project_id": "qazagents",
+            "placement": "qazagents-static-runtime",
+            "source_sha": QAZAGENTS_SHA,
+            "artifact_digest": QAZAGENTS_DIGEST,
+            "artifact_ref": QAZAGENTS_REF,
+            "candidate_receipt": {
+                "schema": "qdev-release-candidate-receipt-v1",
+                "status": "passed",
+                "source_sha": QAZAGENTS_SHA,
+                "artifact_digest": QAZAGENTS_DIGEST,
+                "artifact_ref": QAZAGENTS_REF,
+                "artifact_type": "http-archive",
+                "artifact_uri": "https://ci.qdev.run/artifacts/qazagents-static/release.tar.gz",
+                "archive_sha256": QAZAGENTS_ARCHIVE_SHA256,
+                "payload_sha256": QAZAGENTS_PAYLOAD_SHA256,
+                "repository": "belilovsky/qazagents",
+                "workflow": "QazAgents static release",
+                "job": "source-bound archive",
+                "run_id": 33838251934,
+                "job_id": 101039384205,
+                "attempt": 1,
+                "runner_profile": "qdev-ci",
+                "evidence": _qazagents_evidence() if evidence is None else evidence,
+            },
+        }
+    )
+
+
+def _qazagents_runtime_receipt(lane) -> dict:
+    evidence = _qazagents_evidence()
+    return {
+        "schema": RUNTIME_RECEIPT_SCHEMA,
+        "status": "verified",
+        "project": lane.project_id,
+        "release_lane": lane.name,
+        "placement": lane.placement,
+        "source_sha": QAZAGENTS_SHA,
+        "artifact_digest": QAZAGENTS_DIGEST,
+        "artifact_ref": QAZAGENTS_REF,
+        "health": "ok",
+        "readiness": {"native": "ok", "public": "ok", "identity": "ok"},
+        "runtime_identity": {
+            "source_sha": QAZAGENTS_SHA,
+            "artifact_digest": QAZAGENTS_DIGEST,
+            "artifact_ref": QAZAGENTS_REF,
+            "measured": True,
+        },
+        "dependency_identity": {"static_host_adapter": lane.native_host_adapter},
+        "artifact_provenance": qazagents_artifact_provenance_from_evidence(evidence),
+        "static_bundle": {
+            "digest": "sha256:" + "9" * 64,
+            "manifest": "release-manifest.json",
+            "skills_manifest_sha256": "sha256:" + "a" * 64,
+            "release_manifest_sha256": "sha256:" + "b" * 64,
+        },
+        "rollback": {
+            "verified": True,
+            "source_sha": QAZAGENTS_ROLLBACK_SHA,
+            "artifact_digest": QAZAGENTS_ROLLBACK_DIGEST,
+            "artifact_ref": QAZAGENTS_ROLLBACK_REF,
+        },
+    }
 
 
 def _qgeo_dependency_identity() -> dict[str, dict[str, object]]:
@@ -165,11 +309,19 @@ def _sign_request(
 
 
 def _record_bootstrap_heartbeat(store: ReleaseStore, lane) -> None:
-    anchor = {
-        "source_sha": ROLLBACK_SHA,
-        "artifact_digest": ROLLBACK_DIGEST,
-        "artifact_ref": ROLLBACK_REF,
-    }
+    anchor = (
+        {
+            "source_sha": QAZAGENTS_ROLLBACK_SHA,
+            "artifact_digest": QAZAGENTS_ROLLBACK_DIGEST,
+            "artifact_ref": QAZAGENTS_ROLLBACK_REF,
+        }
+        if lane.project_id == "qazagents"
+        else {
+            "source_sha": ROLLBACK_SHA,
+            "artifact_digest": ROLLBACK_DIGEST,
+            "artifact_ref": ROLLBACK_REF,
+        }
+    )
     heartbeat = HostHeartbeatRequest.model_validate(
         {
             "schema": HOST_HEARTBEAT_SCHEMA,
@@ -205,6 +357,154 @@ def test_qgeo_candidate_requires_complete_bound_evidence() -> None:
     request.candidate_receipt["evidence"]["artifact"]["artifact_digest"] = "sha256:" + "c" * 64
     with pytest.raises(ReleaseLaneError, match="artifact evidence"):
         validate_candidate(request, lane)
+
+
+def test_qazagents_static_candidate_requires_archive_and_manifest_provenance() -> None:
+    lane = _qazagents_lane()
+    validate_candidate(_qazagents_candidate_request(), lane)
+
+    evidence = _qazagents_evidence()
+    evidence["provenance"]["archive_sha256"] = "0" * 64
+    with pytest.raises(ReleaseLaneError, match="provenance evidence"):
+        validate_candidate(_qazagents_candidate_request(evidence=evidence), lane)
+
+    request = _qazagents_candidate_request()
+    request.candidate_receipt["artifact_type"] = "oci"
+    request.candidate_receipt.pop("archive_sha256")
+    request.candidate_receipt.pop("payload_sha256")
+    with pytest.raises(ReleaseLaneError, match="QazAgents candidate must"):
+        validate_candidate(request, lane)
+
+
+def test_qazagents_controller_claim_binds_full_static_evidence() -> None:
+    lane = _qazagents_lane()
+    request = _qazagents_candidate_request()
+    claim = controller_claim_payload(
+        request,
+        lane,
+        issued_at=TEST_NOW,
+        expires_at=TEST_NOW + 120,
+        nonce="qazagents-static-nonce-000000000001",
+    )
+    assert claim["candidate_evidence_digest"] == qazagents_candidate_evidence_digest(
+        request.candidate_receipt["evidence"]
+    )
+    request.controller_claim = claim
+    request.controller_claim_signature = hmac.new(
+        SIGNING_KEY.encode("utf-8"),
+        json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    validate_controller_claim(request, lane, signing_key=SIGNING_KEY, now=TEST_NOW)
+
+    request.candidate_receipt["evidence"]["static"]["skills_manifest_sha256"] = "sha256:" + "0" * 64
+    with pytest.raises(ReleaseLaneError, match="does not bind release tuple"):
+        validate_controller_claim(request, lane, signing_key=SIGNING_KEY, now=TEST_NOW)
+
+
+def test_qazagents_runtime_receipts_require_the_static_host_adapter_and_bundle() -> None:
+    lane = _qazagents_lane()
+    receipt = _qazagents_runtime_receipt(lane)
+    validate_runtime_receipt(
+        receipt,
+        lane=lane,
+        source_sha=QAZAGENTS_SHA,
+        artifact_digest=QAZAGENTS_DIGEST,
+        artifact_ref=QAZAGENTS_REF,
+    )
+    native = {
+        "schema": "qdev-admin-platform-native-receipt-v1",
+        "project_id": lane.project_id,
+        "native_host_adapter": lane.native_host_adapter,
+        "source_sha": QAZAGENTS_SHA,
+        "artifact_digest": QAZAGENTS_DIGEST,
+        "artifact_ref": QAZAGENTS_REF,
+        "readiness": {"native": "ok", "public": "ok", "identity": "ok"},
+        "runtime_identity": receipt["runtime_identity"],
+        "dependency_identity": receipt["dependency_identity"],
+        "artifact_provenance": receipt["artifact_provenance"],
+        "static_bundle": receipt["static_bundle"],
+    }
+    validate_native_runtime_receipt(
+        native,
+        lane=lane,
+        source_sha=QAZAGENTS_SHA,
+        artifact_digest=QAZAGENTS_DIGEST,
+        artifact_ref=QAZAGENTS_REF,
+    )
+
+    without_bundle = copy.deepcopy(receipt)
+    without_bundle.pop("static_bundle")
+    with pytest.raises(ReleaseLaneError, match="static bundle evidence is required"):
+        validate_runtime_receipt(
+            without_bundle,
+            lane=lane,
+            source_sha=QAZAGENTS_SHA,
+            artifact_digest=QAZAGENTS_DIGEST,
+            artifact_ref=QAZAGENTS_REF,
+        )
+
+    forged_adapter = copy.deepcopy(native)
+    forged_adapter["dependency_identity"] = {
+        "static_host_adapter": "qgeo-native-immutable-release-v1"
+    }
+    with pytest.raises(ReleaseLaneError, match="static host adapter identity"):
+        validate_native_runtime_receipt(
+            forged_adapter,
+            lane=lane,
+            source_sha=QAZAGENTS_SHA,
+            artifact_digest=QAZAGENTS_DIGEST,
+            artifact_ref=QAZAGENTS_REF,
+        )
+
+    absolute_manifest = copy.deepcopy(native)
+    absolute_manifest["static_bundle"]["manifest"] = "/release-manifest.json"
+    with pytest.raises(ReleaseLaneError, match="static bundle evidence"):
+        validate_native_runtime_receipt(
+            absolute_manifest,
+            lane=lane,
+            source_sha=QAZAGENTS_SHA,
+            artifact_digest=QAZAGENTS_DIGEST,
+            artifact_ref=QAZAGENTS_REF,
+        )
+
+
+def test_qazagents_complete_rejects_static_provenance_drift(tmp_path: Path) -> None:
+    lane = _qazagents_lane()
+    store = ReleaseStore(tmp_path / "release-state")
+    request = _qazagents_candidate_request()
+    _record_bootstrap_heartbeat(store, lane)
+    _sign_request(request, lane, nonce="qazagents-static-nonce-000000000002")
+    admitted, _ = store.admit(request, lane, now=TEST_NOW)
+    dispatched = store.next_job(
+        lane,
+        host_identity=lane.host_agent_mtls_identity,
+        dispatch_signing_key=SIGNING_KEY,
+        now=TEST_NOW + 1,
+    )
+    assert dispatched is not None
+
+    forged = _qazagents_runtime_receipt(lane)
+    forged["static_bundle"]["skills_manifest_sha256"] = "sha256:" + "0" * 64
+    with pytest.raises(ReleaseLaneError, match="static bundle does not match"):
+        store.complete(
+            lane,
+            str(admitted["release_id"]),
+            forged,
+            lease_id=str(admitted["lease_id"]),
+            fence=str(admitted["fence"]),
+            now=TEST_NOW + 2,
+        )
+
+    completed = store.complete(
+        lane,
+        str(admitted["release_id"]),
+        _qazagents_runtime_receipt(lane),
+        lease_id=str(admitted["lease_id"]),
+        fence=str(admitted["fence"]),
+        now=TEST_NOW + 2,
+    )
+    assert completed["status"] == "verified"
 
 
 def test_qgeo_controller_claim_binds_complete_candidate_evidence() -> None:

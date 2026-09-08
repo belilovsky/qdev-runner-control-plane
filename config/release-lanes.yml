@@ -144,3 +144,24 @@ lanes:
       - https://qgeo.tech/health/quality
     rollback_reference: controller-verified immutable runtime d65cd62a4c96786d9d5c35ebea8af872dcc3cb69 rollback receipt
     required_readiness: [db, postgis, martin, photon, redis, app]
+  qdev-release-qazagents-static:
+    project_id: qazagents
+    # This is a logical placement only.  The root-owned private enrolment
+    # registry must map this exact target to a host adapter before admission;
+    # without that mapping enrolment returns access_blocked/target_unregistered.
+    placement: qazagents-static-runtime
+    client_mtls_identity: qdev-release-client:qazagents-static
+    host_agent_mtls_identity: qdev-host-agent:qazagents-static-runtime
+    minimum_free_gib: 4
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qazagents-static
+    canonical_repository: belilovsky/qazagents
+    artifact_ref_prefix: registry.ci.qdev.run/qazagents-static
+    native_host_adapter: qazagents-static-release-v1
+    runtime_endpoints:
+      - https://qazagents.qdev.run/health.json
+      - https://qazagents.qdev.run/readiness.json
+      - https://qazagents.qdev.run/release.json
+      - https://qazagents.qdev.run/skills/index.json
+    rollback_reference: controller-verified immutable QazAgents static rollback receipt
+    required_readiness: [native, public, identity]

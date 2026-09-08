@@ -18,6 +18,7 @@ enrolment:
     - qdev-release-qazposter
     - qdev-release-qmt
     - qdev-release-qazgeo
+    - qdev-release-qazagents-static
 workers:
   - qdev-ci
   - qdev-ci-browser
