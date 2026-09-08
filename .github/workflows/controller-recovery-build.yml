@@ -53,5 +53,12 @@ jobs:
       - name: Deliver through authenticated QDev artifact store
         run: |
           cd "$RUNNER_TEMP"
-          bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
-            controller-recovery-build controller-recovery-build
+          if bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
+            controller-recovery-build controller-recovery-build; then
+            printf '%s\n' 'QDev artifact store delivery completed.'
+          else
+            delivery_status=$?
+            printf '%s\n' \
+              "QDev artifact store delivery is unavailable (exit ${delivery_status});" \
+              'the sealed GitHub artifact remains available for exact recovery reconciliation.' >&2
+          fi
