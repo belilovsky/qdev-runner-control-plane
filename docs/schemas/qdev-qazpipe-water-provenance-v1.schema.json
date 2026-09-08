@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ci.qdev.run/schemas/qdev-qazpipe-water-provenance-v1.schema.json",
+  "title": "QazPipe-to-QazLake water provenance receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "payload", "signature"],
+  "properties": {
+    "schema": {"const": "qdev-qazpipe-water-provenance/v1"},
+    "payload": {"$ref": "#/$defs/payload"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "profile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "full_name"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "full_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        }
+      }
+    },
+    "collector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {"id": {"const": "geo-003"}}
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "run_id", "run_attempt", "job_id", "profile"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._/-][A-Za-z0-9._:/-]{0,255}$"
+        },
+        "run_id": {"type": "integer", "minimum": 1},
+        "run_attempt": {"type": "integer", "minimum": 1},
+        "job_id": {"type": "integer", "minimum": 1},
+        "profile": {"$ref": "#/$defs/profile"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256", "size_bytes"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^\\S+$"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "water_run_id",
+        "state",
+        "query_plan_sha256",
+        "expected_query_count",
+        "completed_query_count",
+        "manifest_sha256",
+        "records_sha256",
+        "record_count",
+        "source_observed_at",
+        "started_at",
+        "completed_at"
+      ],
+      "properties": {
+        "water_run_id": {"$ref": "#/$defs/identifier"},
+        "state": {"const": "complete"},
+        "query_plan_sha256": {"$ref": "#/$defs/digest"},
+        "expected_query_count": {"type": "integer", "minimum": 1},
+        "completed_query_count": {"type": "integer", "minimum": 1},
+        "manifest_sha256": {"$ref": "#/$defs/digest"},
+        "records_sha256": {"$ref": "#/$defs/digest"},
+        "record_count": {"type": "integer", "minimum": 0},
+        "source_observed_at": {"$ref": "#/$defs/time"},
+        "started_at": {"$ref": "#/$defs/time"},
+        "completed_at": {"$ref": "#/$defs/time"}
+      },
+      "$comment": "Runtime validation requires completed_query_count to equal expected_query_count and validates timestamp ordering."
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "claim_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "protected_ref",
+        "source_sha",
+        "collector",
+        "workflow",
+        "artifact",
+        "result",
+        "controller_revision",
+        "receipt",
+        "issued_at",
+        "expires_at"
+      ],
+      "properties": {
+        "repository": {"$ref": "#/$defs/repository"},
+        "protected_ref": {
+          "type": "string",
+          "pattern": "^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$"
+        },
+        "source_sha": {"$ref": "#/$defs/sha"},
+        "collector": {"$ref": "#/$defs/collector"},
+        "workflow": {"$ref": "#/$defs/workflow"},
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "result": {"$ref": "#/$defs/result"},
+        "controller_revision": {"$ref": "#/$defs/sha"},
+        "receipt": {"$ref": "#/$defs/receipt"},
+        "issued_at": {"$ref": "#/$defs/time"},
+        "expires_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "payload_sha256", "value"],
+      "properties": {
+        "algorithm": {"const": "Ed25519"},
+        "key_id": {"$ref": "#/$defs/digest"},
+        "payload_sha256": {"$ref": "#/$defs/digest"},
+        "value": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+      }
+    }
+  }
+}

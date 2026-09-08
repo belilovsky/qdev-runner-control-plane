@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 qdev-runner-broker = "qdev_runner.broker:main"
 qdev-controller-admission = "qdev_runner.controller_admission:main"
+qdev-qazpipe-water-provenance = "qdev_runner.qazpipe_water_provenance:main"
 qdev-runner-operator = "qdev_runner.operator:main"
 qdev-runner-worker = "qdev_runner.worker:main"
 
