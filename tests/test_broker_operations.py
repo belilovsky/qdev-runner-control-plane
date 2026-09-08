@@ -3668,6 +3668,48 @@ def test_capacity_override_does_not_prioritize_non_active_controller_sha(
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "conclusion", "sha", "attempt", "expected"),
+    [
+        ("completed", "cancelled", "a" * 40, 1, 200),
+        ("queued", None, "a" * 40, 1, 409),
+        ("in_progress", None, "a" * 40, 1, 409),
+        ("completed", None, "a" * 40, 1, 409),
+        ("completed", "cancelled", "b" * 40, 1, 409),
+        ("completed", "cancelled", "a" * 40, 2, 409),
+    ],
+)
+def test_pending_terminal_reconciliation(
+    tmp_path: Path, status: str, conclusion: str | None, sha: str, attempt: int, expected: int
+) -> None:
+    client = _app(
+        tmp_path,
+        FakeGitHub(job_status=status, job_conclusion=conclusion, head_sha=sha, run_attempt=attempt),
+    )
+    created_at = _seed_stale_running_job(client)
+    store = client.app.state.store
+    store.set_status(42, "pending")
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-stale",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "reconcile terminal provider state",
+            "pending_terminal_only": True,
+        },
+    )
+    assert response.status_code == expected
+    assert store.job_status(42) == ("completed" if expected == 200 else "pending")
+    assert float(store.job(42)["created_at"]) == created_at
+    if expected == 200:
+        receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+        assert receipt["payload"]["action"] == "pending-completed-from-provider"
+        assert store.job(42)["result"] == "cancelled"
+    store.set_status(42, "running")
+    assert not store.complete_pending_from_provider(42, "cancelled")
+    assert store.job_status(42) == "running"
+
+
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
     _seed_stale_running_job(client)
