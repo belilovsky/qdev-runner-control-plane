@@ -669,8 +669,8 @@ def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
     assert fresh.json()["state"] == "prepared"
     with Store(harness.settings.database_path).connect() as connection:
         new_certificate = connection.execute(
-            "SELECT expected_agent_certificate_sha256 FROM worker_recoveries "
-            "WHERE operation_id=?", (fresh.json()["operation_id"],),
+            "SELECT expected_agent_certificate_sha256 FROM worker_recoveries WHERE operation_id=?",
+            (fresh.json()["operation_id"],),
         ).fetchone()[0]
     assert new_certificate == PLATFORM_AGENT_CERTIFICATE
 
