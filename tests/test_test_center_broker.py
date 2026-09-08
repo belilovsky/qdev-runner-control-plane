@@ -9,6 +9,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import artifact_token, create_app
+from qdev_runner.github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from qdev_runner.models import QueuedJob
 from qdev_runner.settings import BrokerSettings
 from qdev_runner.store import Store
@@ -53,6 +54,17 @@ class FakeGitHub:
 
     def ref_sha(self, installation_id: int, repository: str, ref: str) -> str:
         return self.sha
+
+
+class RecordingArtifactOIDCVerifier(GitHubActionsArtifactOIDCVerifier):
+    def __init__(self, *, reject: bool = False) -> None:
+        self.reject = reject
+        self.calls: list[tuple[str, str, str, int]] = []
+
+    def verify(self, token: str, *, repository: str, sha: str, run_id: int) -> None:
+        self.calls.append((token, repository, sha, run_id))
+        if self.reject:
+            raise GitHubActionsOIDCError("rejected by test verifier")
 
 
 def _app_settings(
@@ -148,6 +160,108 @@ def _claimed_client(
     assert store.claim("worker-1", ("qdev-ci",)) is not None
     fake = github or FakeGitHub()
     return settings, store, TestClient(create_app(settings, store=store, github=fake)), fake
+
+
+def _legacy_oidc_client(
+    tmp_path: Path, policy_files: tuple[Path, Path], *, reject: bool = False
+) -> tuple[BrokerSettings, TestClient, RecordingArtifactOIDCVerifier]:
+    settings = _app_settings(tmp_path, policy_files)
+    verifier = RecordingArtifactOIDCVerifier(reject=reject)
+    client = TestClient(
+        create_app(
+            settings,
+            github=FakeGitHub(),
+            github_actions_oidc_verifier=verifier,
+        )
+    )
+    return settings, client, verifier
+
+
+def _legacy_oidc_headers(body: bytes, **extra: str) -> dict[str, str]:
+    return {
+        "X-Qdev-GitHub-OIDC": "github-oidc-token",
+        "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
+        **extra,
+    }
+
+
+def test_legacy_oidc_archive_upload_uses_workflow_run_without_controller_job(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings, client, verifier = _legacy_oidc_client(tmp_path, policy_files)
+    body = b"controller recovery archive"
+    response = client.put(
+        f"/artifacts/belilovsky/private-repo/{SHA}/123/controller-recovery-build.tar.gz",
+        content=body,
+        headers=_legacy_oidc_headers(body),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "schema": "qdev-artifact-v1",
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "size": len(body),
+    }
+    assert verifier.calls == [("github-oidc-token", "belilovsky/private-repo", SHA, 123)]
+    target = (
+        settings.artifact_root
+        / "belilovsky"
+        / "private-repo"
+        / SHA
+        / "123"
+        / "controller-recovery-build.tar.gz"
+    )
+    assert target.read_bytes() == body
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_legacy_archive_does_not_bypass_report_or_worker_job_binding(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings, client, verifier = _legacy_oidc_client(tmp_path, policy_files)
+    body = b"archive"
+    path = f"/artifacts/belilovsky/private-repo/{SHA}/123/controller-recovery-build.tar.gz"
+    report_metadata = client.put(
+        path,
+        content=body,
+        headers=_legacy_oidc_headers(body, **{"X-Qdev-Test-Suite": "unit"}),
+    )
+    assert report_metadata.status_code == 422
+    assert verifier.calls == []
+    invalid_checksum = client.put(
+        path,
+        content=body,
+        headers=_legacy_oidc_headers(b"different"),
+    )
+    assert invalid_checksum.status_code == 422
+    assert verifier.calls == [("github-oidc-token", "belilovsky/private-repo", SHA, 123)]
+    worker_token = client.put(
+        path,
+        content=body,
+        headers={
+            "X-Qdev-Artifact-Token": artifact_token(
+                settings.worker_token, "belilovsky/private-repo", SHA, 123
+            ),
+            "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
+        },
+    )
+    assert worker_token.status_code == 401
+    target = settings.artifact_root / "belilovsky" / "private-repo" / SHA / "123"
+    assert not target.exists()
+
+
+def test_legacy_oidc_archive_rejects_invalid_identity(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    settings, client, verifier = _legacy_oidc_client(tmp_path, policy_files, reject=True)
+    body = b"archive"
+    response = client.put(
+        f"/artifacts/belilovsky/private-repo/{SHA}/123/controller-recovery-build.tar.gz",
+        content=body,
+        headers=_legacy_oidc_headers(body),
+    )
+    assert response.status_code == 401
+    assert verifier.calls == [("github-oidc-token", "belilovsky/private-repo", SHA, 123)]
+    assert not (settings.artifact_root / "belilovsky").exists()
 
 
 def test_registered_report_is_idempotent_and_empty_pass_is_rejected(

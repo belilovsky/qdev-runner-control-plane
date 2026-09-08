@@ -4992,6 +4992,66 @@ def create_app(
         safe_name = _safe_segment(name)
         if bool(x_qdev_artifact_token) == bool(x_qdev_github_oidc):
             raise HTTPException(status_code=401, detail="exactly one artifact identity is required")
+
+        # Keep the original five-segment artifact protocol separate from the
+        # test-report protocol below.  GitHub-hosted builds use their workflow
+        # run id in this URL and never create a controller job, so looking up a
+        # local job before verifying their OIDC claim breaks ordinary release
+        # archive delivery.  Test reports always use the explicit
+        # attempt/suite path and retain the stricter controller-job binding.
+        if artifact_attempt is None and artifact_suite is None:
+            if any(key.lower().startswith("x-qdev-test-") for key in request.headers):
+                raise HTTPException(
+                    status_code=422,
+                    detail="test report metadata requires the test-report artifact path",
+                )
+            if x_qdev_artifact_token:
+                job = store.job(job_id)
+                if not artifact_job_is_active(job, full_name, safe_sha, job_id):
+                    raise HTTPException(status_code=401, detail="artifact credentials expired")
+                expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
+                if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+                    raise HTTPException(status_code=401, detail="artifact authentication failed")
+            else:
+                try:
+                    github_actions_oidc_verifier.verify(
+                        x_qdev_github_oidc or "",
+                        repository=full_name,
+                        sha=safe_sha,
+                        run_id=job_id,
+                    )
+                except GitHubActionsOIDCError as error:
+                    raise HTTPException(
+                        status_code=401, detail="artifact OIDC authentication failed"
+                    ) from error
+            raw_content_length = request.headers.get("content-length")
+            try:
+                content_length = int(raw_content_length) if raw_content_length is not None else None
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail="invalid content length") from error
+            if content_length is not None and content_length < 0:
+                raise HTTPException(status_code=400, detail="invalid content length")
+            maximum = min(settings.max_artifact_bytes, 250 * 1024 * 1024)
+            if content_length is not None and content_length > maximum:
+                raise HTTPException(
+                    status_code=413, detail="artifact is larger than the allowed limit"
+                )
+            body = await request.body()
+            if len(body) > maximum:
+                raise HTTPException(
+                    status_code=413, detail="artifact is larger than the allowed limit"
+                )
+            digest = hashlib.sha256(body).hexdigest()
+            if not x_qdev_sha256 or not secrets.compare_digest(x_qdev_sha256, digest):
+                raise HTTPException(status_code=422, detail="artifact checksum mismatch")
+            target = settings.artifact_root / owner / repo / safe_sha / str(job_id) / safe_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(target.suffix + ".tmp")
+            temporary.write_bytes(body)
+            os.chmod(temporary, 0o600)
+            temporary.replace(target)
+            return {"schema": "qdev-artifact-v1", "sha256": digest, "size": len(body)}
+
         if artifact_attempt is not None and artifact_attempt < 1:
             raise HTTPException(status_code=422, detail="invalid test attempt")
         path_suite = None
