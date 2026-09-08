@@ -831,6 +831,28 @@ def test_release_tree_fingerprint_ignores_checkout_metadata(tmp_path: Path) -> N
     assert fingerprint_release_tree(release, require_root_owner=False) == baseline
 
 
+def test_release_tree_fingerprint_ignores_derived_python_cache(tmp_path: Path) -> None:
+    release = tmp_path / "release"
+    source = release / "src" / "qdev_runner"
+    source.mkdir(parents=True)
+    (source / "controller_activation.py").write_text("VALUE = 1\n", encoding="utf-8")
+    baseline = fingerprint_release_tree(release, require_root_owner=False)
+
+    cache = source / "__pycache__"
+    cache.mkdir()
+    (cache / "controller_activation.cpython-312.pyc").write_bytes(b"derived-bytecode")
+
+    assert fingerprint_release_tree(release, require_root_owner=False) == baseline
+
+    cache.chmod(0o775)
+    with pytest.raises(ControllerActivationError, match="permissions"):
+        fingerprint_release_tree(release, require_root_owner=False)
+    cache.chmod(0o755)
+
+    (source / "controller_activation.pyc").write_bytes(b"unexpected-bytecode")
+    assert fingerprint_release_tree(release, require_root_owner=False) != baseline
+
+
 def test_signed_envelope_rejects_tampering_expiry_and_excessive_ttl() -> None:
     now = datetime(2026, 9, 5, 1, tzinfo=UTC)
     document = _envelope_document(now=now)

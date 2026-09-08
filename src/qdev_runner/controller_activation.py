@@ -1884,6 +1884,28 @@ def fingerprint_release_tree(
                 or ".." in relative.parts
             ):
                 raise ControllerActivationError("controller release tree path is invalid")
+            # CPython creates this derived interpreter cache while release
+            # tooling imports the activation modules. It is not executable
+            # release material and must not bind a signed tree to one host's
+            # bytecode policy. Its directory still has to meet the ownership
+            # and permission checks; links and arbitrary ``.pyc`` files fail
+            # closed below.
+            if child.name == "__pycache__" and child.is_dir(follow_symlinks=False):
+                try:
+                    cache_metadata = child.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise ControllerActivationError(
+                        f"controller release tree entry is unavailable: {relative_text}"
+                    ) from error
+                if require_root_owner and cache_metadata.st_uid != 0:
+                    raise ControllerActivationError(
+                        f"controller release tree entry is not root-owned: {relative_text}"
+                    )
+                if cache_metadata.st_mode & 0o022:
+                    raise ControllerActivationError(
+                        f"controller release tree entry permissions are unsafe: {relative_text}"
+                    )
+                continue
             try:
                 metadata = child.stat(follow_symlinks=False)
             except OSError as error:

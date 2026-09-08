@@ -23,7 +23,7 @@ release_root=/opt/qdev-runner-control-plane
 activation_helper="$script_dir/controller_activation.py"
 activation_python=/usr/bin/python3
 activation_pythonpath="$(cd -- "$script_dir/../src" && pwd)"
-activation_cli=(env "PYTHONPATH=$activation_pythonpath" "$activation_python" "$activation_helper")
+activation_cli=(env "PYTHONDONTWRITEBYTECODE=1" "PYTHONPATH=$activation_pythonpath" "$activation_python" "$activation_helper")
 activation_status="${QDEV_CONTROLLER_ACTIVATION_STATUS:-/var/lib/qdev-runner/controller-activation/activation-status.json}"
 
 json_value() {

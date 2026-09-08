@@ -10,7 +10,11 @@ import stat
 import sys
 from pathlib import Path
 
-from qdev_runner.controller_activation import (
+# The wrapper fingerprints the release tree after this CLI runs. Keep its
+# imports from creating host-specific bytecode in that tree.
+sys.dont_write_bytecode = True
+
+from qdev_runner.controller_activation import (  # noqa: E402
     ActivationEnvelope,
     ActivationStateStore,
     ControllerActivationError,
@@ -23,7 +27,7 @@ from qdev_runner.controller_activation import (
     load_and_verify_envelope,
     verify_controller_artifact_manifest,
 )
-from qdev_runner.controller_release import (
+from qdev_runner.controller_release import (  # noqa: E402
     ControllerReleaseIdentityError,
     controller_release_digest,
 )

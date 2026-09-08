@@ -477,8 +477,13 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert "qdev-start-controller-broker" in provision
     assert "qdev-start-controller-broker" in activation
     assert '"$release/deploy/qdev-runner-broker.service"' in activation
-    assert "QDEV_CONTROLLER_IMAGE_REF=\"$reference\"" in starter
+    assert 'QDEV_CONTROLLER_IMAGE_REF="$reference"' in starter
     assert "--no-build --no-deps broker-public broker-internal" in starter
+    assert 'activation_cli=(env "PYTHONDONTWRITEBYTECODE=1"' in activation
+    activation_cli = (ROOT / "scripts/controller_activation.py").read_text(encoding="utf-8")
+    recovery_cli = (ROOT / "scripts/controller_recovery_artifact.py").read_text(encoding="utf-8")
+    assert "sys.dont_write_bytecode = True" in activation_cli
+    assert "sys.dont_write_bytecode = True" in recovery_cli
     # Only the internal broker can mutate the durable managed-release ledger.
     assert (
         compose.count(
