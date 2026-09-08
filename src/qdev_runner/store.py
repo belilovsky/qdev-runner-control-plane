@@ -5,6 +5,7 @@ import hmac
 import json
 import math
 import re
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -91,6 +92,162 @@ _WORKER_RECOVERY_CANARY_CONCLUSIONS = frozenset(
         "startup_failure",
     }
 )
+
+# Hosted controller recovery is deliberately not a normal runner job or claim.
+# Its subject is bound to a verified GitHub workflow-job webhook and remains
+# immutable for the lifetime of the recovery artifact receipt.
+_HOSTED_RECOVERY_REPOSITORY = "belilovsky/qdev-runner-control-plane"
+_HOSTED_RECOVERY_HEAD_BRANCH = "main"
+_HOSTED_RECOVERY_JOB_NAME = "controller-recovery-build"
+_HOSTED_RECOVERY_LABELS = ("ubuntu-latest",)
+_HOSTED_RECOVERY_SUBJECT_SCHEMA = "qdev-hosted-controller-recovery-subject-v1"
+_HOSTED_RECOVERY_CONCLUSIONS = frozenset(
+    {
+        "success",
+        "failure",
+        "neutral",
+        "cancelled",
+        "skipped",
+        "timed_out",
+        "action_required",
+        "stale",
+        "startup_failure",
+    }
+)
+_HOSTED_RECOVERY_LEASE_ID = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+
+
+def _hosted_recovery_positive_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field} is invalid")
+    return value
+
+
+def _hosted_recovery_time(value: object, *, field: str) -> float:
+    return _finite_recovery_number(value, field=field)
+
+
+def _hosted_recovery_digest(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not (_SHA256_HEX.fullmatch(value) or _SHA256_DIGEST.fullmatch(value))
+    ):
+        raise ValueError(f"{field} is invalid")
+    return value
+
+
+def _hosted_recovery_lease(value: object) -> str:
+    if not isinstance(value, str) or not _HOSTED_RECOVERY_LEASE_ID.fullmatch(value):
+        raise ValueError("hosted recovery upload lease is invalid")
+    return value
+
+
+def _hosted_recovery_storage_key(job_id: int) -> str:
+    """Return the server-owned opaque archive key for one immutable subject."""
+
+    return f"hosted-controller-recovery:{job_id}"
+
+
+def _hosted_recovery_subject_binding(
+    *,
+    job_id: int,
+    repository: str,
+    repository_id: int,
+    installation_id: int,
+    source_sha: str,
+    run_id: int,
+    attempt: int,
+    head_branch: str,
+    job_name: str,
+    labels: tuple[str, ...],
+) -> tuple[str, str]:
+    """Return the canonical immutable webhook tuple and its subject id."""
+
+    binding = {
+        "schema": _HOSTED_RECOVERY_SUBJECT_SCHEMA,
+        "job_id": job_id,
+        "repository": repository,
+        "repository_id": repository_id,
+        "installation_id": installation_id,
+        "source_sha": source_sha,
+        "run_id": run_id,
+        "attempt": attempt,
+        "head_branch": head_branch,
+        "job_name": job_name,
+        "labels": list(labels),
+    }
+    canonical = json.dumps(binding, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+HOSTED_RECOVERY_SUBJECT_SCHEMA = """
+-- This isolated ledger is intentionally not related to jobs, claims, or
+-- worker recovery transactions.  The broker may derive a filesystem location
+-- from archive_storage_key, but no caller-supplied path or URL is durable.
+CREATE TABLE IF NOT EXISTS hosted_recovery_subjects (
+    job_id INTEGER PRIMARY KEY CHECK(job_id > 0),
+    subject_id TEXT NOT NULL UNIQUE,
+    delivery_id TEXT NOT NULL UNIQUE,
+    repository TEXT NOT NULL CHECK(repository = 'belilovsky/qdev-runner-control-plane'),
+    repository_id INTEGER NOT NULL CHECK(repository_id > 0),
+    installation_id INTEGER NOT NULL CHECK(installation_id > 0),
+    source_sha TEXT NOT NULL,
+    run_id INTEGER NOT NULL CHECK(run_id > 0),
+    attempt INTEGER NOT NULL CHECK(attempt > 0),
+    head_branch TEXT NOT NULL CHECK(head_branch = 'main'),
+    job_name TEXT NOT NULL CHECK(job_name = 'controller-recovery-build'),
+    labels_json TEXT NOT NULL CHECK(labels_json = '["ubuntu-latest"]'),
+    immutable_tuple_json TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'uploading', 'stored', 'verified')),
+    upload_lease_id TEXT,
+    upload_fence INTEGER NOT NULL DEFAULT 0 CHECK(upload_fence >= 0),
+    upload_lease_expires_at REAL,
+    upload_started_at REAL,
+    upload_aborted_at REAL,
+    archive_storage_key TEXT NOT NULL UNIQUE,
+    receipt_id TEXT UNIQUE,
+    archive_sha256 TEXT,
+    archive_size INTEGER CHECK(archive_size >= 0),
+    oidc_claim_digest TEXT,
+    stored_at REAL,
+    provider_conclusion TEXT CHECK(provider_conclusion IN (
+        'success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out',
+        'action_required', 'stale', 'startup_failure'
+    )),
+    provider_completed_at REAL,
+    verification_digest TEXT,
+    verified_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    CHECK(
+        (provider_conclusion IS NULL AND provider_completed_at IS NULL)
+        OR (provider_conclusion IS NOT NULL AND provider_completed_at IS NOT NULL)
+    ),
+    CHECK(
+        state != 'uploading'
+        OR (
+            upload_lease_id IS NOT NULL AND upload_fence > 0
+            AND upload_lease_expires_at IS NOT NULL
+        )
+    ),
+    CHECK(
+        state NOT IN ('stored', 'verified')
+        OR (
+            receipt_id IS NOT NULL AND archive_sha256 IS NOT NULL AND archive_size IS NOT NULL
+            AND oidc_claim_digest IS NOT NULL AND stored_at IS NOT NULL
+        )
+    ),
+    CHECK(
+        state != 'verified'
+        OR (
+            provider_conclusion = 'success' AND verification_digest IS NOT NULL
+            AND verified_at IS NOT NULL
+        )
+    )
+);
+CREATE INDEX IF NOT EXISTS hosted_recovery_subjects_state_idx
+    ON hosted_recovery_subjects(state, updated_at);
+"""
 
 
 def _finite_recovery_number(value: object, *, field: str) -> float:
@@ -534,7 +691,7 @@ BEGIN
     SELECT RAISE(ABORT, 'worker recovery canary events are append-only');
 END;
 
-"""
+""" + HOSTED_RECOVERY_SUBJECT_SCHEMA
 
 TEST_SCHEMA = """
 -- Test receipts are intentionally additive to the runner queue.  The queue
@@ -688,7 +845,7 @@ CREATE TABLE IF NOT EXISTS test_schedules (
 );
 CREATE INDEX IF NOT EXISTS test_schedules_due_idx
     ON test_schedules(enabled, next_run_at);
-"""
+""" + HOSTED_RECOVERY_SUBJECT_SCHEMA
 
 
 def _worker_concurrency(detail: dict[str, Any]) -> int:
@@ -1445,6 +1602,524 @@ class Store:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _hosted_recovery_subject_row(row: sqlite3.Row) -> dict[str, Any]:
+        """Decode the isolated hosted-recovery subject without exposing a path."""
+
+        value = dict(row)
+        value["labels"] = json.loads(str(value["labels_json"]))
+        value["immutable_tuple"] = json.loads(str(value["immutable_tuple_json"]))
+        return value
+
+    def create_hosted_recovery_subject(
+        self,
+        *,
+        job_id: int,
+        repository: str,
+        repository_id: int,
+        installation_id: int,
+        source_sha: str,
+        run_id: int,
+        attempt: int,
+        head_branch: str,
+        job_name: str,
+        labels: tuple[str, ...] | list[str],
+        delivery_id: str,
+    ) -> dict[str, Any]:
+        """Create one immutable hosted controller-recovery artifact subject.
+
+        This ledger is deliberately outside ``jobs`` and ``claims``.  Its
+        identity is the verified webhook's exact static tuple rather than a
+        caller-selected storage location.  The first verified delivery id is
+        retained for audit; equivalent redeliveries return that same subject.
+        """
+
+        job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+        repository_id = _hosted_recovery_positive_int(
+            repository_id, field="hosted recovery repository id"
+        )
+        installation_id = _hosted_recovery_positive_int(
+            installation_id, field="hosted recovery installation id"
+        )
+        run_id = _hosted_recovery_positive_int(run_id, field="hosted recovery run id")
+        attempt = _hosted_recovery_positive_int(attempt, field="hosted recovery attempt")
+        if (
+            repository != _HOSTED_RECOVERY_REPOSITORY
+            or head_branch != _HOSTED_RECOVERY_HEAD_BRANCH
+            or job_name != _HOSTED_RECOVERY_JOB_NAME
+            or not isinstance(labels, (tuple, list))
+            or tuple(labels) != _HOSTED_RECOVERY_LABELS
+            or not isinstance(source_sha, str)
+            or not _GIT_REVISION.fullmatch(source_sha)
+        ):
+            raise ValueError("hosted recovery subject does not match the static workflow")
+        if not isinstance(delivery_id, str) or not _RECOVERY_KEY.fullmatch(delivery_id):
+            raise ValueError("hosted recovery delivery id is invalid")
+
+        labels_tuple = tuple(labels)
+        immutable_tuple_json, subject_id = _hosted_recovery_subject_binding(
+            job_id=job_id,
+            repository=repository,
+            repository_id=repository_id,
+            installation_id=installation_id,
+            source_sha=source_sha,
+            run_id=run_id,
+            attempt=attempt,
+            head_branch=head_branch,
+            job_name=job_name,
+            labels=labels_tuple,
+        )
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing_rows = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects "
+                    "WHERE job_id=? OR subject_id=? OR delivery_id=? "
+                    "OR immutable_tuple_json=?",
+                    (job_id, subject_id, delivery_id, immutable_tuple_json),
+                ).fetchall()
+                if existing_rows:
+                    if any(
+                        str(existing["immutable_tuple_json"]) != immutable_tuple_json
+                        for existing in existing_rows
+                    ):
+                        raise ValueError("hosted recovery subject is immutable")
+                    connection.execute("COMMIT")
+                    return self._hosted_recovery_subject_row(existing_rows[0])
+                connection.execute(
+                    "INSERT INTO hosted_recovery_subjects("
+                    "job_id,subject_id,delivery_id,repository,repository_id,installation_id,"
+                    "source_sha,run_id,attempt,head_branch,job_name,labels_json,"
+                    "immutable_tuple_json,state,archive_storage_key,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?)",
+                    (
+                        job_id,
+                        subject_id,
+                        delivery_id,
+                        repository,
+                        repository_id,
+                        installation_id,
+                        source_sha,
+                        run_id,
+                        attempt,
+                        head_branch,
+                        job_name,
+                        json.dumps(list(labels_tuple), separators=(",", ":")),
+                        immutable_tuple_json,
+                        "pending",
+                        _hosted_recovery_storage_key(job_id),
+                        now,
+                        now,
+                    ),
+                )
+                created = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert created is not None
+                return self._hosted_recovery_subject_row(created)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def hosted_recovery_subject(
+        self,
+        job_id: int | None = None,
+        *,
+        receipt_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Load one hosted recovery subject by its job or immutable receipt."""
+
+        if (job_id is None) == (receipt_id is None):
+            raise ValueError("exactly one hosted recovery subject identity is required")
+        if job_id is not None:
+            job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+            with self.connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+        else:
+            assert receipt_id is not None
+            if not _SHA256_HEX.fullmatch(receipt_id):
+                raise ValueError("hosted recovery receipt id is invalid")
+            with self.connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE receipt_id=?", (receipt_id,)
+                ).fetchone()
+        return self._hosted_recovery_subject_row(row) if row is not None else None
+
+    def begin_hosted_recovery_upload(
+        self,
+        job_id: int,
+        lease_seconds: float = 300.0,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Fence one upload lease and return its Store-derived storage key.
+
+        A live upload cannot be replaced.  An expired upload lease can be
+        atomically reclaimed with a higher fence so controller recovery does
+        not depend on a crashed uploader to call ``abort``.
+        """
+
+        job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+        lease_seconds = _hosted_recovery_time(lease_seconds, field="upload lease seconds")
+        if not 0 < lease_seconds <= 3600:
+            raise ValueError("upload lease seconds is invalid")
+        timestamp = (
+            time.time()
+            if now is None
+            else _hosted_recovery_time(now, field="upload time")
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                state = str(row["state"])
+                expires_at = row["upload_lease_expires_at"]
+                expired_upload = (
+                    state == "uploading"
+                    and expires_at is not None
+                    and float(expires_at) <= timestamp
+                )
+                if row["provider_conclusion"] not in {None, "success"} or (
+                    state != "pending" and not expired_upload
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                upload_fence = int(row["upload_fence"]) + 1
+                upload_lease_id = secrets.token_urlsafe(32)
+                updated = connection.execute(
+                    "UPDATE hosted_recovery_subjects SET state='uploading',"
+                    "upload_lease_id=?,upload_fence=?,upload_lease_expires_at=?,"
+                    "upload_started_at=?,upload_aborted_at=NULL,updated_at=? "
+                    "WHERE job_id=? AND state=? AND upload_fence=?",
+                    (
+                        upload_lease_id,
+                        upload_fence,
+                        timestamp + lease_seconds,
+                        timestamp,
+                        timestamp,
+                        job_id,
+                        state,
+                        int(row["upload_fence"]),
+                    ),
+                )
+                if updated.rowcount != 1:
+                    connection.execute("COMMIT")
+                    return None
+                leased = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert leased is not None
+                return self._hosted_recovery_subject_row(leased)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def finalize_hosted_recovery_upload(
+        self,
+        job_id: int,
+        lease_id: str,
+        upload_fence: int,
+        receipt_id: str,
+        sha256: str,
+        size: int,
+        storage_key: str,
+        oidc_claim_digest: str,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Persist receipt and archive metadata only for the current lease fence."""
+
+        job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+        lease_id = _hosted_recovery_lease(lease_id)
+        upload_fence = _hosted_recovery_positive_int(upload_fence, field="upload fence")
+        if not isinstance(receipt_id, str) or not _SHA256_HEX.fullmatch(receipt_id):
+            raise ValueError("hosted recovery receipt id is invalid")
+        if not isinstance(sha256, str) or not _SHA256_HEX.fullmatch(sha256):
+            raise ValueError("hosted recovery archive sha256 is invalid")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("hosted recovery archive size is invalid")
+        if storage_key != _hosted_recovery_storage_key(job_id):
+            raise ValueError("hosted recovery archive storage key is not Store-derived")
+        oidc_claim_digest = _hosted_recovery_digest(
+            oidc_claim_digest, field="hosted recovery OIDC claim digest"
+        )
+        timestamp = (
+            time.time()
+            if now is None
+            else _hosted_recovery_time(now, field="upload time")
+        )
+        metadata = (receipt_id, sha256, size, storage_key, oidc_claim_digest)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                if row["provider_conclusion"] not in {None, "success"}:
+                    connection.execute("COMMIT")
+                    return None
+                if str(row["state"]) in {"stored", "verified"}:
+                    existing_metadata = (
+                        row["receipt_id"],
+                        row["archive_sha256"],
+                        row["archive_size"],
+                        row["archive_storage_key"],
+                        row["oidc_claim_digest"],
+                    )
+                    if (
+                        str(row["upload_lease_id"]) == lease_id
+                        and int(row["upload_fence"]) == upload_fence
+                        and existing_metadata == metadata
+                    ):
+                        connection.execute("COMMIT")
+                        return self._hosted_recovery_subject_row(row)
+                    if (
+                        str(row["upload_lease_id"]) == lease_id
+                        and int(row["upload_fence"]) == upload_fence
+                    ):
+                        raise ValueError("hosted recovery upload receipt is immutable")
+                    connection.execute("COMMIT")
+                    return None
+                if (
+                    str(row["state"]) != "uploading"
+                    or str(row["upload_lease_id"]) != lease_id
+                    or int(row["upload_fence"]) != upload_fence
+                    or row["upload_lease_expires_at"] is None
+                    or float(row["upload_lease_expires_at"]) <= timestamp
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                receipt_owner = connection.execute(
+                    "SELECT job_id FROM hosted_recovery_subjects WHERE receipt_id=?", (receipt_id,)
+                ).fetchone()
+                if receipt_owner is not None and int(receipt_owner["job_id"]) != job_id:
+                    raise ValueError("hosted recovery receipt id is already bound")
+                updated = connection.execute(
+                    "UPDATE hosted_recovery_subjects SET state='stored',receipt_id=?,"
+                    "archive_sha256=?,archive_size=?,oidc_claim_digest=?,stored_at=?,updated_at=? "
+                    "WHERE job_id=? AND state='uploading' AND upload_lease_id=? "
+                    "AND upload_fence=? AND upload_lease_expires_at>?",
+                    (
+                        receipt_id,
+                        sha256,
+                        size,
+                        oidc_claim_digest,
+                        timestamp,
+                        timestamp,
+                        job_id,
+                        lease_id,
+                        upload_fence,
+                        timestamp,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    connection.execute("COMMIT")
+                    return None
+                stored = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert stored is not None
+                return self._hosted_recovery_subject_row(stored)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def abort_hosted_recovery_upload(
+        self,
+        job_id: int,
+        lease_id: str,
+        upload_fence: int,
+        *,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Return a live fenced upload to pending without accepting an error path."""
+
+        job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+        lease_id = _hosted_recovery_lease(lease_id)
+        upload_fence = _hosted_recovery_positive_int(upload_fence, field="upload fence")
+        timestamp = (
+            time.time()
+            if now is None
+            else _hosted_recovery_time(now, field="upload time")
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                if str(row["state"]) == "pending":
+                    if (
+                        str(row["upload_lease_id"]) == lease_id
+                        and int(row["upload_fence"]) == upload_fence
+                    ):
+                        connection.execute("COMMIT")
+                        return self._hosted_recovery_subject_row(row)
+                    connection.execute("COMMIT")
+                    return None
+                if (
+                    str(row["state"]) != "uploading"
+                    or str(row["upload_lease_id"]) != lease_id
+                    or int(row["upload_fence"]) != upload_fence
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                updated = connection.execute(
+                    "UPDATE hosted_recovery_subjects SET state='pending',"
+                    "upload_lease_expires_at=NULL,upload_aborted_at=?,updated_at=? "
+                    "WHERE job_id=? AND state='uploading' AND upload_lease_id=? "
+                    "AND upload_fence=?",
+                    (timestamp, timestamp, job_id, lease_id, upload_fence),
+                )
+                if updated.rowcount != 1:
+                    connection.execute("COMMIT")
+                    return None
+                aborted = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert aborted is not None
+                return self._hosted_recovery_subject_row(aborted)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def complete_hosted_recovery_subject(
+        self,
+        job_id: int,
+        conclusion: str,
+        *,
+        completed_at: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Record the provider's immutable terminal workflow conclusion."""
+
+        job_id = _hosted_recovery_positive_int(job_id, field="hosted recovery job id")
+        if not isinstance(conclusion, str) or conclusion not in _HOSTED_RECOVERY_CONCLUSIONS:
+            raise ValueError("hosted recovery provider conclusion is invalid")
+        timestamp = (
+            time.time()
+            if completed_at is None
+            else _hosted_recovery_time(completed_at, field="provider completion time")
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                prior_conclusion = row["provider_conclusion"]
+                if prior_conclusion is not None:
+                    if str(prior_conclusion) != conclusion:
+                        raise ValueError("hosted recovery provider conclusion is immutable")
+                    connection.execute("COMMIT")
+                    return self._hosted_recovery_subject_row(row)
+                if conclusion != "success" and str(row["state"]) == "uploading":
+                    updated = connection.execute(
+                        "UPDATE hosted_recovery_subjects SET state='pending',"
+                        "upload_fence=upload_fence+1,upload_lease_expires_at=NULL,"
+                        "upload_aborted_at=?,provider_conclusion=?,"
+                        "provider_completed_at=?,updated_at=? "
+                        "WHERE job_id=? AND state='uploading' AND provider_conclusion IS NULL",
+                        (timestamp, conclusion, timestamp, timestamp, job_id),
+                    )
+                else:
+                    updated = connection.execute(
+                        "UPDATE hosted_recovery_subjects SET provider_conclusion=?,"
+                        "provider_completed_at=?,updated_at=? "
+                        "WHERE job_id=? AND provider_conclusion IS NULL",
+                        (conclusion, timestamp, timestamp, job_id),
+                    )
+                if updated.rowcount != 1:
+                    connection.execute("COMMIT")
+                    return None
+                completed = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert completed is not None
+                return self._hosted_recovery_subject_row(completed)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def mark_hosted_recovery_verified(
+        self,
+        receipt_id: str,
+        verification_digest: str,
+        *,
+        verified_at: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a stored receipt verified only after a successful provider conclusion."""
+
+        if not isinstance(receipt_id, str) or not _SHA256_HEX.fullmatch(receipt_id):
+            raise ValueError("hosted recovery receipt id is invalid")
+        verification_digest = _hosted_recovery_digest(
+            verification_digest, field="hosted recovery verification digest"
+        )
+        timestamp = (
+            time.time()
+            if verified_at is None
+            else _hosted_recovery_time(verified_at, field="verification time")
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE receipt_id=?", (receipt_id,)
+                ).fetchone()
+                if row is None:
+                    connection.execute("COMMIT")
+                    return None
+                if str(row["state"]) == "verified":
+                    if str(row["verification_digest"]) != verification_digest:
+                        raise ValueError("hosted recovery verification is immutable")
+                    connection.execute("COMMIT")
+                    return self._hosted_recovery_subject_row(row)
+                if (
+                    str(row["state"]) != "stored"
+                    or str(row["provider_conclusion"]) != "success"
+                ):
+                    connection.execute("COMMIT")
+                    return None
+                updated = connection.execute(
+                    "UPDATE hosted_recovery_subjects SET state='verified',"
+                    "verification_digest=?,verified_at=?,updated_at=? "
+                    "WHERE receipt_id=? AND state='stored' AND provider_conclusion='success'",
+                    (verification_digest, timestamp, timestamp, receipt_id),
+                )
+                if updated.rowcount != 1:
+                    connection.execute("COMMIT")
+                    return None
+                verified = connection.execute(
+                    "SELECT * FROM hosted_recovery_subjects WHERE receipt_id=?", (receipt_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+                assert verified is not None
+                return self._hosted_recovery_subject_row(verified)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
 
     def record_test_run(self, payload: dict[str, Any], digest: str) -> tuple[dict[str, Any], bool]:
         """Store one normalized receipt, returning ``(row, idempotent)``.
