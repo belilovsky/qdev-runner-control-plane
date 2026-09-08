@@ -112,6 +112,8 @@ def _archive(
     duplicate_layer: bool = False,
     unsafe_layer_link: bool = False,
     unsafe_layer_type: bool = False,
+    oci_layout: bool = False,
+    corrupt_blob: bool = False,
 ) -> str:
     config = json.dumps(
         {
@@ -126,28 +128,39 @@ def _archive(
         separators=(",", ":"),
     ).encode()
     config_digest = hashlib.sha256(config).hexdigest()
-    layers = ["layer.tar", "layer.tar"] if duplicate_layer else ["layer.tar"]
+    layer = (
+        b"layer"
+        if malformed_layer
+        else _layer(
+            unsafe=unsafe_layer,
+            unsafe_link=unsafe_layer_link,
+            unsafe_type=unsafe_layer_type,
+        )
+    )
+    layer_name = f"blobs/sha256/{hashlib.sha256(layer).hexdigest()}" if oci_layout else "layer.tar"
+    config_name = f"blobs/sha256/{config_digest}" if oci_layout else f"{config_digest}.json"
+    layers = [layer_name, layer_name] if duplicate_layer else [layer_name]
     manifest = json.dumps(
-        [{"Config": f"{config_digest}.json", "RepoTags": [], "Layers": layers}],
+        [{"Config": config_name, "RepoTags": [], "Layers": layers}],
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
     with tarfile.open(path, "w") as bundle:
         _add_tar_bytes(bundle, "manifest.json", manifest)
-        _add_tar_bytes(bundle, f"{config_digest}.json", config)
-        layer = (
-            b"layer"
-            if malformed_layer
-            else _layer(
-                unsafe=unsafe_layer,
-                unsafe_link=unsafe_layer_link,
-                unsafe_type=unsafe_layer_type,
-            )
-        )
-        _add_tar_bytes(bundle, "layer.tar", layer)
+        _add_tar_bytes(bundle, config_name, config)
+        _add_tar_bytes(bundle, layer_name, layer + b"tampered" if corrupt_blob else layer)
         if unsafe:
             _add_tar_bytes(bundle, "../escape", b"unsafe")
     return config_digest
+
+
+def test_inspect_docker_archive_rejects_corrupt_oci_blob(tmp_path: Path) -> None:
+    archive = tmp_path / "corrupt.tar"
+    _archive(archive, oci_layout=True, corrupt_blob=True)
+    with pytest.raises(ControllerRecoveryArtifactError, match="layer digest"):
+        inspect_docker_archive(
+            archive, expected_source_sha=SOURCE_SHA, expected_policy_digest=POLICY_DIGEST
+        )
 
 
 def _workflow() -> tuple[dict[str, object], dict[str, object]]:
@@ -254,9 +267,12 @@ def test_trivy_report_counts_high_critical_vulnerabilities_and_secrets() -> None
     assert trivy_high_critical_count(report) == 3
 
 
-def test_inspect_docker_archive_binds_labels_and_rejects_traversal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("oci_layout", [False, True])
+def test_inspect_docker_archive_binds_labels_and_rejects_traversal(
+    tmp_path: Path, oci_layout: bool
+) -> None:
     archive = tmp_path / "controller.tar"
-    expected = _archive(archive)
+    expected = _archive(archive, oci_layout=oci_layout)
     digest, size = inspect_docker_archive(
         archive,
         expected_source_sha=SOURCE_SHA,
