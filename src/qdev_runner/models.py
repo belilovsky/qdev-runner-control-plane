@@ -136,6 +136,22 @@ class RecoveryStatusRequest(BaseModel):
     provenance: RecoveryRequestProvenance
 
 
+class RecoverySupersedeRequest(BaseModel):
+    """Release an uninvoked recovery fence left by a superseded controller."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(
+        default="qdev-runner-recovery-supersede-v1",
+        alias="schema",
+        pattern=r"^qdev-runner-recovery-supersede-v1$",
+    )
+    operation_id: Sha256Hex
+    request_fingerprint: Sha256Hex
+    reason: str = Field(min_length=8, max_length=500)
+    provenance: RecoveryRequestProvenance
+
+
 class RecoveryReconcileRequest(BaseModel):
     """Native result supplied by the certificate-authenticated host agent."""
 
@@ -330,7 +346,7 @@ class RecoveryOperationResponse(BaseModel):
     state: str = Field(
         pattern=(
             r"^(prepared|invoking|awaiting_acceptance|pending_canary|completed|"
-            r"already_completed|not_applied|failed|ambiguous)$"
+            r"already_completed|not_applied|failed|ambiguous|superseded)$"
         )
     )
     native_outcome: str | None = Field(

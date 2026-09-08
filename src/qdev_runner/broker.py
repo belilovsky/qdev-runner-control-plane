@@ -72,6 +72,7 @@ from .models import (
     RecoveryPrepareRequest,
     RecoveryReconcileRequest,
     RecoveryStatusRequest,
+    RecoverySupersedeRequest,
 )
 from .operations import (
     DISK_ONLY_BLOCKERS,
@@ -2113,6 +2114,25 @@ def create_app(
                 request,
                 operator_certificate_sha256=certificate,
             )
+        )
+
+    @app.post(
+        "/internal/v1/operations/worker-recovery/supersede",
+        response_model=RecoveryOperationResponse,
+    )
+    def supersede_worker_recovery(
+        request: RecoverySupersedeRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_proxy_auth: str | None = Header(default=None),
+        x_qdev_verified_client_certificate_sha256: str | None = Header(default=None),
+    ) -> RecoveryOperationResponse:
+        certificate = require_recovery_operator(
+            x_qdev_operator_token,
+            x_qdev_operator_proxy_auth,
+            x_qdev_verified_client_certificate_sha256,
+        )
+        return execute_worker_recovery(
+            lambda: worker_recovery.supersede(request, operator_certificate_sha256=certificate)
         )
 
     @app.post(

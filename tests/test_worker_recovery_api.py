@@ -272,13 +272,14 @@ def _prepare_body(
     target_id: RecoveryTargetId = "qdev-platform-ci-187",
     *,
     idempotency_key: str = "recovery-request-0001",
+    nonce: str = "nonce-prepare-0001",
 ) -> dict[str, Any]:
     return {
         "schema": "qdev-runner-recovery-prepare-v1",
         "target_id": target_id,
         "idempotency_key": idempotency_key,
         "reason": "Recover the fixed runner after confirmed provider outage.",
-        "provenance": _provenance(),
+        "provenance": _provenance(nonce=nonce),
     }
 
 
@@ -299,6 +300,18 @@ def _status_body(operation: dict[str, Any], *, nonce: str = "nonce-0002") -> dic
         "schema": "qdev-runner-recovery-status-v1",
         "operation_id": operation["operation_id"],
         "request_fingerprint": operation["request_fingerprint"],
+        "provenance": _provenance(nonce=nonce),
+    }
+
+
+def _supersede_body(
+    operation: dict[str, Any], *, nonce: str = "nonce-supersede-0001"
+) -> dict[str, Any]:
+    return {
+        "schema": "qdev-runner-recovery-supersede-v1",
+        "operation_id": operation["operation_id"],
+        "request_fingerprint": operation["request_fingerprint"],
+        "reason": "Retire the stale uninvoked controller-release fence.",
         "provenance": _provenance(nonce=nonce),
     }
 
@@ -594,6 +607,57 @@ def test_status_and_accept_are_bound_to_the_preparing_operator_certificate(
         headers=OPERATOR_HEADERS,
     )
     assert not_ready.status_code == 409
+
+
+def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
+    tmp_path: Path, policy_files: tuple[Path, Path]
+) -> None:
+    harness = _harness(tmp_path, policy_files)
+    prepared = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(),
+        headers=OPERATOR_HEADERS,
+    ).json()
+    with Store(harness.settings.database_path).connect() as connection:
+        connection.execute(
+            "UPDATE worker_recoveries SET controller_revision=?,controller_release_digest=?,"
+            "controller_observed_at=?,requested_at=?,provider_observed_at=? WHERE operation_id=?",
+            (
+                "0" * 40,
+                "0" * 64,
+                time.time() - 600,
+                time.time() - 600,
+                time.time() - 600,
+                prepared["operation_id"],
+            ),
+        )
+
+    wrong_owner = harness.client.post(
+        "/internal/v1/operations/worker-recovery/supersede",
+        json=_supersede_body(prepared),
+        headers=OPERATOR_HEADERS
+        | {"X-QDev-Verified-Client-Certificate-SHA256": OTHER_OPERATOR_CERTIFICATE},
+    )
+    assert wrong_owner.status_code == 409
+    superseded = harness.client.post(
+        "/internal/v1/operations/worker-recovery/supersede",
+        json=_supersede_body(prepared, nonce="nonce-supersede-0002"),
+        headers=OPERATOR_HEADERS,
+    )
+    assert superseded.status_code == 200, superseded.text
+    assert superseded.json()["state"] == "superseded"
+    assert superseded.json()["native_outcome"] is None
+
+    fresh = harness.client.post(
+        "/internal/v1/operations/worker-recovery/prepare",
+        json=_prepare_body(
+            idempotency_key="recovery-request-fresh-0001",
+            nonce="nonce-prepare-fresh-0001",
+        ),
+        headers=OPERATOR_HEADERS,
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["state"] == "prepared"
 
 
 def test_platform_claim_and_reconcile_have_exact_signed_shapes_and_replay(
