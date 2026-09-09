@@ -777,9 +777,19 @@ def stage_activation_assets(
         label="activation envelope spool",
         require_root_owner=require_root_owner,
     )
+    # Every reconciled artifact is immutable as a complete bundle.  Descriptors
+    # are intentionally reused between controller builds, so placing them at a
+    # flat spool path makes a safe no-overwrite write fail on the next release.
+    # The manifest digest names the bundle and keeps each manifest beside the
+    # exact relative members it verifies.
+    artifact_bundle = _ensure_directory(
+        artifacts / artifact.manifest_digest,
+        label="activation artifact bundle",
+        require_root_owner=require_root_owner,
+    )
     for name, payload in sorted(members.items()):
-        target = artifacts / (
-            artifact.manifest_digest + ".json" if name.startswith("manifest:") else name
+        target = artifact_bundle / (
+            "controller-artifact-manifest.json" if name.startswith("manifest:") else name
         )
         _publish_bytes(
             target,
@@ -788,6 +798,7 @@ def stage_activation_assets(
             require_root_owner=require_root_owner,
             allow_existing_same=True,
         )
+    _fsync_directory(artifact_bundle)
     _fsync_directory(artifacts)
     envelope_path = envelopes / f"{envelope.digest}.json"
     published = _publish_bytes(

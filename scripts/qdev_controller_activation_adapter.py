@@ -530,8 +530,15 @@ def _activation_assets(request: dict[str, Any]) -> tuple[Path, Path, Path, str, 
         or not TRANSACTION_ID.fullmatch(transaction_id)
     ):
         raise AdapterError("activation_envelope_identity_mismatch")
+    # New releases stage each manifest with its relative artifact descriptors
+    # under a digest-addressed bundle.  Retain the former flat manifest path
+    # for an already active historical release during adapter upgrades.
+    bundle_manifest = (
+        ACTIVATION_ASSETS_ROOT / "artifacts" / manifest_digest / "controller-artifact-manifest.json"
+    )
+    legacy_manifest = ACTIVATION_ASSETS_ROOT / "artifacts" / f"{manifest_digest}.json"
     manifest_path = _private_file(
-        ACTIVATION_ASSETS_ROOT / "artifacts" / f"{manifest_digest}.json", mode=0o600
+        bundle_manifest if bundle_manifest.exists() else legacy_manifest, mode=0o600
     )
     public_key = _activation_public_key()
     return envelope_path, manifest_path, public_key, candidate_policy_digest, transaction_id
