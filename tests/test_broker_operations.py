@@ -883,6 +883,7 @@ class FakeGitHub:
         self.head_sha = head_sha
         self.run_attempt = run_attempt
         self.job_run_id = job_run_id
+        self.jit_runner_names: list[str] = []
 
     def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, object]:
         return {
@@ -908,6 +909,7 @@ class FakeGitHub:
         runner_name: str,
         labels: tuple[str, ...],
     ) -> str:
+        self.jit_runner_names.append(runner_name)
         return "signed-jit-config"
 
 
@@ -2118,7 +2120,8 @@ def test_controller_issues_only_profile_fifo_head_scope_idempotently(tmp_path: P
 
 
 def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Path) -> None:
-    client = _app(tmp_path, FakeGitHub())
+    github = FakeGitHub()
+    client = _app(tmp_path, github)
     _heartbeat(client, admitted=True, scope_id="srv1879763-primary", disk_free_gib=50.0)
     stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
     _seed_pending_job(
@@ -2176,6 +2179,8 @@ def test_fifo_skips_stale_admin_platform_rows_with_signed_evidence(tmp_path: Pat
     )
     assert claimed.status_code == 200
     assert claimed.json()["job_id"] == 42
+    assert claimed.json()["runner_name"] == "qdev-example-42-a1"
+    assert github.jit_runner_names == ["qdev-example-42-a1"]
     assert client.app.state.store.job_status(41) == "pending"
 
 

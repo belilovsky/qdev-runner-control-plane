@@ -4791,7 +4791,17 @@ def create_app(
                     str(remote_job.get("conclusion") or remote_job.get("status") or "unknown"),
                 )
                 return Response(status_code=204)
-            runner_name = f"qdev-{claimed['repository'].split('/')[-1]}-{job_id}"[:63]
+            # GitHub retains an offline JIT runner when a host fails between
+            # configuration issuance and process start.  A retry of the same
+            # workflow job must not reuse that provider-side name: GitHub then
+            # rejects it with 409 and the job can never recover.  The durable
+            # claim attempt is incremented transactionally by Store.claim(),
+            # so it provides an exact, auditable suffix without weakening the
+            # workflow job / SHA binding.
+            attempt = int(claimed["attempts"])
+            runner_suffix = f"-{job_id}-a{attempt}"
+            runner_prefix = f"qdev-{claimed['repository'].split('/')[-1]}"
+            runner_name = f"{runner_prefix[: 63 - len(runner_suffix)]}{runner_suffix}"
             jit_config = github_client.generate_jit_config(
                 int(claimed["installation_id"]),
                 claimed["repository"],

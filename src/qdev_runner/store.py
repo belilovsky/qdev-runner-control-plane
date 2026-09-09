@@ -1421,9 +1421,14 @@ class Store:
             connection.execute("COMMIT")
             if updated.rowcount != 1:
                 return None
+            # The row was selected before the atomic increment above.  Return
+            # the committed claim attempt so callers can bind any provider-side
+            # ephemeral identity to this exact dispatch rather than reusing it
+            # after an infrastructure retry.
             return dict(selected) | {
                 "worker_name": worker_name,
                 "profile": selected_profile,
+                "attempts": int(selected["attempts"]) + 1,
             }
 
     def set_status(self, job_id: int, status: str, result: str = "") -> None:
