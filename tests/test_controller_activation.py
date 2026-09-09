@@ -340,6 +340,39 @@ def test_valid_envelope_cli_recovers_every_durable_crash_state(tmp_path: Path) -
     assert "runtime does not match committed" in committed_foreign_runtime.stderr
 
 
+def test_expired_envelope_can_finalize_an_already_measured_commit(tmp_path: Path) -> None:
+    status = tmp_path / "controller-release.json"
+    status.write_bytes(_encoded_status())
+    envelope = tmp_path / "activation-envelope.json"
+    envelope.write_text(
+        json.dumps(
+            _envelope_document(now=datetime.now(UTC) - timedelta(hours=1)),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    public_key = tmp_path / "activation-public-key.pem"
+    public_key.write_bytes(
+        PUBLIC_KEY.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+
+    finalize = _run_activation_cli(
+        status=status,
+        envelope=envelope,
+        public_key=public_key,
+        command="finalize-measured",
+        observations=(NEW.image_digest, NEW_CONFIG),
+    )
+
+    assert finalize.returncode == 78
+    assert "local and public measured controller statuses are required" in finalize.stderr
+    assert "expired" not in finalize.stderr
+
+
 def _recovery_claim_receipt(*, now: datetime) -> dict[str, object]:
     job = {
         "repository": CONTROLLER_REPOSITORY,

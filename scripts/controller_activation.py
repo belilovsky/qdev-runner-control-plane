@@ -141,6 +141,7 @@ def _load_envelope(args: argparse.Namespace) -> ActivationEnvelope:
             "authorize-rollback",
             "abort",
             "complete-rollback",
+            "finalize-measured",
             "finalize-historical",
             "verify-legacy-public",
             "verify-recovery-envelope",
