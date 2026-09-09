@@ -511,8 +511,7 @@ class WorkerRecoveryController:
         if (
             row.get("controller_revision") == release["revision"]
             and row.get("controller_release_digest") == release["release_digest"]
-            and row.get("expected_agent_certificate_sha256")
-            == self._agent_certificate(target)
+            and row.get("expected_agent_certificate_sha256") == self._agent_certificate(target)
         ):
             raise WorkerRecoveryError("current-controller recovery fence cannot be superseded")
         timestamps = (
