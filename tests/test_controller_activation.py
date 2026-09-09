@@ -748,6 +748,36 @@ def test_hosted_artifact_requires_fresh_exact_identity(tmp_path: Path, tamper: s
         )
 
 
+def test_self_hosted_recovery_build_artifact_requires_exact_labels(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 6, 12, tzinfo=UTC)
+    identity = _recovery_workflow_identity(now=now)
+    identity.pop("admission_nonce")
+    identity.update(
+        {
+            "workflow_ref": (
+                f"{CONTROLLER_REPOSITORY}/.github/workflows/"
+                "controller-recovery-build.yml@refs/heads/main"
+            ),
+            "subject": f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main",
+            "ref": "refs/heads/main",
+            "job_name": "controller-recovery-build",
+            "labels": ["self-hosted", "Linux", "X64", "qdev-ci-docker"],
+            "execution_lane": "self-hosted-recovery-build",
+            "idempotency_key": "self-hosted-recovery:101:202:1",
+            "issued_at": identity["reconciled_at"],
+        }
+    )
+    manifest, _ = _artifact_bundle(tmp_path, workflow_identity=identity)
+    assert (
+        verify_controller_artifact_manifest(manifest, require_root_owner=False, now=now).source_sha
+        == NEW.source_sha
+    )
+    identity["labels"] = ["self-hosted", "Linux", "X64", "qdev-ci"]
+    manifest, _ = _artifact_bundle(tmp_path, workflow_identity=identity)
+    with pytest.raises(ControllerActivationError):
+        verify_controller_artifact_manifest(manifest, require_root_owner=False, now=now)
+
+
 def test_artifact_manifest_accepts_fresh_exact_recovery_identity(tmp_path: Path) -> None:
     now = datetime(2026, 9, 6, 12, tzinfo=UTC)
     manifest, _ = _artifact_bundle(

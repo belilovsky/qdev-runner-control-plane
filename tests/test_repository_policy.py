@@ -475,6 +475,51 @@ jobs:
     assert run_guard(root).returncode == 0
 
 
+def test_declared_manual_recovery_allows_only_sealed_docker_worker(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/controller-recovery-build.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  recovery:
+    runs-on: [self-hosted, Linux, X64, qdev-ci-docker]
+    steps:
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+""",
+        encoding="utf-8",
+    )
+    declare_github_artifact_recovery_workflow(root)
+    contract = root / ".github/qdev-runner.yml"
+    contract.write_text(
+        contract.read_text(encoding="utf-8").replace(
+            "profiles:\n  - qdev-ci\n", "profiles:\n  - qdev-ci\n  - qdev-ci-docker\n"
+        ),
+        encoding="utf-8",
+    )
+    load_installer().install(root)
+    assert run_guard(root).returncode == 0
+
+
+def test_declared_manual_recovery_rejects_unsealed_static_worker(tmp_path: Path) -> None:
+    root = hosted_repository(tmp_path, "jobs: {}\n")
+    (root / ".github/workflows/controller-recovery-build.yml").write_text(
+        """on:
+  workflow_dispatch:
+jobs:
+  recovery:
+    runs-on: [self-hosted, Linux, X64, qdev-ci]
+    steps:
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+""",
+        encoding="utf-8",
+    )
+    declare_github_artifact_recovery_workflow(root)
+    load_installer().install(root)
+    result = run_guard(root)
+    assert result.returncode == 1
+    assert "self-hosted-runner-outside-recovery" in result.stdout
+
+
 def test_declared_manual_recovery_rejects_artifact_download(tmp_path: Path) -> None:
     root = hosted_repository(tmp_path, "jobs: {}\n")
     (root / ".github/workflows/controller-recovery-build.yml").write_text(

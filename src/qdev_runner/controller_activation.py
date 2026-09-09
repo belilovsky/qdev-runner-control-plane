@@ -2260,12 +2260,29 @@ def verify_controller_artifact_manifest(
         ):
             raise ControllerActivationError("controller artifact workflow identity is invalid")
     elif set(workflow_identity) == hosted_identity_fields:
-        issued_at = _parse_time(workflow_identity.get("issued_at"), "hosted recovery issued_at")
-        expires_at = _parse_time(workflow_identity.get("expires_at"), "hosted recovery expires_at")
+        issued_at = _parse_time(workflow_identity.get("issued_at"), "recovery build issued_at")
+        expires_at = _parse_time(workflow_identity.get("expires_at"), "recovery build expires_at")
         observed_at = (now or datetime.now(UTC)).astimezone(UTC)
         run_id = workflow_identity["run_id"]
         job_id = workflow_identity["job_id"]
         attempt = workflow_identity["attempt"]
+        recovery_build_identities = {
+            (
+                ("ubuntu-latest",),
+                "github-hosted-recovery-build",
+                "hosted-recovery",
+            ),
+            (
+                ("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+                "self-hosted-recovery-build",
+                "self-hosted-recovery",
+            ),
+        }
+        identity_tuple = (
+            tuple(workflow_identity.get("labels", [])),
+            workflow_identity.get("execution_lane"),
+            str(workflow_identity.get("idempotency_key", "")).split(":", 1)[0],
+        )
         if (
             claim_receipt_raw is not None
             or "claim_receipt_sha256" in provenance
@@ -2275,10 +2292,9 @@ def verify_controller_artifact_manifest(
             or workflow_identity.get("head_sha") != source_sha
             or workflow_identity.get("expected_sha") != source_sha
             or workflow_identity.get("job_name") != "controller-recovery-build"
-            or workflow_identity.get("labels") != ["ubuntu-latest"]
             or workflow_identity.get("conclusion") != "success"
             or workflow_identity.get("owner_recovery") is not True
-            or workflow_identity.get("execution_lane") != "github-hosted-recovery-build"
+            or identity_tuple not in recovery_build_identities
             or workflow_identity["subject"] != f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"
             or workflow_identity["workflow_ref"]
             != (
@@ -2286,14 +2302,14 @@ def verify_controller_artifact_manifest(
                 "controller-recovery-build.yml@refs/heads/main"
             )
             or workflow_identity.get("idempotency_key")
-            != f"hosted-recovery:{run_id}:{job_id}:{attempt}"
+            != f"{identity_tuple[2]}:{run_id}:{job_id}:{attempt}"
             or expires_at <= issued_at
             or expires_at - issued_at > MAX_ENVELOPE_TTL
             or reconciled_at != issued_at
             or issued_at > observed_at + MAX_CLOCK_SKEW
             or expires_at <= observed_at
         ):
-            raise ControllerActivationError("hosted controller recovery identity is invalid")
+            raise ControllerActivationError("controller recovery build identity is invalid")
     else:
         if claim_receipt_raw is None or claim_receipt_digest is None:
             raise ControllerActivationError(

@@ -37,6 +37,9 @@ UNIQUE_JOB_LABEL = re.compile(
 MATRIX_JOB_INDEX = re.compile(r"\$\{\{\s*strategy\.job-index\s*\}\}")
 RUNS_ON = re.compile(r"^(\s*)['\"]?runs-on['\"]?\s*:\s*(.*)$")
 FLOW_RUNS_ON = re.compile(r"(?:^|[{,])\s*['\"]?runs-on['\"]?\s*:\s*(.*)$")
+SEALED_ARTIFACT_RECOVERY_SELECTOR = re.compile(
+    r"^\s*\[\s*self-hosted\s*,\s*Linux\s*,\s*X64\s*,\s*qdev-ci-docker\s*\]\s*$"
+)
 FORK_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 MANAGED_START = "<!-- qdev-runner-policy:start -->"
 MANAGED_END = "<!-- qdev-runner-policy:end -->"
@@ -321,8 +324,14 @@ def workflow_violations(
             errors.append(f"{rel}:{number}: dynamic-runner-selector")
         selected_profiles = set(QDEV_PROFILE.findall(selector))
         if selected_profiles:
+            sealed_artifact_recovery = (
+                is_github_artifact_recovery_workflow
+                and SEALED_ARTIFACT_RECOVERY_SELECTOR.fullmatch(selector) is not None
+            )
             if allow_hosted and not (
-                is_recovery_workflow or is_primary_self_hosted_workflow
+                is_recovery_workflow
+                or is_primary_self_hosted_workflow
+                or sealed_artifact_recovery
             ):
                 errors.append(f"{rel}:{number}: self-hosted-runner-outside-recovery")
             if len(selected_profiles) != 1:
@@ -333,19 +342,20 @@ def workflow_violations(
             patterns = (rf"\b{re.escape(label)}\b" for label in required)
             if not all(re.search(pattern, selector) for pattern in patterns):
                 errors.append(f"{rel}:{number}: missing-required-runner-label")
-            has_unique_components = all(
-                marker in selector
-                for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
-            )
-            label_match = UNIQUE_JOB_LABEL.search(selector)
-            if not has_unique_components or not label_match:
-                errors.append(f"{rel}:{number}: missing-unique-job-label")
-            else:
-                label = label_match.group(0)
-                if label in unique_labels:
-                    errors.append(f"{rel}:{number}: duplicate-unique-job-label")
+            if not sealed_artifact_recovery:
+                has_unique_components = all(
+                    marker in selector
+                    for marker in ("qdev-job-", "github.run_id", "github.run_attempt")
+                )
+                label_match = UNIQUE_JOB_LABEL.search(selector)
+                if not has_unique_components or not label_match:
+                    errors.append(f"{rel}:{number}: missing-unique-job-label")
                 else:
-                    unique_labels[label] = number
+                    label = label_match.group(0)
+                    if label in unique_labels:
+                        errors.append(f"{rel}:{number}: duplicate-unique-job-label")
+                    else:
+                        unique_labels[label] = number
         elif "${{" not in selector:
             approved_hosted = allow_hosted and bool(HOSTED_SELECTOR.fullmatch(selector))
             approved_release = any(
