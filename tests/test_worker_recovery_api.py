@@ -631,7 +631,8 @@ def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
         else:
             connection.execute(
                 "UPDATE worker_recoveries SET controller_revision=?,controller_release_digest=?,"
-                "controller_observed_at=?,requested_at=?,provider_observed_at=? WHERE operation_id=?",
+                "controller_observed_at=?,requested_at=?,provider_observed_at=? "
+                "WHERE operation_id=?",
                 (
                     "0" * 40,
                     "0" * 64,
