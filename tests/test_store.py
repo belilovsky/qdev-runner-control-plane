@@ -887,6 +887,77 @@ def test_reserve_waits_when_primary_has_profile_headroom(tmp_path: Path) -> None
     )
 
 
+def test_reserve_ignores_primary_override_bound_to_another_candidate(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(
+        job(
+            repository="belilovsky/current-project",
+            head_sha="b" * 40,
+        )
+    )
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 20,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": "operation-old",
+            "capacity_directive_repository": "belilovsky/old-project",
+            "capacity_directive_head_sha": "a" * 40,
+        },
+    )
+
+    claimed = store.claim(
+        "reserve-1",
+        ("qdev-ci",),
+        tier="reserve",
+        disk_free_gib=40,
+        min_disk_free_gib=4.5,
+        profile_disk_mb={"qdev-ci": 4096},
+    )
+
+    assert claimed is not None
+    assert claimed["job_id"] == 100
+
+
+def test_reserve_waits_for_primary_override_matching_candidate(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    store.enqueue(job(repository="belilovsky/current-project", head_sha="b" * 40))
+    store.heartbeat(
+        "primary-1",
+        ("qdev-ci",),
+        0,
+        (),
+        {
+            "tier": "primary",
+            "allowed": True,
+            "concurrency": 1,
+            "disk_free_gib": 20,
+            "min_disk_free_gib": 4.5,
+            "capacity_directive_id": "operation-current",
+            "capacity_directive_repository": "belilovsky/current-project",
+            "capacity_directive_head_sha": "b" * 40,
+        },
+    )
+
+    assert (
+        store.claim(
+            "reserve-1",
+            ("qdev-ci",),
+            tier="reserve",
+            disk_free_gib=40,
+            min_disk_free_gib=4.5,
+            profile_disk_mb={"qdev-ci": 4096},
+        )
+        is None
+    )
+
+
 def test_completed_job_is_not_overwritten_by_late_worker_failure(tmp_path: Path) -> None:
     store = Store(tmp_path / "broker.db")
     store.enqueue(job())

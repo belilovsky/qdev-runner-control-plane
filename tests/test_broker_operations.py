@@ -1831,6 +1831,50 @@ def test_health_reports_profile_specific_admission_without_job_details(tmp_path:
     }
 
 
+def test_health_does_not_count_override_bound_to_another_candidate(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="profile-health-bound-override",
+            job_id=99,
+            run_id=84000000099,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=("self-hosted", "Linux", "X64", "qdev-ci-docker"),
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+    _heartbeat(
+        client,
+        admitted=True,
+        capacity_directive_id="operation-other-candidate",
+    )
+    with store.connect() as connection:
+        row = connection.execute(
+            "SELECT detail_json FROM workers WHERE name=?", (WORKER_NAME,)
+        ).fetchone()
+        assert row is not None
+        detail = json.loads(row["detail_json"])
+        detail["capacity_directive_repository"] = "belilovsky/other"
+        detail["capacity_directive_head_sha"] = "b" * 40
+        connection.execute(
+            "UPDATE workers SET detail_json=? WHERE name=?",
+            (json.dumps(detail), WORKER_NAME),
+        )
+
+    profile = client.get("/health").json()["profile_admission"]["qdev-ci-docker"]
+    assert profile == {
+        "pending": 1,
+        "primary_slots_available": 0,
+        "reserve_slots_available": 0,
+        "admission": "no-fresh-eligible-worker",
+    }
+
+
 @pytest.mark.parametrize(
     "status",
     [

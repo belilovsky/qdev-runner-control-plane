@@ -77,6 +77,10 @@ reusable workflow. Recovery evidence must not be reported as a hosted check.
   free for the exact pending profile. Claim admission preserves the configured
   free-space floor plus that profile's declared disk budget; a merely present,
   busy, or undersized primary does not block reserve.
+- The default shared-worker disk baseline is 30 GiB free and 85% used. A
+  continuously monitored shared worker may use the durable 10 GiB/90% bound;
+  profile reservations are still added per claim. Values below that durable
+  bound remain exact-candidate, expiring scoped overrides only.
 - Preserve the previous controller release and host configuration before a
   bounded activation. Do not broad-prune shared Docker data.
 - A runner-image cleanup allowlist is configuration-bound. Inspect every image

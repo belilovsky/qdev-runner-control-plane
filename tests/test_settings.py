@@ -147,24 +147,52 @@ def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
         "QDEV_MTLS_CA": "/var/lib/qdev-test/ca.pem",
         "QDEV_MTLS_CERT": "/var/lib/qdev-test/cert.pem",
         "QDEV_MTLS_KEY": "/var/lib/qdev-test/key.pem",
-        "QDEV_WORKER_MIN_FREE_GIB": "4",
+        "QDEV_WORKER_MIN_FREE_GIB": "4.5",
         "QDEV_WORKER_MAX_DISK_USED_PCT": "90",
     }.items():
         monkeypatch.setenv(name, value)
     set_required_runner_images(monkeypatch)
     monkeypatch.delenv("QDEV_WORKER_TOKEN", raising=False)
 
-    with pytest.raises(RuntimeError, match="scoped explicit override"):
+    with pytest.raises(RuntimeError, match="durable worker capacity gate"):
         WorkerSettings.from_env()
 
     monkeypatch.setenv("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE", "true")
     settings = WorkerSettings.from_env()
     assert settings.capacity_override_active is True
-    assert settings.min_disk_free_gib == 4
+    assert settings.min_disk_free_gib == 4.5
     assert settings.max_disk_used_pct == 90
 
-    monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "3")
+    monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "4")
     with pytest.raises(RuntimeError, match="bounded range"):
+        WorkerSettings.from_env()
+
+
+def test_unscoped_worker_can_use_durable_capacity_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "QDEV_WORKER_NAME": "mail-qdev-reserve",
+        "QDEV_WORKER_TIER": "reserve",
+        "QDEV_BROKER_URL": "https://worker.ci.qdev.run",
+        "QDEV_WORKER_TOKEN": "worker-secret",
+        "QDEV_MTLS_CA": "/var/lib/qdev-test/ca.pem",
+        "QDEV_MTLS_CERT": "/var/lib/qdev-test/cert.pem",
+        "QDEV_MTLS_KEY": "/var/lib/qdev-test/key.pem",
+        "QDEV_WORKER_MIN_FREE_GIB": "10",
+        "QDEV_WORKER_MAX_DISK_USED_PCT": "90",
+    }.items():
+        monkeypatch.setenv(name, value)
+    set_required_runner_images(monkeypatch)
+
+    settings = WorkerSettings.from_env()
+
+    assert settings.capacity_override_active is False
+    assert settings.min_disk_free_gib == 10
+    assert settings.max_disk_used_pct == 90
+
+    monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "9.9")
+    with pytest.raises(RuntimeError, match="durable worker capacity gate"):
         WorkerSettings.from_env()
 
 

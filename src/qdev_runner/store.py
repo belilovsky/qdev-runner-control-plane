@@ -1096,6 +1096,8 @@ class Store:
         cutoff: float,
         *,
         profile: str | None = None,
+        repository: str | None = None,
+        head_sha: str | None = None,
         profile_disk_mb: int | None = None,
         repository_min_disk_free_gib: float | None = None,
         repository_max_concurrency: int | None = None,
@@ -1113,6 +1115,19 @@ class Store:
             detail = json.loads(row["detail_json"])
             worker_profiles = {str(item).lower() for item in json.loads(row["profiles_json"])}
             if profile is not None and profile.lower() not in worker_profiles:
+                continue
+            # A capacity override is an exact repository/SHA admission, not a
+            # general-purpose tier slot.  Treating it as generic primary
+            # capacity makes every reserve worker wait forever on jobs the
+            # primary is cryptographically unable to claim.
+            if detail.get("capacity_directive_id") and (
+                repository is None
+                or head_sha is None
+                or str(detail.get("capacity_directive_repository") or "").lower()
+                != repository.lower()
+                or str(detail.get("capacity_directive_head_sha") or "").lower()
+                != head_sha.lower()
+            ):
                 continue
             if (
                 detail.get("tier") == tier
@@ -1390,6 +1405,8 @@ class Store:
                     "primary",
                     now - primary_max_age_seconds,
                     profile=matching_profile,
+                    repository=repository_name,
+                    head_sha=str(row["head_sha"]),
                     profile_disk_mb=required_disk_mb,
                     repository_min_disk_free_gib=minimum_free_gib,
                     repository_max_concurrency=maximum_concurrency,

@@ -189,6 +189,7 @@ def profile_admission_health(
     names and counts, and does not participate in admission.
     """
     pending_by_profile: dict[str, int] = {}
+    pending_bindings_by_profile: dict[str, set[tuple[str, str]]] = {}
     for job in pending_jobs:
         try:
             profile = policy.profile_for_labels(
@@ -199,6 +200,9 @@ def profile_admission_health(
             # the normal broker validation and reconciliation paths.
             continue
         pending_by_profile[profile.name] = pending_by_profile.get(profile.name, 0) + 1
+        pending_bindings_by_profile.setdefault(profile.name, set()).add(
+            (str(job["repository"]).lower(), str(job["head_sha"]).lower())
+        )
 
     summary: dict[str, dict[str, int | str]] = {}
     for profile_name, pending in sorted(pending_by_profile.items()):
@@ -208,6 +212,12 @@ def profile_admission_health(
                 continue
             profiles = {item.lower() for item in _json_strings(worker["profiles_json"])}
             if profile_name.lower() not in profiles:
+                continue
+            detail = _json_object(worker.get("detail_json"))
+            if detail.get("capacity_directive_id") and (
+                str(detail.get("capacity_directive_repository") or "").lower(),
+                str(detail.get("capacity_directive_head_sha") or "").lower(),
+            ) not in pending_bindings_by_profile.get(profile_name, set()):
                 continue
             tier = str(worker["tier"])
             if tier in slots:

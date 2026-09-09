@@ -8,6 +8,12 @@ from typing import Literal, cast
 
 _IMMUTABLE_IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
+_DEFAULT_WORKER_MIN_FREE_GIB = 30.0
+_DEFAULT_WORKER_MAX_DISK_USED_PCT = 85.0
+_DURABLE_WORKER_MIN_FREE_GIB = 10.0
+_DURABLE_WORKER_MAX_DISK_USED_PCT = 90.0
+_SCOPED_WORKER_MIN_FREE_GIB = 4.5
+
 
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
@@ -376,8 +382,15 @@ class WorkerSettings:
         worker_token = os.environ.get("QDEV_WORKER_TOKEN", "").strip() or None
         if not worker_token and not claim_scope_id:
             raise RuntimeError("QDEV_WORKER_TOKEN is required for an unscoped worker")
-        min_disk_free_gib = float(os.environ.get("QDEV_WORKER_MIN_FREE_GIB", "30"))
-        max_disk_used_pct = float(os.environ.get("QDEV_WORKER_MAX_DISK_USED_PCT", "85"))
+        min_disk_free_gib = float(
+            os.environ.get("QDEV_WORKER_MIN_FREE_GIB", str(_DEFAULT_WORKER_MIN_FREE_GIB))
+        )
+        max_disk_used_pct = float(
+            os.environ.get(
+                "QDEV_WORKER_MAX_DISK_USED_PCT",
+                str(_DEFAULT_WORKER_MAX_DISK_USED_PCT),
+            )
+        )
         min_memory_available_gib = float(
             os.environ.get("QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB", "4")
         )
@@ -387,18 +400,26 @@ class WorkerSettings:
         )
         if allow_capacity_override not in {"true", "false"}:
             raise RuntimeError("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE must be true or false")
-        capacity_override_active = min_disk_free_gib < 30 or max_disk_used_pct > 85
+        capacity_gate_relaxed = (
+            min_disk_free_gib < _DEFAULT_WORKER_MIN_FREE_GIB
+            or max_disk_used_pct > _DEFAULT_WORKER_MAX_DISK_USED_PCT
+        )
+        capacity_override_active = allow_capacity_override == "true"
         if min_memory_available_gib < 4 or max_load_per_cpu > 2:
             raise RuntimeError("worker memory and load gates cannot be relaxed")
         if capacity_override_active:
-            if not claim_scope_id or allow_capacity_override != "true":
-                raise RuntimeError(
-                    "a lower worker capacity gate requires a scoped explicit override"
-                )
-            if min_disk_free_gib < 4 or max_disk_used_pct > 90:
+            if not claim_scope_id or not capacity_gate_relaxed:
+                raise RuntimeError("worker capacity override is not active and scoped")
+            if (
+                min_disk_free_gib < _SCOPED_WORKER_MIN_FREE_GIB
+                or max_disk_used_pct > _DURABLE_WORKER_MAX_DISK_USED_PCT
+            ):
                 raise RuntimeError("worker capacity override is outside the bounded range")
-        elif allow_capacity_override == "true":
-            raise RuntimeError("worker capacity override is not active")
+        elif (
+            min_disk_free_gib < _DURABLE_WORKER_MIN_FREE_GIB
+            or max_disk_used_pct > _DURABLE_WORKER_MAX_DISK_USED_PCT
+        ):
+            raise RuntimeError("durable worker capacity gate is outside the bounded range")
         return cls(
             broker_url=_required("QDEV_BROKER_URL").rstrip("/"),
             worker_token=worker_token,

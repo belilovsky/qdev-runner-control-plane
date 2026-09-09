@@ -32,7 +32,11 @@ GitHub API.
   pull requests and missing head-repository provenance are rejected. Dedicated
   release labels remain product-specific and are not assigned to the general
   pool.
-- The capacity gate stops claims above 85% disk usage, below 30 GiB free disk,
+- The capacity gate defaults to stopping claims above 85% disk usage or below
+  30 GiB free disk. A continuously monitored shared worker may use a durable
+  floor down to 10 GiB and a ceiling up to 90% when profile disk reservations
+  are still added before every claim; this is baseline capacity, not a scoped
+  override. Claims also stop
   below 4 GiB available memory or above load-15 equal to twice the CPU count.
   Worker-specific floors can be raised with `QDEV_WORKER_MIN_FREE_GIB`,
   `QDEV_WORKER_MAX_DISK_USED_PCT`, `QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB`,
@@ -368,14 +372,17 @@ relax the 85% disk-use, memory, or load gates, and does not start the worker.
 Before the owner-bound execution permit is released, `worker.env` must carry
 the normal runtime gate or a separate, source-validated runtime override.
 
-When a scoped worker must run a profile whose explicit disk reservation cannot
-fit above the default runtime floor, its owner may make a second, independent
-runtime override. It requires all of `QDEV_CLAIM_SCOPE_ID`,
-`QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE=true`, a free-space floor from 4
-through 30 GiB, and a disk-use ceiling no higher than 90%. Memory and load
-gates cannot be relaxed. The active override is reported in the worker
-heartbeat, and the broker still requires the configured floor plus the claimed
-profile's disk reservation before assigning a job.
+An unscoped shared worker may use a durable runtime baseline from 10 through
+30 GiB and a disk-use ceiling no higher than 90%. The broker still adds the
+claimed profile's disk reservation, so a 10 GiB baseline admits a 20 GiB Docker
+profile only while at least 30 GiB is actually free.
+
+When a scoped worker must run one exact candidate below that durable baseline,
+its owner may make a separate runtime override. It requires all of
+`QDEV_CLAIM_SCOPE_ID`, `QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE=true`, a
+free-space floor from 4.5 through 30 GiB, and a disk-use ceiling no higher than
+90%. Memory and load gates cannot be relaxed. The active override is reported
+in the worker heartbeat.
 
 Worker provisioning archives the exact obsolete
 `qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not
