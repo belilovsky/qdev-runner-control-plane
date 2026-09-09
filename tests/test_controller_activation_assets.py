@@ -308,11 +308,14 @@ def test_repair_installed_activation_adapter_is_digest_bound_and_keeps_backup(
     )
     assert receipt["rollback_adapter_sha256"] == old
     assert receipt["candidate_adapter_sha256"] == new
-    assert json.loads(
-        (repairs_parent / "adapter-repairs" / "receipts" / "adapter-repair-0001.json").read_text(
-            encoding="utf-8"
+    assert (
+        json.loads(
+            (
+                repairs_parent / "adapter-repairs" / "receipts" / "adapter-repair-0001.json"
+            ).read_text(encoding="utf-8")
         )
-    ) == receipt
+        == receipt
+    )
 
 
 def test_repair_installed_activation_adapter_rejects_changed_installed_bytes(
