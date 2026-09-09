@@ -147,10 +147,11 @@ def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted(tmp_path: Pat
         CI.validate_context("local", environment, SHA)
 
 
-def test_recovery_build_requires_owner_dispatch_on_main(tmp_path: Path) -> None:
+def test_hosted_recovery_build_requires_owner_dispatch_on_main(tmp_path: Path) -> None:
     environment = context(tmp_path)
     environment.update(
         {
+            "RUNNER_ENVIRONMENT": "github-hosted",
             "GITHUB_WORKFLOW_REF": (
                 "belilovsky/qdev-runner-control-plane/.github/workflows/"
                 "controller-recovery-build.yml@refs/heads/main"
@@ -482,12 +483,12 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
     }
 
 
-def test_recovery_build_uses_existing_docker_worker_and_full_verification() -> None:
+def test_recovery_build_uses_hosted_lane_and_full_verification() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/controller-recovery-build.yml").read_text()
     )
     job = workflow["jobs"]["controller-recovery-build"]
-    assert job["runs-on"] == ["self-hosted", "Linux", "X64", "qdev-ci-docker"]
+    assert job["runs-on"] == "ubuntu-latest"
     verify = next(
         step for step in job["steps"] if "scripts/verify_controller_ci.py" in step.get("run", "")
     )

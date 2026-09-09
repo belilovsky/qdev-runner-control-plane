@@ -198,7 +198,9 @@ def validate_context(
             ),
         )
     )
-    runner_environment = "github-hosted" if lane == "github-hosted" else "self-hosted"
+    runner_environment = (
+        "github-hosted" if lane in {"github-hosted", "controller-recovery-build"} else "self-hosted"
+    )
     if environment.get("RUNNER_ENVIRONMENT") != runner_environment:
         raise ValueError("runner environment does not match requested execution lane")
     if lane == "managed":

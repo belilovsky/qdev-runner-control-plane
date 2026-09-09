@@ -20,11 +20,9 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       github.ref == 'refs/heads/main' && inputs.expected_sha == github.sha
-    # This is the one owner-dispatched bootstrap lane.  It intentionally uses
-    # the existing Docker-capable recovery worker rather than consuming
-    # GitHub-hosted minutes, but remains bound to the default branch and the
-    # exact requested SHA below.
-    runs-on: [self-hosted, Linux, X64, qdev-ci-docker]
+    # This is the one owner-dispatched bootstrap lane. It must remain
+    # independent of the self-hosted fleet it is intended to recover.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
