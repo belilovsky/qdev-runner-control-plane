@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-09-06T06:36:56.219389+00:00",
+  "generated_at": "2026-09-09T16:16:42.356737+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
   "runner_repository_count": 98,
@@ -3183,13 +3183,30 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 3,
+      "workflow_count": 5,
       "workflow_files": [
         {
           "path": ".github/workflows/ci.yml",
-          "sha": "edb4b4d536ab3fe717c835d5dda3d03d73640edb",
+          "sha": "119197972cf0227027164b5a9f7d9bcf545fa148",
+          "hosted_selectors": 1,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/controller-recovery-build.yml",
+          "sha": "5ff460b9e36718ce41b63f28d47ad685cdc572bb",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 1,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/fleet-bootstrap.yml",
+          "sha": "81f9bbfc310ceb67cc03657f97232873c93f824e",
           "hosted_selectors": 1,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -3197,7 +3214,7 @@
         },
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
-          "sha": "a601b0d1afaf829fddedeeb80807cd98f56f0c10",
+          "sha": "c268e398d49e76b98b2cb187229a57161da0d6b5",
           "hosted_selectors": 1,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -3205,7 +3222,7 @@
         },
         {
           "path": ".github/workflows/runner-smoke.yml",
-          "sha": "6562aa1e2cceaffbc2cd9d7014b2251bbd508b58",
+          "sha": "055f22d1e4ab3813e3768aea9cadebe139bdca38",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,

@@ -3,6 +3,13 @@ schema_version: qdev-runner-profiles-v1
 # This changes admission for that exact repository/profile only; the worker's
 # live disk floor remains enforced throughout execution.
 repository_admission_disk_mb:
+  # The controller recovery build uses the already-cached 2.11 GiB runner
+  # image and a 24 MiB checked-out source tree.  The build is the only
+  # bootstrap path for restoring a controller with constrained capacity, so
+  # reserve the policy minimum of 4 GiB for this exact Docker lane while the
+  # worker's independent 4.5 GiB free-space floor remains mandatory.
+  belilovsky/qdev-runner-control-plane:
+    qdev-ci-docker: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # QazLake declares a 12 GiB bounded compose-validation workload in its
