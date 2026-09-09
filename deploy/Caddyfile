@@ -14,6 +14,20 @@ ci.qdev.run {
     reverse_proxy qdev-runner-broker-public:9020
   }
 
+  # GitHub-hosted recovery may submit only these typed, OIDC-verified
+  # bootstrap intents.  The broker independently validates the workflow
+  # identity and policy-shaped request before it can create a host dispatch.
+  @fleet_bootstrap_ingress {
+    method POST
+    path /internal/v1/ingress/fleet-bootstrap/activate-controller /internal/v1/ingress/fleet-bootstrap/enrol-host-agent
+  }
+  handle @fleet_bootstrap_ingress {
+    request_body {
+      max_size 128KB
+    }
+    reverse_proxy qdev-runner-broker-public:9020
+  }
+
   @artifact path /artifacts/*
   handle @artifact {
     request_body {

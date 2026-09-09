@@ -673,6 +673,16 @@ def test_controller_defers_public_worker_route_to_source_owned_edge() -> None:
     assert "worker.ci.qdev.run" not in caddyfile
 
 
+def test_controller_allows_only_typed_github_bootstrap_ingress_at_public_edge() -> None:
+    caddyfile = (ROOT / "deploy/Caddyfile").read_text(encoding="utf-8")
+
+    assert "@fleet_bootstrap_ingress" in caddyfile
+    assert "method POST" in caddyfile
+    assert "/internal/v1/ingress/fleet-bootstrap/activate-controller" in caddyfile
+    assert "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent" in caddyfile
+    assert "max_size 128KB" in caddyfile
+
+
 def test_edge_proxy_issuer_keeps_credential_local_and_short_lived() -> None:
     script = (ROOT / "scripts/issue_edge_proxy_certificate.sh").read_text(encoding="utf-8")
 
