@@ -146,18 +146,18 @@ def test_installer_repairs_managed_only_agents_without_heading(tmp_path: Path) -
     assert installer.install(root) == []
 
 
-def test_installer_supports_broker_and_github_hosted_artifact_identities(tmp_path: Path) -> None:
+def test_installer_supports_broker_artifact_identity_and_hosted_reconciliation(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     load_installer().install(root)
     uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
     assert "${QDEV_REPOSITORY}/${QDEV_HEAD_SHA}/${QDEV_JOB_ID}" in uploader
-    assert "${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}/${GITHUB_RUN_ID:?}" in uploader
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in uploader
-    assert "X-QDev-GitHub-OIDC" in uploader
+    assert "retained by GitHub for controller reconciliation" in uploader
+    assert "X-QDev-GitHub-OIDC" not in uploader
     assert "[A-Za-z0-9._-]{0,127}" in uploader
 
 
-def test_hosted_artifact_upload_uses_the_bound_workflow_run_id(tmp_path: Path) -> None:
+def test_hosted_artifact_is_retained_for_controller_reconciliation(tmp_path: Path) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     load_installer().install(root)
     uploader = root / ".github/scripts/qdev-upload-artifact.sh"
@@ -211,9 +211,8 @@ def test_hosted_artifact_upload_uses_the_bound_workflow_run_id(tmp_path: Path) -
         env=environment,
     )
     assert result.returncode == 0, result.stderr
-    calls = capture.read_text(encoding="utf-8")
-    assert "/actions/runs/123/jobs?per_page=100" not in calls
-    assert "/owner/repository/" + ("a" * 40) + "/123/receipt.tar.gz" in calls
+    assert not capture.exists()
+    assert "retained by GitHub for controller reconciliation" in result.stdout
 
 
 def test_guard_rejects_hosted_services_and_unpinned_actions(tmp_path: Path) -> None:

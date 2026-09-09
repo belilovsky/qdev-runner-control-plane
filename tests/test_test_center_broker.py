@@ -162,7 +162,7 @@ def _claimed_client(
     return settings, store, TestClient(create_app(settings, store=store, github=fake)), fake
 
 
-def test_hosted_oidc_uploads_generic_archive_without_controller_job(
+def test_hosted_oidc_generic_archive_is_rejected_without_writing(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
     settings = _app_settings(tmp_path, policy_files)
@@ -186,18 +186,12 @@ def test_hosted_oidc_uploads_generic_archive_without_controller_job(
             "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
         },
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["report"] is None
-    assert verifier.calls == [("valid-oidc", "belilovsky/qazpolit", SHA, run_id)]
-    assert (
-        settings.artifact_root.joinpath(
-            "belilovsky", "qazpolit", SHA, str(run_id), "1", "artifact", "qazpolit-release.tar.gz"
-        ).read_bytes()
-        == body
-    )
+    assert response.status_code == 403, response.text
+    assert verifier.calls == []
+    assert list(settings.artifact_root.rglob("*")) == []
 
 
-def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
+def test_hosted_oidc_archive_is_rejected_before_identity_verification(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
     settings = _app_settings(tmp_path, policy_files)
@@ -218,7 +212,8 @@ def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
             "X-Qdev-SHA256": hashlib.sha256(body).hexdigest(),
         },
     )
-    assert response.status_code == 401
+    assert response.status_code == 403
+    assert verifier.calls == []
     target = settings.artifact_root.joinpath(
         "belilovsky", "qazpolit", SHA, "34184945942", "1", "artifact", "qazpolit-release.tar.gz"
     )
@@ -226,7 +221,7 @@ def test_hosted_oidc_archive_rejects_an_invalid_identity_without_writing(
     assert list(settings.artifact_root.rglob("*")) == []
 
 
-def test_hosted_oidc_test_report_still_requires_a_controller_job(
+def test_hosted_oidc_test_report_is_rejected_before_body_processing(
     tmp_path: Path, policy_files: tuple[Path, Path]
 ) -> None:
     settings = _app_settings(tmp_path, policy_files)
@@ -250,7 +245,7 @@ def test_hosted_oidc_test_report_still_requires_a_controller_job(
             "X-Qdev-Test-Workflow": WORKFLOW,
         },
     )
-    assert response.status_code == 404
+    assert response.status_code == 403
     assert verifier.calls == []
 
 
