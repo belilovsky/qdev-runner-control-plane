@@ -310,6 +310,7 @@ required=(
   deploy/compose.yml \
   inventory/repos.json \
   config/profiles.yml \
+  config/admin-platform-package-bindings.json \
   config/release-lanes.yml \
   config/fleet-bootstrap.yml \
   config/managed-registry.yml \
@@ -565,6 +566,7 @@ if [[ -z "$recovery_state" ]]; then
       --dispatcher-active "$dispatcher_active" \
       --snapshot "configuration=/etc/qdev-runner/repos.json" \
       --snapshot "configuration=/etc/qdev-runner/profiles.yml" \
+      --snapshot "configuration=/etc/qdev-runner/admin-platform-package-bindings.json" \
       --snapshot "configuration=/etc/qdev-runner/release-lanes.yml" \
       --snapshot "configuration=/etc/qdev-runner/fleet-bootstrap.yml" \
       --snapshot "configuration=/etc/qdev-runner/managed-registry.yml" \
@@ -1443,6 +1445,7 @@ validate_transition_configuration() {
   done <<EOF
 /etc/qdev-runner/repos.json|${release}/inventory/repos.json
 /etc/qdev-runner/profiles.yml|${release}/config/profiles.yml
+/etc/qdev-runner/admin-platform-package-bindings.json|${release}/config/admin-platform-package-bindings.json
 /etc/qdev-runner/release-lanes.yml|${release}/config/release-lanes.yml
 /etc/qdev-runner/fleet-bootstrap.yml|${release}/config/fleet-bootstrap.yml
 /etc/qdev-runner/managed-registry.yml|${release}/config/managed-registry.yml
@@ -1774,6 +1777,8 @@ if ! prepare_saved_rollback_images; then
 fi
 atomic_install "$release/inventory/repos.json" /etc/qdev-runner/repos.json 0644
 atomic_install "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml 0644
+atomic_install "$release/config/admin-platform-package-bindings.json" \
+  /etc/qdev-runner/admin-platform-package-bindings.json 0644
 atomic_install "$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml 0644
 atomic_install "$release/config/fleet-bootstrap.yml" /etc/qdev-runner/fleet-bootstrap.yml 0644
 atomic_install "$release/config/managed-registry.yml" /etc/qdev-runner/managed-registry.yml 0644
@@ -1784,6 +1789,9 @@ atomic_install "$release/config/managed-release-ledger.yml" \
   /etc/qdev-runner/managed-release-ledger.yml 0644
 if [[ "$rollback_mode" != true ]]; then
   install -d -o root -g root -m 0700 /etc/qdev-runner/admission /run/qdev-controller
+  install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings
+  install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings/incoming
+  install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings/issued
   atomic_install "$release/scripts/qdev_controller_admission_host.sh" \
     "$admission_host_tool_path" 0755
 fi

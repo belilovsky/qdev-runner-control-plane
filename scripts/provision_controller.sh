@@ -27,6 +27,9 @@ install -d -o root -g root -m 0700 /etc/qdev-runner/admission
 install -d -o root -g root -m 0755 /etc/qdev-runner/trust
 install -d -o root -g root -m 0700 /etc/qdev-runner/qazcoop-release-signing
 install -d -o root -g root -m 0700 /run/qdev-controller
+install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings
+install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings/incoming
+install -d -o root -g root -m 0700 /run/qdev-controller/admin-platform-package-bindings/issued
 install -d -o root -g root -m 0755 /etc/qdev-runner/mtls
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/controller
 install -d -o root -g 9020 -m 0750 /etc/qdev-runner/mtls/operator
@@ -88,6 +91,8 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.service \
 install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
+install -o root -g root -m 0644 config/admin-platform-package-bindings.json \
+  /etc/qdev-runner/admin-platform-package-bindings.json
 PYTHONPATH="$PWD/src" python3 scripts/provision_qazcoop_release_signing_key.py
 if [[ -f /etc/qdev-runner/admission/ed25519-public.pem ]]; then
   /usr/local/sbin/qdev-controller-activation-trust-provision
