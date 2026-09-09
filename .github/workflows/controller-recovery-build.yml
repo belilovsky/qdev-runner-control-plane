@@ -12,7 +12,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: controller-recovery-build
+  # Keep current hosted recovery serialized without allowing a legacy
+  # self-hosted recovery run to hold this bootstrap lane forever.
+  group: controller-recovery-build-hosted-v2
   cancel-in-progress: false
 
 jobs:
