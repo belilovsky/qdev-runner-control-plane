@@ -232,7 +232,8 @@ def test_stage_publishes_verified_members_before_no_overwrite_envelope(
         require_root_owner=False,
     )
 
-    manifest_target = assets_root / "artifacts" / f"{manifest_digest}.json"
+    bundle_root = assets_root / "artifacts" / manifest_digest
+    manifest_target = bundle_root / "controller-artifact-manifest.json"
     envelope_target = assets_root / "envelopes" / f"{envelope_digest}.json"
     assert receipt["status"] == "staged"
     assert receipt["activation_envelope_digest"] == "sha256:" + envelope_digest
@@ -243,23 +244,57 @@ def test_stage_publishes_verified_members_before_no_overwrite_envelope(
     assert envelope_target.read_bytes() == b"{}\n"
     assert stat.S_IMODE(manifest_target.stat().st_mode) == 0o600
     assert stat.S_IMODE(envelope_target.stat().st_mode) == 0o600
+    image_target = bundle_root / "controller-image.tar"
 
-    image_target = assets_root / "artifacts" / "controller-image.tar"
-    image_target.write_bytes(b"tampered")
-    image_target.chmod(0o600)
-    with pytest.raises(assets.ControllerActivationAssetsError, match="refusing to replace"):
-        assets.stage_activation_assets(
-            release_root=tmp_path / "candidate-release",
-            source_sha=CANDIDATE_SHA,
-            artifact_manifest=artifact_manifest,
-            signed_envelope=signed,
-            assets_root=assets_root,
-            activation_public_key=tmp_path / "activation.pub",
-            admission_public_key=tmp_path / "admission.pub",
-            trust_binding=tmp_path / "binding.json",
-            now=NOW + timedelta(minutes=1),
-            require_root_owner=False,
-        )
+    # A different immutable bundle may reuse descriptor names without
+    # overwriting the already staged artifact.
+    second_directory = tmp_path / "second-artifact"
+    second_directory.mkdir()
+    second_manifest, _second_digest = _artifact_manifest(second_directory)
+    second_image = second_directory / "controller-image.tar"
+    second_image.write_bytes(b"second image archive bytes")
+    document = json.loads(second_manifest.read_text(encoding="utf-8"))
+    document["image_archive"]["sha256"] = hashlib.sha256(second_image.read_bytes()).hexdigest()
+    document["image_archive"]["size"] = len(second_image.read_bytes())
+    second_manifest.write_text(
+        json.dumps(document, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    second_manifest.chmod(0o600)
+    second_digest = hashlib.sha256(second_manifest.read_bytes()).hexdigest()
+    assert second_digest != manifest_digest
+    second_envelope = SimpleNamespace(
+        transaction_id="assets-stage-0002",
+        candidate=ControllerTuple(CANDIDATE_SHA, CANDIDATE_IMAGE, CANDIDATE_POLICY),
+        artifact_manifest_digest=second_digest,
+        candidate_release_digest=RELEASE_DIGEST,
+        candidate_config_digest=CANDIDATE_POLICY,
+        entrypoint_reconciliation_digest=ENTRYPOINT_DIGEST,
+        digest=hashlib.sha256(b'{"second":true}').hexdigest(),
+    )
+    second_signed = tmp_path / "second-signed.json"
+    second_signed.write_text('{"second":true}', encoding="utf-8")
+    second_signed.chmod(0o600)
+    monkeypatch.setattr(assets, "load_and_verify_envelope", lambda *args, **kwargs: second_envelope)
+    monkeypatch.setattr(
+        assets,
+        "verify_controller_artifact_manifest",
+        lambda *args, **kwargs: _artifact(manifest_digest=second_digest),
+    )
+    second = assets.stage_activation_assets(
+        release_root=tmp_path / "candidate-release",
+        source_sha=CANDIDATE_SHA,
+        artifact_manifest=second_manifest,
+        signed_envelope=second_signed,
+        assets_root=assets_root,
+        activation_public_key=tmp_path / "activation.pub",
+        admission_public_key=tmp_path / "admission.pub",
+        trust_binding=tmp_path / "binding.json",
+        now=NOW + timedelta(minutes=1),
+        require_root_owner=False,
+    )
+    assert second["status"] == "staged"
+    assert (assets_root / "artifacts" / second_digest / "controller-image.tar").exists()
+    assert image_target.read_bytes() == b"image_archive bytes"
 
 
 def test_repair_installed_activation_adapter_is_digest_bound_and_keeps_backup(
