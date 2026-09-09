@@ -32,6 +32,7 @@ ACTIVATION = _load("qdev_controller_activation_adapter")
 ENROLMENT = _load("qdev_release_host_agent_enrol_adapter")
 RECOVERY = _load("qdev_fleet_worker_recovery_adapter")
 FIXED_RECOVERY = _load("qdev_fixed_worker_recovery_dispatch")
+CI_CONFIGURATION_RECOVERY = _load("qdev_ci_worker_configuration_recovery")
 HOST_ENROL = _load("qdev_recovery_host_enrol_adapter")
 HOST_APPLY = _load("qdev_recovery_host_apply")
 PROVISION = _load("provision_fleet_host_dispatch_state")
@@ -40,15 +41,18 @@ ACTIVATION_TRUST = _load("provision_controller_activation_trust")
 
 def _request(action: str) -> dict[str, Any]:
     return {
-        "schema": "qdev-fleet-bootstrap-request-v1",
+        "schema": "qdev-fleet-bootstrap-request-v2",
         "action": action,
         "source_sha": SHA,
         "run_id": 101,
         "job_id": 202,
         "attempt": 1,
         "claim_ttl_seconds": 300,
-        "controller_revision": SHA,
-        "controller_release_digest": DIGEST,
+        "controller_revision": None,
+        "controller_release_digest": None,
+        "controller_image_digest": None,
+        "controller_internal_image_digest": None,
+        "activation_envelope_digest": None,
         "release_lane": None,
         "worker_name": None,
     }
@@ -66,6 +70,7 @@ def _bootstrap_request(action: str) -> dict[str, Any]:
         "controller_revision": SHA,
         "controller_release_digest": DIGEST,
         "controller_image_digest": IMAGE_DIGEST,
+        "controller_internal_image_digest": IMAGE_DIGEST,
         "activation_envelope_digest": ENVELOPE_DIGEST,
         "release_lane": None,
         "worker_name": None,
@@ -689,7 +694,7 @@ def test_fixed_worker_dispatch_is_allowlisted_and_uses_exact_ssh_argv(
 
     calls: list[list[str]] = []
     monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda **_kwargs: None)
     monkeypatch.setattr(
         FIXED_RECOVERY,
         "_enrol",
@@ -759,7 +764,7 @@ def test_fixed_worker_dispatch_sanitizes_ssh_failure(
         "active_jobs": 0,
     }
     monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda **_kwargs: None)
     monkeypatch.setattr(
         FIXED_RECOVERY,
         "_enrol",
@@ -807,7 +812,7 @@ def test_fixed_worker_dispatch_fails_closed_before_service_start_when_enrol_fail
         "active_jobs": 0,
     }
     monkeypatch.setattr(FIXED_RECOVERY.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda: None)
+    monkeypatch.setattr(FIXED_RECOVERY, "_validate_private_identity", lambda **_kwargs: None)
     monkeypatch.setattr(
         FIXED_RECOVERY.sys,
         "stdin",
@@ -833,6 +838,109 @@ def test_fixed_worker_dispatch_fails_closed_before_service_start_when_enrol_fail
         "native_status": "not_started",
         "recovery_service_unit": "qdev-runner-recovery-platform.service",
     }
+
+
+def test_ci_configuration_target_is_bound_to_the_registered_worker() -> None:
+    request = _request("restore-existing-worker")
+    request["worker_name"] = "srv1879763-primary"
+    target_id = "qdev-ci.srv1879763-primary"
+    target = FIXED_RECOVERY.TARGETS[target_id]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": {
+            "worker_name": request["worker_name"],
+            "target_id": target_id,
+            "service_unit": target["service_unit"],
+            "host_binding": "controller-registry",
+            "labels": target["labels"],
+        },
+        "active_jobs": 0,
+    }
+
+    original_stdin = FIXED_RECOVERY.sys.stdin
+    try:
+        FIXED_RECOVERY.sys.stdin = SimpleNamespace(
+            buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())
+        )
+        _, parsed = FIXED_RECOVERY._parse()
+        assert parsed["host"] == "186.240.148.129"
+        assert parsed["profile"] == "ci-worker-configuration"
+
+        envelope["target"]["target_id"] = "other"
+        FIXED_RECOVERY.sys.stdin = SimpleNamespace(
+            buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())
+        )
+        with pytest.raises(FIXED_RECOVERY.DispatchError, match="target_not_allowlisted"):
+            FIXED_RECOVERY._parse()
+    finally:
+        FIXED_RECOVERY.sys.stdin = original_stdin
+
+
+def test_ci_configuration_recovery_removes_only_reconciled_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dropin = tmp_path / "~~~~position-followup-qv-ci.conf"
+    position_env = tmp_path / "worker.position-followup-qv-ci.env"
+    dropin.write_text("[Service]\n", encoding="utf-8")
+    position_env.write_text("QDEV_WORKER_TOKEN=redacted\n", encoding="utf-8")
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda: None)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_safe_stale_files", lambda *_args: [dropin])
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_position_envs", lambda: [position_env])
+    monkeypatch.setattr(
+        CI_CONFIGURATION_RECOVERY,
+        "_snapshot",
+        lambda _files: (snapshot, {"files": []}),
+    )
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_restart_and_verify", lambda: True)
+
+    result = CI_CONFIGURATION_RECOVERY.repair(
+        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__))
+    )
+
+    assert result["status"] == "completed"
+    assert not dropin.exists()
+    assert not position_env.exists()
+    assert result["removed_dropins"] == 1
+    assert result["removed_position_envs"] == 1
+
+
+def test_ci_configuration_recovery_rolls_back_when_worker_does_not_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dropin = tmp_path / "~position-followup-qv-ci.conf"
+    dropin.write_text("[Service]\n", encoding="utf-8")
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    restored: list[Path] = []
+
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda: None)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_safe_stale_files", lambda *_args: [dropin])
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_position_envs", lambda: [])
+    monkeypatch.setattr(
+        CI_CONFIGURATION_RECOVERY,
+        "_snapshot",
+        lambda _files: (snapshot, {"files": []}),
+    )
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_restart_and_verify", lambda: False)
+    monkeypatch.setattr(
+        CI_CONFIGURATION_RECOVERY,
+        "_restore",
+        lambda path, _manifest: restored.append(path) or True,
+    )
+
+    result = CI_CONFIGURATION_RECOVERY.repair(
+        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__))
+    )
+
+    assert result["status"] == "failed"
+    assert result["rollback_status"] == "restored"
+    assert restored == [snapshot]
 
 
 def test_host_enrol_uses_agent_command_signer_not_operator_receipt_key() -> None:
