@@ -530,8 +530,12 @@ def _activation_assets(request: dict[str, Any]) -> tuple[Path, Path, Path, str, 
         or not TRANSACTION_ID.fullmatch(transaction_id)
     ):
         raise AdapterError("activation_envelope_identity_mismatch")
+    # The manifest shares a content-addressed bundle with its verified
+    # payloads.  This preserves the producer manifest's sibling references and
+    # prevents a candidate from overwriting the active release's fixed member
+    # names in the common spool.
     manifest_path = _private_file(
-        ACTIVATION_ASSETS_ROOT / "artifacts" / f"{manifest_digest}.json", mode=0o600
+        ACTIVATION_ASSETS_ROOT / "artifacts" / manifest_digest / "manifest.json", mode=0o600
     )
     public_key = _activation_public_key()
     return envelope_path, manifest_path, public_key, candidate_policy_digest, transaction_id

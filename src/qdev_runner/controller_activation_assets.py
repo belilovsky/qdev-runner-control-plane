@@ -777,10 +777,18 @@ def stage_activation_assets(
         label="activation envelope spool",
         require_root_owner=require_root_owner,
     )
+    # Every verified artifact keeps the producer's original member names, so
+    # they must live below a manifest-addressed directory.  Flattening these
+    # files into the shared spool made a second valid release collide with the
+    # active release's ``controller-image.tar`` and scan reports.  The bundle
+    # directory is both immutable and the manifest's required sibling root.
+    bundle = _ensure_directory(
+        artifacts / artifact.manifest_digest,
+        label="activation artifact bundle",
+        require_root_owner=require_root_owner,
+    )
     for name, payload in sorted(members.items()):
-        target = artifacts / (
-            artifact.manifest_digest + ".json" if name.startswith("manifest:") else name
-        )
+        target = bundle / ("manifest.json" if name.startswith("manifest:") else name)
         _publish_bytes(
             target,
             payload,
@@ -788,6 +796,7 @@ def stage_activation_assets(
             require_root_owner=require_root_owner,
             allow_existing_same=True,
         )
+    _fsync_directory(bundle)
     _fsync_directory(artifacts)
     envelope_path = envelopes / f"{envelope.digest}.json"
     published = _publish_bytes(
@@ -803,7 +812,7 @@ def stage_activation_assets(
         "transaction_id": envelope.transaction_id,
         "activation_envelope": str(envelope_path),
         "activation_envelope_digest": "sha256:" + envelope.digest,
-        "artifact_manifest": str(artifacts / f"{artifact.manifest_digest}.json"),
+        "artifact_manifest": str(bundle / "manifest.json"),
         "artifact_manifest_digest": "sha256:" + artifact.manifest_digest,
         "source_sha": source_sha,
         "controller_release_digest": "sha256:" + release_digest,
