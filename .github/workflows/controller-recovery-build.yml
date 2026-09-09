@@ -35,7 +35,11 @@ jobs:
           python-version: "3.12"
       - name: Install build dependencies
         run: |
-          python -m pip install -e '.[dev]'
+          # Keep generated packaging metadata out of the signed release tree.
+          # Editable installs create ignored *.egg-info files in the checkout,
+          # making the hosted fingerprint impossible to reproduce on the host.
+          python -m pip install '.[dev]'
+          test -z "$(find src -maxdepth 1 -type d -name '*.egg-info' -print -quit)"
           bash scripts/install_controller_scan_tools.sh
       - name: Build and scan exact recovery image
         env:
