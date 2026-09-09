@@ -10,7 +10,7 @@
   "active_internal_image_bytes": 65710783,
   "estimated_peak_incremental_bytes": 1073741824,
   "minimum_operational_reserve_bytes": 8589934592,
-  "max_disk_used_pct": 96,
+  "max_disk_used_pct": 90,
   "min_free_gib": 8,
-  "notes": "The measured candidate plus both broker images is below 136 MiB. A 1 GiB peak allowance exceeds that footprint sevenfold and leaves more than the 8 GiB rollback reserve. The percentage threshold is aligned with the measured 96% filesystem state; the independent absolute-free-space gate remains fail-closed."
+  "notes": "The measured candidate plus both broker images is below 136 MiB. A 1 GiB peak allowance exceeds that footprint sevenfold and leaves more than the 8 GiB rollback reserve. Activation requires both the independent absolute-free-space gate and the strict 90% usage ceiling; a host measured above that ceiling must be remediated before activation."
 }

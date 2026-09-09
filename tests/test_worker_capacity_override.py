@@ -119,7 +119,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95,
+        max_disk_used_pct=90,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -134,7 +134,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.effective.allowed
         assert state.profiles == ("qdev-ci-docker",)
         assert state.min_disk_free_gib == 4.5
-        assert state.max_disk_used_pct == 95
+        assert state.max_disk_used_pct == 90
         assert state.directive_id == directive.operation_id
         assert state.directive_repository == "belilovsky/qazshield"
         assert state.directive_head_sha == "a" * 40
@@ -156,7 +156,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
         head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95,
+        max_disk_used_pct=90,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -193,7 +193,7 @@ async def test_worker_keeps_admitted_job_when_capacity_override_expires(tmp_path
         head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95,
+        max_disk_used_pct=90,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -230,7 +230,7 @@ async def test_expired_override_keeps_frozen_running_job_disk_floor(tmp_path: Pa
         head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95,
+        max_disk_used_pct=90,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -267,7 +267,7 @@ async def test_worker_rejects_tampered_or_non_disk_override(tmp_path: Path) -> N
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95,
+        max_disk_used_pct=90,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,

@@ -3120,7 +3120,7 @@ def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=94.0,
+        max_disk_used_pct=90.0,
         owner="admin-platform",
         reason="retain measured capacity while advancing exact signed scope",
         duration_seconds=300,
@@ -3299,7 +3299,7 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
         head_sha="a" * 40,
         profiles=("qdev-ci-browser",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=94.0,
+        max_disk_used_pct=90.0,
         owner="test-owner",
         reason="admit the exact browser FIFO tuple",
         duration_seconds=300,
@@ -3516,6 +3516,38 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     assert response.json()["detail"] == "worker has an active task"
 
 
+@pytest.mark.parametrize("disk_used_pct", (91.0, 95.0, 97.0))
+def test_override_rejects_every_disk_threshold_above_ninety(
+    tmp_path: Path, disk_used_pct: float
+) -> None:
+    client = _app(tmp_path)
+    _heartbeat(client)
+
+    response = client.post(
+        f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
+        headers=OPERATOR_HEADERS,
+        json={
+            "repository": "belilovsky/qazshield",
+            "head_sha": "a" * 40,
+            "profiles": ["qdev-ci-docker"],
+            "min_disk_free_gib": 4.5,
+            "max_disk_used_pct": disk_used_pct,
+            "duration_seconds": 300,
+            "owner": "portfolio-ci",
+            "reason": "must reject unsafe disk override",
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        client.app.state.operations.active(
+            WORKER_NAME,
+            registered_profiles=("qdev-ci", "qdev-ci-docker"),
+        )
+        is None
+    )
+
+
 def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
     client = _app(tmp_path)
     _heartbeat(client, disk_free_gib=17.0)
@@ -3535,7 +3567,7 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "pinned QazLake compose validation",
@@ -3579,7 +3611,7 @@ def test_qazgeo_capacity_override_cannot_weaken_repository_constraints(
             "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "must preserve the QGeo absolute admission floor",
@@ -3617,7 +3649,7 @@ def test_qazgeo_capacity_override_accepts_exact_server_owned_boundary(tmp_path: 
             "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "exact QGeo admission boundary regression",
@@ -3642,7 +3674,7 @@ def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=95.0,
+        max_disk_used_pct=90.0,
         owner="portfolio-ci",
         reason="expired directive audit regression",
         duration_seconds=300,
@@ -3710,7 +3742,7 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "repository-bound regression",
@@ -3798,7 +3830,7 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "must not leapfrog FIFO",
@@ -3845,7 +3877,7 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "admissible FIFO head after blocked managed row",
@@ -3898,7 +3930,7 @@ def test_capacity_override_skips_superseded_managed_production_fifo_rows(
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "admissible head after superseded managed-production row",
@@ -3950,7 +3982,7 @@ def test_capacity_override_prioritizes_exact_active_controller_candidate(
             "head_sha": controller_sha,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "admin-platform",
             "reason": "restore exact controller prerequisite admission",
@@ -3997,7 +4029,7 @@ def test_capacity_override_does_not_prioritize_non_active_controller_sha(
             "head_sha": "f" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 95.0,
+            "max_disk_used_pct": 90.0,
             "duration_seconds": 300,
             "owner": "admin-platform",
             "reason": "must remain ledger bound",
