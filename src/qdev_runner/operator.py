@@ -292,6 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_stale.add_argument("--timeout-seconds", type=int, default=300)
     recover_stale.add_argument("--owner", required=True)
     recover_stale.add_argument("--reason", required=True)
+    recover_stale.add_argument("--pending-terminal-only", action="store_true")
 
     commands.add_parser(
         "failed-audit", help="Read signed failed-worker-job candidates without mutation"
@@ -440,6 +441,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             path=f"/internal/v1/operations/jobs/{arguments.job_id}/recover-stale",
             body={
                 "worker_timeout_seconds": arguments.timeout_seconds,
+                "pending_terminal_only": arguments.pending_terminal_only,
                 "owner": arguments.owner,
                 "reason": arguments.reason,
             },

@@ -18,6 +18,7 @@ def _job(**overrides: object) -> dict[str, object]:
     result: dict[str, object] = {
         "id": 9001,
         "run_id": 42,
+        "run_attempt": 3,
         "name": "bootstrap",
         "head_sha": "a" * 40,
         "status": "in_progress",
@@ -29,6 +30,7 @@ def _job(**overrides: object) -> dict[str, object]:
 
 def _prepare(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
     monkeypatch.delenv("BOOTSTRAP_JOB_ID", raising=False)
     monkeypatch.setattr(validator, "_job_list", lambda repository, run_id: [_job()])
 
@@ -39,6 +41,38 @@ def test_resolve_job_id_binds_numeric_job_to_current_attempt(
     _prepare(monkeypatch)
 
     assert validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap") == 9001
+
+
+@pytest.mark.parametrize("attempt", [None, 1, 2, 4, True, "3"])
+def test_resolve_job_rejects_other_or_invalid_attempt(
+    monkeypatch: pytest.MonkeyPatch, attempt: object
+) -> None:
+    _prepare(monkeypatch)
+    monkeypatch.setattr(
+        validator, "_job_list", lambda repository, run_id: [_job(run_attempt=attempt)]
+    )
+    with pytest.raises(validator.BootstrapValidationError, match="does not match"):
+        validator.resolve_job_id("owner/repo", 42, expected_name="bootstrap")
+
+
+@pytest.mark.parametrize("total", [0, 1, 2, None, True])
+def test_job_list_is_attempt_scoped_and_complete(
+    monkeypatch: pytest.MonkeyPatch, total: object
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com")
+
+    def response(url: str, **kwargs: object) -> dict[str, object]:
+        assert url.endswith("/repos/owner/repo/actions/runs/42/attempts/3/jobs?per_page=100")
+        return {"jobs": [_job()], "total_count": total}
+
+    monkeypatch.setattr(validator, "_json_request", response)
+    if type(total) is int and total == 1:
+        assert validator._job_list("owner/repo", 42) == [_job()]
+    else:
+        with pytest.raises(validator.BootstrapValidationError, match="incomplete"):
+            validator._job_list("owner/repo", 42)
 
 
 def test_oidc_url_accepts_only_github_oidc_hosts() -> None:
@@ -145,4 +179,59 @@ def test_build_request_derives_controller_tuple_from_running_source(
     assert request.activation_envelope_digest == "sha256:" + "1" * 64
     assert request.run_id == 42
     assert request.job_id == 9001
+    assert request.attempt == 3
+
+
+@pytest.mark.parametrize(
+    "unexpected_field",
+    [
+        None,
+        "BOOTSTRAP_CONTROLLER_REVISION",
+        "BOOTSTRAP_CONTROLLER_RELEASE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_IMAGE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST",
+        "BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST",
+        "BOOTSTRAP_RELEASE_LANE",
+    ],
+)
+def test_worker_restore_has_no_activation_tuple(
+    monkeypatch: pytest.MonkeyPatch, unexpected_field: str | None
+) -> None:
+    policy = validator.FleetBootstrapPolicy(
+        ROOT / "config" / "fleet-bootstrap.yml",
+        ROOT / "config" / "release-lanes.yml",
+    )
+    for name in (
+        "BOOTSTRAP_CONTROLLER_REVISION",
+        "BOOTSTRAP_CONTROLLER_RELEASE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_IMAGE_DIGEST",
+        "BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST",
+        "BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST",
+        "BOOTSTRAP_RELEASE_LANE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", policy.identity.repository)
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    monkeypatch.setenv("BOOTSTRAP_JOB_NAME", "bootstrap")
+    monkeypatch.setenv("BOOTSTRAP_ACTION", "restore-existing-worker")
+    monkeypatch.setenv("BOOTSTRAP_WORKER_NAME", "qdev-qazstack-01")
+    monkeypatch.setattr(validator, "resolve_job_id", lambda *args, **kwargs: 9001)
+
+    def unexpected_release_hash(root: Path) -> str:
+        pytest.fail("worker restoration must not compute an activation release")
+
+    monkeypatch.setattr(validator, "controller_release_digest", unexpected_release_hash)
+    if unexpected_field:
+        monkeypatch.setenv(unexpected_field, "unexpected")
+        with pytest.raises(validator.BootstrapValidationError, match="fields are invalid"):
+            validator.build_request(policy)
+        return
+
+    request = validator.build_request(policy)
+    assert request.worker_name == "qdev-qazstack-01"
+    assert request.controller_revision is None
+    assert request.controller_release_digest is None
+    assert request.source_sha == "b" * 40
     assert request.attempt == 3

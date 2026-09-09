@@ -19,6 +19,30 @@ def _settings() -> operator.OperatorSettings:
     )
 
 
+def test_pending_terminal_reconciliation_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+    operator.run(
+        [
+            "recover-stale",
+            "42",
+            "--owner",
+            "fleet",
+            "--reason",
+            "provider completed",
+            "--pending-terminal-only",
+        ]
+    )
+    assert captured["path"] == "/internal/v1/operations/jobs/42/recover-stale"
+    assert captured["body"]["pending_terminal_only"] is True
+
+
 def test_claim_scope_uses_fifo_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

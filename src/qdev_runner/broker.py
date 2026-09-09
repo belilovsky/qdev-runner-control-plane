@@ -54,14 +54,17 @@ from .controller_activation import (
     ControllerReleaseStatus,
 )
 from .fleet_bootstrap import (
+    REQUEST_SCHEMA,
     BootstrapOperationStore,
     FleetBootstrapError,
     FleetBootstrapPolicy,
     FleetBootstrapRequest,
+    bootstrap_ingress_operation_key,
+    validate_github_bootstrap_observation,
 )
 from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
-from .github_oidc import GitHubActionsArtifactOIDCVerifier
+from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import (
     QGEO_REQUIRED_JOB_PROFILES,
@@ -288,6 +291,7 @@ class ControllerClaimRequest(BaseModel):
 
 
 class StaleJobRecoveryRequest(BaseModel):
+    pending_terminal_only: bool = False
     worker_timeout_seconds: int = Field(default=300, ge=300, le=3600)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
@@ -336,6 +340,51 @@ class TestScheduleRequest(BaseModel):
 class SchedulerTickRequest(BaseModel):
     now: float | None = Field(default=None, ge=0)
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class FleetBootstrapIngressIntent(BaseModel):
+    """The closed GitHub workflow intent shape for controller bootstrap.
+
+    This is intentionally narrower than :class:`FleetBootstrapRequest`: the
+    GitHub ingress has no schema selector or worker-recovery fields.  The
+    server supplies the fixed request schema before the policy sees it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["activate-controller", "enrol-host-agent"]
+    source_sha: str
+    run_id: int = Field(ge=1)
+    job_id: int = Field(ge=1)
+    attempt: int = Field(ge=1)
+    claim_ttl_seconds: int = Field(ge=1)
+    controller_revision: str | None = None
+    controller_release_digest: str | None = None
+    controller_image_digest: str | None = None
+    controller_internal_image_digest: str | None = None
+    activation_envelope_digest: str | None = None
+    release_lane: str | None = None
+
+    def bootstrap_request(self) -> FleetBootstrapRequest:
+        """Attach the fixed internal schema without accepting it from HTTP."""
+
+        return FleetBootstrapRequest.model_validate({"schema": REQUEST_SCHEMA, **self.model_dump()})
+
+
+class FleetBootstrapIngressRequest(BaseModel):
+    """Typed GitHub Actions handoff for the two controller bootstrap actions.
+
+    This deliberately has no host, command, path, CA, timeout or recovery
+    knobs.  The broker derives all dispatch details from the registered policy
+    after authenticating the exact GitHub Actions job attempt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request: FleetBootstrapIngressIntent
+    # This caller value is a non-secret correlation token only.  The durable
+    # dispatch key is derived server-side from the authenticated GitHub tuple.
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 
 
 class QGeoCIRegistrationRequest(BaseModel):
@@ -900,6 +949,9 @@ def create_app(
     policy: Policy | None = None,
     github: GitHubAppClient | None = None,
     github_actions_oidc_verifier: GitHubActionsArtifactOIDCVerifier | None = None,
+    fleet_bootstrap_oidc_verifier_factory: (
+        Callable[[str], GitHubActionsArtifactOIDCVerifier] | None
+    ) = None,
 ) -> FastAPI:
     settings = settings or BrokerSettings.from_env()
     store = store or Store(settings.database_path)
@@ -928,6 +980,25 @@ def create_app(
         if github is None:
             raise HTTPException(status_code=503, detail="GitHub integration unavailable")
         return github
+
+    def build_fleet_bootstrap_oidc_verifier(
+        audience: str,
+    ) -> GitHubActionsArtifactOIDCVerifier:
+        """Build a verifier for the policy-owned bootstrap audience only.
+
+        Artifact uploads use a distinct audience and may never authenticate a
+        controller bootstrap operation.  Keeping the factory injectable makes
+        the exact separation straightforward to test without accepting a
+        verifier or audience from an HTTP request.
+        """
+
+        if fleet_bootstrap_oidc_verifier_factory is not None:
+            return fleet_bootstrap_oidc_verifier_factory(audience)
+        return GitHubActionsArtifactOIDCVerifier(
+            issuer=settings.github_actions_oidc_issuer,
+            audience=audience,
+            jwks_url=settings.github_actions_oidc_jwks_url,
+        )
 
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
     artifact_token_key = settings.artifact_token_key
@@ -1647,6 +1718,7 @@ def create_app(
     app.state.policy = policy
     app.state.github = github
     app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
+    app.state.fleet_bootstrap_oidc_verifier_factory = build_fleet_bootstrap_oidc_verifier
     app.state.operations = operations
     worker_recovery = WorkerRecoveryController(
         settings=settings,
@@ -3056,21 +3128,14 @@ def create_app(
 
         operation_store = require_operator_session(operator_token, operator_mtls_identity)
         try:
-            bootstrap_request = FleetBootstrapRequest.model_validate(request.request)
-            if bootstrap_request.action != expected_action:
-                raise FleetBootstrapError("fleet bootstrap action does not match route")
-            policy_value = fleet_bootstrap_policy()
-            operation_path = (
-                settings.fleet_bootstrap_operation_root / f"{request.idempotency_key}.json"
+            policy_value, bootstrap_request = prepare_fleet_bootstrap_operation(
+                expected_action,
+                request.request,
             )
-            execution = FleetHostDispatchSpool(
-                settings.fleet_host_dispatch_request_root,
-                settings.fleet_host_dispatch_result_root,
-            ).submit(
-                policy=policy_value,
-                store=BootstrapOperationStore(operation_path),
-                request=bootstrap_request,
-                idempotency_key=request.idempotency_key,
+            execution = submit_fleet_bootstrap_operation(
+                policy_value,
+                bootstrap_request,
+                request.idempotency_key,
             )
         except (FleetBootstrapError, ValidationError, ValueError) as error:
             raise HTTPException(
@@ -3084,6 +3149,171 @@ def create_app(
                 "execution": execution.as_dict(),
             }
         )
+
+    def prepare_fleet_bootstrap_operation(
+        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        raw_request: dict[str, Any] | FleetBootstrapRequest,
+    ) -> tuple[FleetBootstrapPolicy, FleetBootstrapRequest]:
+        """Parse and policy-bind one route-frozen bootstrap request.
+
+        Both the legacy operator operation and the GitHub OIDC ingress use
+        this before reaching the root-owned spool.  It is intentionally not a
+        public generic operation parser: the caller supplies only one of the
+        two statically declared route actions.
+        """
+
+        bootstrap_request = (
+            raw_request
+            if isinstance(raw_request, FleetBootstrapRequest)
+            else FleetBootstrapRequest.model_validate(raw_request)
+        )
+        if bootstrap_request.action != expected_action:
+            raise FleetBootstrapError("fleet bootstrap action does not match route")
+        policy_value = fleet_bootstrap_policy()
+        policy_value.validate(bootstrap_request)
+        return policy_value, bootstrap_request
+
+    def submit_fleet_bootstrap_operation(
+        policy_value: FleetBootstrapPolicy,
+        bootstrap_request: FleetBootstrapRequest,
+        idempotency_key: str,
+    ) -> Any:
+        """Durably submit a request through the unchanged protected spool."""
+
+        operation_path = settings.fleet_bootstrap_operation_root / f"{idempotency_key}.json"
+        return FleetHostDispatchSpool(
+            settings.fleet_host_dispatch_request_root,
+            settings.fleet_host_dispatch_result_root,
+        ).submit(
+            policy=policy_value,
+            store=BootstrapOperationStore(operation_path),
+            request=bootstrap_request,
+            idempotency_key=idempotency_key,
+        )
+
+    def run_fleet_bootstrap_ingress(
+        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        request: FleetBootstrapIngressRequest,
+        oidc_token: str | None,
+    ) -> dict[str, Any]:
+        """Accept one GitHub-OIDC-authenticated bootstrap handoff.
+
+        The request body is merely a typed claim of intent.  Dispatch happens
+        only after the policy-owned OIDC verifier and the GitHub App observe
+        the same immutable run/job/attempt/SHA tuple.  No user-controlled
+        value selects a worker, host, command, path, CA or artifact audience.
+        """
+
+        try:
+            policy_value, bootstrap_request = prepare_fleet_bootstrap_operation(
+                expected_action,
+                request.request.bootstrap_request(),
+            )
+        except (FleetBootstrapError, ValidationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="fleet bootstrap operation request is invalid",
+            ) from error
+
+        if not oidc_token or oidc_token != oidc_token.strip():
+            raise HTTPException(
+                status_code=401,
+                detail="fleet bootstrap OIDC authentication failed",
+            )
+        try:
+            verifier = build_fleet_bootstrap_oidc_verifier(policy_value.identity.audience)
+            claims = verifier.verify_and_decode(
+                oidc_token,
+                repository=policy_value.identity.repository,
+                sha=bootstrap_request.source_sha,
+                run_id=bootstrap_request.run_id,
+            )
+            policy_value.validate_oidc_claims(claims, bootstrap_request)
+        except (GitHubActionsOIDCError, FleetBootstrapError) as error:
+            raise HTTPException(
+                status_code=401,
+                detail="fleet bootstrap OIDC authentication failed",
+            ) from error
+
+        try:
+            github_client = require_github()
+            installation_id = github_client.repository_installation_id(
+                policy_value.identity.repository
+            )
+            run = github_client.workflow_run(
+                installation_id,
+                policy_value.identity.repository,
+                bootstrap_request.run_id,
+            )
+            jobs = github_client.workflow_run_jobs(
+                installation_id,
+                policy_value.identity.repository,
+                bootstrap_request.run_id,
+                bootstrap_request.attempt,
+            )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="fleet bootstrap GitHub observation is unavailable",
+            ) from error
+        try:
+            validate_github_bootstrap_observation(
+                policy_value,
+                bootstrap_request,
+                run,
+                jobs,
+            )
+        except FleetBootstrapError as error:
+            raise HTTPException(
+                status_code=409,
+                detail="fleet bootstrap GitHub identity is invalid",
+            ) from error
+
+        try:
+            operation_key = bootstrap_ingress_operation_key(policy_value, bootstrap_request)
+            execution = submit_fleet_bootstrap_operation(
+                policy_value,
+                bootstrap_request,
+                operation_key,
+            )
+        except FleetBootstrapError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="fleet bootstrap operation request is invalid",
+            ) from error
+        return {
+            "schema": "qdev-fleet-bootstrap-ingress-v1",
+            "correlation_id": request.idempotency_key,
+            "execution": execution.as_dict(),
+        }
+
+    def require_fleet_bootstrap_ingress_oidc(raw_request: Request) -> str:
+        """Accept exactly the one OIDC header allowed at the public bridge.
+
+        The edge removes privileged ``X-QDev-*`` headers before proxying the
+        typed GitHub Actions ingress.  Enforce the same narrow boundary here:
+        a deployment or proxy regression must not turn an inbound context
+        header into authority at this endpoint.  In particular, do not accept
+        duplicate OIDC fields, since a proxy and the application could select
+        different values from a repeated header.
+        """
+
+        allowed_header = "x-qdev-github-oidc"
+        for header_name in raw_request.headers:
+            lowered_header_name = header_name.lower()
+            if lowered_header_name.startswith("x-qdev-") and lowered_header_name != allowed_header:
+                raise HTTPException(
+                    status_code=401,
+                    detail="fleet bootstrap OIDC authentication failed",
+                )
+
+        oidc_values = raw_request.headers.getlist(allowed_header)
+        if len(oidc_values) != 1 or not oidc_values[0] or oidc_values[0] != oidc_values[0].strip():
+            raise HTTPException(
+                status_code=401,
+                detail="fleet bootstrap OIDC authentication failed",
+            )
+        return oidc_values[0]
 
     @app.post("/internal/v1/operations/fleet-bootstrap/activate-controller")
     def activate_controller(
@@ -3109,6 +3339,28 @@ def create_app(
             request,
             x_qdev_operator_token,
             x_qdev_operator_mtls_identity,
+        )
+
+    @app.post("/internal/v1/ingress/fleet-bootstrap/activate-controller")
+    def ingress_activate_controller(
+        request: FleetBootstrapIngressRequest,
+        raw_request: Request,
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_ingress(
+            "activate-controller",
+            request,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
+        )
+
+    @app.post("/internal/v1/ingress/fleet-bootstrap/enrol-host-agent")
+    def ingress_enrol_host_agent(
+        request: FleetBootstrapIngressRequest,
+        raw_request: Request,
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_ingress(
+            "enrol-host-agent",
+            request,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
         )
 
     @app.post("/internal/v1/operations/releases/qazgeo/ci-registration")
@@ -4340,8 +4592,14 @@ def create_app(
             ),
             None,
         )
+        if row is None and request.pending_terminal_only:
+            row = store.job(job_id)
+            if row is None or row["status"] != "pending":
+                raise HTTPException(status_code=409, detail="job is not pending")
         if row is None:
             raise HTTPException(status_code=409, detail="job is not stale")
+        if request.pending_terminal_only and row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="job is not pending")
         immutable_job = _stale_job_tuple(row)
         installation_id = int(row["installation_id"])
         repository = str(row["repository"])
@@ -4370,7 +4628,29 @@ def create_app(
                 )
             provider_status = str(remote_job.get("status") or "unknown")
             provider_conclusion = remote_job.get("conclusion")
-            if provider_status == "completed":
+            if request.pending_terminal_only:
+                terminal_conclusions = {
+                    "success",
+                    "failure",
+                    "neutral",
+                    "cancelled",
+                    "skipped",
+                    "timed_out",
+                    "action_required",
+                    "stale",
+                    "startup_failure",
+                }
+                if (
+                    provider_status != "completed"
+                    or provider_conclusion not in terminal_conclusions
+                ):
+                    raise HTTPException(status_code=409, detail="provider job is not terminal")
+                if not store.complete_pending_from_provider(job_id, str(provider_conclusion)):
+                    raise HTTPException(
+                        status_code=409, detail="pending job changed during reconciliation"
+                    )
+                action = "pending-completed-from-provider"
+            elif provider_status == "completed":
                 conclusion = str(provider_conclusion or "unknown")
                 store.complete_from_webhook(job_id, conclusion)
                 action = "completed-from-provider"

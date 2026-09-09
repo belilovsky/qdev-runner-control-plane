@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +15,12 @@ from fastapi.testclient import TestClient
 from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
 from qdev_runner.broker import create_app
+from qdev_runner.fleet_bootstrap import (
+    REQUEST_SCHEMA,
+    FleetBootstrapPolicy,
+    FleetBootstrapRequest,
+    bootstrap_ingress_operation_key,
+)
 from qdev_runner.fleet_host_dispatch import FleetHostDispatchSpool
 from qdev_runner.managed_release_ledger import (
     QGEO_REQUIRED_JOB_PROFILES,
@@ -44,6 +49,7 @@ OPERATOR_HEADERS = {
     "X-QDev-Operator-mTLS-Identity": "qdev-fleet-operations",
 }
 _FLEET_BOOTSTRAP_POLICY = Path(__file__).resolve().parents[1] / "config" / "fleet-bootstrap.yml"
+_FLEET_RELEASE_LANES = Path(__file__).resolve().parents[1] / "config" / "release-lanes.yml"
 
 
 def _fleet_bootstrap_activation() -> dict[str, str]:
@@ -99,6 +105,7 @@ def _app(
     *,
     managed_release_ledger_path: Path | None = None,
     include_qgeo: bool = False,
+    fleet_bootstrap_oidc_verifier_factory: Any | None = None,
 ) -> TestClient:
     inventory = tmp_path / "repos.json"
     repositories = [
@@ -318,6 +325,7 @@ def _app(
         store=Store(settings.database_path),
         policy=Policy(inventory, profiles),
         github=github or object(),  # type: ignore[arg-type]
+        fleet_bootstrap_oidc_verifier_factory=fleet_bootstrap_oidc_verifier_factory,
     )
     return TestClient(app)
 
@@ -1643,6 +1651,338 @@ def test_existing_worker_recovery_is_controller_bound_and_fail_closed_without_ad
     assert not operation.exists()
 
 
+class _BootstrapIngressGitHub:
+    """Minimal GitHub App observation used by the closed bootstrap ingress."""
+
+    def __init__(self, *, job_attempt: int = 1) -> None:
+        self.job_attempt = job_attempt
+        self.calls: list[tuple[object, ...]] = []
+
+    def repository_installation_id(self, repository: str) -> int:
+        self.calls.append(("installation", repository))
+        return 71
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
+        self.calls.append(("run", installation_id, repository, run_id))
+        return {
+            "id": run_id,
+            "run_attempt": 1,
+            "repository": {"full_name": repository},
+            "head_sha": "a" * 40,
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/fleet-bootstrap.yml",
+            "ref": "refs/heads/main",
+            "head_branch": "main",
+            "status": "in_progress",
+            "conclusion": None,
+        }
+
+    def workflow_run_jobs(
+        self, installation_id: int, repository: str, run_id: int, attempt: int
+    ) -> list[dict[str, Any]]:
+        self.calls.append(("jobs", installation_id, repository, run_id, attempt))
+        return [
+            {
+                "id": 456,
+                "run_id": run_id,
+                "run_attempt": self.job_attempt,
+                "head_sha": "a" * 40,
+                "head_branch": "main",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        ]
+
+
+class _BootstrapIngressOIDC:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str, int]] = []
+
+    def verify_and_decode(
+        self, token: str, *, repository: str, sha: str, run_id: int
+    ) -> dict[str, Any]:
+        self.calls.append((token, repository, sha, run_id))
+        return {
+            "repository": repository,
+            "ref": "refs/heads/main",
+            "sha": sha,
+            "run_id": run_id,
+            "run_attempt": "1",
+            "workflow_ref": (
+                "belilovsky/qdev-runner-control-plane/.github/workflows/"
+                "fleet-bootstrap.yml@refs/heads/main"
+            ),
+        }
+
+
+def _bootstrap_ingress_body(*, key: str = "ingress-activation-001") -> dict[str, Any]:
+    activation = _fleet_bootstrap_activation()
+    return {
+        "request": {
+            "action": "activate-controller",
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "claim_ttl_seconds": 300,
+            "controller_revision": activation["controller_revision"],
+            "controller_release_digest": activation["controller_release_digest"],
+            "controller_image_digest": activation["controller_image_digest"],
+            "activation_envelope_digest": activation["activation_envelope_digest"],
+            "release_lane": None,
+        },
+        "idempotency_key": key,
+    }
+
+
+def _bootstrap_ingress_operation_key(body: dict[str, Any]) -> str:
+    request = FleetBootstrapRequest.model_validate({"schema": REQUEST_SCHEMA, **body["request"]})
+    return bootstrap_ingress_operation_key(
+        FleetBootstrapPolicy(_FLEET_BOOTSTRAP_POLICY, _FLEET_RELEASE_LANES),
+        request,
+    )
+
+
+def _bootstrap_ingress_spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    incoming = tmp_path / "fleet-host-dispatch" / "incoming"
+    results = tmp_path / "fleet-host-dispatch" / "results"
+    incoming.mkdir(parents=True)
+    results.mkdir()
+    incoming.chmod(0o700)
+    results.chmod(0o750)
+
+    def _fixture_dispatch_spool(request_root: Path, result_root: Path) -> FleetHostDispatchSpool:
+        request_metadata = request_root.stat()
+        result_metadata = result_root.stat()
+        assert request_metadata.st_uid == result_metadata.st_uid
+        assert request_metadata.st_gid == result_metadata.st_gid
+        return FleetHostDispatchSpool(
+            request_root,
+            result_root,
+            runtime_uid=request_metadata.st_uid,
+            runtime_gid=request_metadata.st_gid,
+            result_uid=result_metadata.st_uid,
+        )
+
+    monkeypatch.setattr("qdev_runner.broker.FleetHostDispatchSpool", _fixture_dispatch_spool)
+    return incoming, results
+
+
+def test_github_oidc_bootstrap_ingress_observes_exact_attempt_before_spooling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    audiences: list[str] = []
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda audience: (
+            audiences.append(audience) or verifier
+        ),
+    )
+
+    response = client.post(
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        json=_bootstrap_ingress_body(),
+        headers={"X-QDev-GitHub-OIDC": "test-oidc-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema"] == "qdev-fleet-bootstrap-ingress-v1"
+    execution = payload["execution"]
+    assert execution["schema"] == "qdev-fleet-bootstrap-execution-receipt-v2"
+    assert execution["action"] == "activate-controller"
+    operation_key = _bootstrap_ingress_operation_key(_bootstrap_ingress_body())
+    assert execution["idempotency_key"] == operation_key
+    assert payload["correlation_id"] == "ingress-activation-001"
+    assert execution["status"] == "queued"
+    assert execution["operation_status"] == "pending"
+    assert execution["error_code"] is None
+    assert execution["release_lane"] is None
+    assert execution["host_agent_mtls_identity"] is None
+    assert audiences == ["qdev-fleet-bootstrap-v1"]
+    assert verifier.calls == [
+        (
+            "test-oidc-token",
+            "belilovsky/qdev-runner-control-plane",
+            "a" * 40,
+            123,
+        )
+    ]
+    assert github.calls == [
+        ("installation", "belilovsky/qdev-runner-control-plane"),
+        ("run", 71, "belilovsky/qdev-runner-control-plane", 123),
+        ("jobs", 71, "belilovsky/qdev-runner-control-plane", 123, 1),
+    ]
+    assert (incoming / f"{operation_key}.json").is_file()
+
+
+def test_github_oidc_bootstrap_ingress_replays_only_an_identical_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+    path = "/internal/v1/ingress/fleet-bootstrap/activate-controller"
+    headers = {"X-QDev-GitHub-OIDC": "test-oidc-token"}
+    key = "ingress-replay-001"
+
+    first = client.post(path, json=_bootstrap_ingress_body(key=key), headers=headers)
+    repeated = client.post(path, json=_bootstrap_ingress_body(key=key), headers=headers)
+    alternate = client.post(
+        path,
+        json=_bootstrap_ingress_body(key="ingress-replay-002"),
+        headers=headers,
+    )
+    changed_body = _bootstrap_ingress_body(key="ingress-replay-drift-001")
+    changed_body["request"]["controller_release_digest"] = "sha256:" + "e" * 64
+    changed = client.post(path, json=changed_body, headers=headers)
+
+    assert first.status_code == 200, first.text
+    assert repeated.status_code == 200, repeated.text
+    assert alternate.status_code == 200, alternate.text
+    assert first.json()["execution"] == repeated.json()["execution"]
+    assert first.json()["execution"] == alternate.json()["execution"]
+    assert alternate.json()["correlation_id"] == "ingress-replay-002"
+    assert changed.status_code == 422
+    assert changed.json()["detail"] == "fleet bootstrap operation request is invalid"
+    assert [path.name for path in incoming.iterdir()] == [
+        f"{_bootstrap_ingress_operation_key(_bootstrap_ingress_body(key=key))}.json"
+    ]
+
+
+def test_github_oidc_bootstrap_ingress_rejects_missing_auth_drift_and_caller_knobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub(job_attempt=2)
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+    path = "/internal/v1/ingress/fleet-bootstrap/activate-controller"
+
+    missing = client.post(path, json=_bootstrap_ingress_body())
+    assert missing.status_code == 401
+    assert github.calls == []
+    assert not list(incoming.iterdir())
+
+    caller_knob = _bootstrap_ingress_body(key="ingress-caller-knob-001")
+    caller_knob["active_jobs"] = 0
+    rejected = client.post(
+        path,
+        json=caller_knob,
+        headers={"X-QDev-GitHub-OIDC": "token"},
+    )
+    assert rejected.status_code == 422
+    assert not list(incoming.iterdir())
+
+    drift = client.post(
+        path,
+        json=_bootstrap_ingress_body(key="ingress-attempt-drift-001"),
+        headers={"X-QDev-GitHub-OIDC": "token"},
+    )
+    assert drift.status_code == 409
+    assert drift.json()["detail"] == "fleet bootstrap GitHub identity is invalid"
+    assert not list(incoming.iterdir())
+    assert (
+        client.post(
+            "/internal/v1/ingress/fleet-bootstrap/restore-existing-worker",
+            json=_bootstrap_ingress_body(key="ingress-no-recovery-001"),
+            headers={"X-QDev-GitHub-OIDC": "token"},
+        ).status_code
+        == 404
+    )
+
+
+@pytest.mark.parametrize(
+    "spoofed_header",
+    (
+        "X-QDev-Operator-Token",
+        "X-QDev-mTLS-Identity",
+        "X-QDev-Worker-Token",
+        "X-QDev-Claim-Scope-Id",
+        "X-QDev-Recovery-Agent-Signature",
+        "X-QDev-Release-Identity",
+        "X-QDev-Future-Context",
+    ),
+)
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent",
+    ),
+)
+def test_github_oidc_bootstrap_ingress_rejects_any_spoofed_qdev_context_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spoofed_header: str,
+    path: str,
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        path,
+        json=_bootstrap_ingress_body(),
+        headers={
+            "X-QDev-GitHub-OIDC": "test-oidc-token",
+            spoofed_header: "spoofed-context",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "fleet bootstrap OIDC authentication failed"
+    assert verifier.calls == []
+    assert github.calls == []
+    assert not list(incoming.iterdir())
+
+
+def test_github_oidc_bootstrap_ingress_rejects_duplicate_oidc_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        json=_bootstrap_ingress_body(),
+        headers=[
+            ("X-QDev-GitHub-OIDC", "first-token"),
+            ("X-QDev-GitHub-OIDC", "second-token"),
+        ],
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "fleet bootstrap OIDC authentication failed"
+    assert verifier.calls == []
+    assert github.calls == []
+    assert not list(incoming.iterdir())
+
+
 def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_bridge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1704,14 +2044,21 @@ def test_activation_and_enrolment_routes_are_mtls_bound_and_fail_closed_without_
     results.mkdir()
     incoming.chmod(0o700)
     results.chmod(0o750)
-    monkeypatch.setattr(
-        "qdev_runner.broker.FleetHostDispatchSpool",
-        lambda request_root, result_root: FleetHostDispatchSpool(
+
+    def _fixture_dispatch_spool(request_root: Path, result_root: Path) -> FleetHostDispatchSpool:
+        request_metadata = request_root.stat()
+        result_metadata = result_root.stat()
+        assert request_metadata.st_uid == result_metadata.st_uid
+        assert request_metadata.st_gid == result_metadata.st_gid
+        return FleetHostDispatchSpool(
             request_root,
             result_root,
-            result_uid=os.geteuid(),
-        ),
-    )
+            runtime_uid=request_metadata.st_uid,
+            runtime_gid=request_metadata.st_gid,
+            result_uid=result_metadata.st_uid,
+        )
+
+    monkeypatch.setattr("qdev_runner.broker.FleetHostDispatchSpool", _fixture_dispatch_spool)
     queued_body = activation_body | {"idempotency_key": "controller-activation-queued-001"}
     queued_response = client.post(
         activation_path,
@@ -3666,6 +4013,48 @@ def test_capacity_override_does_not_prioritize_non_active_controller_sha(
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "sha", "attempt", "expected"),
+    [
+        ("completed", "cancelled", "a" * 40, 1, 200),
+        ("queued", None, "a" * 40, 1, 409),
+        ("in_progress", None, "a" * 40, 1, 409),
+        ("completed", None, "a" * 40, 1, 409),
+        ("completed", "cancelled", "b" * 40, 1, 409),
+        ("completed", "cancelled", "a" * 40, 2, 409),
+    ],
+)
+def test_pending_terminal_reconciliation(
+    tmp_path: Path, status: str, conclusion: str | None, sha: str, attempt: int, expected: int
+) -> None:
+    client = _app(
+        tmp_path,
+        FakeGitHub(job_status=status, job_conclusion=conclusion, head_sha=sha, run_attempt=attempt),
+    )
+    created_at = _seed_stale_running_job(client)
+    store = client.app.state.store
+    store.set_status(42, "pending")
+    response = client.post(
+        "/internal/v1/operations/jobs/42/recover-stale",
+        headers=OPERATOR_HEADERS,
+        json={
+            "owner": "portfolio-ci",
+            "reason": "reconcile terminal provider state",
+            "pending_terminal_only": True,
+        },
+    )
+    assert response.status_code == expected
+    assert store.job_status(42) == ("completed" if expected == 200 else "pending")
+    assert float(store.job(42)["created_at"]) == created_at
+    if expected == 200:
+        receipt = verify_controller_receipt(response.json(), receipt_key=RECEIPT_KEY)
+        assert receipt["payload"]["action"] == "pending-completed-from-provider"
+        assert store.job(42)["result"] == "cancelled"
+    store.set_status(42, "running")
+    assert not store.complete_pending_from_provider(42, "cancelled")
+    assert store.job_status(42) == "running"
 
 
 def test_stale_job_audit_is_signed_and_read_only(tmp_path: Path) -> None:
