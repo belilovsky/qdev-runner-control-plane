@@ -132,9 +132,7 @@ def test_github_observation_binds_exact_bootstrap_run_and_job_attempt() -> None:
 
 def test_github_observation_accepts_github_workflow_dispatch_null_ref() -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
-    validate_github_bootstrap_observation(
-        policy, _request(), _github_run(ref=None), _github_jobs()
-    )
+    validate_github_bootstrap_observation(policy, _request(), _github_run(ref=None), _github_jobs())
 
 
 @pytest.mark.parametrize(
