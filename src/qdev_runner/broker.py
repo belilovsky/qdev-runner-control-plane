@@ -127,6 +127,9 @@ _CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V2
 _CONTROLLER_REPOSITORY = "belilovsky/qdev-runner-control-plane"
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_DYNAMIC_RUNNER_LABEL = re.compile(
+    r"^qdev-job-(?P<run_id>[1-9][0-9]*)-(?P<attempt>[1-9][0-9]*)-[A-Za-z0-9][A-Za-z0-9-]*$"
+)
 _RecoveryResult = TypeVar("_RecoveryResult")
 
 
@@ -543,6 +546,65 @@ def _job_attempt(row: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return attempt if attempt > 0 else None
+
+
+def exact_offline_runner_identity(
+    github: GitHubAppClient,
+    claimed: dict[str, Any],
+    labels: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Find one provider-owned offline JIT identity for this immutable job.
+
+    A dynamic label is the provider-visible binding for a one-shot runner.  We
+    only hold a job when exactly one existing registration has the complete
+    queued label set and is offline/idle.  Missing, duplicate, malformed, or
+    mismatched registrations fall through to the normal JIT path; ambiguity is
+    never resolved by choosing a runner name or a host.
+    """
+
+    dynamic = [label for label in labels if _DYNAMIC_RUNNER_LABEL.fullmatch(label)]
+    if not dynamic:
+        return None
+    if len(dynamic) != 1:
+        raise PolicyError("queued job has ambiguous dynamic runner labels")
+    match = _DYNAMIC_RUNNER_LABEL.fullmatch(dynamic[0])
+    assert match is not None
+    attempt = _job_attempt(claimed)
+    if (
+        int(match["run_id"]) != int(claimed["run_id"])
+        or attempt is None
+        or int(match["attempt"]) != attempt
+    ):
+        raise PolicyError("dynamic runner label differs from queued immutable tuple")
+    expected_labels = frozenset(labels)
+    matches: list[dict[str, Any]] = []
+    for runner in github.repository_runners(
+        int(claimed["installation_id"]), str(claimed["repository"])
+    ):
+        runner_id = runner.get("id")
+        runner_name = runner.get("name")
+        runner_labels = runner.get("labels")
+        if (
+            isinstance(runner_id, bool)
+            or not isinstance(runner_id, int)
+            or runner_id <= 0
+            or not isinstance(runner_name, str)
+            or not runner_name
+            or not isinstance(runner_labels, list)
+            or any(
+                not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                for item in runner_labels
+            )
+        ):
+            raise GitHubError("repository runner response is malformed")
+        observed_labels = frozenset(str(item["name"]) for item in runner_labels)
+        if observed_labels != expected_labels:
+            continue
+        if runner.get("status") == "offline" and runner.get("busy") is False:
+            matches.append(runner)
+    if len(matches) > 1:
+        raise PolicyError("provider runner identity is ambiguous")
+    return matches[0] if matches else None
 
 
 def _pending_job_tuple(row: dict[str, Any], profile: str) -> dict[str, Any]:
@@ -2394,6 +2456,9 @@ def create_app(
             "ok": True,
             "schema": "qdev-runner-health-v1",
             "pending": data["jobs"].get("pending", 0),
+            # Aggregate only: exact job and runner bindings are exposed solely
+            # from the authenticated operations audit below.
+            "offline_runner_reconciliation_holds": len(store.active_offline_runner_holds()),
             "active_workers": len(fresh_workers),
             "primary_present": bool(primary),
             "reserve_present": bool(reserve),
@@ -4530,6 +4595,44 @@ def create_app(
         }
         return operation_store.receipt(payload)
 
+    @app.get("/internal/v1/operations/jobs/offline-runner-holds")
+    def audit_offline_runner_holds(
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        holds = []
+        for row in store.active_offline_runner_holds():
+            holds.append(
+                {
+                    "immutable_tuple": {
+                        "repository": str(row["repository"]),
+                        "run_id": int(row["run_id"]),
+                        "job_id": int(row["job_id"]),
+                        "attempt": _job_attempt(row),
+                        "exact_sha": str(row["head_sha"]),
+                        "profile": str(row["profile"]),
+                    },
+                    "runner_identity": {
+                        "provider_runner_id": int(row["provider_runner_id"]),
+                        "runner_name": str(row["runner_name"]),
+                        "labels": list(_json_strings(row["labels_json"])),
+                    },
+                    "tuple_digest": str(row["tuple_digest"]),
+                    "held_at": float(row["held_at"]),
+                    "state": str(row["state"]),
+                }
+            )
+        return operation_store.receipt(
+            {
+                "kind": "offline-runner-reconciliation-audit",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "holds": holds,
+            }
+        )
+
     @app.get("/internal/v1/operations/jobs/pending")
     def audit_pending_jobs(
         x_qdev_operator_token: str | None = Header(default=None),
@@ -5080,6 +5183,25 @@ def create_app(
                     job_id,
                     str(remote_job.get("conclusion") or remote_job.get("status") or "unknown"),
                 )
+                return Response(status_code=204)
+            offline_identity = exact_offline_runner_identity(github_client, claimed, labels)
+            if offline_identity is not None:
+                try:
+                    store.hold_exact_offline_runner(
+                        job_id,
+                        provider_runner_id=int(offline_identity["id"]),
+                        runner_name=str(offline_identity["name"]),
+                        labels=labels,
+                    )
+                except ValueError as error:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="offline runner reconciliation lost its immutable claim",
+                    ) from error
+                # The exact provider identity already exists.  A fresh JIT
+                # registration would either compete with it or create a second
+                # runner for the same GitHub job, so leave this poll empty and
+                # let only the registry-bound host-agent reconcile the hold.
                 return Response(status_code=204)
             # GitHub retains an offline JIT runner when a host fails between
             # configuration issuance and process start.  A retry of the same

@@ -323,6 +323,25 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status_created_idx ON jobs(status, created_at);
 
+-- A provider-side ephemeral runner may be registered but offline when its
+-- original host dies before the process starts.  Keep that exact immutable
+-- job claimed while the controller reconciles the existing identity.  This is
+-- deliberately a separate additive table: older databases keep their jobs
+-- status constraint and rollback never turns a held job into a new dispatch.
+CREATE TABLE IF NOT EXISTS offline_runner_holds (
+    job_id INTEGER PRIMARY KEY,
+    provider_runner_id INTEGER NOT NULL UNIQUE,
+    runner_name TEXT NOT NULL,
+    labels_json TEXT NOT NULL,
+    tuple_digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('active','terminal')),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+);
+CREATE INDEX IF NOT EXISTS offline_runner_holds_state_idx
+    ON offline_runner_holds(state, created_at);
+
 CREATE TABLE IF NOT EXISTS workers (
     name TEXT PRIMARY KEY,
     profiles_json TEXT NOT NULL,
@@ -1267,6 +1286,24 @@ class Store:
                     "SELECT * FROM jobs WHERE status='pending' ORDER BY created_at, job_id"
                 )
             )
+            held_profile_heads: dict[str, tuple[float, int]] = {}
+            for row in connection.execute(
+                """
+                    SELECT jobs.job_id, jobs.profile, jobs.created_at
+                    FROM jobs JOIN offline_runner_holds
+                      ON offline_runner_holds.job_id=jobs.job_id
+                    WHERE offline_runner_holds.state='active'
+                      AND jobs.status='claimed'
+                      AND jobs.profile IS NOT NULL
+                    ORDER BY jobs.created_at, jobs.job_id
+                    """
+            ):
+                # The query is oldest-first. Preserve the profile head when
+                # several exact provider identities are being reconciled.
+                held_profile_heads.setdefault(
+                    str(row["profile"]).lower(),
+                    (float(row["created_at"]), int(row["job_id"])),
+                )
             if claim_scope is not None and claim_scope.schema != SCHEMA_V2:
                 # A temporary scope is an explicit execution sequence.  Keep the
                 # normal queue FIFO untouched, while ensuring a scoped worker can
@@ -1344,6 +1381,16 @@ class Store:
                     (profile for profile in profiles if profile.lower() in labels), None
                 )
                 if matching_profile is None:
+                    continue
+                held_head = held_profile_heads.get(matching_profile.lower())
+                if held_head is not None and held_head <= (
+                    float(row["created_at"]),
+                    int(row["job_id"]),
+                ):
+                    # Do not let a recovery worker jump the provider's exact
+                    # offline identity.  Other profiles remain independently
+                    # claimable, preserving profile FIFO without globally
+                    # freezing the queue.
                     continue
                 if scoped_profiles is not None and matching_profile.lower() not in scoped_profiles:
                     continue
@@ -1456,6 +1503,12 @@ class Store:
                 "completed_at=COALESCE(?, completed_at) WHERE job_id=?",
                 (status, result[:4000], now, completed_at, job_id),
             )
+            if completed_at is not None:
+                connection.execute(
+                    "UPDATE offline_runner_holds SET state='terminal', updated_at=? "
+                    "WHERE job_id=? AND state='active'",
+                    (now, job_id),
+                )
 
     def job_status(self, job_id: int) -> str | None:
         with self.connect() as connection:
@@ -2974,6 +3027,145 @@ class Store:
                 (conclusion, now, now, job_id),
             )
             return result.rowcount == 1
+
+    def hold_exact_offline_runner(
+        self,
+        job_id: int,
+        *,
+        provider_runner_id: int,
+        runner_name: str,
+        labels: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Durably retain a claimed job for its already-registered offline runner.
+
+        The broker never receives a host, command, registration token, or
+        arbitrary labels here.  Those are recovered only by the registry-bound
+        host-agent path after this record has frozen the provider identity.
+        """
+
+        if (
+            isinstance(provider_runner_id, bool)
+            or not isinstance(provider_runner_id, int)
+            or provider_runner_id <= 0
+            or not isinstance(runner_name, str)
+            or not runner_name
+            or len(runner_name) > 255
+            or not labels
+            or any(
+                not isinstance(label, str) or not _RUNNER_LABEL.fullmatch(label) for label in labels
+            )
+            or len(labels) != len(set(labels))
+        ):
+            raise ValueError("offline runner identity is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                job = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                if job is None or str(job["status"]) != "claimed":
+                    raise ValueError("offline runner hold requires an active claim")
+                try:
+                    expected_labels = tuple(json.loads(str(job["labels_json"])))
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("queued runner labels are invalid") from error
+                if tuple(labels) != expected_labels:
+                    raise ValueError("offline runner labels differ from queued labels")
+                tuple_payload = {
+                    "job_id": int(job["job_id"]),
+                    "run_id": int(job["run_id"]),
+                    "repository": str(job["repository"]),
+                    "head_sha": str(job["head_sha"]).lower(),
+                    "attempt": _workflow_job_attempt(str(job["payload_json"])),
+                    "profile": str(job["profile"] or "").lower(),
+                    "provider_runner_id": provider_runner_id,
+                    "runner_name": runner_name,
+                    "labels": list(labels),
+                }
+                canonical = json.dumps(
+                    tuple_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                )
+                tuple_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                existing = connection.execute(
+                    "SELECT * FROM offline_runner_holds WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        str(existing["tuple_digest"]) != tuple_digest
+                        or str(existing["state"]) != "active"
+                    ):
+                        raise ValueError("offline runner hold conflicts with immutable tuple")
+                    connection.execute("COMMIT")
+                    return dict(existing)
+                by_runner = connection.execute(
+                    "SELECT job_id FROM offline_runner_holds WHERE provider_runner_id=?",
+                    (provider_runner_id,),
+                ).fetchone()
+                if by_runner is not None:
+                    raise ValueError("provider runner identity is already held")
+                connection.execute(
+                    """
+                    INSERT INTO offline_runner_holds(
+                        job_id, provider_runner_id, runner_name, labels_json,
+                        tuple_digest, state, created_at, updated_at
+                    ) VALUES(?,?,?,?,?,'active',?,?)
+                    """,
+                    (
+                        job_id,
+                        provider_runner_id,
+                        runner_name,
+                        json.dumps(labels, separators=(",", ":")),
+                        tuple_digest,
+                        now,
+                        now,
+                    ),
+                )
+                # The polling worker did not receive a JIT payload.  Release
+                # that worker capacity while retaining the job's claimed state
+                # and profile FIFO head; stale-job recovery explicitly excludes
+                # this immutable reconciliation hold.
+                updated = connection.execute(
+                    """
+                    UPDATE jobs SET worker_name=NULL, claim_scope_id=NULL,
+                        updated_at=?, result=?
+                    WHERE job_id=? AND status='claimed'
+                    """,
+                    (
+                        now,
+                        f"offline provider runner reconciliation: id={provider_runner_id}",
+                        job_id,
+                    ),
+                )
+                if updated.rowcount != 1:  # pragma: no cover - transaction guard
+                    raise ValueError("offline runner hold lost its active claim")
+                held = connection.execute(
+                    "SELECT * FROM offline_runner_holds WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        assert held is not None
+        return dict(held)
+
+    def active_offline_runner_holds(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.job_id, jobs.run_id, jobs.repository, jobs.head_sha,
+                       jobs.profile, jobs.payload_json, jobs.created_at,
+                       offline_runner_holds.provider_runner_id,
+                       offline_runner_holds.runner_name,
+                       offline_runner_holds.labels_json,
+                       offline_runner_holds.tuple_digest,
+                       offline_runner_holds.state,
+                       offline_runner_holds.created_at AS held_at,
+                       offline_runner_holds.updated_at AS hold_updated_at
+                FROM offline_runner_holds JOIN jobs ON jobs.job_id=offline_runner_holds.job_id
+                WHERE offline_runner_holds.state='active'
+                ORDER BY jobs.created_at, jobs.job_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def heartbeat(
         self,
@@ -5770,6 +5962,11 @@ class Store:
                 SELECT jobs.*, workers.last_seen AS worker_last_seen
                 FROM jobs LEFT JOIN workers ON workers.name=jobs.worker_name
                 WHERE jobs.status IN ('claimed','running') AND jobs.updated_at<?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM offline_runner_holds
+                    WHERE offline_runner_holds.job_id=jobs.job_id
+                      AND offline_runner_holds.state='active'
+                  )
                   AND (jobs.worker_name IS NULL OR workers.name IS NULL
                        OR workers.last_seen<? OR workers.active_jobs=0)
                 ORDER BY jobs.created_at ASC, jobs.job_id ASC
@@ -5788,6 +5985,11 @@ class Store:
                     claim_scope_id=NULL, profile=NULL,
                     claimed_at=NULL, updated_at=?, result=?
                 WHERE job_id=? AND status IN ('claimed','running') AND updated_at<?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM offline_runner_holds
+                    WHERE offline_runner_holds.job_id=jobs.job_id
+                      AND offline_runner_holds.state='active'
+                  )
                   AND (worker_name IS NULL OR worker_name NOT IN (
                     SELECT name FROM workers WHERE last_seen>=? AND active_jobs>0
                   ))

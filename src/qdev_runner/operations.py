@@ -108,6 +108,7 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "profile_heads",
         "unclassified",
     },
+    "offline-runner-reconciliation-audit": {"kind", "observed_at", "holds"},
     "fifo-claim-scope-issued": {
         "kind",
         "operator_session",
@@ -333,6 +334,70 @@ def _validate_fifo_skipped(value: Any) -> None:
             raise ValueError("fifo skip item is invalid")
 
 
+def _validate_offline_runner_hold(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != {
+        "immutable_tuple",
+        "runner_identity",
+        "tuple_digest",
+        "held_at",
+        "state",
+    }:
+        raise ValueError("offline runner hold is invalid")
+    immutable = value["immutable_tuple"]
+    identity = value["runner_identity"]
+    if not isinstance(immutable, dict) or set(immutable) != {
+        "repository",
+        "run_id",
+        "job_id",
+        "attempt",
+        "exact_sha",
+        "profile",
+    }:
+        raise ValueError("offline runner immutable tuple is invalid")
+    if (
+        not isinstance(immutable["repository"], str)
+        or not _REPOSITORY.fullmatch(immutable["repository"])
+        or isinstance(immutable["run_id"], bool)
+        or not isinstance(immutable["run_id"], int)
+        or immutable["run_id"] <= 0
+        or isinstance(immutable["job_id"], bool)
+        or not isinstance(immutable["job_id"], int)
+        or immutable["job_id"] <= 0
+        or isinstance(immutable["attempt"], bool)
+        or not isinstance(immutable["attempt"], int)
+        or immutable["attempt"] <= 0
+        or not isinstance(immutable["exact_sha"], str)
+        or not _SOURCE_SHA.fullmatch(immutable["exact_sha"])
+        or not isinstance(immutable["profile"], str)
+        or not _WORKER_NAME.fullmatch(immutable["profile"])
+    ):
+        raise ValueError("offline runner immutable tuple is invalid")
+    if not isinstance(identity, dict) or set(identity) != {
+        "provider_runner_id",
+        "runner_name",
+        "labels",
+    }:
+        raise ValueError("offline runner identity is invalid")
+    labels = identity["labels"]
+    if (
+        isinstance(identity["provider_runner_id"], bool)
+        or not isinstance(identity["provider_runner_id"], int)
+        or identity["provider_runner_id"] <= 0
+        or not isinstance(identity["runner_name"], str)
+        or not _WORKER_NAME.fullmatch(identity["runner_name"])
+        or not isinstance(labels, list)
+        or not 1 <= len(labels) <= 64
+        or any(not isinstance(label, str) or not _WORKER_NAME.fullmatch(label) for label in labels)
+        or not isinstance(value["tuple_digest"], str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["tuple_digest"])
+        or isinstance(value["held_at"], bool)
+        or not isinstance(value["held_at"], (int, float))
+        or value["held_at"] <= 0
+        or value["state"] != "active"
+    ):
+        raise ValueError("offline runner hold is invalid")
+
+
 def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the v2 discriminator before a controller receipt is signed.
 
@@ -393,6 +458,13 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             for job_id in value["unclassified"]
         ):
             raise ValueError("durable queue audit unclassified jobs are invalid")
+    if kind == "offline-runner-reconciliation-audit" and (
+        not isinstance(value["holds"], list) or len(value["holds"]) > 512
+    ):
+        raise ValueError("offline runner audit payload is invalid")
+    if kind == "offline-runner-reconciliation-audit":
+        for item in value["holds"]:
+            _validate_offline_runner_hold(item)
     if kind == "fifo-claim-scope-issued" and (
         value["operator_session"] != "verified"
         or not isinstance(value["mtls_identity"], str)
