@@ -38,6 +38,14 @@ repository_admission_disk_mb:
   # The worker's independent running floor and workflow preflight remain active.
   belilovsky/qazgeo:
     qdev-ci-docker: 15360
+  # The current FIFO head for id-qdev-run is its static-contract validation:
+  # it invokes Docker Compose configuration validation but does not build or
+  # retain an OCI image.  Its successful executions on mail-qdev-reserve were
+  # short-lived, with no persistent Docker volumes.  Reserve the supported
+  # 12 GiB minimum for this repository/profile only; the controller's 4.5 GiB
+  # independent live free-space floor remains mandatory.
+  belilovsky/id-qdev-run:
+    qdev-ci-docker: 12288
   # Qaz.Vision's measured checkout is 120 MiB (53 MiB tracked source) and
   # its published runtime image is 201 MiB. Its Docker lane builds one slim
   # Python image, with no nested services or persistent Docker volumes.
