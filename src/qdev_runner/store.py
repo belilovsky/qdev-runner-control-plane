@@ -2943,6 +2943,17 @@ class Store:
     def complete_from_webhook(self, job_id: int, conclusion: str) -> None:
         self.set_status(job_id, "completed", conclusion)
 
+    def complete_pending_from_provider(self, job_id: int, conclusion: str) -> bool:
+        """Reconcile provider-terminal pending work without racing a worker claim."""
+        now = time.time()
+        with self.connect() as connection:
+            result = connection.execute(
+                "UPDATE jobs SET status='completed', result=?, updated_at=?, completed_at=? "
+                "WHERE job_id=? AND status='pending'",
+                (conclusion, now, now, job_id),
+            )
+            return result.rowcount == 1
+
     def heartbeat(
         self,
         name: str,
