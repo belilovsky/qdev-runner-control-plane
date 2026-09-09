@@ -25,7 +25,7 @@ ci.qdev.run {
     request_body {
       max_size 128KB
     }
-    reverse_proxy qdev-runner-broker-public:9020
+    reverse_proxy qdev-runner-broker-internal:9443
   }
 
   @artifact path /artifacts/*

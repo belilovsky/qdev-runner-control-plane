@@ -681,6 +681,7 @@ def test_controller_allows_only_typed_github_bootstrap_ingress_at_public_edge() 
     assert "/internal/v1/ingress/fleet-bootstrap/activate-controller" in caddyfile
     assert "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent" in caddyfile
     assert "max_size 128KB" in caddyfile
+    assert "reverse_proxy qdev-runner-broker-internal:9443" in caddyfile
 
 
 def test_edge_proxy_issuer_keeps_credential_local_and_short_lived() -> None:
