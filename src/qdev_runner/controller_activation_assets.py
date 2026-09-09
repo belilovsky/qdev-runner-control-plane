@@ -42,6 +42,8 @@ from .controller_release import ControllerReleaseIdentityError, controller_relea
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+ACTIVATION_LIFECYCLE_LOCK = Path("/run/lock/qdev-controller-activation.lock")
+
 _DESCRIPTOR_FIELDS = (
     "image_archive",
     "sbom",
@@ -812,3 +814,195 @@ def stage_activation_assets(
         "workflow_job_id": artifact.workflow_identity["job_id"],
         "workflow_attempt": artifact.workflow_identity["attempt"],
     }
+
+
+def _sha256_hex(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _replace_root_owned_bytes(
+    path: Path, payload: bytes, *, label: str, require_root_owner: bool
+) -> None:
+    """Atomically replace one fixed root executable after its bytes are bound.
+
+    The caller holds the lifecycle lock.  This intentionally has no caller-selected
+    destination: it is used only to repair the installed activation adapter before
+    the normal signed activation path can update itself.
+    """
+
+    parent = _safe_directory(
+        path.parent, label=f"{label} directory", require_root_owner=require_root_owner
+    )
+    temporary = parent / f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o700,
+        )
+        os.fchmod(descriptor, 0o700)
+        if require_root_owner:
+            os.fchown(descriptor, 0, 0)
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, path)
+        _fsync_directory(parent)
+    except OSError as exc:
+        raise ControllerActivationAssetsError(f"{label} cannot be replaced") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ControllerActivationAssetsError(f"{label} temporary cleanup failed") from exc
+
+
+def repair_installed_activation_adapter(
+    *,
+    release_root: Path,
+    source_sha: str,
+    artifact_manifest: Path,
+    transaction_id: str,
+    installed_adapter: Path,
+    expected_installed_sha256: str,
+    expected_candidate_sha256: str,
+    repairs_root: Path,
+    now: datetime | None = None,
+    require_root_owner: bool = True,
+    lifecycle_lock_path: Path = ACTIVATION_LIFECYCLE_LOCK,
+) -> dict[str, object]:
+    """Repair the fixed adapter from a reconciled controller release.
+
+    This is a narrowly-scoped bootstrap bridge.  It verifies the same hosted
+    recovery artifact inputs as activation, accepts only a clean exact release,
+    backs up the measured installed adapter by digest, and atomically replaces
+    that one fixed executable.  It never activates a release or touches queue,
+    service, or policy state.
+    """
+
+    if not _SHA.fullmatch(source_sha):
+        raise ControllerActivationAssetsError("candidate source SHA is invalid")
+    if not _IDENTIFIER.fullmatch(transaction_id):
+        raise ControllerActivationAssetsError("adapter repair transaction ID is invalid")
+    if not _HEX_DIGEST.fullmatch(expected_installed_sha256):
+        raise ControllerActivationAssetsError("expected installed adapter digest is invalid")
+    if not _HEX_DIGEST.fullmatch(expected_candidate_sha256):
+        raise ControllerActivationAssetsError("expected candidate adapter digest is invalid")
+    release = _safe_directory(
+        release_root, label="controller repair release", require_root_owner=require_root_owner
+    )
+    if release.name != source_sha:
+        raise ControllerActivationAssetsError("repair release is not bound to its source SHA")
+    candidate_adapter = release / "scripts" / "qdev_controller_activation_adapter.py"
+    _safe_directory(
+        candidate_adapter.parent,
+        label="candidate activation adapter directory",
+        require_root_owner=require_root_owner,
+    )
+    candidate_bytes = _safe_regular_bytes(
+        candidate_adapter,
+        label="candidate activation adapter",
+        require_root_owner=require_root_owner,
+    )
+    if _sha256_hex(candidate_bytes) != expected_candidate_sha256:
+        raise ControllerActivationAssetsError("candidate activation adapter digest does not match")
+    try:
+        artifact = verify_controller_artifact_manifest(
+            artifact_manifest,
+            require_root_owner=require_root_owner,
+            now=(now or datetime.now(UTC)).astimezone(UTC),
+        )
+        policy_digest = candidate_config_digest(release)
+        entrypoint_digest = fingerprint_release_tree(release, require_root_owner=require_root_owner)
+    except (ControllerActivationError, ControllerRecoveryArtifactError) as exc:
+        raise ControllerActivationAssetsError(str(exc)) from exc
+    if (
+        artifact.source_sha != source_sha
+        or artifact.policy_bundle_digest != policy_digest
+        or artifact.entrypoint_reconciliation_digest != entrypoint_digest
+    ):
+        raise ControllerActivationAssetsError("recovery artifact does not bind candidate adapter")
+
+    observed_at = _format_time(now or datetime.now(UTC))
+    with activation_lifecycle_lock(
+        lifecycle_lock_path, require_root_owner=require_root_owner
+    ):
+        installed_bytes = _safe_regular_bytes(
+            installed_adapter,
+            label="installed activation adapter",
+            require_root_owner=require_root_owner,
+        )
+        installed_digest = _sha256_hex(installed_bytes)
+        if installed_digest != expected_installed_sha256:
+            if installed_digest == expected_candidate_sha256:
+                raise ControllerActivationAssetsError(
+                    "activation adapter is already repaired; reconcile its existing receipt"
+                )
+            raise ControllerActivationAssetsError("installed activation adapter digest changed")
+        root = _ensure_directory(
+            repairs_root,
+            label="activation adapter repair root",
+            require_root_owner=require_root_owner,
+        )
+        backups = _ensure_directory(
+            root / "backups",
+            label="activation adapter repair backups",
+            require_root_owner=require_root_owner,
+        )
+        receipts = _ensure_directory(
+            root / "receipts",
+            label="activation adapter repair receipts",
+            require_root_owner=require_root_owner,
+        )
+        _publish_bytes(
+            backups / f"{installed_digest}.py",
+            installed_bytes,
+            label="activation adapter rollback backup",
+            require_root_owner=require_root_owner,
+            allow_existing_same=True,
+        )
+        _replace_root_owned_bytes(
+            installed_adapter,
+            candidate_bytes,
+            label="installed activation adapter",
+            require_root_owner=require_root_owner,
+        )
+        verified = _safe_regular_bytes(
+            installed_adapter,
+            label="installed activation adapter",
+            require_root_owner=require_root_owner,
+        )
+        if _sha256_hex(verified) != expected_candidate_sha256:
+            raise ControllerActivationAssetsError(
+                "installed activation adapter digest is not durable"
+            )
+        receipt: dict[str, object] = {
+            "schema": "qdev-controller-activation-adapter-repair-v1",
+            "status": "completed",
+            "transaction_id": transaction_id,
+            "source_sha": source_sha,
+            "artifact_manifest_digest": artifact.manifest_digest,
+            "policy_bundle_digest": policy_digest,
+            "entrypoint_reconciliation_digest": entrypoint_digest,
+            "installed_adapter": str(installed_adapter),
+            "rollback_adapter_sha256": installed_digest,
+            "candidate_adapter_sha256": expected_candidate_sha256,
+            "observed_at": observed_at,
+        }
+        _publish_bytes(
+            receipts / f"{transaction_id}.json",
+            _canonical(receipt) + b"\n",
+            label="activation adapter repair receipt",
+            require_root_owner=require_root_owner,
+            allow_existing_same=True,
+        )
+    return receipt

@@ -147,6 +147,30 @@ def test_activation_adapter_binds_source_target_and_signed_envelope() -> None:
         )
 
 
+def test_activation_adapter_accepts_and_validates_runtime_rollback_anchor() -> None:
+    envelope = _activation_envelope()
+    request = {
+        **envelope["request"],
+        "controller_internal_image_digest": IMAGE_DIGEST,
+    }
+    target = {
+        **envelope["target"],
+        "controller_internal_image_digest": IMAGE_DIGEST,
+        "rollback_revision": "e" * 40,
+        "rollback_release_digest": "sha256:" + "f" * 64,
+    }
+    parsed_request, parsed_target = ACTIVATION._validate_request(
+        {**envelope, "request": request, "target": target}
+    )
+    assert parsed_request["controller_internal_image_digest"] == IMAGE_DIGEST
+    assert parsed_target["rollback_revision"] == "e" * 40
+
+    with pytest.raises(ACTIVATION.AdapterError, match="rollback_revision_invalid"):
+        ACTIVATION._validate_request(
+            {**envelope, "request": request, "target": {**target, "rollback_revision": "bad"}}
+        )
+
+
 def test_activation_adapter_rejects_legacy_runtime_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

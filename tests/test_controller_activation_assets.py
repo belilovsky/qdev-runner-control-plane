@@ -260,3 +260,94 @@ def test_stage_publishes_verified_members_before_no_overwrite_envelope(
             now=NOW + timedelta(minutes=1),
             require_root_owner=False,
         )
+
+
+def test_repair_installed_activation_adapter_is_digest_bound_and_keeps_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = tmp_path / CANDIDATE_SHA
+    candidate = release / "scripts" / "qdev_controller_activation_adapter.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"#!/usr/bin/python3\n# repaired adapter\n")
+    candidate.chmod(0o700)
+    installed = tmp_path / "installed" / "qdev-controller-activate"
+    installed.parent.mkdir()
+    installed.write_bytes(b"#!/usr/bin/python3\n# old adapter\n")
+    installed.chmod(0o700)
+    repairs_parent = tmp_path / "assets"
+    repairs_parent.mkdir()
+    lock = tmp_path / "qdev-controller-activation.lock"
+
+    monkeypatch.setattr(
+        assets, "verify_controller_artifact_manifest", lambda *args, **kwargs: _artifact()
+    )
+    monkeypatch.setattr(assets, "candidate_config_digest", lambda _root: CANDIDATE_POLICY)
+    monkeypatch.setattr(
+        assets, "fingerprint_release_tree", lambda *args, **kwargs: ENTRYPOINT_DIGEST
+    )
+
+    old = hashlib.sha256(installed.read_bytes()).hexdigest()
+    new = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    receipt = assets.repair_installed_activation_adapter(
+        release_root=release,
+        source_sha=CANDIDATE_SHA,
+        artifact_manifest=tmp_path / "reconciled.json",
+        transaction_id="adapter-repair-0001",
+        installed_adapter=installed,
+        expected_installed_sha256=old,
+        expected_candidate_sha256=new,
+        repairs_root=repairs_parent / "adapter-repairs",
+        now=NOW,
+        require_root_owner=False,
+        lifecycle_lock_path=lock,
+    )
+
+    assert installed.read_bytes() == candidate.read_bytes()
+    assert (repairs_parent / "adapter-repairs" / "backups" / f"{old}.py").read_bytes() == (
+        b"#!/usr/bin/python3\n# old adapter\n"
+    )
+    assert receipt["rollback_adapter_sha256"] == old
+    assert receipt["candidate_adapter_sha256"] == new
+    assert json.loads(
+        (repairs_parent / "adapter-repairs" / "receipts" / "adapter-repair-0001.json").read_text(
+            encoding="utf-8"
+        )
+    ) == receipt
+
+
+def test_repair_installed_activation_adapter_rejects_changed_installed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = tmp_path / CANDIDATE_SHA
+    candidate = release / "scripts" / "qdev_controller_activation_adapter.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"candidate")
+    candidate.chmod(0o700)
+    installed = tmp_path / "installed"
+    installed.write_bytes(b"different")
+    installed.chmod(0o700)
+    (tmp_path / "assets").mkdir()
+    monkeypatch.setattr(
+        assets, "verify_controller_artifact_manifest", lambda *args, **kwargs: _artifact()
+    )
+    monkeypatch.setattr(assets, "candidate_config_digest", lambda _root: CANDIDATE_POLICY)
+    monkeypatch.setattr(
+        assets, "fingerprint_release_tree", lambda *args, **kwargs: ENTRYPOINT_DIGEST
+    )
+
+    with pytest.raises(
+        assets.ControllerActivationAssetsError, match="installed activation adapter digest changed"
+    ):
+        assets.repair_installed_activation_adapter(
+            release_root=release,
+            source_sha=CANDIDATE_SHA,
+            artifact_manifest=tmp_path / "reconciled.json",
+            transaction_id="adapter-repair-0002",
+            installed_adapter=installed,
+            expected_installed_sha256="0" * 64,
+            expected_candidate_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            repairs_root=tmp_path / "assets" / "adapter-repairs",
+            now=NOW,
+            require_root_owner=False,
+            lifecycle_lock_path=tmp_path / "lock",
+        )
