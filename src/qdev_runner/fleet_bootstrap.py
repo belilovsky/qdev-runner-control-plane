@@ -437,13 +437,20 @@ def validate_github_bootstrap_observation(
         or repository.get("full_name") != policy.identity.repository
     ):
         raise FleetBootstrapError("GitHub bootstrap repository is invalid")
+    # GitHub's workflow-dispatch run representation currently leaves ``ref``
+    # null even when the dispatch originates from the protected default branch.
+    # The independently observed head branch, exact immutable SHA, OIDC claim
+    # and workflow path remain mandatory; accepting any other ref is not.
+    observed_ref = run.get("ref")
+    if observed_ref is None:
+        observed_ref = expected_ref
     if (
         not require_exact_int(run.get("id"), request.run_id)
         or not require_exact_int(run.get("run_attempt"), request.attempt)
         or run.get("head_sha") != request.source_sha
         or run.get("event") != "workflow_dispatch"
         or run.get("path") != policy.identity.workflow
-        or run.get("ref") != expected_ref
+        or observed_ref != expected_ref
         or run.get("head_branch") != policy.identity.branch
     ):
         raise FleetBootstrapError("GitHub bootstrap run identity is invalid")
