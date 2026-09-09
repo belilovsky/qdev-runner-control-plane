@@ -64,7 +64,7 @@ from .fleet_bootstrap import (
 )
 from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
-from .github_oidc import GitHubActionsArtifactOIDCVerifier
+from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import (
     QGEO_REQUIRED_JOB_PROFILES,
