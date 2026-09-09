@@ -220,10 +220,7 @@ def _trusted_current(revision: str, release_digest: str) -> tuple[Path, Path]:
         link_metadata = CURRENT_RELEASE.lstat()
     except OSError as exc:
         raise AdapterError("current_release_unavailable") from exc
-    if (
-        not stat.S_ISLNK(link_metadata.st_mode)
-        or link_metadata.st_uid != 0
-    ):
+    if not stat.S_ISLNK(link_metadata.st_mode) or link_metadata.st_uid != 0:
         raise AdapterError("current_release_link_invalid")
     releases = _validate_root_directory(RELEASES_ROOT)
     current = _validate_root_directory(CURRENT_RELEASE)
