@@ -37,6 +37,7 @@ config_args_for_current() {
   printf '%s\n' \
     'repos.json=/etc/qdev-runner/repos.json' \
     'profiles.yml=/etc/qdev-runner/profiles.yml' \
+    'admin-platform-package-bindings.json=/etc/qdev-runner/admin-platform-package-bindings.json' \
     'release-lanes.yml=/etc/qdev-runner/release-lanes.yml' \
     'managed-registry.yml=/etc/qdev-runner/managed-registry.yml' \
     'fleet-bootstrap.yml=/etc/qdev-runner/fleet-bootstrap.yml' \
@@ -275,6 +276,7 @@ candidate_config="$({
   printf '%s\n' \
     "repos.json=$release/inventory/repos.json" \
     "profiles.yml=$release/config/profiles.yml" \
+    "admin-platform-package-bindings.json=$release/config/admin-platform-package-bindings.json" \
     "release-lanes.yml=$release/config/release-lanes.yml" \
     "managed-registry.yml=$release/config/managed-registry.yml" \
     "fleet-bootstrap.yml=$release/config/fleet-bootstrap.yml" \

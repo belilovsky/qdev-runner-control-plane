@@ -466,6 +466,7 @@ def snapshot_current_material(
         expected_names = {
             "repos.json",
             "profiles.yml",
+            "admin-platform-package-bindings.json",
             "release-lanes.yml",
             "managed-registry.yml",
             "fleet-bootstrap.yml",

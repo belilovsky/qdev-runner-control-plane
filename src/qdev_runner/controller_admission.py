@@ -788,6 +788,9 @@ def _parser() -> argparse.ArgumentParser:
     sign.add_argument("--private-key", required=True, type=Path)
     sign.add_argument("--output", required=True, type=Path)
 
+    issue_package = subparsers.add_parser("issue-admin-platform-package-binding")
+    issue_package.add_argument("--request-id", required=True)
+
     verify = subparsers.add_parser("verify")
     verify.add_argument("--receipt", required=True, type=Path)
     verify.add_argument("--public-key", required=True, type=Path)
@@ -810,7 +813,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
     try:
         if args.command == "generate-keypair":
             key_id = initialize_keypair(args.private_key, args.public_key)
@@ -826,6 +830,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state": "signed",
                 "receipt": str(args.output),
                 "key_id": result["signature"]["key_id"],
+            }
+        elif args.command == "issue-admin-platform-package-binding":
+            if os.geteuid() != 0:
+                parser.error(
+                    "issue-admin-platform-package-binding must run through the root host wrapper"
+                )
+            # The admission host wrapper supplies the root-owned policy, key
+            # and protected spool.  A caller can name only an opaque request
+            # ID, never a key, repository, URI or arbitrary filesystem path.
+            from .admin_platform_package_issuer import (
+                AdminPlatformPackageIssuerError,
+                issue_binding,
+            )
+
+            try:
+                issued = issue_binding(args.request_id)
+            except AdminPlatformPackageIssuerError as error:
+                raise ControllerAdmissionError(str(error)) from error
+            result = {
+                "state": "issued",
+                "request_id": issued["request_id"],
+                "key_id": issued["binding"]["signature"]["key_id"],
             }
         else:
             receipt = load_json_strict(args.receipt)

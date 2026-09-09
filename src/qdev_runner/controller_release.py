@@ -49,6 +49,7 @@ _REQUIRED_FILES = frozenset(
         "deploy/qdev-runner-recovery-qazstack.service",
         "config/fleet-bootstrap.yml",
         "config/controller-capacity.json",
+        "config/admin-platform-package-bindings.json",
         "config/release-lanes.yml",
         "deploy/compose.yml",
     }

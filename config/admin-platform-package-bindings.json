@@ -1,0 +1,17 @@
+{
+  "schema_version": "qdev-admin-platform-package-binding-policy-v1",
+  "subjects": {
+    "avds-admin-shell": {
+      "package": "@av/admin-shell",
+      "repository": "belilovsky/av-platform-core",
+      "workflow": "Publish AVDS admin shell",
+      "artifact_uri_prefix": "https://ci.qdev.run/artifacts/belilovsky/av-platform-core/"
+    },
+    "qaz-admin-kit": {
+      "package": "qaz-admin-kit",
+      "repository": "belilovsky/qaz-admin-kit",
+      "workflow": "Publish federated admin package",
+      "artifact_uri_prefix": "https://ci.qdev.run/artifacts/belilovsky/qaz-admin-kit/"
+    }
+  }
+}

@@ -28,6 +28,9 @@ def _config_root(root: Path) -> tuple[Path, dict[str, Path]]:
     files = {
         "repos.json": root / "inventory/repos.json",
         "profiles.yml": root / "config/profiles.yml",
+        "admin-platform-package-bindings.json": (
+            root / "config/admin-platform-package-bindings.json"
+        ),
         "release-lanes.yml": root / "config/release-lanes.yml",
         "managed-registry.yml": root / "config/managed-registry.yml",
         "fleet-bootstrap.yml": root / "config/fleet-bootstrap.yml",
