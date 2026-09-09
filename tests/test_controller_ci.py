@@ -147,6 +147,31 @@ def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted(tmp_path: Pat
         CI.validate_context("local", environment, SHA)
 
 
+def test_recovery_build_requires_owner_dispatch_on_main(tmp_path: Path) -> None:
+    environment = context(tmp_path)
+    environment.update(
+        {
+            "GITHUB_WORKFLOW_REF": (
+                "belilovsky/qdev-runner-control-plane/.github/workflows/"
+                "controller-recovery-build.yml@refs/heads/main"
+            ),
+            "GITHUB_JOB": "controller-recovery-build",
+        }
+    )
+    assert CI.validate_context("controller-recovery-build", environment, SHA)
+    environment["GITHUB_REF"] = "refs/heads/candidate"
+    environment["GITHUB_WORKFLOW_REF"] = (
+        "belilovsky/qdev-runner-control-plane/.github/workflows/"
+        "controller-recovery-build.yml@refs/heads/candidate"
+    )
+    event_path = Path(environment["GITHUB_EVENT_PATH"])
+    event = json.loads(event_path.read_text())
+    event["ref"] = "refs/heads/candidate"
+    event_path.write_text(json.dumps(event))
+    with pytest.raises(ValueError, match="default branch"):
+        CI.validate_context("controller-recovery-build", environment, SHA)
+
+
 @pytest.mark.parametrize("lane", ["github-hosted", "managed"])
 def test_internal_pr_binds_head_and_preserves_provider_merge(tmp_path: Path, lane: str) -> None:
     environment = context(tmp_path, "pull_request")
@@ -454,6 +479,22 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
     assert verify["env"] == {
         "QDEV_EXPECTED_SHA": "${{ inputs.expected_sha }}",
         "QDEV_OWNER_RECOVERY": "${{ inputs.owner_recovery }}",
+    }
+
+
+def test_recovery_build_uses_existing_docker_worker_and_full_verification() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/controller-recovery-build.yml").read_text()
+    )
+    job = workflow["jobs"]["controller-recovery-build"]
+    assert job["runs-on"] == ["self-hosted", "Linux", "X64", "qdev-ci-docker"]
+    verify = next(
+        step for step in job["steps"] if "scripts/verify_controller_ci.py" in step.get("run", "")
+    )
+    assert verify["run"].endswith("--lane controller-recovery-build")
+    assert verify["env"] == {
+        "QDEV_EXPECTED_SHA": "${{ inputs.expected_sha }}",
+        "QDEV_OWNER_RECOVERY": "true",
     }
 
 

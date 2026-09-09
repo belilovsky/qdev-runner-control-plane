@@ -20,7 +20,11 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       github.ref == 'refs/heads/main' && inputs.expected_sha == github.sha
-    runs-on: ubuntu-latest
+    # This is the one owner-dispatched bootstrap lane.  It intentionally uses
+    # the existing Docker-capable recovery worker rather than consuming
+    # GitHub-hosted minutes, but remains bound to the default branch and the
+    # exact requested SHA below.
+    runs-on: [self-hosted, Linux, X64, qdev-ci-docker]
     permissions:
       contents: read
       id-token: write
@@ -45,6 +49,11 @@ jobs:
           test -z "$(find src -maxdepth 1 -type d -name '*.egg-info' -print -quit)"
           test -z "$(git status --porcelain)"
           bash scripts/install_controller_scan_tools.sh
+      - name: Verify complete controller suite on the recovery lane
+        env:
+          QDEV_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          QDEV_OWNER_RECOVERY: "true"
+        run: python scripts/verify_controller_ci.py --lane controller-recovery-build
       - name: Build and scan exact recovery image
         env:
           QDEV_EXPECTED_SHA: ${{ inputs.expected_sha }}

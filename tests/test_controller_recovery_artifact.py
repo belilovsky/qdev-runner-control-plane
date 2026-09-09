@@ -398,6 +398,23 @@ def test_hosted_recovery_requires_no_self_hosted_claim() -> None:
     assert "admission_nonce" not in identity
 
 
+def test_self_hosted_recovery_build_requires_no_self_hosted_claim() -> None:
+    run, job = _hosted_workflow()
+    job["labels"] = ["self-hosted", "Linux", "X64", "qdev-ci-docker"]
+    identity = reconcile_workflow_identity(
+        run,
+        job,
+        source_sha=SOURCE_SHA,
+        run_id=101,
+        job_id=202,
+        attempt=1,
+        now=NOW,
+    )
+    assert identity["execution_lane"] == "self-hosted-recovery-build"
+    assert identity["idempotency_key"] == "self-hosted-recovery:101:202:1"
+    assert "admission_nonce" not in identity
+
+
 @pytest.mark.parametrize(
     ("target", "field", "value"),
     [

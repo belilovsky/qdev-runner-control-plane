@@ -48,7 +48,9 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _WORKFLOW = ".github/workflows/runner-smoke.yml"
-_HOSTED_WORKFLOW = ".github/workflows/controller-recovery-build.yml"
+_RECOVERY_BUILD_WORKFLOW = ".github/workflows/controller-recovery-build.yml"
+_HOSTED_RECOVERY_BUILD_LABELS = ["ubuntu-latest"]
+_SELF_HOSTED_RECOVERY_BUILD_LABELS = ["self-hosted", "Linux", "X64", "qdev-ci-docker"]
 _CONFIG_FILES = {
     "repos.json": Path("inventory/repos.json"),
     "profiles.yml": Path("config/profiles.yml"),
@@ -444,7 +446,7 @@ def reconcile_workflow_identity(
     exact_run = _require_positive_int(run_id, "run ID")
     exact_job = _require_positive_int(job_id, "job ID")
     exact_attempt = _require_positive_int(attempt, "attempt")
-    if run.get("path") == _HOSTED_WORKFLOW:
+    if run.get("path") == _RECOVERY_BUILD_WORKFLOW:
         actor = run.get("actor")
         repository = run.get("repository")
         if (
@@ -464,15 +466,23 @@ def reconcile_workflow_identity(
             or job.get("head_sha") != exact_sha
             or job.get("name") != "controller-recovery-build"
             or job.get("conclusion") != "success"
-            or job.get("labels") != ["ubuntu-latest"]
             or admission_nonce is not None
         ):
-            raise ControllerRecoveryArtifactError("hosted recovery workflow identity is not exact")
+            raise ControllerRecoveryArtifactError("recovery build workflow identity is not exact")
+        labels = job.get("labels")
+        if labels == _HOSTED_RECOVERY_BUILD_LABELS:
+            execution_lane = "github-hosted-recovery-build"
+            idempotency_prefix = "hosted-recovery"
+        elif labels == _SELF_HOSTED_RECOVERY_BUILD_LABELS:
+            execution_lane = "self-hosted-recovery-build"
+            idempotency_prefix = "self-hosted-recovery"
+        else:
+            raise ControllerRecoveryArtifactError("recovery build runner labels are not exact")
         observed_at = (now or datetime.now(UTC)).astimezone(UTC)
         return {
             "issuer": "https://api.github.com",
             "subject": f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main",
-            "workflow_ref": f"{CONTROLLER_REPOSITORY}/{_HOSTED_WORKFLOW}@refs/heads/main",
+            "workflow_ref": f"{CONTROLLER_REPOSITORY}/{_RECOVERY_BUILD_WORKFLOW}@refs/heads/main",
             "event": "workflow_dispatch",
             "ref": "refs/heads/main",
             "run_id": exact_run,
@@ -481,11 +491,11 @@ def reconcile_workflow_identity(
             "reconciled_at": observed_at.isoformat().replace("+00:00", "Z"),
             "head_sha": exact_sha,
             "job_name": "controller-recovery-build",
-            "labels": ["ubuntu-latest"],
+            "labels": labels,
             "owner_recovery": True,
-            "execution_lane": "github-hosted-recovery-build",
+            "execution_lane": execution_lane,
             "expected_sha": exact_sha,
-            "idempotency_key": f"hosted-recovery:{exact_run}:{exact_job}:{exact_attempt}",
+            "idempotency_key": f"{idempotency_prefix}:{exact_run}:{exact_job}:{exact_attempt}",
             "issued_at": observed_at.isoformat().replace("+00:00", "Z"),
             "expires_at": (observed_at + timedelta(minutes=15)).isoformat().replace("+00:00", "Z"),
             "conclusion": "success",

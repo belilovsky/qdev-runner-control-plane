@@ -1,7 +1,8 @@
 schema_version: qdev-runner-v2
 execution_mode: github-hosted-primary
 self_hosted_recovery: true
-# Self-hosted capacity is reserved for the explicit manual recovery workflow.
+# Self-hosted capacity is reserved for explicit owner-dispatched recovery
+# workflows.  They are not a fallback for ordinary CI.
 recovery_workflows:
   - runner-smoke.yml
 # This manual bootstrap lane may retain a sealed recovery artifact only after
@@ -10,6 +11,7 @@ github_artifact_recovery_workflows:
   - controller-recovery-build.yml
 profiles:
   - qdev-ci
+  - qdev-ci-docker
 trusted_events:
   - push
   - workflow_dispatch

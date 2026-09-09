@@ -157,7 +157,13 @@ def provider_execution_binding(
 def validate_context(
     lane: str, environment: dict[str, str], sha: str
 ) -> dict[str, str | int] | None:
-    if lane not in {"local", "github-hosted", "managed", "controller-recovery"}:
+    if lane not in {
+        "local",
+        "github-hosted",
+        "managed",
+        "controller-recovery",
+        "controller-recovery-build",
+    }:
         raise ValueError("unknown execution lane")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("exact checkout SHA is required")
@@ -172,11 +178,24 @@ def validate_context(
         raise ValueError("Actions must identify its real execution lane")
     binding = provider_binding(environment, sha)
     recovery = lane == "controller-recovery"
+    recovery_build = lane == "controller-recovery-build"
     binding.update(
         provider_execution_binding(
             environment,
-            workflow="runner-smoke.yml" if recovery else "ci.yml",
-            job="runner-smoke" if recovery else "verify",
+            workflow=(
+                "runner-smoke.yml"
+                if recovery
+                else "controller-recovery-build.yml"
+                if recovery_build
+                else "ci.yml"
+            ),
+            job=(
+                "runner-smoke"
+                if recovery
+                else "controller-recovery-build"
+                if recovery_build
+                else "verify"
+            ),
         )
     )
     runner_environment = "github-hosted" if lane == "github-hosted" else "self-hosted"
@@ -194,7 +213,7 @@ def validate_context(
         expected_repository = f"{owner}/qdev-runner-control-plane"
         if not owner or environment.get("GITHUB_REPOSITORY") != expected_repository:
             raise ValueError("managed CI is bound to the controller repository")
-    if lane == "controller-recovery":
+    if recovery or recovery_build:
         owner = environment.get("GITHUB_REPOSITORY_OWNER", "")
         if not owner or environment.get("GITHUB_ACTOR") != owner:
             raise ValueError("recovery requires the nonempty repository owner actor")
@@ -206,6 +225,8 @@ def validate_context(
         ref = environment.get("GITHUB_REF", "")
         if not ref.startswith("refs/heads/") or ref == "refs/heads/":
             raise ValueError("recovery requires a selected repository branch")
+        if recovery_build and ref != "refs/heads/main":
+            raise ValueError("recovery build requires the default branch")
         if environment.get("QDEV_OWNER_RECOVERY") != "true" or not expected:
             raise ValueError("explicit owner recovery confirmation and exact SHA are required")
     return binding
@@ -227,7 +248,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--lane",
-        choices=("local", "github-hosted", "managed", "controller-recovery"),
+        choices=(
+            "local",
+            "github-hosted",
+            "managed",
+            "controller-recovery",
+            "controller-recovery-build",
+        ),
         required=True,
     )
     args = parser.parse_args()
