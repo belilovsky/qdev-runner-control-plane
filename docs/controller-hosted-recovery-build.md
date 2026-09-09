@@ -98,3 +98,42 @@ workflow run, job, and attempt for the existing fleet bootstrap request.  Existi
 otherwise staging fails closed.  If the identity expires or current status
 changes before dispatch, reconcile a fresh successful hosted artifact and
 repeat with a new transaction ID; do not edit timestamps or reuse a snapshot.
+
+## Repair the installed activation adapter before a signed activation
+
+If the root dispatcher and the installed activation adapter disagree about a
+new signed request shape, do not bypass the dispatcher or launch queued jobs by
+hand.  A reconciled controller recovery release contains the narrowly-scoped
+`repair-adapter` bridge.  It replaces only
+`/usr/local/sbin/qdev-controller-activate`; it does not change the active
+controller release, services, queue, or policy.
+
+Use it only from a clean, root-owned exact release archive whose hosted recovery
+artifact has passed reconciliation.  Record the measured installed adapter
+hash and the candidate adapter hash first.  The operation rejects a changed
+installed adapter, verifies the artifact's source, policy and entrypoint
+bindings, stores a digest-addressed rollback copy, atomically replaces the
+fixed adapter, and writes a root-only receipt.
+
+```sh
+release=/opt/qdev-runner-control-plane/releases/<exact-40-character-sha>
+artifact=/root/<root-only-reconciled-artifact>/controller-artifact-manifest.json
+tool="$release/scripts/controller_activation_assets.py"
+old=$(/usr/bin/sha256sum /usr/local/sbin/qdev-controller-activate | awk '{print $1}')
+new=$(/usr/bin/sha256sum "$release/scripts/qdev_controller_activation_adapter.py" | awk '{print $1}')
+
+sudo "$tool" repair-adapter \
+  --release "$release" \
+  --artifact-manifest "$artifact" \
+  --transaction-id <new-8-to-128-character-transaction-id> \
+  --expected-installed-sha256 "$old" \
+  --expected-candidate-sha256 "$new"
+```
+
+Reconcile the receipt under
+`/var/lib/qdev-runner/controller-activation/adapter-repairs/receipts/` before
+issuing a fresh signed activation envelope.  If the command reports that the
+installed adapter has already changed, stop and reconcile its existing receipt;
+do not overwrite it or retry against a different digest.  The backup is under
+`adapter-repairs/backups/` and is retained for the normal documented rollback
+procedure.

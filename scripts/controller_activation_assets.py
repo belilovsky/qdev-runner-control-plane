@@ -30,6 +30,8 @@ ACTIVATION_LOCK_PATH = Path("/run/lock/qdev-controller-activation.lock")
 ACTIVATION_PUBLIC_KEY = Path("/etc/qdev-runner/trust/controller-activation-ed25519.pub")
 ADMISSION_PUBLIC_KEY = Path("/etc/qdev-runner/admission/ed25519-public.pem")
 TRUST_BINDING = Path("/etc/qdev-runner/trust/controller-activation-trust-binding.json")
+INSTALLED_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
+ADAPTER_REPAIRS_ROOT = ASSETS_ROOT / "adapter-repairs"
 CURRENT_CONFIG_FILES = {
     "repos.json": Path("/etc/qdev-runner/repos.json"),
     "profiles.yml": Path("/etc/qdev-runner/profiles.yml"),
@@ -89,6 +91,7 @@ sys.path.insert(0, str(SOURCE_ROOT))
 from qdev_runner.controller_activation_assets import (  # noqa: E402
     ControllerActivationAssetsError,
     activation_lifecycle_lock,
+    repair_installed_activation_adapter,
     snapshot_and_issue_unsigned_activation_envelope,
     stage_activation_assets,
 )
@@ -186,6 +189,20 @@ def stage(args: argparse.Namespace) -> dict[str, object]:
         )
 
 
+def repair_adapter(args: argparse.Namespace) -> dict[str, object]:
+    release, source_sha = _exact_release(args.release)
+    return repair_installed_activation_adapter(
+        release_root=release,
+        source_sha=source_sha,
+        artifact_manifest=args.artifact_manifest,
+        transaction_id=args.transaction_id,
+        installed_adapter=INSTALLED_ACTIVATION_ADAPTER,
+        expected_installed_sha256=args.expected_installed_sha256,
+        expected_candidate_sha256=args.expected_candidate_sha256,
+        repairs_root=ADAPTER_REPAIRS_ROOT,
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
     commands = result.add_subparsers(dest="command", required=True)
@@ -202,6 +219,14 @@ def parser() -> argparse.ArgumentParser:
     stage_parser.add_argument("--artifact-manifest", type=Path, required=True)
     stage_parser.add_argument("--signed-envelope", type=Path, required=True)
     stage_parser.set_defaults(handler=stage)
+
+    repair_parser = commands.add_parser("repair-adapter")
+    repair_parser.add_argument("--release", type=Path, required=True)
+    repair_parser.add_argument("--artifact-manifest", type=Path, required=True)
+    repair_parser.add_argument("--transaction-id", required=True)
+    repair_parser.add_argument("--expected-installed-sha256", required=True)
+    repair_parser.add_argument("--expected-candidate-sha256", required=True)
+    repair_parser.set_defaults(handler=repair_adapter)
     return result
 
 

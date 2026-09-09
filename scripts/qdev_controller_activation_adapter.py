@@ -60,9 +60,18 @@ TARGET_FIELDS = {
     "activation_envelope_schema",
     "activation_public_key_binding",
     "activation_max_envelope_ttl_seconds",
+    # The dispatcher obtains these values from the measured runtime immediately
+    # before it invokes us.  They are a compare-and-swap anchor: an envelope
+    # prepared for an earlier runtime must never activate a candidate.
+    "rollback_revision",
+    "rollback_release_digest",
 }
 LEGACY_REQUEST_FIELDS = REQUEST_FIELDS - {"controller_internal_image_digest"}
-LEGACY_TARGET_FIELDS = TARGET_FIELDS - {"controller_internal_image_digest"}
+LEGACY_TARGET_FIELDS = TARGET_FIELDS - {
+    "controller_internal_image_digest",
+    "rollback_revision",
+    "rollback_release_digest",
+}
 
 
 class AdapterError(RuntimeError):
@@ -130,6 +139,17 @@ def _validate_request(envelope: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         raise AdapterError("controller_internal_image_digest_invalid")
     if not isinstance(envelope_digest, str) or not DIGEST.fullmatch(envelope_digest):
         raise AdapterError("activation_envelope_digest_invalid")
+    rollback_revision = target.get("rollback_revision")
+    rollback_release_digest = target.get("rollback_release_digest")
+    if rollback_revision is not None and (
+        not isinstance(rollback_revision, str) or not SHA.fullmatch(rollback_revision)
+    ):
+        raise AdapterError("rollback_revision_invalid")
+    if rollback_release_digest is not None and (
+        not isinstance(rollback_release_digest, str)
+        or not DIGEST.fullmatch(rollback_release_digest)
+    ):
+        raise AdapterError("rollback_release_digest_invalid")
     if (
         target.get("controller_revision") != revision
         or target.get("controller_release_digest") != release_digest
@@ -562,6 +582,17 @@ def main() -> int:
         transaction_id,
     ) = _activation_assets(request)
     current_revision, current_digest, current_image, current_internal_image = _read_status()
+    # Current dispatcher requests always carry the measured rollback anchor.
+    # Retain the old target shape only for a completed historical request; a
+    # present anchor must match the just-read runtime before any payload runs.
+    if (
+        target.get("rollback_revision") is not None
+        and (
+            target["rollback_revision"] != current_revision
+            or target["rollback_release_digest"] != current_digest
+        )
+    ):
+        raise AdapterError("rollback_anchor_mismatch")
     _current, activation = _trusted_current(current_revision, current_digest)
     was_already_active = (
         current_revision == request["controller_revision"]
