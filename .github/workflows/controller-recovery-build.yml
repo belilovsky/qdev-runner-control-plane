@@ -42,6 +42,9 @@ jobs:
           # Keep generated packaging metadata out of the signed release tree.
           # Local installs can create ignored *.egg-info files in the checkout,
           # so remove that exact generated directory before fingerprinting.
+          # The release guard deliberately rejects group-writable trusted Python
+          # modules; hosted runners otherwise inherit a group-writable umask.
+          umask 022
           python -m pip install '.[dev]'
           rm -rf -- src/qdev_runner_control_plane.egg-info
           rm -rf -- build
