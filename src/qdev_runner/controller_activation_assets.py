@@ -933,9 +933,7 @@ def repair_installed_activation_adapter(
         raise ControllerActivationAssetsError("recovery artifact does not bind candidate adapter")
 
     observed_at = _format_time(now or datetime.now(UTC))
-    with activation_lifecycle_lock(
-        lifecycle_lock_path, require_root_owner=require_root_owner
-    ):
+    with activation_lifecycle_lock(lifecycle_lock_path, require_root_owner=require_root_owner):
         installed_bytes = _safe_regular_bytes(
             installed_adapter,
             label="installed activation adapter",

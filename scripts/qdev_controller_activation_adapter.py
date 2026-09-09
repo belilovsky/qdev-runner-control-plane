@@ -585,12 +585,9 @@ def main() -> int:
     # Current dispatcher requests always carry the measured rollback anchor.
     # Retain the old target shape only for a completed historical request; a
     # present anchor must match the just-read runtime before any payload runs.
-    if (
-        target.get("rollback_revision") is not None
-        and (
-            target["rollback_revision"] != current_revision
-            or target["rollback_release_digest"] != current_digest
-        )
+    if target.get("rollback_revision") is not None and (
+        target["rollback_revision"] != current_revision
+        or target["rollback_release_digest"] != current_digest
     ):
         raise AdapterError("rollback_anchor_mismatch")
     _current, activation = _trusted_current(current_revision, current_digest)
