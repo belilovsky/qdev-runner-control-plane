@@ -43,9 +43,24 @@ jobs:
           # Local installs can create ignored *.egg-info files in the checkout,
           # so remove that exact generated directory before fingerprinting.
           # The release guard deliberately rejects group-writable trusted Python
-          # modules; hosted runners otherwise inherit a group-writable umask.
+          # modules.  The wheel build can preserve group-write bits even with a
+          # safe umask, so harden only the installed trusted package before the
+          # guard exercises it.  Its content and ownership checks remain intact.
           umask 022
           python -m pip install '.[dev]'
+          python - <<'PY'
+          from pathlib import Path
+          import qdev_runner
+
+          package_root = Path(qdev_runner.__file__).resolve().parent
+          if package_root.is_symlink() or not package_root.is_dir():
+              raise SystemExit("installed qdev_runner package is not a real directory")
+          for installed_file in package_root.rglob("*"):
+              if installed_file.is_symlink():
+                  raise SystemExit(f"unexpected symlink in trusted package: {installed_file}")
+              if installed_file.is_file():
+                  installed_file.chmod(installed_file.stat().st_mode & ~0o022)
+          PY
           rm -rf -- src/qdev_runner_control_plane.egg-info
           rm -rf -- build
           git restore --worktree .
