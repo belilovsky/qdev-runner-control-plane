@@ -269,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--head-sha", required=True)
     create.add_argument("--profile", action="append", required=True, dest="profiles")
     create.add_argument("--min-disk-free-gib", type=float, default=4.5)
-    create.add_argument("--max-disk-used-pct", type=float, default=95.0)
+    create.add_argument("--max-disk-used-pct", type=float, default=90.0)
     create.add_argument("--duration-seconds", type=int, default=900)
     create.add_argument("--owner", required=True)
     create.add_argument("--reason", required=True)

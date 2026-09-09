@@ -22,10 +22,10 @@ from .fleet_bootstrap_executor import BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
 HARD_MIN_FREE_GIB = 4.5
 # Runtime overrides remain repository-, SHA-, profile- and time-bound.  The
 # absolute free-space floor plus the repository reservation is the primary
-# safety invariant; 96% is the outer percentage guard for large volumes where
-# that absolute invariant is stricter than the former 95% ceiling.
-HARD_MAX_DISK_USED_PCT = 96.0
-MAX_OVERRIDE_SECONDS = 15 * 60
+# safety invariant. Ninety percent is an absolute outer guard; a release may
+# not weaken it for a large volume or through a temporary override.
+HARD_MAX_DISK_USED_PCT = 90.0
+MAX_OVERRIDE_SECONDS = 900
 DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

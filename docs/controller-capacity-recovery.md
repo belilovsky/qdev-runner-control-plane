@@ -193,7 +193,7 @@ profile and FIFO. Do not create a provider retry or duplicate, change
 `runs-on`, mutate broker rows, leases, webhooks, priorities or job timestamps,
 restart an active worker, remove active images/releases/rollback material, or
 perform a global Docker prune. Disk-only overrides keep the controller's hard
-floor of 4.5 GiB free and 95% maximum use, and expire within 900 seconds.
+floor of 4.5 GiB free and 90% maximum use, and expire within 900 seconds.
 
 Set operator values only in the root-owned `/etc/qdev-runner/broker.env` and
 the worker directive key in `/etc/qdev-runner/worker.env`; secrets never enter
@@ -231,7 +231,7 @@ qdev-runner-operator override srv1879763-light-primary \
   --repository belilovsky/qazlake \
   --head-sha 0123456789abcdef0123456789abcdef01234567 \
   --profile qdev-ci-docker \
-  --min-disk-free-gib 4.5 --max-disk-used-pct 95 \
+  --min-disk-free-gib 4.5 --max-disk-used-pct 90 \
   --duration-seconds 900 --owner qdev-fleet-operations \
   --reason 'bounded exact-SHA FIFO recovery' \
   > capacity-override-receipt.json

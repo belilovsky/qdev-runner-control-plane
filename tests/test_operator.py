@@ -131,7 +131,7 @@ def test_capacity_override_sends_exact_source_binding(
         "head_sha": "b" * 40,
         "profiles": ["qdev-ci-docker"],
         "min_disk_free_gib": 4.5,
-        "max_disk_used_pct": 95.0,
+        "max_disk_used_pct": 90.0,
         "duration_seconds": 900,
         "owner": "portfolio-ci",
         "reason": "bounded exact-SHA recovery",

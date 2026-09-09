@@ -59,7 +59,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     )
     assert 'python3 "$release/scripts/controller_capacity_gate.py"' in script
     capacity = json.loads((ROOT / "config/controller-capacity.json").read_text(encoding="utf-8"))
-    assert capacity["max_disk_used_pct"] == 96
+    assert capacity["max_disk_used_pct"] == 90
     assert capacity["min_free_gib"] == 8
     assert capacity["root_available_bytes"] >= (
         capacity["minimum_operational_reserve_bytes"] + capacity["estimated_peak_incremental_bytes"]

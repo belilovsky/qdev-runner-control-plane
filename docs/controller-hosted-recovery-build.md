@@ -24,7 +24,7 @@ This hosted lane does not take a self-hosted claim receipt because it is only a
 bootstrap build. It cannot restore worker admission or stand in for the separate
 signed `runner-smoke.yml` claim tuple. After signed controller activation and
 health verification, obtain that exact self-hosted tuple before restoring normal
-worker admission. Reconciliation creates a 15-minute identity; the normal
+worker admission. Reconciliation creates a 900-second identity; the normal
 offline-signed activation envelope, artifact verification, capacity checks and
 rollback apply. Download only the retained artifact from that exact successful
 workflow run and reconcile it with the same provider metadata checks. Do not use

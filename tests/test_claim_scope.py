@@ -8,6 +8,7 @@ import pytest
 
 from qdev_runner.claim_scope import (
     MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION,
+    SCHEMA_V1,
     SCHEMA_V2,
     ClaimScope,
     ClaimScopeError,
@@ -224,7 +225,7 @@ def test_scope_requires_exact_two_jobs_profiles_and_short_expiry(tmp_path: Path)
         [{"job_id": 100, "profile": "qdev-ci"}, {"job_id": 101, "profile": "qdev-ci-docker"}],
         now + timedelta(minutes=16),
     )
-    with pytest.raises(ClaimScopeError, match="15 minute"):
+    with pytest.raises(ClaimScopeError, match="900 second"):
         resolve_claim_scope(
             path,
             "maturity-20260828",
@@ -509,6 +510,18 @@ def test_upsert_rejects_new_managed_scope_with_foreign_jobs(tmp_path: Path) -> N
     with pytest.raises(ClaimScopeError, match="requires one QGeo SHA"):
         upsert_claim_scope(path, scope)
     assert not path.exists()
+
+
+def test_upsert_rejects_new_v1_scope_but_keeps_legacy_scopes_readable(tmp_path: Path) -> None:
+    path = tmp_path / "claim-scopes.json"
+    write_scope(path, expires_at=datetime.now(UTC) + timedelta(minutes=10))
+    legacy = load_claim_scopes(path)["maturity-20260828"]
+    assert legacy.schema == SCHEMA_V1
+
+    with pytest.raises(ClaimScopeError, match="must use claim-scope-v2"):
+        upsert_claim_scope(path, legacy)
+
+    assert load_claim_scopes(path)["maturity-20260828"].schema == SCHEMA_V1
 
 
 def test_v2_scope_rejects_missing_or_duplicate_immutable_tuple(tmp_path: Path) -> None:

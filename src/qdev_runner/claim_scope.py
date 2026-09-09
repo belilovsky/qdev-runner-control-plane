@@ -15,7 +15,7 @@ from typing import Any
 # profile.
 SCHEMA_V1 = "claim-scope-v1"
 SCHEMA_V2 = "claim-scope-v2"
-SCHEMA = SCHEMA_V1
+SCHEMA = SCHEMA_V2
 LEGACY_SCHEMA = "qdev-runner-claim-scopes-v1"
 # A mixed document is the v2 container used while v1 scopes are still valid.
 # Existing root-level v1 documents continue to load unchanged.
@@ -29,7 +29,7 @@ PORTFOLIO_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 # scope whose immutable jobs are all bound to the managed QGeo candidate.
 MANAGED_EXACT_CANDIDATE_FIFO_EXCEPTION = "managed-exact-candidate"
 QGEO_REPOSITORY = "belilovsky/qazgeo"
-MAX_TTL = timedelta(minutes=15)
+MAX_TTL = timedelta(seconds=900)
 _SHA256 = re.compile(r"^[0-9a-f]{40}$")
 _CERT_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
@@ -435,6 +435,8 @@ def upsert_claim_scope(path: Path, scope: ClaimScope) -> None:
     FIFO position, lease or provider state.  The controller later lets the
     already-configured worker claim the exact immutable tuple.
     """
+    if scope.schema != SCHEMA_V2:
+        raise ClaimScopeError("new claim scopes must use claim-scope-v2")
     # Validate the newly serialized entry before touching the durable
     # document.  This keeps a malformed controller-generated scope from
     # poisoning the worker claim path.
@@ -480,7 +482,7 @@ def resolve_claim_scope(
     if scope.expires_at <= current:
         raise ClaimScopeError("claim scope has expired")
     if scope.schema in {SCHEMA_V1, SCHEMA_V2} and scope.expires_at > current + MAX_TTL:
-        raise ClaimScopeError("claim scope expiry exceeds the 15 minute limit")
+        raise ClaimScopeError("claim scope expiry exceeds the 900 second limit")
     if scope.worker_name != worker_name or scope.tier != tier:
         raise ClaimScopeError("claim scope worker identity does not match")
     if scope.schema == SCHEMA_V1 and (
