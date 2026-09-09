@@ -379,7 +379,8 @@ def test_activation_adapter_resolves_core_raw_digest_assets(
     envelope_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     envelope_path = envelopes / f"{envelope_digest[7:]}.json"
     envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
-    manifest_path = artifacts / f"{manifest_digest}.json"
+    manifest_path = artifacts / manifest_digest / "manifest.json"
+    manifest_path.parent.mkdir()
     manifest_path.write_text("{}", encoding="utf-8")
     for path in (envelope_path, manifest_path):
         path.chmod(0o600)

@@ -161,7 +161,7 @@ def test_issue_binds_generation_zero_to_status_and_config_captured_at_issue(
     assert unsigned["expires_at"] == "2026-09-08T08:02:00Z"
 
 
-def _artifact_manifest(directory: Path) -> tuple[Path, str]:
+def _artifact_manifest(directory: Path, *, marker: str = "") -> tuple[Path, str]:
     descriptors: dict[str, dict[str, object]] = {}
     for field, name in (
         ("image_archive", "controller-image.tar"),
@@ -171,7 +171,7 @@ def _artifact_manifest(directory: Path) -> tuple[Path, str]:
         ("image_scan", "controller-image-trivy.json"),
         ("provenance", "controller-provenance.json"),
     ):
-        payload = f"{field} bytes".encode()
+        payload = f"{field} {marker} bytes".encode()
         (directory / name).write_bytes(payload)
         (directory / name).chmod(0o600)
         descriptors[field] = {
@@ -232,7 +232,8 @@ def test_stage_publishes_verified_members_before_no_overwrite_envelope(
         require_root_owner=False,
     )
 
-    manifest_target = assets_root / "artifacts" / f"{manifest_digest}.json"
+    bundle = assets_root / "artifacts" / manifest_digest
+    manifest_target = bundle / "manifest.json"
     envelope_target = assets_root / "envelopes" / f"{envelope_digest}.json"
     assert receipt["status"] == "staged"
     assert receipt["activation_envelope_digest"] == "sha256:" + envelope_digest
@@ -243,8 +244,55 @@ def test_stage_publishes_verified_members_before_no_overwrite_envelope(
     assert envelope_target.read_bytes() == b"{}\n"
     assert stat.S_IMODE(manifest_target.stat().st_mode) == 0o600
     assert stat.S_IMODE(envelope_target.stat().st_mode) == 0o600
+    image_target = bundle / "controller-image.tar"
 
-    image_target = assets_root / "artifacts" / "controller-image.tar"
+    # A later verified release can reuse producer member names without
+    # overwriting the active bundle's archive or scan evidence.
+    second_source = tmp_path / "second-artifact"
+    second_source.mkdir()
+    second_manifest, second_manifest_digest = _artifact_manifest(second_source, marker="second")
+    second_signed = tmp_path / "second-signed.json"
+    second_signed.write_bytes(b'{"second":true}')
+    second_signed.chmod(0o600)
+    second_envelope = SimpleNamespace(
+        transaction_id="assets-stage-0002",
+        candidate=ControllerTuple(CANDIDATE_SHA, CANDIDATE_IMAGE, CANDIDATE_POLICY),
+        artifact_manifest_digest=second_manifest_digest,
+        candidate_release_digest=RELEASE_DIGEST,
+        candidate_config_digest=CANDIDATE_POLICY,
+        entrypoint_reconciliation_digest=ENTRYPOINT_DIGEST,
+        digest=hashlib.sha256(b'{"second":true}').hexdigest(),
+    )
+    manifests = {
+        artifact_manifest: _artifact(manifest_digest=manifest_digest),
+        second_manifest: _artifact(manifest_digest=second_manifest_digest),
+    }
+    monkeypatch.setattr(
+        assets,
+        "verify_controller_artifact_manifest",
+        lambda path, **_kwargs: manifests[path],
+    )
+    monkeypatch.setattr(
+        assets,
+        "load_and_verify_envelope",
+        lambda path, **_kwargs: second_envelope if path == second_signed else envelope,
+    )
+    second_receipt = assets.stage_activation_assets(
+        release_root=tmp_path / "candidate-release",
+        source_sha=CANDIDATE_SHA,
+        artifact_manifest=second_manifest,
+        signed_envelope=second_signed,
+        assets_root=assets_root,
+        activation_public_key=tmp_path / "activation.pub",
+        admission_public_key=tmp_path / "admission.pub",
+        trust_binding=tmp_path / "binding.json",
+        now=NOW + timedelta(minutes=1),
+        require_root_owner=False,
+    )
+    second_bundle = assets_root / "artifacts" / second_manifest_digest
+    assert second_receipt["artifact_manifest"] == str(second_bundle / "manifest.json")
+    assert (second_bundle / "controller-image.tar").read_bytes() != image_target.read_bytes()
+
     image_target.write_bytes(b"tampered")
     image_target.chmod(0o600)
     with pytest.raises(assets.ControllerActivationAssetsError, match="refusing to replace"):
