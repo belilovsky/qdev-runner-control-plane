@@ -892,6 +892,7 @@ class FakeGitHub:
         self.run_attempt = run_attempt
         self.job_run_id = job_run_id
         self.jit_runner_names: list[str] = []
+        self.runners: list[dict[str, object]] = []
 
     def workflow_job(self, installation_id: int, repository: str, job_id: int) -> dict[str, object]:
         return {
@@ -919,6 +920,9 @@ class FakeGitHub:
     ) -> str:
         self.jit_runner_names.append(runner_name)
         return "signed-jit-config"
+
+    def repository_runners(self, installation_id: int, repository: str) -> list[dict[str, object]]:
+        return self.runners
 
 
 QGEO_SOURCE_SHA = "9" * 40
@@ -995,6 +999,10 @@ class QGeoFakeGitHub:
         self.run_overrides: dict[int, dict[str, object]] = {}
         self.job_overrides: dict[int, dict[str, object]] = {}
         self.extra_jobs_by_run: dict[int, list[dict[str, object]]] = {}
+        self.runners: list[dict[str, object]] = []
+
+    def repository_runners(self, installation_id: int, repository: str) -> list[dict[str, object]]:
+        return self.runners
 
     @property
     def bindings(self) -> tuple[dict[str, object], ...]:
@@ -1478,6 +1486,87 @@ def _seed_pending_job(
         )
         is True
     )
+
+
+def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path: Path) -> None:
+    run_id = 84000000042
+    labels = (
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci-docker",
+        f"qdev-job-{run_id}-1-contract",
+    )
+    github = FakeGitHub(job_run_id=run_id)
+    github.runners = [
+        {
+            "id": 2377,
+            "name": "qdev-platform-portal-102459781441",
+            "status": "offline",
+            "busy": False,
+            "labels": [{"name": label} for label in labels],
+        }
+    ]
+    client = _app(tmp_path, github=github)
+    _heartbeat(client, admitted=True, disk_free_gib=50.0)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="exact-offline-42",
+            job_id=42,
+            run_id=run_id,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=labels,
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+    _seed_pending_job(client, 43, "behind-exact-offline-42")
+    claim = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "profiles": ["qdev-ci-docker"],
+        "disk_free_gib": 50.0,
+        "min_disk_free_gib": 30.0,
+    }
+    headers = {"X-QDev-Worker-Token": WORKER_TOKEN}
+
+    assert client.post("/internal/v1/jobs/claim", headers=headers, json=claim).status_code == 204
+    assert github.jit_runner_names == []
+    held = store.active_offline_runner_holds()
+    assert len(held) == 1
+    assert held[0]["provider_runner_id"] == 2377
+    assert held[0]["runner_name"] == "qdev-platform-portal-102459781441"
+    assert store.job(42)["status"] == "claimed"  # type: ignore[index]
+    assert store.job(42)["worker_name"] is None  # type: ignore[index]
+    public_health = client.get("/health").json()
+    assert public_health["offline_runner_reconciliation_holds"] == 1
+    assert "qdev-platform-portal-102459781441" not in json.dumps(public_health)
+    audit = client.get(
+        "/internal/v1/operations/jobs/offline-runner-holds", headers=OPERATOR_HEADERS
+    )
+    assert audit.status_code == 200
+    audit_payload = verify_controller_receipt(audit.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert audit_payload["holds"][0]["immutable_tuple"]["job_id"] == 42
+    assert audit_payload["holds"][0]["runner_identity"]["provider_runner_id"] == 2377
+
+    # The next worker poll must not leapfrog the profile head while the exact
+    # provider identity is being restored; an unrelated profile remains free.
+    assert client.post("/internal/v1/jobs/claim", headers=headers, json=claim).status_code == 204
+    assert store.job_status(43) == "pending"
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET updated_at=? WHERE job_id=42", (time.time() - 600,))
+    assert store.stale_jobs(300) == []
+
+    store.complete_from_webhook(42, "success")
+    next_claim = client.post("/internal/v1/jobs/claim", headers=headers, json=claim)
+    assert next_claim.status_code == 200
+    assert next_claim.json()["job_id"] == 43
+    assert len(github.jit_runner_names) == 1
+    assert store.active_offline_runner_holds() == []
 
 
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
