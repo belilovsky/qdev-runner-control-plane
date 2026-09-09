@@ -48,7 +48,14 @@ def _source_root() -> Path:
 
     local_release = Path(__file__).resolve().parents[1]
     local = local_release / "src"
-    if local.is_dir():
+    # The installed helper lives at /usr/local/sbin.  Some hosts also have a
+    # generic /usr/local/src directory; that must never be mistaken for a
+    # controller candidate.  A candidate is only a root-owned, exact-SHA
+    # directory directly below the fixed release archive.
+    is_candidate_location = (
+        local_release.parent == RELEASES_ROOT and _SHA.fullmatch(local_release.name) is not None
+    )
+    if is_candidate_location:
         try:
             releases = RELEASES_ROOT.resolve(strict=True)
             releases_metadata = releases.lstat()
@@ -57,7 +64,6 @@ def _source_root() -> Path:
             raise RuntimeError("candidate controller source is unavailable") from exc
         if (
             local_release.parent != releases
-            or _SHA.fullmatch(local_release.name) is None
             or not stat.S_ISDIR(releases_metadata.st_mode)
             or stat.S_ISLNK(releases_metadata.st_mode)
             or releases_metadata.st_uid != 0
