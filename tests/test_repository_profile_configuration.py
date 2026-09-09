@@ -22,6 +22,19 @@ def test_controller_verification_admission_uses_bounded_qdev_ci_profile() -> Non
     assert policy.profiles["qdev-ci"].disk_mb == 4 * 1024
 
 
+def test_controller_recovery_build_admission_is_repository_scoped() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert (
+        policy.repository_profile_disk_mb[
+            ("belilovsky/qdev-runner-control-plane", "qdev-ci-docker")
+        ]
+        == 4 * 1024
+    )
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
+
+
 def test_platform_portal_contract_admission_uses_bounded_qdev_ci_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
