@@ -36,9 +36,10 @@ jobs:
       - name: Install build dependencies
         run: |
           # Keep generated packaging metadata out of the signed release tree.
-          # Editable installs create ignored *.egg-info files in the checkout,
-          # making the hosted fingerprint impossible to reproduce on the host.
+          # Local installs can create ignored *.egg-info files in the checkout,
+          # so remove that exact generated directory before fingerprinting.
           python -m pip install '.[dev]'
+          rm -rf -- src/qdev_runner_control_plane.egg-info
           test -z "$(find src -maxdepth 1 -type d -name '*.egg-info' -print -quit)"
           bash scripts/install_controller_scan_tools.sh
       - name: Build and scan exact recovery image
