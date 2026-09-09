@@ -146,7 +146,9 @@ def test_installer_repairs_managed_only_agents_without_heading(tmp_path: Path) -
     assert installer.install(root) == []
 
 
-def test_installer_supports_broker_artifact_identity_and_hosted_reconciliation(tmp_path: Path) -> None:
+def test_installer_supports_broker_artifact_identity_and_hosted_reconciliation(
+    tmp_path: Path,
+) -> None:
     root = repository(tmp_path, GOOD_WORKFLOW)
     load_installer().install(root)
     uploader = (root / ".github/scripts/qdev-upload-artifact.sh").read_text(encoding="utf-8")
