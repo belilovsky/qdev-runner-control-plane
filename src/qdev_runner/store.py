@@ -1125,8 +1125,7 @@ class Store:
                 or head_sha is None
                 or str(detail.get("capacity_directive_repository") or "").lower()
                 != repository.lower()
-                or str(detail.get("capacity_directive_head_sha") or "").lower()
-                != head_sha.lower()
+                or str(detail.get("capacity_directive_head_sha") or "").lower() != head_sha.lower()
             ):
                 continue
             if (
