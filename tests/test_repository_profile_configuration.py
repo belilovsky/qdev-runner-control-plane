@@ -69,3 +69,14 @@ def test_qgeo_recovery_admission_preserves_absolute_capacity_constraints() -> No
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
     assert policy.repository_min_disk_free_gib["belilovsky/qazgeo"] == 35
     assert policy.repository_max_concurrency["belilovsky/qazgeo"] == 1
+
+
+def test_qazvision_docker_admission_matches_measured_bounded_build() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert (
+        policy.repository_profile_disk_mb[("belilovsky/tokaev-module", "qdev-ci-docker")]
+        == 8 * 1024
+    )
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024

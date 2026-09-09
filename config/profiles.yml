@@ -38,13 +38,13 @@ repository_admission_disk_mb:
   # The worker's independent running floor and workflow preflight remain active.
   belilovsky/qazgeo:
     qdev-ci-docker: 15360
-  # Qaz.Vision's release image has a measured 201 MiB compressed runtime and
-  # its candidate checkout is 331 MiB. Its Docker lane is a single slim
-  # Python image build with no nested services; reserve the supported 12 GiB
-  # repository minimum after that measurement. The worker's independent
+  # Qaz.Vision's measured checkout is 120 MiB (53 MiB tracked source) and
+  # its published runtime image is 201 MiB. Its Docker lane builds one slim
+  # Python image, with no nested services or persistent Docker volumes.
+  # Reserve 8 GiB for that measured workload. The worker's independent
   # 4.5 GiB hard free-space floor and workflow preflight remain enforced.
   belilovsky/tokaev-module:
-    qdev-ci-docker: 12288
+    qdev-ci-docker: 8192
   # QazPolit declares a 12 GiB exact-SHA Docker release lane. Keep this
   # repository-specific admission bound below the profile default while the
   # worker's independent hard floor remains enforced during execution.
