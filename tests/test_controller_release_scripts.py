@@ -621,6 +621,14 @@ def test_controller_atomically_replaced_records_use_directory_mounts() -> None:
     assert "controller durable-state parent ownership or permissions are unsafe" in activation
 
 
+def test_installed_activation_assets_helper_ignores_unrelated_usr_local_src() -> None:
+    helper = (ROOT / "scripts/controller_activation_assets.py").read_text(encoding="utf-8")
+
+    assert "is_candidate_location" in helper
+    assert "if is_candidate_location:" in helper
+    assert "local_release.parent == RELEASES_ROOT" in helper
+
+
 def test_activation_status_is_read_only_and_private_to_internal_broker() -> None:
     compose = (ROOT / "deploy/compose.yml").read_text(encoding="utf-8")
     public = compose.split("  broker-public:", 1)[1].split("  broker-internal:", 1)[0]
