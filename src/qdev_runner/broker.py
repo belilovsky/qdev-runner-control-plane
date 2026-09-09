@@ -61,7 +61,7 @@ from .fleet_bootstrap import (
 )
 from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
-from .github_oidc import GitHubActionsArtifactOIDCVerifier, GitHubActionsOIDCError
+from .github_oidc import GitHubActionsArtifactOIDCVerifier
 from .managed_registry import ManagedRegistry, ManagedRegistryError
 from .managed_release_ledger import (
     QGEO_REQUIRED_JOB_PROFILES,
@@ -4992,6 +4992,15 @@ def create_app(
         safe_name = _safe_segment(name)
         if bool(x_qdev_artifact_token) == bool(x_qdev_github_oidc):
             raise HTTPException(status_code=401, detail="exactly one artifact identity is required")
+        if x_qdev_github_oidc:
+            # GitHub-hosted jobs have no controller lease. Their sealed
+            # material is reconciled later against the exact workflow/job
+            # identity under a signed recovery claim, never through this
+            # generic write endpoint.
+            raise HTTPException(
+                status_code=403,
+                detail="hosted artifact intake is disabled; use recovery reconciliation",
+            )
         if artifact_attempt is not None and artifact_attempt < 1:
             raise HTTPException(status_code=422, detail="invalid test attempt")
         path_suite = None
@@ -5013,35 +5022,14 @@ def create_app(
             or x_qdev_test_workflow
         )
         job = store.job(job_id)
-        if job is None and (x_qdev_artifact_token or report_like):
+        if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if x_qdev_artifact_token:
-            assert job is not None
-            if not artifact_job_is_active(job, full_name, safe_sha, job_id):
-                raise HTTPException(status_code=401, detail="artifact credentials expired")
-            expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
-            if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
-                raise HTTPException(status_code=401, detail="artifact authentication failed")
-        else:
-            # GitHub-hosted jobs do not enter the controller queue and cannot
-            # receive a worker token.  Their OIDC identity is still bound to
-            # the exact repository, commit and GitHub workflow run in the
-            # legacy artifact path.  A queued job, when present, remains the
-            # stronger source of that run identifier and active lease state.
-            oidc_run_id = int(job.get("run_id") or 0) if job is not None else job_id
-            try:
-                github_actions_oidc_verifier.verify(
-                    x_qdev_github_oidc or "",
-                    repository=full_name,
-                    sha=safe_sha,
-                    run_id=oidc_run_id,
-                )
-            except GitHubActionsOIDCError as error:
-                raise HTTPException(
-                    status_code=401, detail="artifact OIDC authentication failed"
-                ) from error
-            if job is not None and not artifact_job_is_active(job, full_name, safe_sha, job_id):
-                raise HTTPException(status_code=401, detail="artifact credentials expired")
+        assert x_qdev_artifact_token is not None
+        if not artifact_job_is_active(job, full_name, safe_sha, job_id):
+            raise HTTPException(status_code=401, detail="artifact credentials expired")
+        expected_token = artifact_token(artifact_token_key, full_name, safe_sha, job_id)
+        if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+            raise HTTPException(status_code=401, detail="artifact authentication failed")
         raw_content_length = request.headers.get("content-length")
         try:
             content_length = int(raw_content_length) if raw_content_length is not None else None

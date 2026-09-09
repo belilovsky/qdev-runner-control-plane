@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: controller-recovery-build
@@ -22,6 +21,9 @@ jobs:
       github.actor == github.repository_owner &&
       github.ref == 'refs/heads/main' && inputs.expected_sha == github.sha
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -50,15 +52,8 @@ jobs:
           path: ${{ runner.temp }}/controller-recovery-build
           if-no-files-found: error
           retention-days: 7
-      - name: Deliver through authenticated QDev artifact store
+      - name: Record controller reconciliation handoff
         run: |
           cd "$RUNNER_TEMP"
-          if bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
-            controller-recovery-build controller-recovery-build; then
-            printf '%s\n' 'QDev artifact store delivery completed.'
-          else
-            delivery_status=$?
-            printf '%s\n' \
-              "QDev artifact store delivery is unavailable (exit ${delivery_status});" \
-              'the sealed GitHub artifact remains available for exact recovery reconciliation.' >&2
-          fi
+          bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
+            controller-recovery-build controller-recovery-build

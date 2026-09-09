@@ -39,33 +39,11 @@ if [[ -n "${QDEV_ARTIFACT_TOKEN:-}" || -n "${QDEV_REPOSITORY:-}" || -n "${QDEV_H
     --data-binary "@${archive}" \
     "${QDEV_ARTIFACT_URL:?}/${QDEV_REPOSITORY}/${QDEV_HEAD_SHA}/${QDEV_JOB_ID}/${name}.tar.gz"
 elif [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-  # Hosted workflows are authorized by the signed GitHub OIDC claims bound to
-  # this exact repository, SHA and workflow run.  The active controller uses
-  # the workflow-run ID as the artifact identity; a GitHub job ID has no
-  # corresponding controller lease and is rejected before OIDC verification.
-  [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || {
-    printf '%s\n' 'GITHUB_RUN_ID must be a positive integer' >&2
-    exit 2
-  }
-  oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}"
-  if [[ "$oidc_url" == *\?* ]]; then
-    oidc_url+="&audience=qdev-artifact-v1"
-  else
-    oidc_url+="?audience=qdev-artifact-v1"
-  fi
-  oidc_response="$(curl --fail --silent --show-error \
-    --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-    "$oidc_url")"
-  oidc_token="$(printf '%s' "$oidc_response" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  [[ -n "$oidc_token" ]] || {
-    printf '%s\n' 'GitHub Actions OIDC response has no token' >&2
-    exit 2
-  }
-  curl --fail --silent --show-error --request PUT \
-    --header "X-QDev-GitHub-OIDC: ${oidc_token}" \
-    --header "X-QDev-SHA256: ${digest}" \
-    --data-binary "@${archive}" \
-    "${QDEV_ARTIFACT_URL:-https://ci.qdev.run/artifacts}/${GITHUB_REPOSITORY:?}/${GITHUB_SHA:?}/${GITHUB_RUN_ID:?}/${name}.tar.gz"
+  # Hosted workflows retain their archive with actions/upload-artifact.  The
+  # generic controller endpoint deliberately has no hosted OIDC ingress:
+  # recovery material becomes usable only after exact GitHub workflow/job
+  # reconciliation under a signed controller claim.
+  printf 'qdev artifact %s retained by GitHub for controller reconciliation\n' "$name"
 else
   printf '%s\n' 'no supported qdev artifact identity is available' >&2
   exit 2
