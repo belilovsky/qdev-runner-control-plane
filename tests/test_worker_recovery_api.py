@@ -620,18 +620,27 @@ def test_supersede_releases_only_stale_uninvoked_fence_and_allows_fresh_prepare(
         headers=OPERATOR_HEADERS,
     ).json()
     with Store(harness.settings.database_path).connect() as connection:
-        connection.execute(
-            "UPDATE worker_recoveries SET controller_revision=?,controller_release_digest=?,"
-            "controller_observed_at=?,requested_at=?,provider_observed_at=? WHERE operation_id=?",
-            (
-                "0" * 40,
-                "0" * 64,
-                time.time() - 600,
-                time.time() - 600,
-                time.time() - 600,
-                prepared["operation_id"],
-            ),
-        )
+        if rotated_agent:
+            # Renewal on an unchanged controller must retire only an
+            # uninvoked, aged fence; ordinary same-release fences stay bound.
+            connection.execute(
+                "UPDATE worker_recoveries SET controller_observed_at=?,requested_at=?,"
+                "provider_observed_at=? WHERE operation_id=?",
+                (time.time() - 600, time.time() - 600, time.time() - 600, prepared["operation_id"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE worker_recoveries SET controller_revision=?,controller_release_digest=?,"
+                "controller_observed_at=?,requested_at=?,provider_observed_at=? WHERE operation_id=?",
+                (
+                    "0" * 40,
+                    "0" * 64,
+                    time.time() - 600,
+                    time.time() - 600,
+                    time.time() - 600,
+                    prepared["operation_id"],
+                ),
+            )
 
     if rotated_agent:
         with Store(harness.settings.database_path).connect() as connection:

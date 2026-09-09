@@ -503,9 +503,16 @@ class WorkerRecoveryController:
             )
         ):
             raise WorkerRecoveryError("recovery fence has native execution evidence")
+        # A certificate renewal can happen while the controller release stays
+        # unchanged.  Such an uninvoked fence is unusable by the replacement
+        # agent, so it must be retired after its provider proof ages out.  Keep
+        # the stronger same-release fence for ordinary replays: no recovery
+        # authority is reopened unless the agent certificate itself changed.
         if (
             row.get("controller_revision") == release["revision"]
             and row.get("controller_release_digest") == release["release_digest"]
+            and row.get("expected_agent_certificate_sha256")
+            == self._agent_certificate(target)
         ):
             raise WorkerRecoveryError("current-controller recovery fence cannot be superseded")
         timestamps = (
