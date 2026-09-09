@@ -37,6 +37,7 @@ belilovsky/llm-kb-rag	true	main	qdev-ci,qdev-ci-docker	4	0	0	0	2
 belilovsky/MapRegion	true	main	qdev-ci	3	0	0	0	0
 belilovsky/mazhilis-viii	true	master	qdev-ci	5	0	0	0	0
 belilovsky/mcp-servers	true	main	qdev-ci,qdev-ci-docker	3	0	0	0	0
+belilovsky/mem	true	main	qdev-ci	3	0	0	0	0
 belilovsky/migrations	true	master	qdev-ci	3	0	0	0	0
 belilovsky/nginx-confs	true	master	qdev-ci	3	0	0	0	0
 belilovsky/npa-collector	true	feat/npa-collector-mvp	qdev-ci	4	0	0	0	0
