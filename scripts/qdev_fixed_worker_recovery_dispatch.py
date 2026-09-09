@@ -3,22 +3,30 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import stat
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "qdev-fleet-worker-recovery-result-v1"
 REQUEST_SCHEMA = "qdev-fleet-worker-recovery-request-v1"
 SSH = Path("/usr/bin/ssh")
+SCP = Path("/usr/bin/scp")
 IDENTITY_ROOT = Path("/etc/qdev-runner/worker-recovery-dispatch")
 IDENTITY = IDENTITY_ROOT / "id_ed25519"
 KNOWN_HOSTS = IDENTITY_ROOT / "known_hosts"
 ENROL = Path("/usr/local/sbin/qdev-recovery-host-enrol")
+CONTROLLER_STATUS = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
+RELEASE_ROOT = Path("/opt/qdev-runner-control-plane/current")
+CI_RECOVERY_PAYLOAD = RELEASE_ROOT / "scripts/qdev_ci_worker_configuration_recovery.py"
+REMOTE_STAGING_DIR = "/var/lib/qdev-runner/recovery-staging"
+REMOTE_PAYLOAD = f"{REMOTE_STAGING_DIR}/qdev-ci-worker-configuration-recovery.py"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 HEX = re.compile(r"^[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -39,6 +47,13 @@ TARGETS: dict[str, dict[str, object]] = {
         "profile": "qazstack",
         "recovery_service": "qdev-runner-recovery-qazstack.service",
     },
+    "qdev-ci.srv1879763-primary": {
+        "worker_name": "srv1879763-primary",
+        "service_unit": "qdev-runner-worker.service",
+        "labels": ["self-hosted", "Linux", "X64", "qdev-ci", "qdev-ci-browser", "qdev-ci-docker"],
+        "host": "186.240.148.129",
+        "profile": "ci-worker-configuration",
+    },
 }
 
 
@@ -57,7 +72,7 @@ def _root_private_file(path: Path, mode: int) -> None:
         raise DispatchError("dispatch_identity_permissions_invalid")
 
 
-def _validate_private_identity() -> None:
+def _validate_private_identity(*, require_enrol: bool) -> None:
     metadata = IDENTITY_ROOT.lstat()
     if (
         not stat.S_ISDIR(metadata.st_mode)
@@ -70,14 +85,15 @@ def _validate_private_identity() -> None:
     _root_private_file(KNOWN_HOSTS, 0o600)
     if not SSH.is_file() or SSH.is_symlink():
         raise DispatchError("ssh_client_unavailable")
-    enrol = ENROL.lstat()
-    if (
-        not stat.S_ISREG(enrol.st_mode)
-        or stat.S_ISLNK(enrol.st_mode)
-        or enrol.st_uid != 0
-        or stat.S_IMODE(enrol.st_mode) != 0o755
-    ):
-        raise DispatchError("host_enrol_adapter_invalid")
+    if require_enrol:
+        enrol = ENROL.lstat()
+        if (
+            not stat.S_ISREG(enrol.st_mode)
+            or stat.S_ISLNK(enrol.st_mode)
+            or enrol.st_uid != 0
+            or stat.S_IMODE(enrol.st_mode) != 0o755
+        ):
+            raise DispatchError("host_enrol_adapter_invalid")
 
 
 def _enrol(target_id: str, expected: dict[str, object]) -> dict[str, str]:
@@ -174,6 +190,174 @@ def _parse() -> tuple[dict[str, Any], dict[str, object]]:
     return envelope, expected
 
 
+def _ssh_prefix() -> list[str]:
+    return [
+        "-F",
+        "/dev/null",
+        "-i",
+        str(IDENTITY),
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={KNOWN_HOSTS}",
+        "-o",
+        "ConnectTimeout=15",
+    ]
+
+
+def _controller_private_file(path: Path) -> None:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise DispatchError("controller_release_status_invalid")
+
+
+def _active_payload(source_sha: object) -> tuple[Path, str]:
+    if not isinstance(source_sha, str) or SHA.fullmatch(source_sha) is None:
+        raise DispatchError("controller_release_identity_unavailable")
+    _controller_private_file(CONTROLLER_STATUS)
+    status = json.loads(CONTROLLER_STATUS.read_text(encoding="utf-8"))
+    if (
+        not isinstance(status, dict)
+        or status.get("schema") != "qdev-controller-release-status-v2"
+        or status.get("state") != "active"
+        or status.get("revision") != source_sha
+    ):
+        raise DispatchError("controller_release_identity_unavailable")
+    payload = CI_RECOVERY_PAYLOAD.resolve(strict=True)
+    root = RELEASE_ROOT.resolve(strict=True)
+    if payload.parent != root / "scripts" or not payload.is_file() or payload.is_symlink():
+        raise DispatchError("controller_recovery_payload_invalid")
+    metadata = payload.lstat()
+    if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise DispatchError("controller_recovery_payload_invalid")
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    return payload, digest
+
+
+def _parse_ci_recovery_result(raw: str) -> dict[str, object]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise DispatchError("ci_worker_recovery_response_invalid") from error
+    expected = {
+        "schema",
+        "status",
+        "service_unit",
+        "removed_dropins",
+        "removed_position_envs",
+    }
+    optional = {"snapshot_id", "error_code", "rollback_status"}
+    if (
+        not isinstance(value, dict)
+        or not expected.issubset(value)
+        or set(value) - expected - optional
+    ):
+        raise DispatchError("ci_worker_recovery_response_invalid")
+    if (
+        value.get("schema") != "qdev-ci-worker-configuration-recovery-result-v1"
+        or value.get("status") not in {"completed", "already_completed", "failed"}
+        or value.get("service_unit") != "qdev-runner-worker.service"
+        or any(
+            isinstance(value.get(name), bool)
+            or not isinstance(value.get(name), int)
+            or value[name] < 0
+            for name in ("removed_dropins", "removed_position_envs")
+        )
+        or any(not isinstance(value[name], str) for name in optional & set(value))
+    ):
+        raise DispatchError("ci_worker_recovery_response_invalid")
+    return value
+
+
+def _ci_worker_configuration_recovery(
+    envelope: dict[str, Any], expected: dict[str, object]
+) -> tuple[str, dict[str, object]]:
+    if not SCP.is_file() or SCP.is_symlink():
+        raise DispatchError("scp_client_unavailable")
+    payload, digest = _active_payload(envelope["request"].get("source_sha"))
+    remote = f"root@{expected['host']}"
+    common = _ssh_prefix()
+    prepare = subprocess.run(
+        [
+            str(SSH),
+            *common,
+            remote,
+            "/usr/bin/install",
+            "-d",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0700",
+            REMOTE_STAGING_DIR,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=120,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+    )
+    if prepare.returncode != 0:
+        raise DispatchError("fixed_host_dispatch_failed")
+    copied = subprocess.run(
+        [str(SCP), *common, str(payload), f"{remote}:{REMOTE_PAYLOAD}"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=120,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+    )
+    if copied.returncode != 0:
+        raise DispatchError("fixed_host_dispatch_failed")
+    try:
+        completed = subprocess.run(
+            [
+                str(SSH),
+                *common,
+                remote,
+                "/usr/bin/python3",
+                REMOTE_PAYLOAD,
+                "--expected-sha256",
+                digest,
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=420,
+            check=False,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+        )
+    finally:
+        # The payload is controller-owned code, but it does not need to remain
+        # on the worker after this single, hashed transition.
+        with suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                [str(SSH), *common, remote, "/usr/bin/rm", "-f", "--", REMOTE_PAYLOAD],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+                check=False,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+            )
+    if completed.returncode != 0:
+        raise DispatchError("fixed_host_dispatch_failed")
+    result = _parse_ci_recovery_result(completed.stdout)
+    status = "completed" if result["status"] in {"completed", "already_completed"} else "failed"
+    return status, {"dispatch_binding": "controller-fixed-ssh-v1", **result}
+
+
 def _result(
     envelope: dict[str, Any],
     expected: dict[str, object],
@@ -183,11 +367,14 @@ def _result(
     error_code: str | None = None,
 ) -> dict[str, object]:
     target = envelope["target"]
-    details: dict[str, object] = {
-        "dispatch_binding": "controller-fixed-ssh-v1",
-        "native_status": "started" if status == "completed" else "not_started",
-        "recovery_service_unit": expected["recovery_service"],
-    }
+    details: dict[str, object] = {"dispatch_binding": "controller-fixed-ssh-v1"}
+    if "recovery_service" in expected:
+        details.update(
+            {
+                "native_status": "started" if status == "completed" else "not_started",
+                "recovery_service_unit": expected["recovery_service"],
+            }
+        )
     if error_code is not None:
         details["error_code"] = error_code
     if enrolment is not None:
@@ -217,7 +404,25 @@ def main() -> int:
     if os.geteuid() != 0:
         raise DispatchError("root_identity_required")
     envelope, expected = _parse()
-    _validate_private_identity()
+    is_ci_configuration = expected["profile"] == "ci-worker-configuration"
+    _validate_private_identity(require_enrol=not is_ci_configuration)
+    if is_ci_configuration:
+        try:
+            status, result = _ci_worker_configuration_recovery(envelope, expected)
+        except DispatchError as error:
+            response = _result(envelope, expected, status="access_blocked", error_code=str(error))
+        else:
+            response = {
+                "schema": SCHEMA,
+                "status": status,
+                "worker_name": envelope["target"]["worker_name"],
+                "target_id": envelope["target"]["target_id"],
+                "service_unit": envelope["target"]["service_unit"],
+                "active_jobs": 0,
+                "result": result,
+            }
+        print(json.dumps(response, sort_keys=True, separators=(",", ":")))
+        return 0
     try:
         enrolment = _enrol(str(envelope["target"]["target_id"]), expected)
     except DispatchError as error:
@@ -231,20 +436,7 @@ def main() -> int:
         return 0
     command = [
         str(SSH),
-        "-F",
-        "/dev/null",
-        "-i",
-        str(IDENTITY),
-        "-o",
-        "IdentitiesOnly=yes",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        f"UserKnownHostsFile={KNOWN_HOSTS}",
-        "-o",
-        "ConnectTimeout=15",
+        *_ssh_prefix(),
         f"root@{expected['host']}",
         "/usr/bin/systemctl",
         "start",

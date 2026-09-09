@@ -36,3 +36,11 @@ worker_targets:
     service_unit: actions.runner.belilovsky-qazstack.qdev-qazstack-01.service
     host_binding: controller-registry
     labels: [self-hosted, Linux, X64, qdev-ci]
+  # This is the one controller-registered queue worker.  Its recovery adapter
+  # repairs only stale controller-owned position overlays; it never creates a
+  # runner identity or accepts a hostname from a workflow request.
+  - worker_name: srv1879763-primary
+    target_id: qdev-ci.srv1879763-primary
+    service_unit: qdev-runner-worker.service
+    host_binding: controller-registry
+    labels: [self-hosted, Linux, X64, qdev-ci, qdev-ci-browser, qdev-ci-docker]

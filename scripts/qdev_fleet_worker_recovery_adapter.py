@@ -15,7 +15,6 @@ from typing import Any
 REGISTRY = Path("/etc/qdev-runner/fleet-worker-recovery-targets.json")
 SCHEMA = "qdev-fleet-worker-recovery-result-v1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
-DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 SERVICE_UNIT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,254}\.service$")
 REQUEST_FIELDS = {
@@ -28,6 +27,9 @@ REQUEST_FIELDS = {
     "claim_ttl_seconds",
     "controller_revision",
     "controller_release_digest",
+    "controller_image_digest",
+    "controller_internal_image_digest",
+    "activation_envelope_digest",
     "release_lane",
     "worker_name",
 }
@@ -95,15 +97,22 @@ def _parse() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     ):
         raise AdapterError("request_integer_invalid")
     if (
-        request.get("schema") != "qdev-fleet-bootstrap-request-v1"
+        request.get("schema") != "qdev-fleet-bootstrap-request-v2"
         or request.get("action") != "restore-existing-worker"
-        or request.get("source_sha") != request.get("controller_revision")
-        or not isinstance(request.get("controller_revision"), str)
-        or not SHA.fullmatch(request["controller_revision"])
-        or not isinstance(request.get("controller_release_digest"), str)
-        or not DIGEST.fullmatch(request["controller_release_digest"])
+        or not isinstance(request.get("source_sha"), str)
+        or SHA.fullmatch(request["source_sha"]) is None
         or request.get("worker_name") != target.get("worker_name")
-        or request.get("release_lane") is not None
+        or any(
+            request.get(name) is not None
+            for name in (
+                "controller_revision",
+                "controller_release_digest",
+                "controller_image_digest",
+                "controller_internal_image_digest",
+                "activation_envelope_digest",
+                "release_lane",
+            )
+        )
         or isinstance(envelope.get("active_jobs"), bool)
         or not isinstance(envelope.get("active_jobs"), int)
         or envelope["active_jobs"] != 0

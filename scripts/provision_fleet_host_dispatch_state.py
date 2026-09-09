@@ -34,6 +34,21 @@ RECOVERY_TARGETS: dict[str, dict[str, object]] = {
         "labels": ["self-hosted", "Linux", "X64", "qdev-ci"],
         "adapter_path": RECOVERY_ADAPTER,
     },
+    "qdev-ci.srv1879763-primary": {
+        "worker_name": "srv1879763-primary",
+        "target_id": "qdev-ci.srv1879763-primary",
+        "service_unit": "qdev-runner-worker.service",
+        "host_binding": "controller-registry",
+        "labels": [
+            "self-hosted",
+            "Linux",
+            "X64",
+            "qdev-ci",
+            "qdev-ci-browser",
+            "qdev-ci-docker",
+        ],
+        "adapter_path": RECOVERY_ADAPTER,
+    },
 }
 HOST_IDENTITIES = (
     "qdev-host-agent:ortcom-production-controller",
