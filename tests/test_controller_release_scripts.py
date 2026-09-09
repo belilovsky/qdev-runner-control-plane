@@ -493,6 +493,8 @@ def test_controller_compose_project_is_namespaced() -> None:
     assert "sys.dont_write_bytecode = True" in activation_cli
     assert "sys.dont_write_bytecode = True" in recovery_cli
     assert "sys.dont_write_bytecode = True" in assets_cli
+    assert '"admin-platform-package-bindings.json": Path(' in assets_cli
+    assert '"/etc/qdev-runner/admin-platform-package-bindings.json"' in assets_cli
     # Only the internal broker can mutate the durable managed-release ledger.
     assert (
         compose.count(

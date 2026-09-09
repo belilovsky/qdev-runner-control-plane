@@ -35,6 +35,9 @@ ADAPTER_REPAIRS_ROOT = ASSETS_ROOT / "adapter-repairs"
 CURRENT_CONFIG_FILES = {
     "repos.json": Path("/etc/qdev-runner/repos.json"),
     "profiles.yml": Path("/etc/qdev-runner/profiles.yml"),
+    "admin-platform-package-bindings.json": Path(
+        "/etc/qdev-runner/admin-platform-package-bindings.json"
+    ),
     "release-lanes.yml": Path("/etc/qdev-runner/release-lanes.yml"),
     "managed-registry.yml": Path("/etc/qdev-runner/managed-registry.yml"),
     "fleet-bootstrap.yml": Path("/etc/qdev-runner/fleet-bootstrap.yml"),
