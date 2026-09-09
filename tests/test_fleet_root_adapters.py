@@ -243,6 +243,49 @@ def test_activation_adapter_accepts_measured_runtime_identity(
     assert ACTIVATION._read_status() == (SHA, DIGEST, IMAGE_DIGEST, IMAGE_DIGEST)
 
 
+def test_activation_adapter_accepts_root_owned_current_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    releases = tmp_path / "releases"
+    release = releases / SHA
+    activation = release / "scripts" / "activate_controller_release.sh"
+    identity = release / "src" / "qdev_runner" / "controller_release.py"
+    activation.parent.mkdir(parents=True)
+    identity.parent.mkdir(parents=True)
+    activation.write_text("#!/bin/sh\n", encoding="utf-8")
+    identity.write_text("", encoding="utf-8")
+    for path in (releases, release, activation.parent, release / "src", identity.parent):
+        path.chmod(0o755)
+    activation.chmod(0o755)
+    identity.chmod(0o644)
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+
+    monkeypatch.setattr(ACTIVATION, "RELEASES_ROOT", releases)
+    monkeypatch.setattr(ACTIVATION, "CURRENT_RELEASE", current)
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        mode = metadata.st_mode
+        if path == current:
+            mode = (mode & ~0o777) | 0o777
+        return SimpleNamespace(st_mode=mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+    monkeypatch.setattr(ACTIVATION, "_validate_root_directory", lambda path: path.resolve())
+    monkeypatch.setattr(
+        ACTIVATION.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=DIGEST),
+    )
+
+    # Linux reports symlink permissions as 0777; ownership and target-chain
+    # validation provide the actual trust boundary.
+    assert stat.S_IMODE(root_owned(current).st_mode) == 0o777
+    assert ACTIVATION._trusted_current(SHA, DIGEST) == (release, activation)
+
+
 def test_activation_adapter_binds_committed_status_to_signed_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

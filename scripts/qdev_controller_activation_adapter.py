@@ -223,7 +223,6 @@ def _trusted_current(revision: str, release_digest: str) -> tuple[Path, Path]:
     if (
         not stat.S_ISLNK(link_metadata.st_mode)
         or link_metadata.st_uid != 0
-        or stat.S_IMODE(link_metadata.st_mode) & 0o022
     ):
         raise AdapterError("current_release_link_invalid")
     releases = _validate_root_directory(RELEASES_ROOT)
