@@ -1670,8 +1670,12 @@ rollback() {
     }
     docker image tag "$rollback_internal_ref" "$previous_internal_ref" || return 1
   fi
-  docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
-    up -d --force-recreate --no-build --no-deps broker-public broker-internal || return 1
+  # Compose otherwise falls back to its mutable ``:local`` default.  Bind the
+  # saved immutable image explicitly so rollback restores the exact image ID
+  # captured in activation material before the runtime identity check below.
+  QDEV_CONTROLLER_IMAGE_REF="$previous_public_ref" \
+    docker compose -p qdev-runner -f "$previous/deploy/compose.yml" \
+      up -d --force-recreate --no-build --no-deps broker-public broker-internal || return 1
   if [[ -n "$previous_public_image" &&
         "$(docker inspect qdev-runner-broker-public --format '{{.Image}}')" != "$previous_public_image" ]]; then
     printf 'rollback restored an unexpected public broker image\n' >&2
