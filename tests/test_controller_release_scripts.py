@@ -299,6 +299,7 @@ def test_controller_activation_publishes_revertible_exact_release_status() -> No
     assert 'urllib.request.urlopen("https://ci.qdev.run/health", timeout=5)' in script
     assert "legacy public health is not bound to the active revision" in script
     rollback = script.split("rollback() {", 1)[1].split("\n}\n\nif !", 1)[0]
+    assert 'QDEV_CONTROLLER_IMAGE_REF="$previous_public_ref"' in rollback
     previous_rollback = rollback.split('activate_link "$previous"', 1)[1]
     assert previous_rollback.index("up -d --force-recreate --no-build") < previous_rollback.index(
         "restore_release_status"
