@@ -37,7 +37,7 @@ source and health before restoring worker admission and queued product checks.
 The fleet adapter accepts only the fixed root-owned activation spool.  Do not
 copy a reconciled manifest, a signed envelope, or its sibling artifacts into
 that spool by hand.  Use `qdev-controller-activation-assets`: it captures the
-current controller status and all six effective configuration inputs while it
+current controller status and all seven effective configuration inputs while it
 holds the same lifecycle lock used by activation, creates a transaction-scoped
 unsigned envelope, and publishes verified assets atomically without replacing
 existing paths.

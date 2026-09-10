@@ -253,6 +253,7 @@ def _config_root(tmp_path: Path) -> Path:
     for relative in (
         "inventory/repos.json",
         "config/profiles.yml",
+        "config/admin-platform-package-bindings.json",
         "config/release-lanes.yml",
         "config/managed-registry.yml",
         "config/fleet-bootstrap.yml",
@@ -262,6 +263,18 @@ def _config_root(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{relative}\n", encoding="utf-8")
     return root
+
+
+def test_candidate_config_digest_includes_admin_platform_bindings(
+    tmp_path: Path,
+) -> None:
+    root = _config_root(tmp_path)
+    before = candidate_config_digest(root)
+
+    bindings = root / "config/admin-platform-package-bindings.json"
+    bindings.write_text("changed bindings\n", encoding="utf-8")
+
+    assert candidate_config_digest(root) != before
 
 
 def _trivy_report(*, results: object = None) -> dict[str, object]:
