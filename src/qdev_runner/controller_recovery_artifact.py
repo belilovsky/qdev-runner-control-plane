@@ -54,9 +54,7 @@ _SELF_HOSTED_RECOVERY_BUILD_LABELS = ["self-hosted", "Linux", "X64", "qdev-ci-do
 _CONFIG_FILES = {
     "repos.json": Path("inventory/repos.json"),
     "profiles.yml": Path("config/profiles.yml"),
-    "admin-platform-package-bindings.json": Path(
-        "config/admin-platform-package-bindings.json"
-    ),
+    "admin-platform-package-bindings.json": Path("config/admin-platform-package-bindings.json"),
     "release-lanes.yml": Path("config/release-lanes.yml"),
     "managed-registry.yml": Path("config/managed-registry.yml"),
     "fleet-bootstrap.yml": Path("config/fleet-bootstrap.yml"),
