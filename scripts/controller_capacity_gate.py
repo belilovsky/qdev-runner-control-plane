@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 KIB = 1024
@@ -16,6 +17,14 @@ GIB = 1024**3
 # import-free so it can run straight from the immutable release tree.
 HARD_MIN_FREE_GIB = 4.5
 HARD_MAX_DISK_USED_PCT = 90.0
+
+# The immutable incumbent activation payload (release eb9eea64...) transmits
+# its unset ceiling default as 96 percent.  A candidate release has to stay
+# activatable from that incumbent, so exactly that legacy default is accepted
+# and clamped to the published ceiling below.  Every other value above the
+# ceiling, including the 91, 95 and 97 percent overrides seen on hosts, is
+# still rejected outright.
+LEGACY_INCUMBENT_MAX_DISK_USED_PCT = 96
 
 
 def capacity_allowed(
@@ -66,9 +75,18 @@ def main() -> int:
             f"controller capacity minimum free space must be at least {HARD_MIN_FREE_GIB} GiB"
         )
     if args.max_disk_used_pct > HARD_MAX_DISK_USED_PCT:
-        raise SystemExit(
-            f"controller capacity maximum disk usage must not exceed {HARD_MAX_DISK_USED_PCT:g}%"
+        if args.max_disk_used_pct != LEGACY_INCUMBENT_MAX_DISK_USED_PCT:
+            raise SystemExit(
+                f"controller capacity disk usage must not exceed {HARD_MAX_DISK_USED_PCT:g}%"
+            )
+        print(
+            "controller capacity legacy incumbent ceiling "
+            f"{LEGACY_INCUMBENT_MAX_DISK_USED_PCT} clamped to {HARD_MAX_DISK_USED_PCT:g}%",
+            file=sys.stderr,
         )
+        max_disk_used_pct = int(HARD_MAX_DISK_USED_PCT)
+    else:
+        max_disk_used_pct = args.max_disk_used_pct
 
     document = json.loads(args.capacity_config.read_text(encoding="utf-8"))
     peak = document.get("estimated_peak_incremental_bytes")
@@ -80,7 +98,7 @@ def main() -> int:
         memory_kib=args.memory_kib,
         cpu_count=args.cpu_count,
         load_15=args.load_15,
-        max_disk_used_pct=args.max_disk_used_pct,
+        max_disk_used_pct=max_disk_used_pct,
         min_free_gib=args.min_free_gib,
         min_memory_gib=args.min_memory_gib,
         max_load_per_cpu=args.max_load_per_cpu,
