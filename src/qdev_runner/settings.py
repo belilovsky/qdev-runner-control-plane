@@ -100,6 +100,12 @@ class BrokerSettings:
     controller_activation_status_path: Path = Path(
         "/var/lib/qdev-runner/controller-activation/activation-status.json"
     )
+    # Derived, non-secret activation aggregate published beside the controller
+    # release status.  Only this file enters the public broker mount namespace;
+    # the raw activation ledger above stays private to the internal surface.
+    controller_activation_projection_path: Path = Path(
+        "/var/lib/qdev-runner/controller-status/controller-activation.json"
+    )
     release_lanes_path: Path = Path("/etc/qdev-runner/release-lanes.yml")
     managed_registry_path: Path = Path("/etc/qdev-runner/managed-registry.yml")
     admin_platform_ledger_path: Path = Path(
@@ -224,6 +230,12 @@ class BrokerSettings:
                 os.environ.get(
                     "QDEV_CONTROLLER_ACTIVATION_STATUS",
                     "/var/lib/qdev-runner/controller-activation/activation-status.json",
+                )
+            ),
+            controller_activation_projection_path=Path(
+                os.environ.get(
+                    "QDEV_CONTROLLER_ACTIVATION_PROJECTION",
+                    "/var/lib/qdev-runner/controller-status/controller-activation.json",
                 )
             ),
             release_lanes_path=Path(

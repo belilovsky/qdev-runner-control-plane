@@ -478,7 +478,10 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96}"
+# 90% is the absolute published ceiling for the exact TTL-bounded claim and is
+# never overridable; 4.5 GiB is the matching free-space floor (rounded up to a
+# whole GiB here because this gate is integer-only).
+max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
@@ -497,6 +500,14 @@ for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_p
     exit 64
   }
 done
+if (( max_disk_used_pct > 90 )); then
+  printf 'QDEV_CONTROLLER_MAX_DISK_USED_PCT must not exceed 90 (91/95/97 are rejected)\n' >&2
+  exit 64
+fi
+if (( min_free_gib < 5 )); then
+  printf 'QDEV_CONTROLLER_MIN_FREE_GIB must be at least 5 (4.5 GiB hard floor)\n' >&2
+  exit 64
+fi
 if [[ "$allow_build_capacity_override" != true && "$allow_build_capacity_override" != false ]]; then
   printf 'QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE must be true or false\n' >&2
   exit 64
@@ -506,7 +517,7 @@ if (( health_check_attempts < 30 || health_check_attempts > 180 )); then
   exit 64
 fi
 if [[ "$no_build" != true && "$allow_build_capacity_override" != true ]] && {
-  [[ "$max_disk_used_pct" != 96 ]] || [[ "$min_free_gib" != 8 ]] ||
+  [[ "$max_disk_used_pct" != 90 ]] || [[ "$min_free_gib" != 8 ]] ||
     [[ "$min_memory_gib" != 4 ]] || [[ "$max_load_per_cpu" != 2 ]]
 }; then
   printf 'controller capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override\n' >&2

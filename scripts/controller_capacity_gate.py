@@ -10,6 +10,13 @@ from pathlib import Path
 KIB = 1024
 GIB = 1024**3
 
+# Single published capacity contract for the exact, TTL-bounded controller
+# claim.  These mirror ``qdev_runner.operations`` (which owns the operator
+# directive bounds) and are duplicated here because this gate must stay
+# import-free so it can run straight from the immutable release tree.
+HARD_MIN_FREE_GIB = 4.5
+HARD_MAX_DISK_USED_PCT = 90.0
+
 
 def capacity_allowed(
     *,
@@ -19,7 +26,7 @@ def capacity_allowed(
     cpu_count: int,
     load_15: float,
     max_disk_used_pct: int,
-    min_free_gib: int,
+    min_free_gib: float,
     min_memory_gib: int,
     max_load_per_cpu: int,
     estimated_peak_incremental_bytes: int,
@@ -45,11 +52,23 @@ def main() -> int:
     parser.add_argument("--cpu-count", type=int, required=True)
     parser.add_argument("--load-15", type=float, required=True)
     parser.add_argument("--max-disk-used-pct", type=int, required=True)
-    parser.add_argument("--min-free-gib", type=int, required=True)
+    parser.add_argument("--min-free-gib", type=float, required=True)
     parser.add_argument("--min-memory-gib", type=int, required=True)
     parser.add_argument("--max-load-per-cpu", type=int, required=True)
     parser.add_argument("--no-build", choices=("true", "false"), required=True)
     args = parser.parse_args()
+
+    # The absolute hard bounds are never overridable: no release, example or
+    # temporary override may admit a claim below the free-space floor or above
+    # the usage ceiling (91/95/97 percent are rejected outright).
+    if args.min_free_gib < HARD_MIN_FREE_GIB:
+        raise SystemExit(
+            f"controller capacity minimum free space must be at least {HARD_MIN_FREE_GIB} GiB"
+        )
+    if args.max_disk_used_pct > HARD_MAX_DISK_USED_PCT:
+        raise SystemExit(
+            f"controller capacity maximum disk usage must not exceed {HARD_MAX_DISK_USED_PCT:g}%"
+        )
 
     document = json.loads(args.capacity_config.read_text(encoding="utf-8"))
     peak = document.get("estimated_peak_incremental_bytes")

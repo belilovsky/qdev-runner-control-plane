@@ -95,7 +95,7 @@ def run(argv: list[str] | None = None) -> int:
                         arguments.controller_status,
                         expected_uid=os.geteuid(),
                     )
-                    if request.action == "activate-controller"
+                    if request.action in {"activate-controller", "reconcile-controller-activation"}
                     else None
                 ),
             )

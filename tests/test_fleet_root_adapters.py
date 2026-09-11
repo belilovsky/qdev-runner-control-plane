@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import stat
 import sys
@@ -37,6 +40,42 @@ HOST_ENROL = _load("qdev_recovery_host_enrol_adapter")
 HOST_APPLY = _load("qdev_recovery_host_apply")
 PROVISION = _load("provision_fleet_host_dispatch_state")
 ACTIVATION_TRUST = _load("provision_controller_activation_trust")
+
+
+def test_activation_failure_receipt_is_closed_vocabulary_and_non_secret() -> None:
+    ACTIVATION._FAILURE_CONTEXT.clear()
+    ACTIVATION._FAILURE_CONTEXT.update(
+        {
+            "stage": "entrypoint",
+            "transaction_id": "controller-eb9eea64-34515000659-r1",
+            "controller_revision": SHA,
+            "activation_envelope_digest": ENVELOPE_DIGEST,
+            "entrypoint_returncode": 7,
+            "entrypoint_stderr_digest": "sha256:" + "e" * 64,
+        }
+    )
+    receipt = ACTIVATION.activation_failure_receipt(ACTIVATION.AdapterError("activation_failed"))
+    assert set(receipt) == {
+        "schema",
+        "failure_code",
+        "diagnostic_digest",
+        "transaction_id",
+        "permitted_action",
+    }
+    assert receipt["schema"] == "qdev-controller-activation-failure-v1"
+    assert receipt["failure_code"] == "activation_failed"
+    assert receipt["transaction_id"] == "controller-eb9eea64-34515000659-r1"
+    assert receipt["permitted_action"] == "reconcile-controller-activation"
+    assert receipt["diagnostic_digest"].startswith("sha256:")
+    # A free-text internal error still maps to a safe closed vocabulary.
+    unsafe = ACTIVATION.activation_failure_receipt(RuntimeError("raw /etc/passwd path"))
+    assert unsafe["failure_code"] == "activation_adapter_internal_error"
+    assert unsafe["permitted_action"] == "operator-review"
+    # Pre-mutation validation failures never authorise a reconcile.
+    retry = ACTIVATION.activation_failure_receipt(
+        ACTIVATION.AdapterError("activation_envelope_digest_mismatch")
+    )
+    assert retry["permitted_action"] == "retry-fleet-bootstrap"
 
 
 def _request(action: str) -> dict[str, Any]:
@@ -1121,3 +1160,624 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
         assert "os.environ" not in source
         assert "shell=True" not in source
+
+
+# --- controller activation reconciliation (signed root dispatch) -------------
+
+RECONCILE_ACTION = "reconcile-controller-activation"
+RECONCILE_TRANSACTION_ID = "controller-eb9eea64-34515000659-r1"
+R2_TRANSACTION_ID = "controller-eb9eea64-34537511259-r2"
+CONFIG_FILE_NAMES = (
+    "repos.json",
+    "profiles.yml",
+    "admin-platform-package-bindings.json",
+    "release-lanes.yml",
+    "managed-registry.yml",
+    "fleet-bootstrap.yml",
+    "managed-release-ledger.yml",
+)
+EXECUTOR_RESULT_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "action",
+        "controller_revision",
+        "controller_release_digest",
+        "controller_image_digest",
+        "controller_internal_image_digest",
+        "activation_envelope_digest",
+        "release_lane",
+        "host_agent_mtls_identity",
+        "rollback_source_sha",
+        "rollback_artifact_digest",
+        "rollback_internal_artifact_digest",
+        "rollback_policy_digest",
+        "rollback_generation",
+        "result",
+    }
+)
+RECONCILIATION_RESULT_FIELDS = frozenset(
+    {
+        "schema",
+        "outcome",
+        "transaction_id",
+        "envelope_digest",
+        "expected_generation",
+        "recovery_state",
+        "reserved_status_digest",
+        "committed_status_digest",
+        "observed_status_digest",
+        "activated_at",
+        "transaction_closed",
+        "previous_generation",
+        "previous_source_sha",
+        "previous_public_image_digest",
+        "previous_internal_image_digest",
+        "previous_policy_bundle_digest",
+        "current_generation",
+        "current_source_sha",
+        "current_public_image_digest",
+        "current_internal_image_digest",
+        "current_policy_bundle_digest",
+        "projection_digest",
+    }
+)
+
+
+def _signed_reconcile_envelope(
+    private_key: Any,
+    *,
+    transaction_id: str,
+    expected_generation: int,
+    expected_current: dict[str, str],
+    candidate: dict[str, str],
+    expected_current_status_digest: str,
+    expected_current_config_digest: str,
+    candidate_release_digest: str,
+    candidate_config_digest: str,
+    artifact_manifest_digest: str,
+    entrypoint_reconciliation_digest: str,
+) -> dict[str, Any]:
+    unsigned = {
+        "schema": "qdev-controller-activation-envelope-v1",
+        "transaction_id": transaction_id,
+        "issued_at": "2026-09-10T18:41:41Z",
+        "expires_at": "2026-09-10T18:51:56Z",
+        "expected_generation": expected_generation,
+        "expected_current": expected_current,
+        "expected_current_status_digest": expected_current_status_digest,
+        "expected_current_config_digest": expected_current_config_digest,
+        "candidate": candidate,
+        "candidate_release_digest": candidate_release_digest,
+        "candidate_config_digest": candidate_config_digest,
+        "artifact_manifest_digest": artifact_manifest_digest,
+        "entrypoint_reconciliation_digest": entrypoint_reconciliation_digest,
+    }
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(ACTIVATION._canonical(unsigned)))
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    assert len(signature) == 86
+    return {**unsigned, "signature": signature}
+
+
+def _reconcile_world(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_rollback_anchor: bool = True,
+    envelope_expected_generation: int = 7,
+    envelope_transaction_id: str = RECONCILE_TRANSACTION_ID,
+) -> SimpleNamespace:
+    """Stage one exact expired-but-committed controller activation transaction."""
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    original_lstat = Path.lstat
+
+    def root_owned(path: Path) -> Any:
+        metadata = original_lstat(path)
+        return SimpleNamespace(st_mode=metadata.st_mode, st_uid=0)
+
+    monkeypatch.setattr(Path, "lstat", root_owned)
+    monkeypatch.setattr(ACTIVATION, "_validate_root_directory", lambda path: path.resolve())
+
+    candidate_revision = SHA
+    candidate_public = "1" * 64
+    candidate_internal = "2" * 64
+    candidate_policy = "3" * 64
+    candidate_release_digest = "sha256:" + "4" * 64
+    previous_revision = "b" * 40
+    previous_public = "5" * 64
+    previous_internal = "6" * 64
+    previous_policy = "7" * 64
+    manifest_digest = "8" * 64
+    entrypoint_digest = "9" * 64
+    expected_current_status_digest = "e" * 64
+    expected_current_config_digest = "f" * 64
+
+    config_paths: dict[str, Path] = {}
+    for name in CONFIG_FILE_NAMES:
+        path = tmp_path / "config" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{name}\n", encoding="utf-8")
+        path.chmod(0o644)
+        config_paths[name] = path
+    monkeypatch.setattr(ACTIVATION, "CONTROLLER_CONFIG_FILES", config_paths)
+    candidate_config_digest = ACTIVATION._fingerprint_config_files(config_paths)
+
+    status_path = tmp_path / "controller-release.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-release-status-v2",
+                "state": "active",
+                "revision": candidate_revision,
+                "release_digest": candidate_release_digest,
+                "activated_at": "2026-09-10T18:41:00Z",
+                "runtime_identity": {
+                    "source_revision": candidate_revision,
+                    "source_digest": "sha256:" + "a" * 64,
+                    "public_image_id": "sha256:" + candidate_public,
+                    "internal_image_id": "sha256:" + candidate_internal,
+                },
+                "dependency_identity": {
+                    "requirements_digest": "sha256:" + "c" * 64,
+                    "public_installed_digest": "sha256:" + "d" * 64,
+                    "internal_installed_digest": "sha256:" + "d" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_path.chmod(0o600)
+    monkeypatch.setattr(ACTIVATION, "STATUS_PATH", status_path)
+
+    ledger_path = tmp_path / "activation-status.json"
+    ledger_bytes = json.dumps(
+        {
+            "schema": "qdev-controller-activation-status-v2",
+            "state": "active",
+            "generation": 8,
+            "source_sha": candidate_revision,
+            "public_image_digest": candidate_public,
+            "internal_image_digest": candidate_internal,
+            "policy_bundle_digest": candidate_policy,
+            "previous": {
+                "generation": 7,
+                "source_sha": previous_revision,
+                "public_image_digest": previous_public,
+                "internal_image_digest": previous_internal,
+                "policy_bundle_digest": previous_policy,
+            },
+            "transaction_id": RECONCILE_TRANSACTION_ID,
+            "activated_at": "2026-09-10T18:43:22.913319Z",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    ledger_path.write_bytes(ledger_bytes)
+    ledger_path.chmod(0o600)
+    ledger_digest = hashlib.sha256(ledger_bytes).hexdigest()
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_STATUS_PATH", ledger_path)
+
+    assets = tmp_path / "activation"
+    (assets / "envelopes").mkdir(parents=True)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_ASSETS_ROOT", assets)
+
+    private_key = Ed25519PrivateKey.generate()
+    candidate = {
+        "source_sha": candidate_revision,
+        "public_image_digest": candidate_public,
+        "internal_image_digest": candidate_internal,
+        "policy_bundle_digest": candidate_policy,
+    }
+    expected_current = {
+        "source_sha": previous_revision,
+        "public_image_digest": previous_public,
+        "internal_image_digest": previous_internal,
+        "policy_bundle_digest": previous_policy,
+    }
+    envelope_document = _signed_reconcile_envelope(
+        private_key,
+        transaction_id=envelope_transaction_id,
+        expected_generation=envelope_expected_generation,
+        expected_current=expected_current,
+        candidate=candidate,
+        expected_current_status_digest=expected_current_status_digest,
+        expected_current_config_digest=expected_current_config_digest,
+        candidate_release_digest=candidate_release_digest[7:],
+        candidate_config_digest=candidate_config_digest,
+        artifact_manifest_digest=manifest_digest,
+        entrypoint_reconciliation_digest=entrypoint_digest,
+    )
+    envelope_digest = (
+        "sha256:" + hashlib.sha256(ACTIVATION._canonical(envelope_document)).hexdigest()
+    )
+    envelope_path = assets / "envelopes" / f"{envelope_digest[7:]}.json"
+    envelope_path.write_text(
+        json.dumps(envelope_document, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    envelope_path.chmod(0o600)
+
+    manifest_path = assets / "artifacts" / manifest_digest / "controller-artifact-manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{}", encoding="utf-8")
+    manifest_path.chmod(0o600)
+
+    public_key_path = tmp_path / "controller-activation-ed25519.pub"
+    public_key_path.write_bytes(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    public_key_path.chmod(0o644)
+    admission_key_path = tmp_path / "ed25519-public.pem"
+    admission_key_path.write_bytes(public_key_path.read_bytes())
+    admission_key_path.chmod(0o644)
+    binding_path = tmp_path / "controller-activation-trust-binding.json"
+    binding_path.write_text(
+        json.dumps(
+            {
+                "schema": "qdev-controller-activation-trust-binding-v1",
+                "binding": "controller-registry",
+                "authority": "controller-admission",
+                "source_path": str(admission_key_path),
+                "source_sha256": "sha256:"
+                + hashlib.sha256(admission_key_path.read_bytes()).hexdigest(),
+                "activation_public_key_path": str(public_key_path),
+                "activation_public_key_sha256": "sha256:"
+                + hashlib.sha256(public_key_path.read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    binding_path.chmod(0o644)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_PUBLIC_KEY", public_key_path)
+    monkeypatch.setattr(ACTIVATION, "ADMISSION_PUBLIC_KEY", admission_key_path)
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_TRUST_BINDING", binding_path)
+
+    transaction_path = ledger_path.with_suffix(".json.transaction")
+    transaction_bytes = json.dumps(
+        {
+            "schema": "qdev-controller-activation-transaction-v1",
+            "transaction_id": envelope_transaction_id,
+            "envelope_digest": envelope_digest[7:],
+            "expected_generation": envelope_expected_generation,
+            "expected_current": expected_current,
+            "expected_current_status_digest": expected_current_status_digest,
+            "expected_current_config_digest": expected_current_config_digest,
+            "candidate": candidate,
+            "candidate_release_digest": candidate_release_digest[7:],
+            "candidate_config_digest": candidate_config_digest,
+            "artifact_manifest_digest": manifest_digest,
+            "entrypoint_reconciliation_digest": entrypoint_digest,
+            "reserved_status_digest": "0" * 64,
+            "committed_status_digest": ledger_digest,
+            "committed_activated_at": "2026-09-10T18:43:22.913319Z",
+            "expires_at": "2026-09-10T18:51:56Z",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    transaction_path.write_bytes(transaction_bytes)
+    transaction_path.chmod(0o600)
+
+    releases = tmp_path / "releases"
+    release = releases / candidate_revision
+    activation_script = release / "scripts" / "activate_controller_release.sh"
+    identity = release / "src" / "qdev_runner" / "controller_release.py"
+    activation_script.parent.mkdir(parents=True)
+    identity.parent.mkdir(parents=True)
+    activation_script.write_text("#!/bin/sh\n", encoding="utf-8")
+    identity.write_text("", encoding="utf-8")
+    for path in (releases, release, activation_script.parent, release / "src", identity.parent):
+        path.chmod(0o755)
+    activation_script.chmod(0o755)
+    identity.chmod(0o644)
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+    monkeypatch.setattr(ACTIVATION, "RELEASES_ROOT", releases)
+    monkeypatch.setattr(ACTIVATION, "CURRENT_RELEASE", current)
+    monkeypatch.setattr(
+        ACTIVATION.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=candidate_release_digest),
+    )
+
+    projection_path = tmp_path / "controller-activation.json"
+    monkeypatch.setattr(ACTIVATION, "ACTIVATION_PROJECTION_PATH", projection_path)
+
+    request = {
+        "schema": "qdev-fleet-bootstrap-request-v2",
+        "action": RECONCILE_ACTION,
+        "source_sha": candidate_revision,
+        "run_id": 101,
+        "job_id": 202,
+        "attempt": 1,
+        "claim_ttl_seconds": 300,
+        "controller_revision": candidate_revision,
+        "controller_release_digest": candidate_release_digest,
+        "controller_image_digest": "sha256:" + candidate_public,
+        "controller_internal_image_digest": "sha256:" + candidate_internal,
+        "activation_envelope_digest": envelope_digest,
+        "release_lane": None,
+        "worker_name": None,
+    }
+    target = {
+        "controller_revision": candidate_revision,
+        "controller_release_digest": candidate_release_digest,
+        "controller_image_digest": "sha256:" + candidate_public,
+        "controller_internal_image_digest": "sha256:" + candidate_internal,
+        "activation_envelope_digest": envelope_digest,
+        "activation_mode": "signed-external-envelope",
+        "activation_envelope_schema": "qdev-controller-activation-envelope-v1",
+        "activation_public_key_binding": "controller-registry",
+        "activation_max_envelope_ttl_seconds": 1800,
+    }
+    if include_rollback_anchor:
+        target["rollback_revision"] = candidate_revision
+        target["rollback_release_digest"] = candidate_release_digest
+    return SimpleNamespace(
+        request=request,
+        target=target,
+        payload={
+            "schema": "qdev-fleet-bootstrap-adapter-request-v2",
+            "request": request,
+            "target": target,
+        },
+        envelope_path=envelope_path,
+        envelope_digest=envelope_digest,
+        status_path=status_path,
+        ledger_path=ledger_path,
+        ledger_bytes=ledger_bytes,
+        transaction_path=transaction_path,
+        transaction_bytes=transaction_bytes,
+        projection_path=projection_path,
+        candidate_config_digest=candidate_config_digest,
+        candidate_release_digest=candidate_release_digest,
+        previous_revision=previous_revision,
+    )
+
+
+def _invoke_activation_main(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]
+) -> dict[str, Any]:
+    monkeypatch.setattr(ACTIVATION.os, "geteuid", lambda: 0)
+    encoded = json.dumps(payload).encode("utf-8")
+    monkeypatch.setattr(
+        ACTIVATION.sys,
+        "stdin",
+        SimpleNamespace(buffer=SimpleNamespace(read=lambda _size=0: encoded)),
+    )
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        assert ACTIVATION.main() == 0
+    return json.loads(buffer.getvalue())
+
+
+def _assert_reconcile_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    world: SimpleNamespace,
+    *,
+    expected_error: str,
+) -> None:
+    transaction_before = world.transaction_path.read_bytes()
+    ledger_before = world.ledger_path.read_bytes()
+    with pytest.raises(ACTIVATION.AdapterError, match=expected_error):
+        _invoke_activation_main(monkeypatch, world.payload)
+    assert world.transaction_path.exists()
+    assert world.transaction_path.read_bytes() == transaction_before
+    assert world.ledger_path.read_bytes() == ledger_before
+    assert not world.projection_path.exists()
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+
+def test_reconcile_controller_activation_finalizes_expired_commit_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _reconcile_world(tmp_path, monkeypatch)
+    anchor = tmp_path / "controller-rollback-anchor.json"
+    anchor.write_text("stale foreign anchor\n", encoding="utf-8")
+    monkeypatch.setattr(ACTIVATION, "ROLLBACK_ANCHOR_PATH", anchor)
+
+    response = _invoke_activation_main(monkeypatch, world.payload)
+
+    assert set(response) == EXECUTOR_RESULT_FIELDS
+    assert response["schema"] == "qdev-fleet-bootstrap-adapter-result-v2"
+    assert response["action"] == RECONCILE_ACTION
+    assert response["status"] == "completed"
+    assert response["release_lane"] is None
+    assert response["host_agent_mtls_identity"] is None
+    assert response["rollback_source_sha"] == world.previous_revision
+    assert response["rollback_generation"] == 7
+    assert response["rollback_artifact_digest"].startswith("sha256:")
+    assert set(response["result"]) == RECONCILIATION_RESULT_FIELDS
+    for key in response["result"]:
+        assert not any(
+            marker in key.lower()
+            for marker in ("token", "secret", "private", "password", "credential", "pin", "claim")
+        )
+    result = response["result"]
+    assert result["outcome"] == "finalized"
+    assert result["transaction_closed"] is True
+    assert result["transaction_id"] == RECONCILE_TRANSACTION_ID
+    assert result["expected_generation"] == 7
+    assert result["recovery_state"] == "committed"
+    assert result["current_generation"] == 8
+    assert result["current_source_sha"] == SHA
+    assert result["previous_generation"] == 7
+    assert result["observed_status_digest"] == result["committed_status_digest"]
+    # Reconciliation closes the durable transaction without rewriting the ledger
+    # and never reads or writes the stale live rollback anchor.
+    assert not world.transaction_path.exists()
+    assert world.ledger_path.read_bytes() == world.ledger_bytes
+    assert anchor.read_text(encoding="utf-8") == "stale foreign anchor\n"
+
+    projection = json.loads(world.projection_path.read_text(encoding="utf-8"))
+    assert projection["schema"] == "qdev-controller-activation-projection-v1"
+    assert projection["state"] == "active"
+    assert projection["generation"] == 8
+    assert projection["source_revision"] == SHA
+    assert result["projection_digest"] == projection["projection_digest"]
+
+    replay = _invoke_activation_main(monkeypatch, world.payload)
+    assert replay["status"] == "already_completed"
+    assert replay["result"]["outcome"] == "already-finalized"
+    assert replay["result"]["transaction_closed"] is False
+    assert replay["result"]["reserved_status_digest"] is None
+    assert replay["result"]["current_generation"] == 8
+    assert replay["result"]["observed_status_digest"] == replay["result"]["committed_status_digest"]
+    assert not world.transaction_path.exists()
+    assert world.ledger_path.read_bytes() == world.ledger_bytes
+
+
+def test_reconcile_rejects_foreign_transaction_and_anchor_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _reconcile_world(tmp_path, monkeypatch)
+
+    tampered = json.loads(world.transaction_bytes)
+    tampered["transaction_id"] = "controller-foreign-00000000000-r9"
+    _write_json(world.transaction_path, tampered)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="activation_transaction_ownership_failed"
+    )
+
+    world.transaction_path.write_bytes(world.transaction_bytes)
+    tampered = json.loads(world.transaction_bytes)
+    tampered["envelope_digest"] = "f" * 64
+    _write_json(world.transaction_path, tampered)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="activation_transaction_ownership_failed"
+    )
+
+    world.transaction_path.write_bytes(world.transaction_bytes)
+    tampered = json.loads(world.transaction_bytes)
+    tampered["committed_status_digest"] = "0" * 64
+    _write_json(world.transaction_path, tampered)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_status_fingerprint_mismatch"
+    )
+
+    world.transaction_path.write_bytes(world.transaction_bytes)
+    ledger = json.loads(world.ledger_bytes)
+    ledger["source_sha"] = "0" * 40
+    _write_json(world.ledger_path, ledger)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_committed_shape_invalid"
+    )
+    world.ledger_path.write_bytes(world.ledger_bytes)
+
+    ledger = json.loads(world.ledger_bytes)
+    ledger["generation"] = 9
+    _write_json(world.ledger_path, ledger)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_committed_shape_invalid"
+    )
+
+
+def test_reconcile_rejects_r2_historical_envelope_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = _reconcile_world(
+        tmp_path,
+        monkeypatch,
+        envelope_expected_generation=11,
+        envelope_transaction_id=R2_TRANSACTION_ID,
+    )
+
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_committed_shape_invalid"
+    )
+
+
+def test_reconcile_rejects_wrong_runtime_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A runtime whose measured revision is not the trusted current release link
+    # can never be reconciled, even with a matching anchor-free request.
+    identity_root = tmp_path / "identity"
+    world = _reconcile_world(identity_root, monkeypatch, include_rollback_anchor=False)
+    status = json.loads(world.status_path.read_text(encoding="utf-8"))
+    status["revision"] = "0" * 40
+    status["runtime_identity"]["source_revision"] = "0" * 40
+    _write_json(world.status_path, status)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="current_release_identity_invalid"
+    )
+
+    monkeypatch.undo()
+    image_root = tmp_path / "image"
+    world = _reconcile_world(image_root, monkeypatch)
+    status = json.loads(world.status_path.read_text(encoding="utf-8"))
+    status["runtime_identity"]["public_image_id"] = "sha256:" + "0" * 64
+    _write_json(world.status_path, status)
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_runtime_mismatch"
+    )
+
+    monkeypatch.undo()
+    config_root = tmp_path / "config-drift"
+    world = _reconcile_world(config_root, monkeypatch)
+    (config_root / "config" / "release-lanes.yml").write_text("drifted\n", encoding="utf-8")
+    _assert_reconcile_fails_closed(
+        monkeypatch, world, expected_error="reconciliation_runtime_mismatch"
+    )
+
+
+def test_reconcile_target_shape_and_activate_anchor_contract() -> None:
+    anchor_free_target = {
+        "controller_revision": SHA,
+        "controller_release_digest": DIGEST,
+        "controller_image_digest": IMAGE_DIGEST,
+        "controller_internal_image_digest": IMAGE_DIGEST,
+        "activation_envelope_digest": ENVELOPE_DIGEST,
+        "activation_mode": "signed-external-envelope",
+        "activation_envelope_schema": "qdev-controller-activation-envelope-v1",
+        "activation_public_key_binding": "controller-registry",
+        "activation_max_envelope_ttl_seconds": 1800,
+    }
+    reconcile = {
+        "schema": "qdev-fleet-bootstrap-adapter-request-v2",
+        "request": _bootstrap_request(RECONCILE_ACTION),
+        "target": anchor_free_target,
+    }
+    request, target = ACTIVATION._validate_request(reconcile)
+    assert request["action"] == RECONCILE_ACTION
+    assert frozenset(target) == frozenset(anchor_free_target)
+
+    with pytest.raises(ACTIVATION.AdapterError, match="rollback_revision_invalid"):
+        ACTIVATION._validate_request(
+            {
+                **reconcile,
+                "target": {
+                    **anchor_free_target,
+                    "rollback_revision": "bad",
+                    "rollback_release_digest": DIGEST,
+                },
+            }
+        )
+
+    # Activation still requires the compare-and-swap rollback anchor; the
+    # reconciliation target shape is never accepted for an activation payload.
+    with pytest.raises(ACTIVATION.AdapterError, match="target_shape_invalid"):
+        ACTIVATION._validate_request(
+            {**reconcile, "request": _bootstrap_request("activate-controller")}
+        )
+
+
+def test_reconcile_never_references_the_live_rollback_anchor() -> None:
+    source = (ROOT / "scripts" / "qdev_controller_activation_adapter.py").read_text(
+        encoding="utf-8"
+    )
+    # The stale-anchor republication design was dropped: the path is declared
+    # once and never read or written by reconciliation.
+    assert source.count("ROLLBACK_ANCHOR_PATH") == 1

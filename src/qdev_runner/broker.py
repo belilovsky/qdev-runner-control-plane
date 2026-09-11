@@ -52,6 +52,7 @@ from .controller_activation import (
 from .controller_activation import (
     ControllerActivationError,
     ControllerReleaseStatus,
+    PublicActivationProjection,
 )
 from .fleet_bootstrap import (
     REQUEST_SCHEMA,
@@ -164,6 +165,39 @@ def controller_activation_status(path: Path) -> dict[str, Any]:
         return unavailable
 
 
+def controller_activation_projection(path: Path) -> dict[str, Any] | None:
+    """Return the sanitized public activation aggregate when it is well formed.
+
+    The public broker mounts only the controller-status directory.  The raw
+    activation ledger carries internal transaction and rollback material and is
+    deliberately outside that namespace, so the public surface reads this
+    derived aggregate and degrades to ``unavailable`` rather than guessing.
+    """
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    try:
+        return PublicActivationProjection.parse(value).mapping()
+    except ControllerActivationError:
+        return None
+
+
+def activation_health(settings: BrokerSettings) -> dict[str, Any]:
+    """Project activation state without widening the public mount namespace."""
+
+    if settings.surface == "public":
+        projected = controller_activation_projection(settings.controller_activation_projection_path)
+        if projected is not None:
+            return projected
+        # The public process never reads the raw activation ledger, even when a
+        # path is configured for it; a missing aggregate degrades to the
+        # backward-compatible unavailable projection instead of guessing.
+        return {"schema": CONTROLLER_ACTIVATION_STATUS_SCHEMA, "state": "unavailable"}
+    return controller_activation_status(settings.controller_activation_status_path)
+
+
 def worker_recovery_release_binding(path: Path) -> dict[str, Any]:
     """Project measured v2 identity into the legacy recovery digest shape."""
 
@@ -236,6 +270,40 @@ def profile_admission_health(
             "admission": "ready" if total else "no-fresh-eligible-worker",
         }
     return summary
+
+
+def eligible_slot_health(fresh_workers: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate admission-eligible slots without exposing runner identity.
+
+    The count is deliberately tier-aggregate only: it lets an operator see that
+    capacity exists even when a specific profile cannot be claimed, and it
+    never carries a runner name, host, claim or job binding.
+    """
+
+    eligible = {"primary": 0, "reserve": 0}
+    for worker in fresh_workers:
+        if not worker["capacity_allowed"]:
+            continue
+        tier = str(worker["tier"])
+        if tier in eligible:
+            eligible[tier] += int(worker["slots_available"])
+    eligible["total"] = eligible["primary"] + eligible["reserve"]
+    return eligible
+
+
+def oldest_pending_age_seconds(pending_jobs: list[dict[str, Any]], *, now: float) -> int | None:
+    """Return the FIFO-head age in whole seconds without exposing its identity."""
+
+    ages: list[float] = []
+    for job in pending_jobs:
+        try:
+            created_at = float(job["created_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        ages.append(max(0.0, now - created_at))
+    if not ages:
+        return None
+    return int(max(ages))
 
 
 class ClaimRequest(BaseModel):
@@ -355,7 +423,7 @@ class FleetBootstrapIngressIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["activate-controller", "enrol-host-agent"]
+    action: Literal["activate-controller", "reconcile-controller-activation", "enrol-host-agent"]
     source_sha: str
     run_id: int = Field(ge=1)
     job_id: int = Field(ge=1)
@@ -2452,6 +2520,7 @@ def create_app(
         ]
         primary = [worker for worker in fresh_workers if worker["tier"] == "primary"]
         reserve = [worker for worker in fresh_workers if worker["tier"] == "reserve"]
+        pending_jobs = store.pending_jobs()
         return {
             "ok": True,
             "schema": "qdev-runner-health-v1",
@@ -2468,17 +2537,22 @@ def create_app(
             "reserve_slots_available": sum(worker["slots_available"] for worker in reserve),
             "primary_available": any(worker["available"] for worker in primary),
             "reserve_available": any(worker["available"] for worker in reserve),
+            # Additive aggregate only: admission-eligible slots per tier and the
+            # FIFO-head age.  Neither field carries a runner name, host, claim,
+            # repository, SHA or job identity.
+            "eligible_slots": eligible_slot_health(fresh_workers),
+            "oldest_pending_age_seconds": oldest_pending_age_seconds(
+                pending_jobs, now=float(data["now"])
+            ),
             "profile_admission": profile_admission_health(
-                pending_jobs=store.pending_jobs(),
+                pending_jobs=pending_jobs,
                 fresh_workers=fresh_workers,
                 policy=policy,
             ),
             "controller_release": controller_release_status(
                 settings.controller_release_status_path
             ),
-            "controller_activation": controller_activation_status(
-                settings.controller_activation_status_path
-            ),
+            "controller_activation": activation_health(settings),
         }
 
     @app.get("/health/runtime", response_model=ControllerRuntimeHealth)
@@ -3179,7 +3253,9 @@ def create_app(
         )
 
     def run_fleet_bootstrap_operation(
-        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        expected_action: Literal[
+            "activate-controller", "reconcile-controller-activation", "enrol-host-agent"
+        ],
         request: FleetBootstrapOperationRequest,
         operator_token: str | None,
         operator_mtls_identity: str | None,
@@ -3216,7 +3292,9 @@ def create_app(
         )
 
     def prepare_fleet_bootstrap_operation(
-        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        expected_action: Literal[
+            "activate-controller", "reconcile-controller-activation", "enrol-host-agent"
+        ],
         raw_request: dict[str, Any] | FleetBootstrapRequest,
     ) -> tuple[FleetBootstrapPolicy, FleetBootstrapRequest]:
         """Parse and policy-bind one route-frozen bootstrap request.
@@ -3257,7 +3335,9 @@ def create_app(
         )
 
     def run_fleet_bootstrap_ingress(
-        expected_action: Literal["activate-controller", "enrol-host-agent"],
+        expected_action: Literal[
+            "activate-controller", "reconcile-controller-activation", "enrol-host-agent"
+        ],
         request: FleetBootstrapIngressRequest,
         oidc_token: str | None,
     ) -> dict[str, Any]:
@@ -3393,6 +3473,19 @@ def create_app(
             x_qdev_operator_mtls_identity,
         )
 
+    @app.post("/internal/v1/operations/fleet-bootstrap/reconcile-controller-activation")
+    def reconcile_controller_activation(
+        request: FleetBootstrapOperationRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_operation(
+            "reconcile-controller-activation",
+            request,
+            x_qdev_operator_token,
+            x_qdev_operator_mtls_identity,
+        )
+
     @app.post("/internal/v1/operations/fleet-bootstrap/enrol-host-agent")
     def enrol_host_agent(
         request: FleetBootstrapOperationRequest,
@@ -3413,6 +3506,17 @@ def create_app(
     ) -> dict[str, Any]:
         return run_fleet_bootstrap_ingress(
             "activate-controller",
+            request,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
+        )
+
+    @app.post("/internal/v1/ingress/fleet-bootstrap/reconcile-controller-activation")
+    def ingress_reconcile_controller_activation(
+        request: FleetBootstrapIngressRequest,
+        raw_request: Request,
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_ingress(
+            "reconcile-controller-activation",
             request,
             require_fleet_bootstrap_ingress_oidc(raw_request),
         )

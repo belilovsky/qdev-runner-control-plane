@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - activate-controller
+          - reconcile-controller-activation
           - enrol-host-agent
       controller_revision:
         description: "Exact pushed controller source SHA; activation/enrolment only"

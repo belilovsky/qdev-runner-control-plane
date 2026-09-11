@@ -350,6 +350,13 @@ def build_parser() -> argparse.ArgumentParser:
     activate_controller.add_argument("--request", required=True, type=Path)
     activate_controller.add_argument("--idempotency-key", required=True)
     activate_controller.add_argument("--timeout-seconds", type=float, default=120.0)
+    reconcile_controller = commands.add_parser(
+        "reconcile-controller-activation",
+        help="Finalize one committed-but-unclosed controller activation transaction",
+    )
+    reconcile_controller.add_argument("--request", required=True, type=Path)
+    reconcile_controller.add_argument("--idempotency-key", required=True)
+    reconcile_controller.add_argument("--timeout-seconds", type=float, default=120.0)
     enrol_host_agent = commands.add_parser(
         "enrol-host-agent",
         help="Enrol one allowlisted product host agent through the managed adapter",
@@ -529,7 +536,11 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             response_model=RecoveryOperationResponse,
         )
         return response.model_dump(mode="json", by_alias=True)
-    if arguments.command in {"activate-controller", "enrol-host-agent"}:
+    if arguments.command in {
+        "activate-controller",
+        "reconcile-controller-activation",
+        "enrol-host-agent",
+    }:
         key = _idempotency_key(arguments.idempotency_key)
         try:
             raw = json.loads(arguments.request.read_text(encoding="utf-8"))

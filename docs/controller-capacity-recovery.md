@@ -288,3 +288,9 @@ atomic compare-and-swap against the observed failed row; policy failures and
 other terminal states are not eligible. A successful release clears the old
 worker binding and terminal timestamp while preserving the original FIFO
 creation time.
+
+## Incident watchdog
+
+The two-minute incident watchdog, its published SLO limits, alert
+deduplication, reserve escalation and the aggregate observation contract are
+documented in `docs/incident-watchdog.md`.

@@ -281,6 +281,54 @@ def test_completed_result_is_durable_and_reused_without_reexecution(
     assert calls == 1
 
 
+def test_structured_activation_failure_is_terminal_not_opaque_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool, dispatcher, policy, _incoming, _processing, _results = _bridge(tmp_path)
+    request = _request(policy)
+    key = "activation-failure-receipt-001"
+    store = _store(tmp_path, key)
+
+    def failed_adapter(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        del args, kwargs
+        return "failed", {
+            "schema": "qdev-controller-activation-failure-v1",
+            "error_code": "activation_identity_mismatch",
+            "failure_code": "activation_identity_mismatch",
+            "diagnostic_digest": "sha256:" + "a" * 64,
+            "transaction_id": "controller-eb9eea64-34515000659-r1",
+            "permitted_action": "reconcile-controller-activation",
+        }
+
+    monkeypatch.setattr(dispatch_module, "_invoke_bootstrap_adapter", failed_adapter)
+    spool.submit(policy=policy, store=store, request=request, idempotency_key=key)
+    dispatched = dispatcher.drain()
+    assert len(dispatched) == 1
+    assert dispatched[0].status == "failed"
+    assert dispatched[0].error_code == "activation_identity_mismatch"
+    assert dispatched[0].result is None
+
+
+def test_unclassified_activation_adaptor_result_stays_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spool, dispatcher, policy, _incoming, _processing, _results = _bridge(tmp_path)
+    request = _request(policy)
+    key = "activation-failure-unclassified-001"
+    store = _store(tmp_path, key)
+
+    def unclassified_adapter(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        del args, kwargs
+        return "failed", {"error_code": "adapter_exit"}
+
+    monkeypatch.setattr(dispatch_module, "_invoke_bootstrap_adapter", unclassified_adapter)
+    spool.submit(policy=policy, store=store, request=request, idempotency_key=key)
+    dispatched = dispatcher.drain()
+    assert len(dispatched) == 1
+    assert dispatched[0].status == "unknown"
+    assert dispatched[0].error_code == "operation_outcome_unknown_reconciliation_required"
+
+
 def test_started_without_result_becomes_unknown_and_never_repeats_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

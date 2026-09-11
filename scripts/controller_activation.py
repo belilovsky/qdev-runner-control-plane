@@ -26,6 +26,7 @@ from qdev_runner.controller_activation import (  # noqa: E402
     load_activation_public_key,
     load_and_verify_envelope,
     verify_controller_artifact_manifest,
+    write_public_activation_projection,
 )
 from qdev_runner.controller_release import (  # noqa: E402
     ControllerReleaseIdentityError,
@@ -58,9 +59,12 @@ def _parser() -> argparse.ArgumentParser:
             "verify-recovery-envelope",
             "verify-public",
             "verify-legacy-public",
+            "reconcile-controller-activation",
+            "publish-projection",
         ),
     )
     parser.add_argument("--status", type=Path)
+    parser.add_argument("--projection", type=Path)
     parser.add_argument("--legacy-status", type=Path)
     parser.add_argument("--measured-status", type=Path)
     parser.add_argument("--envelope", type=Path)
@@ -146,6 +150,7 @@ def _load_envelope(args: argparse.Namespace) -> ActivationEnvelope:
             "verify-legacy-public",
             "verify-recovery-envelope",
             "verify-rollback-terminal",
+            "reconcile-controller-activation",
         },
     )
     candidate_public_image = args.candidate_public_image or args.candidate_image
@@ -429,6 +434,13 @@ def main() -> int:
         if args.status is None:
             raise ControllerActivationError("controller status path is required")
         store = ActivationStateStore(args.status)
+        if args.command == "publish-projection":
+            _require_root_owned_state(args.status, mutation=False)
+            if args.projection is None:
+                raise ControllerActivationError("public activation projection path is required")
+            projection = write_public_activation_projection(args.status, args.projection)
+            print(json.dumps(projection, sort_keys=True, separators=(",", ":")))
+            return 0
         if args.command == "show":
             _require_root_owned_state(args.status, mutation=False)
             print(json.dumps(store.read_status().mapping(), sort_keys=True, separators=(",", ":")))
@@ -481,6 +493,27 @@ def main() -> int:
                 "recovery_state": recovery_state,
             }
             print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+            return 0
+        if args.command == "reconcile-controller-activation":
+            # Closing an exact expired-but-committed transaction is the only
+            # mutation this command performs.  It re-proves the committed
+            # ledger and observed runtime before unlinking the transaction, so
+            # a plain replay of an expired recovery envelope can never flip a
+            # live runtime back.
+            _require_root_owned_state(args.status, mutation=True)
+            envelope = _load_envelope(args)
+            if args.allow_config_transition:
+                raise ControllerActivationError(
+                    "controller reconciliation does not accept a config transition"
+                )
+            observed_public, observed_internal, observed_config = _required_observation(args)
+            receipt = store.reconcile_committed(
+                envelope,
+                observed_image_digest=observed_public,
+                observed_internal_image_digest=observed_internal,
+                observed_config_digest=observed_config,
+            )
+            print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
             return 0
         allow_missing_status = args.command == "bootstrap-measured" or (
             args.command == "reserve"

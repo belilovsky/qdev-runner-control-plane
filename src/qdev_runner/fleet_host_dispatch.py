@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .fleet_bootstrap import (
+    CONTROLLER_TUPLE_ACTIONS,
     BootstrapOperationStore,
     FleetBootstrapError,
     FleetBootstrapPolicy,
@@ -31,6 +32,7 @@ from .fleet_bootstrap import (
     bootstrap_request_fingerprints,
 )
 from .fleet_bootstrap_executor import (
+    ACTIVATION_FAILURE_SCHEMA,
     BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA,
     _adapter_path,
     _bootstrap_adapter_path,
@@ -54,11 +56,23 @@ _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_FILE_BYTES = 64 * 1024
-_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
+_ACTIONS = frozenset(
+    {
+        "activate-controller",
+        "reconcile-controller-activation",
+        "enrol-host-agent",
+        "restore-existing-worker",
+    }
+)
 
 DispatchStatus = Literal["queued", "completed", "failed", "unknown", "access_blocked"]
 OperationStatus = Literal["pending", "completed", "unknown"]
-BootstrapAction = Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
+BootstrapAction = Literal[
+    "activate-controller",
+    "reconcile-controller-activation",
+    "enrol-host-agent",
+    "restore-existing-worker",
+]
 
 
 class FleetHostDispatchError(FleetBootstrapError):
@@ -819,11 +833,18 @@ class FleetHostDispatcher:
 
     def _execute(self, policy: FleetBootstrapPolicy, envelope: DispatchEnvelope) -> DispatchResult:
         request = envelope.request
-        if request.action in {"activate-controller", "enrol-host-agent"}:
-            action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
+        if request.action in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
+            action = cast(
+                Literal[
+                    "activate-controller",
+                    "reconcile-controller-activation",
+                    "enrol-host-agent",
+                ],
+                request.action,
+            )
             adapter = (
                 self.activation_adapter
-                if action == "activate-controller"
+                if action in CONTROLLER_TUPLE_ACTIONS
                 else self.enrolment_adapter
             )
             adapter_path = _bootstrap_adapter_path(adapter, action=action)
@@ -837,7 +858,7 @@ class FleetHostDispatcher:
                     None,
                 )
             controller_runtime = None
-            if action == "activate-controller":
+            if action in CONTROLLER_TUPLE_ACTIONS:
                 controller_runtime = verified_controller_runtime_anchor(
                     self.controller_status_path,
                     expected_uid=self.root_uid,
@@ -866,6 +887,25 @@ class FleetHostDispatcher:
                         "host_adapter_access_blocked",
                         None,
                     )
+                # A structured activation rejection is terminal and no longer
+                # opaque: the stable failure code replaces the former generic
+                # unknown/reconciliation placeholder.  Anything the adapter
+                # could not classify still stays ``unknown`` and fails closed.
+                if (
+                    adapter_status == "failed"
+                    and action in CONTROLLER_TUPLE_ACTIONS
+                    and (adapter_result or {}).get("schema") == ACTIVATION_FAILURE_SCHEMA
+                ):
+                    failure_code = (adapter_result or {}).get("error_code")
+                    if isinstance(failure_code, str) and _ERROR_CODE.fullmatch(failure_code):
+                        return DispatchResult(
+                            envelope.idempotency_key,
+                            envelope.request_fingerprint,
+                            action,
+                            "failed",
+                            failure_code,
+                            None,
+                        )
                 return self._unknown(envelope)
             completion: dict[str, Any] = {
                 "action": action,

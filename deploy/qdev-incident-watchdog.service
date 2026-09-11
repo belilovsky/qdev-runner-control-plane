@@ -1,0 +1,23 @@
+[Unit]
+Description=QDev CI incident observation and SLO watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_incident_observation.py --health https://ci.qdev.run/health --state-root /var/lib/qdev-runner/incident-watchdog
+ExecStart=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_incident_watchdog.py --observation /var/lib/qdev-runner/incident-watchdog/observation.json --state-root /var/lib/qdev-runner/incident-watchdog
+TimeoutStartSec=120
+UMask=0027
+Environment=PYTHONNOUSERSITE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/qdev-runner-control-plane
+ReadWritePaths=/var/lib/qdev-runner
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
