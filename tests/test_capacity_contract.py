@@ -31,7 +31,9 @@ def _load_gate():
     return module
 
 
-def _run_gate(*, max_disk_used_pct: int, min_free_gib: float) -> subprocess.CompletedProcess[str]:
+def _run_gate(
+    *, max_disk_used_pct: int, min_free_gib: float, disk_used_pct: float = 50
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         [
             sys.executable,
@@ -39,7 +41,7 @@ def _run_gate(*, max_disk_used_pct: int, min_free_gib: float) -> subprocess.Comp
             "--capacity-config",
             str(CAPACITY_CONFIG),
             "--disk-used-pct",
-            "50",
+            str(disk_used_pct),
             "--disk-free-kib",
             str(64 * 1024 * 1024),
             "--memory-kib",
@@ -93,6 +95,36 @@ def test_activation_gate_rejects_free_space_below_the_hard_floor(floor: float) -
 def test_activation_gate_accepts_only_the_published_bound() -> None:
     assert _run_gate(max_disk_used_pct=90, min_free_gib=4.5).returncode == 0
     assert _run_gate(max_disk_used_pct=85, min_free_gib=30).returncode == 0
+
+
+def test_activation_gate_clamps_only_the_legacy_incumbent_ceiling() -> None:
+    """The immutable incumbent (eb9eea64) payload transmits 96 percent.
+
+    A candidate release must stay activatable from that incumbent, so exactly
+    that legacy default is clamped to the published ceiling while every other
+    above-ceiling override keeps failing closed.
+    """
+
+    accepted = _run_gate(max_disk_used_pct=96, min_free_gib=8)
+    assert accepted.returncode == 0
+    assert "legacy incumbent ceiling 96 clamped to 90%" in accepted.stderr
+
+    # The clamp really is the published ceiling: usage above it is refused.
+    assert _run_gate(max_disk_used_pct=96, min_free_gib=8, disk_used_pct=91).returncode == 1
+
+    for ceiling in (92, 93, 94):
+        rejected = _run_gate(max_disk_used_pct=ceiling, min_free_gib=8)
+        assert rejected.returncode != 0
+        assert "must not exceed 90" in rejected.stderr
+
+
+def test_published_legacy_incumbent_ceiling_constant() -> None:
+    gate = _load_gate()
+
+    # Release eb9eea64's payload ships this unset default; it must never be a
+    # value an operator or a release may request as a real ceiling.
+    assert gate.LEGACY_INCUMBENT_MAX_DISK_USED_PCT == 96
+    assert gate.LEGACY_INCUMBENT_MAX_DISK_USED_PCT > gate.HARD_MAX_DISK_USED_PCT
 
 
 def test_shell_activation_and_provisioning_share_the_same_ceiling() -> None:
@@ -154,5 +186,6 @@ def test_repository_documentation_states_the_same_bounds() -> None:
 
     assert "4.5 GiB free and 90% maximum use" in recovery
     assert "within 900 seconds" in recovery
+    assert "clamps it to the published 90% ceiling" in recovery
     assert "30 GiB free and 85% used" in operating
     assert "10 GiB/90%" in operating

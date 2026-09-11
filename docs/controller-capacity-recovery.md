@@ -195,6 +195,18 @@ restart an active worker, remove active images/releases/rollback material, or
 perform a global Docker prune. Disk-only overrides keep the controller's hard
 floor of 4.5 GiB free and 90% maximum use, and expire within 900 seconds.
 
+### Legacy incumbent activation ceiling
+
+A candidate release can only be activated by the wrapper that is already
+active, and the immutable `eb9eea64...` payload transmits its unset
+`QDEV_CONTROLLER_MAX_DISK_USED_PCT` default as `96`. The activation capacity
+gate therefore accepts exactly that legacy default and clamps it to the published 90% ceiling,
+and records the clamp on stderr so the activation receipt keeps the observation.
+Every other above-ceiling value, including the
+`91`, `95` and `97` percent host overrides, is still rejected before any
+measurement or mutation, and the operator override surface separately refuses
+any value above `90%`. A release must never publish `96` as a real ceiling.
+
 Set operator values only in the root-owned `/etc/qdev-runner/broker.env` and
 the worker directive key in `/etc/qdev-runner/worker.env`; secrets never enter
 receipts or repository files:
