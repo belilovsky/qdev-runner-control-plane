@@ -20,6 +20,8 @@ from qdev_runner.controller_activation import (
     CONTROLLER_REPOSITORY,
     ENVELOPE_SCHEMA,
     LEGACY_STATUS_SCHEMA,
+    PROJECTION_SCHEMA,
+    RECONCILE_SCHEMA,
     STATUS_SCHEMA,
     ActivationEnvelope,
     ActivationStateStore,
@@ -28,10 +30,12 @@ from qdev_runner.controller_activation import (
     ControllerTuple,
     LegacyMeasuredControllerReleaseStatus,
     MeasuredControllerReleaseStatus,
+    PublicActivationProjection,
     _trivy_actionable_findings,
     fingerprint_config_files,
     fingerprint_release_tree,
     verify_controller_artifact_manifest,
+    write_public_activation_projection,
 )
 from qdev_runner.operations import payload_digest, sign_payload
 
@@ -246,6 +250,7 @@ def _run_activation_cli(
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
 
 
@@ -2126,3 +2131,253 @@ def test_state_store_rejects_group_writable_status_and_transaction(tmp_path: Pat
             observed_image_digest=OLD.image_digest,
             observed_config_digest=OLD_CONFIG,
         )
+
+
+def test_public_activation_projection_is_sanitized_and_digest_bound(tmp_path: Path) -> None:
+    status = _status()
+    source = tmp_path / "activation-status.json"
+    source.write_text(
+        json.dumps(status.mapping(), sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    destination = tmp_path / "controller-status" / "controller-activation.json"
+    destination.parent.mkdir()
+
+    projection = write_public_activation_projection(source, destination)
+
+    # The public aggregate never carries transaction identity, the rollback
+    # tuple, or configuration fingerprints.
+    assert set(projection) == {
+        "schema",
+        "state",
+        "generation",
+        "source_revision",
+        "activated_at",
+        "projection_digest",
+    }
+    assert projection["schema"] == PROJECTION_SCHEMA
+    assert projection["state"] == "active"
+    assert projection["generation"] == status.generation
+    assert projection["source_revision"] == status.current.source_sha
+    assert json.loads(destination.read_text(encoding="utf-8")) == projection
+    assert PublicActivationProjection.parse(projection).mapping() == projection
+
+    tampered = dict(projection)
+    tampered["generation"] = int(projection["generation"]) + 1
+    with pytest.raises(ControllerActivationError, match="projection digest is invalid"):
+        PublicActivationProjection.parse(tampered)
+
+
+def test_public_activation_projection_fails_closed_without_exact_ledger(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "controller-status" / "controller-activation.json"
+    destination.parent.mkdir()
+
+    with pytest.raises(ControllerActivationError):
+        write_public_activation_projection(tmp_path / "missing.json", destination)
+    assert not destination.exists()
+
+    inactive = tmp_path / "activation-status.json"
+    inactive.write_text(
+        json.dumps({"schema": STATUS_SCHEMA, "state": "rolled-back"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ControllerActivationError):
+        write_public_activation_projection(inactive, destination)
+    assert not destination.exists()
+
+
+def _committed_store(tmp_path: Path) -> tuple[ActivationStateStore, ActivationEnvelope]:
+    """Commit one exact activation so the durable transaction is still open."""
+
+    store = _store(tmp_path)
+    envelope = _envelope()
+    assert (
+        store.reserve(
+            envelope,
+            observed_image_digest=OLD.image_digest,
+            observed_config_digest=OLD_CONFIG,
+        )
+        == "new"
+    )
+    store.commit(
+        envelope,
+        observed_image_digest=NEW.image_digest,
+        observed_config_digest=NEW_CONFIG,
+        activated_at=datetime(2026, 9, 5, 2, tzinfo=UTC),
+    )
+    return store, envelope
+
+
+def test_reconcile_committed_closes_expired_transaction_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    store, envelope = _committed_store(tmp_path)
+    assert store.transaction_path.exists()
+    committed_status = store.read_status()
+    assert committed_status.generation == 8
+    assert committed_status.current == NEW
+
+    receipt = store.reconcile_committed(
+        envelope,
+        observed_image_digest=NEW.public_image_digest,
+        observed_internal_image_digest=NEW.effective_internal_image_digest,
+        observed_config_digest=NEW_CONFIG,
+    )
+
+    assert receipt["schema"] == RECONCILE_SCHEMA
+    assert receipt["outcome"] == "finalized"
+    assert receipt["transaction_id"] == envelope.transaction_id
+    assert receipt["envelope_digest"] == envelope.digest
+    assert receipt["expected_generation"] == 7
+    assert receipt["recovery_state"] == "committed"
+    assert isinstance(receipt["reserved_status_digest"], str)
+    assert receipt["committed_status_digest"] == receipt["observed_status_digest"]
+    assert receipt["previous"] == {"generation": 7, **OLD.mapping()}
+    assert receipt["current"] == {"generation": 8, **NEW.mapping()}
+    assert receipt["post"] == {**receipt["current"], "transaction_closed": True}
+    # Reconciliation closes the transaction without re-writing the ledger.
+    assert not store.transaction_path.exists()
+    assert store.read_status() == committed_status
+
+    replay = store.reconcile_committed(
+        envelope,
+        observed_image_digest=NEW.public_image_digest,
+        observed_internal_image_digest=NEW.effective_internal_image_digest,
+        observed_config_digest=NEW_CONFIG,
+    )
+
+    assert replay["outcome"] == "already-finalized"
+    assert replay["reserved_status_digest"] is None
+    assert replay["committed_status_digest"] == replay["observed_status_digest"]
+    assert replay["post"] == {**replay["current"], "transaction_closed": False}
+    assert replay["current"] == receipt["current"]
+    assert not store.transaction_path.exists()
+
+
+def test_reconcile_committed_fails_closed_without_mutating_ledger(tmp_path: Path) -> None:
+    store, envelope = _committed_store(tmp_path)
+    status_before = store.status_path.read_bytes()
+    transaction_before = store.transaction_path.read_bytes()
+
+    # A measured runtime that is not the signed candidate is never reconciled.
+    with pytest.raises(ControllerActivationError, match="runtime does not match"):
+        store.reconcile_committed(
+            envelope,
+            observed_image_digest=OLD.image_digest,
+            observed_config_digest=OLD_CONFIG,
+        )
+    assert store.status_path.read_bytes() == status_before
+    assert store.transaction_path.read_bytes() == transaction_before
+
+    # A foreign transaction id may never adopt an already committed ledger.
+    forged = _envelope(transaction_id="transaction-forged")
+    with pytest.raises(ControllerActivationError, match="exact committed transaction"):
+        store.reconcile_committed(
+            forged,
+            observed_image_digest=NEW.image_digest,
+            observed_config_digest=NEW_CONFIG,
+        )
+    assert store.status_path.read_bytes() == status_before
+    assert store.transaction_path.read_bytes() == transaction_before
+
+    # An R2-style historical envelope targets a different committed generation.
+    historical = _envelope(
+        transaction_id="controller-eb9eea64-34537511259-r2",
+        expected_generation=8,
+        expected=NEW,
+        candidate=ControllerTuple(NEW.source_sha, "9" * 64, "a" * 64),
+    )
+    with pytest.raises(ControllerActivationError, match="exact committed transaction"):
+        store.reconcile_committed(
+            historical,
+            observed_image_digest="9" * 64,
+            observed_config_digest=NEW_CONFIG,
+        )
+    assert store.status_path.read_bytes() == status_before
+    assert store.transaction_path.read_bytes() == transaction_before
+
+    # A transaction body that does not reproduce this exact envelope is foreign
+    # and must never be unlinked.  `envelope_digest` is envelope-bound, unlike
+    # the reserved-status anchor which is deliberately an output of this ledger.
+    tampered = json.loads(transaction_before)
+    tampered["envelope_digest"] = "f" * 64
+    store.transaction_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(ControllerActivationError, match="ownership failed"):
+        store.reconcile_committed(
+            envelope,
+            observed_image_digest=NEW.public_image_digest,
+            observed_internal_image_digest=NEW.effective_internal_image_digest,
+            observed_config_digest=NEW_CONFIG,
+        )
+    assert store.status_path.read_bytes() == status_before
+    assert store.transaction_path.exists()
+
+
+def test_reconcile_committed_never_advances_an_uncommitted_ledger(tmp_path: Path) -> None:
+    status_path = tmp_path / "controller-release.json"
+    status_path.write_bytes(_encoded_status())
+    store = ActivationStateStore(status_path)
+    envelope = _envelope()
+    before = status_path.read_bytes()
+
+    with pytest.raises(ControllerActivationError, match="exact committed transaction"):
+        store.reconcile_committed(
+            envelope,
+            observed_image_digest=OLD.image_digest,
+            observed_config_digest=OLD_CONFIG,
+        )
+
+    assert status_path.read_bytes() == before
+    assert not store.transaction_path.exists()
+
+
+def test_reconcile_controller_activation_cli_closes_an_expired_commit(
+    tmp_path: Path,
+) -> None:
+    store, _envelope_value = _committed_store(tmp_path)
+    # The durable transaction was committed while the envelope was valid; by the
+    # time reconciliation runs the signed authorization has expired, exactly like
+    # the live R1 transaction.  Replaying it must close the transaction, not
+    # re-run the activation.
+    envelope_path = tmp_path / "activation-envelope.json"
+    envelope_path.write_text(
+        json.dumps(_envelope_document(), sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    public_key = tmp_path / "activation-public-key.pem"
+    public_key.write_bytes(
+        PUBLIC_KEY.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    assert store.transaction_path.is_file()
+
+    reconcile = _run_activation_cli(
+        status=store.status_path,
+        envelope=envelope_path,
+        public_key=public_key,
+        command="reconcile-controller-activation",
+        observations=(NEW.image_digest, NEW_CONFIG),
+    )
+
+    assert reconcile.returncode == 0, reconcile.stderr
+    receipt = json.loads(reconcile.stdout)
+    assert receipt["schema"] == RECONCILE_SCHEMA
+    assert receipt["outcome"] == "finalized"
+    assert receipt["transaction_id"] == "transaction-0001"
+    assert receipt["current"]["generation"] == 8
+    assert receipt["current"]["source_sha"] == NEW.source_sha
+    assert not store.transaction_path.exists()
+
+    replay = _run_activation_cli(
+        status=store.status_path,
+        envelope=envelope_path,
+        public_key=public_key,
+        command="reconcile-controller-activation",
+        observations=(NEW.image_digest, NEW_CONFIG),
+    )
+    assert replay.returncode == 0, replay.stderr
+    assert json.loads(replay.stdout)["outcome"] == "already-finalized"

@@ -21,15 +21,22 @@ def test_provision_archives_exact_legacy_rollout_gate() -> None:
 def test_provision_capacity_override_is_explicit_and_lower_only() -> None:
     script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
 
-    assert "QDEV_WORKER_PROVISION_MIN_FREE_GIB:-30" in script
-    assert "QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-85" in script
+    # The published contract has exactly two tiers: 30 GiB/85% for a normal
+    # shared worker and 10 GiB/90% for a continuously monitored durable worker.
+    assert "QDEV_WORKER_PROVISION_DURABLE:-false" in script
+    assert "tier_min_free_gib=10" in script
+    assert "tier_max_disk_used_pct=90" in script
+    assert "tier_min_free_gib=30" in script
+    assert "tier_max_disk_used_pct=85" in script
+    assert "QDEV_WORKER_PROVISION_MIN_FREE_GIB:-$tier_min_free_gib" in script
+    assert "QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-$tier_max_disk_used_pct" in script
     assert "QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false" in script
     assert "provision_min_free_gib < 5" in script
     assert "provision_min_free_gib > 30" in script
     assert "provision_max_disk_used_pct < 85" in script
-    assert "provision_max_disk_used_pct > 95" in script
-    assert "provision_min_free_gib != 30" in script
-    assert "provision_max_disk_used_pct != 85" in script
+    assert "provision_max_disk_used_pct > 90" in script
+    assert "provision_min_free_gib != tier_min_free_gib" in script
+    assert "provision_max_disk_used_pct != tier_max_disk_used_pct" in script
     assert "allow_capacity_override" in script
     assert 'min_free="$provision_min_free_kib"' in script
     assert "used > max_used" in script

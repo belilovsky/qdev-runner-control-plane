@@ -27,7 +27,15 @@ from .release_lane import ReleaseLane, ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v2"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v2"
-ALLOWED_ACTIONS = frozenset({"activate-controller", "enrol-host-agent", "restore-existing-worker"})
+ALLOWED_ACTIONS = frozenset(
+    {
+        "activate-controller",
+        "reconcile-controller-activation",
+        "enrol-host-agent",
+        "restore-existing-worker",
+    }
+)
+CONTROLLER_TUPLE_ACTIONS = frozenset({"activate-controller", "reconcile-controller-activation"})
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -85,7 +93,12 @@ class FleetBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     schema_name: str = Field(alias="schema")
-    action: Literal["activate-controller", "enrol-host-agent", "restore-existing-worker"]
+    action: Literal[
+        "activate-controller",
+        "reconcile-controller-activation",
+        "enrol-host-agent",
+        "restore-existing-worker",
+    ]
     source_sha: str
     run_id: int = Field(ge=1)
     job_id: int = Field(ge=1)
@@ -105,14 +118,14 @@ class FleetBootstrapRequest(BaseModel):
         # single-image deployment.  Normalize it before fingerprints, durable
         # storage and adapter dispatch so new receipts always bind both images.
         if (
-            self.action in {"activate-controller", "enrol-host-agent"}
+            self.action in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}
             and self.controller_internal_image_digest is None
             and self.controller_image_digest is not None
         ):
             object.__setattr__(
                 self, "controller_internal_image_digest", self.controller_image_digest
             )
-        if self.action == "activate-controller":
+        if self.action in CONTROLLER_TUPLE_ACTIONS:
             if (
                 self.release_lane is not None
                 or self.worker_name is not None
@@ -122,7 +135,9 @@ class FleetBootstrapRequest(BaseModel):
                 or self.controller_internal_image_digest is None
                 or self.activation_envelope_digest is None
             ):
-                raise ValueError("controller activation cannot name a lane or worker")
+                raise ValueError(
+                    "controller activation and reconciliation cannot name a lane or worker"
+                )
         elif self.action == "enrol-host-agent":
             if (
                 self.release_lane is None
@@ -341,7 +356,7 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap source SHA is invalid")
         if request.claim_ttl_seconds > self.identity.max_claim_ttl_seconds:
             raise FleetBootstrapError("bootstrap claim TTL exceeds policy")
-        if request.action in {"activate-controller", "enrol-host-agent"} and (
+        if request.action in CONTROLLER_TUPLE_ACTIONS and (
             request.controller_revision is None
             or request.controller_revision != request.source_sha
             or _SHA.fullmatch(request.controller_revision) is None
@@ -355,8 +370,8 @@ class FleetBootstrapPolicy:
             or _DIGEST.fullmatch(request.activation_envelope_digest) is None
         ):
             raise FleetBootstrapError(
-                "bootstrap activation must bind the workflow source, release, image, "
-                "and signed envelope"
+                "bootstrap activation/reconciliation must bind the workflow source, "
+                "release, image, and signed envelope"
             )
         if request.action == "enrol-host-agent" and request.release_lane not in self._allowed_lanes:
             raise FleetBootstrapError("bootstrap release lane is not allowlisted")
@@ -416,7 +431,7 @@ def validate_github_bootstrap_observation(
     caller-supplied observation for provider evidence.
     """
 
-    if request.action not in {"activate-controller", "enrol-host-agent"}:
+    if request.action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
         raise FleetBootstrapError("bootstrap ingress action is not allowed")
 
     expected_ref = f"refs/heads/{policy.identity.branch}"
@@ -495,7 +510,7 @@ def bootstrap_ingress_operation_key(
     record and is rejected by its request-fingerprint check.
     """
 
-    if request.action not in {"activate-controller", "enrol-host-agent"}:
+    if request.action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
         raise FleetBootstrapError("bootstrap ingress action is not allowed")
     policy.validate(request)
     payload = {
@@ -527,7 +542,7 @@ def bootstrap_request_fingerprints(request: FleetBootstrapRequest) -> frozenset[
 
     fingerprints = {bootstrap_request_fingerprint(request)}
     if (
-        request.action in {"activate-controller", "enrol-host-agent"}
+        request.action in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}
         and request.controller_image_digest is not None
         and request.controller_internal_image_digest == request.controller_image_digest
     ):

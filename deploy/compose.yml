@@ -45,6 +45,11 @@ services:
       # tuple.  Mount the containing directory read-only so atomic status-file
       # replacement remains visible without exposing any controller journals.
       QDEV_CONTROLLER_RELEASE_STATUS: /var/lib/qdev-runner/controller-status/controller-release.json
+      # Activation is likewise an aggregate: a sanitized projection is written
+      # beside the release status by the root activation transaction.  The raw
+      # activation ledger is never mounted here, so the public process cannot
+      # read transaction identity, rollback tuples or configuration digests.
+      QDEV_CONTROLLER_ACTIVATION_PROJECTION: /var/lib/qdev-runner/controller-status/controller-activation.json
     volumes:
       - /etc/qdev-runner/repos.json:/etc/qdev-runner/repos.json:ro
       - /etc/qdev-runner/profiles.yml:/etc/qdev-runner/profiles.yml:ro

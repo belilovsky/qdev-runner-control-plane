@@ -29,6 +29,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 STATUS_SCHEMA = "qdev-controller-activation-status-v2"
+PROJECTION_SCHEMA = "qdev-controller-activation-projection-v1"
+RECONCILE_SCHEMA = "qdev-controller-reconciliation-v1"
 LEGACY_ACTIVATION_STATUS_SCHEMA = "qdev-controller-activation-status-v1"
 MEASURED_STATUS_SCHEMA = "qdev-controller-release-status-v2"
 LEGACY_STATUS_SCHEMA = "qdev-controller-release-status-v1"
@@ -412,6 +414,91 @@ class ControllerReleaseStatus:
             "transaction_id": self.transaction_id,
             "activated_at": _format_time(self.activated_at),
         }
+
+
+@dataclass(frozen=True)
+class PublicActivationProjection:
+    """Sanitized activation aggregate safe for the unauthenticated health surface.
+
+    The raw activation ledger carries internal transaction identity, the
+    previous rollback tuple and configuration fingerprints.  The public broker
+    deliberately never mounts that ledger, so it receives this derived
+    aggregate instead: monotonic generation, the activated source revision and
+    the activation instant, bound by a digest over the projection body.
+    """
+
+    generation: int
+    source_revision: str
+    activated_at: datetime
+
+    @classmethod
+    def parse(cls, value: object) -> PublicActivationProjection:
+        required = {
+            "schema",
+            "state",
+            "generation",
+            "source_revision",
+            "activated_at",
+            "projection_digest",
+        }
+        if not isinstance(value, dict) or set(value) != required:
+            raise ControllerActivationError("controller activation projection shape is invalid")
+        if value["schema"] != PROJECTION_SCHEMA or value["state"] != "active":
+            raise ControllerActivationError("controller activation projection is not active")
+        generation = _require_int(value["generation"], "activation projection generation")
+        source_revision = value["source_revision"]
+        if not isinstance(source_revision, str) or _SHA.fullmatch(source_revision) is None:
+            raise ControllerActivationError("controller activation projection revision is invalid")
+        projection = cls(
+            generation,
+            source_revision,
+            _parse_time(value["activated_at"], "activation projection activated_at"),
+        )
+        if value["projection_digest"] != projection.digest():
+            raise ControllerActivationError("controller activation projection digest is invalid")
+        return projection
+
+    @classmethod
+    def from_status(cls, status: ControllerReleaseStatus) -> PublicActivationProjection:
+        return cls(status.generation, status.current.source_sha, status.activated_at)
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "schema": PROJECTION_SCHEMA,
+            "state": "active",
+            "generation": self.generation,
+            "source_revision": self.source_revision,
+            "activated_at": _format_time(self.activated_at),
+        }
+
+    def digest(self) -> str:
+        return "sha256:" + hashlib.sha256(_canonical(self._body())).hexdigest()
+
+    def mapping(self) -> dict[str, Any]:
+        return {**self._body(), "projection_digest": self.digest()}
+
+
+def public_activation_projection(value: object) -> dict[str, Any] | None:
+    """Derive the public aggregate from a raw activation ledger value."""
+
+    try:
+        status = ControllerReleaseStatus.parse(value)
+    except ControllerActivationError:
+        return None
+    return PublicActivationProjection.from_status(status).mapping()
+
+
+def write_public_activation_projection(source: Path, destination: Path) -> dict[str, Any]:
+    """Atomically republish the sanitized aggregate from the raw ledger.
+
+    A missing, unreadable, or non-active ledger fails closed before any write so
+    a transient read failure can never be mistaken for a state change.
+    """
+
+    status = ControllerReleaseStatus.parse(ActivationStateStore._read_json(source))
+    projection = PublicActivationProjection.from_status(status)
+    ActivationStateStore._atomic_write(destination, projection.mapping(), mode=0o644)
+    return projection.mapping()
 
 
 @dataclass(frozen=True)
@@ -1508,24 +1595,150 @@ class ActivationStateStore:
         with self._locked():
             raw_status, status_digest = self._read_json_with_digest(self.status_path)
             status = ControllerReleaseStatus.parse(raw_status)
-            expected = (
+            self._finalize_locked(envelope, status, status_digest)
+            return status
+
+    def _finalize_locked(
+        self,
+        envelope: ActivationEnvelope,
+        status: ControllerReleaseStatus,
+        status_digest: str,
+    ) -> None:
+        """Close one committed transaction while its caller already holds the lock.
+
+        ``_locked()`` is deliberately not reentrant: it reopens the lock file and
+        takes an exclusive ``flock`` on a fresh descriptor, so a second acquire
+        from the same thread blocks forever.  Reconciliation already holds the
+        lock while proving the committed ledger, so it must reuse this body
+        instead of calling the locking ``finalize`` wrapper.
+        """
+
+        expected = (
+            status.generation == envelope.expected_generation + 1
+            and status.current == envelope.candidate
+            and status.previous == (envelope.expected_generation, envelope.expected_current)
+            and status.transaction_id == envelope.transaction_id
+        )
+        if not expected:
+            raise ControllerActivationError("controller finalize status CAS failed")
+        if self.transaction_path.exists():
+            transaction = self._assert_transaction(envelope)
+            committed_status_digest = transaction["committed_status_digest"]
+            if committed_status_digest is None:
+                raise ControllerActivationError(
+                    "controller finalize committed status fingerprint is unavailable"
+                )
+            self._assert_status_digest(status_digest, committed_status_digest)
+            self._atomic_unlink(self.transaction_path)
+
+    @staticmethod
+    def _reconcile_tuple(
+        generation: int,
+        value: ControllerTuple,
+    ) -> dict[str, Any]:
+        return {"generation": generation, **value.mapping()}
+
+    def reconcile_committed(
+        self,
+        envelope: ActivationEnvelope,
+        *,
+        observed_image_digest: str,
+        observed_internal_image_digest: str | None = None,
+        observed_config_digest: str,
+    ) -> dict[str, Any]:
+        """Close one exact expired-but-committed transaction without re-mutating.
+
+        Reconciliation is deliberately not recovery.  It never reserves, never
+        rolls back and never advances a generation that does not already match
+        the signed candidate.  Only the exact committed shape may be finalized;
+        a stale, foreign or mismatched ledger or runtime is refused so an
+        operator can never replay an expired envelope into a live flip.
+
+        The operation is idempotent: repeating it after the transaction has
+        already been closed re-proves the exact committed ledger and returns the
+        same receipt instead of failing or mutating anything.
+        """
+
+        _require_digest(observed_image_digest, "observed reconciliation image")
+        if observed_internal_image_digest is not None:
+            _require_digest(
+                observed_internal_image_digest, "observed reconciliation internal image"
+            )
+        _require_digest(observed_config_digest, "observed reconciliation config")
+        observed = (
+            observed_image_digest,
+            observed_internal_image_digest or observed_image_digest,
+            observed_config_digest,
+        )
+        candidate_observed = (
+            envelope.candidate.public_image_digest,
+            envelope.candidate.effective_internal_image_digest,
+            envelope.candidate_config_digest,
+        )
+        with self._locked():
+            raw_status, status_digest = self._read_json_with_digest(self.status_path)
+            status = ControllerReleaseStatus.parse(raw_status)
+            committed_shape = (
                 status.generation == envelope.expected_generation + 1
                 and status.current == envelope.candidate
                 and status.previous == (envelope.expected_generation, envelope.expected_current)
                 and status.transaction_id == envelope.transaction_id
             )
-            if not expected:
-                raise ControllerActivationError("controller finalize status CAS failed")
-            if self.transaction_path.exists():
+            if not committed_shape:
+                raise ControllerActivationError(
+                    "controller reconciliation requires an exact committed transaction"
+                )
+            if observed != candidate_observed:
+                raise ControllerActivationError(
+                    "controller reconciliation runtime does not match the signed candidate"
+                )
+            if self.transaction_path.exists() or self.transaction_path.is_symlink():
                 transaction = self._assert_transaction(envelope)
                 committed_status_digest = transaction["committed_status_digest"]
                 if committed_status_digest is None:
                     raise ControllerActivationError(
-                        "controller finalize committed status fingerprint is unavailable"
+                        "controller reconciliation committed fingerprint is unavailable"
                     )
+                # The transaction body is the durable proof that the running
+                # ledger was produced by this exact envelope.  A committed
+                # status that cannot reproduce it is foreign and must never be
+                # adopted by reconciliation.
                 self._assert_status_digest(status_digest, committed_status_digest)
-                self._atomic_unlink(self.transaction_path)
-            return status
+                # Reuse the lock-free body: this method already holds _locked(),
+                # which is a fresh exclusive flock and would self-deadlock if the
+                # locking finalize wrapper were called here.
+                self._finalize_locked(envelope, status, status_digest)
+                outcome = "finalized"
+            else:
+                # The standard finalize hook already closed this transaction.
+                # Re-proving the exact committed shape keeps a repeat run
+                # idempotent without inventing a second finalize.
+                transaction = None
+                committed_status_digest = status_digest
+                outcome = "already-finalized"
+            pre = self._reconcile_tuple(status.generation, status.current)
+            post = {
+                **self._reconcile_tuple(status.generation, status.current),
+                "transaction_closed": outcome == "finalized",
+            }
+            return {
+                "schema": RECONCILE_SCHEMA,
+                "outcome": outcome,
+                "transaction_id": envelope.transaction_id,
+                "envelope_digest": envelope.digest,
+                "expected_generation": envelope.expected_generation,
+                "recovery_state": "committed",
+                "reserved_status_digest": (
+                    None if transaction is None else transaction["reserved_status_digest"]
+                ),
+                "committed_status_digest": committed_status_digest,
+                "observed_status_digest": status_digest,
+                "previous": self._reconcile_tuple(
+                    envelope.expected_generation, envelope.expected_current
+                ),
+                "current": pre,
+                "post": post,
+            }
 
     def finalize_measured(
         self,

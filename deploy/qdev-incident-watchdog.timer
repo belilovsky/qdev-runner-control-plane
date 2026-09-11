@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the QDev CI incident watchdog every two minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=120
+AccuracySec=15s
+Persistent=true
+Unit=qdev-incident-watchdog.service
+
+[Install]
+WantedBy=timers.target

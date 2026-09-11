@@ -48,23 +48,38 @@ disk_free_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
 memory_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
 cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
-provision_min_free_gib="${QDEV_WORKER_PROVISION_MIN_FREE_GIB:-30}"
-provision_max_disk_used_pct="${QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-85}"
+# One published capacity contract.  A normal shared worker installs at 30 GiB
+# free / 85% used; a durable (continuously monitored) shared worker is allowed
+# the 10 GiB / 90% bound.  The 90% ceiling is absolute for both tiers.
+provision_durable="${QDEV_WORKER_PROVISION_DURABLE:-false}"
+if [[ "$provision_durable" != "true" && "$provision_durable" != "false" ]]; then
+  printf 'QDEV_WORKER_PROVISION_DURABLE must be true or false\n' >&2
+  exit 1
+fi
+if [[ "$provision_durable" == "true" ]]; then
+  tier_min_free_gib=10
+  tier_max_disk_used_pct=90
+else
+  tier_min_free_gib=30
+  tier_max_disk_used_pct=85
+fi
+provision_min_free_gib="${QDEV_WORKER_PROVISION_MIN_FREE_GIB:-$tier_min_free_gib}"
+provision_max_disk_used_pct="${QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-$tier_max_disk_used_pct}"
 allow_capacity_override="${QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false}"
 
 if [[ ! "$provision_min_free_gib" =~ ^[0-9]+$ ]] || (( provision_min_free_gib < 5 || provision_min_free_gib > 30 )); then
   printf 'QDEV_WORKER_PROVISION_MIN_FREE_GIB must be an integer from 5 to 30\n' >&2
   exit 1
 fi
-if [[ ! "$provision_max_disk_used_pct" =~ ^[0-9]+$ ]] || (( provision_max_disk_used_pct < 85 || provision_max_disk_used_pct > 95 )); then
-  printf 'QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT must be an integer from 85 to 95\n' >&2
+if [[ ! "$provision_max_disk_used_pct" =~ ^[0-9]+$ ]] || (( provision_max_disk_used_pct < 85 || provision_max_disk_used_pct > 90 )); then
+  printf 'QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT must be an integer from 85 to 90\n' >&2
   exit 1
 fi
 if [[ "$allow_capacity_override" != "true" && "$allow_capacity_override" != "false" ]]; then
   printf 'QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE must be true or false\n' >&2
   exit 1
 fi
-if (( provision_min_free_gib != 30 || provision_max_disk_used_pct != 85 )) && [[ "$allow_capacity_override" != "true" ]]; then
+if (( provision_min_free_gib != tier_min_free_gib || provision_max_disk_used_pct != tier_max_disk_used_pct )) && [[ "$allow_capacity_override" != "true" ]]; then
   printf 'a relaxed provisioning capacity gate requires QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true\n' >&2
   exit 1
 fi

@@ -268,6 +268,71 @@ def test_controller_activation_rejects_adapter_identity_mismatch(tmp_path: Path)
     assert result.error_code == "adapter_identity_mismatch"
 
 
+def _failing_bootstrap_adapter(
+    path: Path,
+    *,
+    failure_code: str = "activation_identity_mismatch",
+    permitted_action: str = "reconcile-controller-activation",
+    raw_stdout: bool = False,
+) -> Path:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "json.load(sys.stdin)\n"
+        + (
+            "print('Traceback (most recent call last): private diagnostic')\n"
+            if raw_stdout
+            else "print(json.dumps({\n"
+            "  'schema': 'qdev-controller-activation-failure-v1',\n"
+            f"  'failure_code': {failure_code!r},\n"
+            "  'diagnostic_digest': 'sha256:' + 'a' * 64,\n"
+            "  'transaction_id': 'controller-eb9eea64-34515000659-r1',\n"
+            f"  'permitted_action': {permitted_action!r},\n"
+            "}))\n"
+        )
+        + "print('private diagnostic must not escape', file=sys.stderr)\n"
+        + "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o700)
+    return path
+
+
+def test_controller_activation_structured_failure_receipt_is_preserved(
+    tmp_path: Path,
+) -> None:
+    result = execute_bootstrap_operation(
+        policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+        store=BootstrapOperationStore(tmp_path / "activation.json"),
+        request=_bootstrap_request("activate-controller"),
+        idempotency_key="controller-activation-004",
+        adapter=_failing_bootstrap_adapter(tmp_path / "activate"),
+    )
+    assert result.status == "failed"
+    assert result.operation_status == "pending"
+    assert result.error_code == "activation_identity_mismatch"
+    assert result.result is not None
+    assert result.result["failure_code"] == "activation_identity_mismatch"
+    assert result.result["diagnostic_digest"] == "sha256:" + "a" * 64
+    assert result.result["transaction_id"] == "controller-eb9eea64-34515000659-r1"
+    assert result.result["permitted_action"] == "reconcile-controller-activation"
+    # The raw stderr body never reaches the internal receipt.
+    assert "private diagnostic" not in json.dumps(result.result)
+
+
+def test_controller_activation_unstructured_failure_stays_opaque(tmp_path: Path) -> None:
+    result = execute_bootstrap_operation(
+        policy=FleetBootstrapPolicy(POLICY, RELEASE_LANES),
+        store=BootstrapOperationStore(tmp_path / "activation.json"),
+        request=_bootstrap_request("activate-controller"),
+        idempotency_key="controller-activation-005",
+        adapter=_failing_bootstrap_adapter(tmp_path / "activate", raw_stdout=True),
+    )
+    assert result.status == "failed"
+    assert result.error_code == "adapter_exit"
+    assert result.result is None
+
+
 def test_host_enrolment_binds_allowlisted_lane_and_rollback_anchor(tmp_path: Path) -> None:
     request = _bootstrap_request("enrol-host-agent", release_lane="qdev-release-total")
     result = execute_bootstrap_operation(

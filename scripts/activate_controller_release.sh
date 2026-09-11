@@ -25,6 +25,16 @@ activation_python=/usr/bin/python3
 activation_pythonpath="$(cd -- "$script_dir/../src" && pwd)"
 activation_cli=(env "PYTHONDONTWRITEBYTECODE=1" "PYTHONPATH=$activation_pythonpath" "$activation_python" "$activation_helper")
 activation_status="${QDEV_CONTROLLER_ACTIVATION_STATUS:-/var/lib/qdev-runner/controller-activation/activation-status.json}"
+activation_projection="${QDEV_CONTROLLER_ACTIVATION_PROJECTION:-/var/lib/qdev-runner/controller-status/controller-activation.json}"
+
+# The raw activation ledger carries internal transaction identity, rollback
+# tuples and configuration fingerprints.  Only this derived aggregate enters
+# the public broker mount namespace, so refresh it whenever the CAS ledger
+# reaches a new durable state.
+publish_activation_projection() {
+  "${activation_cli[@]}" publish-projection --status "$activation_status" \
+    --projection "$activation_projection" >/dev/null
+}
 
 json_value() {
   "$activation_python" -c \
@@ -127,6 +137,7 @@ transaction_hook() {
         "${identity[@]}" --observed-current-public-image "$public_image" \
         --observed-current-internal-image "$internal_image" \
         --observed-current-config "$config"
+      publish_activation_projection
       ;;
     commit-candidate)
       [[ "$public_image" == "$QDEV_ACT_CANDIDATE_PUBLIC_IMAGE" &&
@@ -139,6 +150,7 @@ transaction_hook() {
         "${identity[@]}" --observed-current-public-image "$public_image" \
         --observed-current-internal-image "$internal_image" \
         --observed-current-config "$config"
+      publish_activation_projection
       ;;
     finalize-candidate)
       [[ "$public_image" == "$QDEV_ACT_CANDIDATE_PUBLIC_IMAGE" &&
@@ -178,6 +190,7 @@ transaction_hook() {
         }
       fi
       rm -f -- "$public_status_temp"
+      publish_activation_projection
       ;;
     *)
       printf 'unknown controller transaction hook\n' >&2

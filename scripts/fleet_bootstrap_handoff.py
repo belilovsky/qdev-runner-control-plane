@@ -44,6 +44,9 @@ from qdev_runner.fleet_bootstrap_executor import BOOTSTRAP_EXECUTION_RECEIPT_SCH
 
 _ROUTES = {
     "activate-controller": "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+    "reconcile-controller-activation": (
+        "/internal/v1/ingress/fleet-bootstrap/reconcile-controller-activation"
+    ),
     "enrol-host-agent": "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent",
 }
 # GitHub-hosted Actions cannot present the worker mTLS certificate.  The

@@ -51,7 +51,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "os.replace(" in _activation_material_helper()
     assert "rollback" in script
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
-    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96" in script
+    assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90" in script
+    assert "max_disk_used_pct > 90" in script
+    assert "min_free_gib < 5" in script
     assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
     assert (
         "capacity overrides require QDEV_CONTROLLER_NO_BUILD=true or an explicit build override"
@@ -644,6 +646,15 @@ def test_activation_status_is_read_only_and_private_to_internal_broker() -> None
     assert f"{directory}/activation-status.json:" not in compose
     assert directory not in public
     assert "QDEV_CONTROLLER_ACTIVATION_STATUS" not in public
+    # The public surface receives only the sanitized aggregate written into the
+    # already mounted controller-status directory, never the raw ledger.
+    assert "QDEV_CONTROLLER_ACTIVATION_PROJECTION" in public
+    assert "/var/lib/qdev-runner/controller-status/controller-activation.json" in public
+    cli = (ROOT / "scripts/controller_activation.py").read_text(encoding="utf-8")
+    assert "write_public_activation_projection" in cli
+    assert "publish-projection" in cli
+    wrapper = (ROOT / "scripts/activate_controller_release.sh").read_text(encoding="utf-8")
+    assert "publish_activation_projection" in wrapper
 
 
 def test_internal_broker_is_not_host_published_or_its_own_mtls_terminator() -> None:

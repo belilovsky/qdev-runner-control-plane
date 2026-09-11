@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .fleet_bootstrap import CONTROLLER_TUPLE_ACTIONS
 from .fleet_bootstrap_executor import BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
 
 HARD_MIN_FREE_GIB = 4.5
@@ -663,7 +664,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
         if (
             execution.get("schema") != BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
             or state_invalid
-            or action not in {"activate-controller", "enrol-host-agent"}
+            or action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}
             or not isinstance(execution.get("idempotency_key"), str)
             or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}",
@@ -684,7 +685,7 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
             or not isinstance(execution.get("activation_envelope_digest"), str)
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution["activation_envelope_digest"])
             or (
-                action == "activate-controller"
+                action in CONTROLLER_TUPLE_ACTIONS
                 and any(item is not None for item in (release_lane, host_identity))
             )
             or (

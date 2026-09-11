@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from contextlib import suppress
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .fleet_bootstrap import (
+    CONTROLLER_TUPLE_ACTIONS,
     BootstrapOperationStore,
     FleetBootstrapError,
     FleetBootstrapPolicy,
@@ -38,6 +40,98 @@ _ADAPTER_STATUSES = frozenset(
 )
 _DEFAULT_ADAPTER = Path("/usr/local/sbin/qdev-fleet-worker-recovery")
 _DEFAULT_ACTIVATION_ADAPTER = Path("/usr/local/sbin/qdev-controller-activate")
+
+# Structured failure receipt emitted by the fixed controller activation adapter.
+# It replaces the former opaque ``activation_failed`` string with a closed
+# vocabulary the internal operations surface can persist and act on.
+ACTIVATION_FAILURE_SCHEMA = "qdev-controller-activation-failure-v1"
+_ACTIVATION_FAILURE_CODE = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
+_ACTIVATION_FAILURE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ACTIVATION_FAILURE_TRANSACTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+_ACTIVATION_PERMITTED_ACTIONS = frozenset(
+    {
+        "reconcile-controller-activation",
+        "retry-fleet-bootstrap",
+        "operator-review",
+    }
+)
+
+
+_ACTIVATION_FAILURE_RECEIPT_KEYS = frozenset(
+    {
+        "schema",
+        "failure_code",
+        "diagnostic_digest",
+        "transaction_id",
+        "permitted_action",
+    }
+)
+_ACTIVATION_FAILURE_FLAT_KEYS = _ACTIVATION_FAILURE_RECEIPT_KEYS | {"error_code"}
+
+
+def _activation_failure_fields(raw: object) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    code = raw.get("failure_code")
+    digest = raw.get("diagnostic_digest")
+    transaction = raw.get("transaction_id")
+    action = raw.get("permitted_action")
+    if (
+        not isinstance(code, str)
+        or not _ACTIVATION_FAILURE_CODE.fullmatch(code)
+        or not isinstance(digest, str)
+        or not _ACTIVATION_FAILURE_DIGEST.fullmatch(digest)
+        or not isinstance(transaction, str)
+        or not _ACTIVATION_FAILURE_TRANSACTION.fullmatch(transaction)
+        or action not in _ACTIVATION_PERMITTED_ACTIONS
+    ):
+        return None
+    return {
+        "failure_code": code,
+        "diagnostic_digest": digest,
+        "transaction_id": transaction,
+        "permitted_action": action,
+    }
+
+
+def _parse_activation_failure(stdout: str) -> dict[str, Any] | None:
+    """Parse only the exact structured activation failure receipt.
+
+    Anything else - a truncated payload, a traceback, a success document - is
+    rejected so the caller keeps the conservative legacy ``adapter_exit`` code.
+    """
+
+    try:
+        raw = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != _ACTIVATION_FAILURE_RECEIPT_KEYS
+        or raw.get("schema") != ACTIVATION_FAILURE_SCHEMA
+    ):
+        return None
+    fields = _activation_failure_fields(raw)
+    if fields is None:
+        return None
+    return {"schema": ACTIVATION_FAILURE_SCHEMA, **fields}
+
+
+def activation_failure_result(result: object) -> dict[str, Any] | None:
+    """Re-validate one flat failure receipt for the internal operations surface."""
+
+    if (
+        not isinstance(result, dict)
+        or set(result) != _ACTIVATION_FAILURE_FLAT_KEYS
+        or result.get("schema") != ACTIVATION_FAILURE_SCHEMA
+    ):
+        return None
+    fields = _activation_failure_fields(result)
+    if fields is None or result.get("error_code") != fields["failure_code"]:
+        return None
+    return {"schema": ACTIVATION_FAILURE_SCHEMA, "error_code": fields["failure_code"], **fields}
+
+
 _DEFAULT_ENROLMENT_ADAPTER = Path("/usr/local/sbin/qdev-release-host-agent-enrol")
 BOOTSTRAP_ADAPTER_RESULT_SCHEMA = "qdev-fleet-bootstrap-adapter-result-v2"
 BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA = "qdev-fleet-bootstrap-execution-receipt-v2"
@@ -84,7 +178,7 @@ class BootstrapExecution:
 
     status: Literal["completed", "access_blocked", "failed"]
     operation_status: Literal["pending", "completed"]
-    action: Literal["activate-controller", "enrol-host-agent"]
+    action: Literal["activate-controller", "reconcile-controller-activation", "enrol-host-agent"]
     idempotency_key: str
     request_fingerprint: str
     controller_revision: str
@@ -143,11 +237,11 @@ def _adapter_path(value: Path | None) -> Path | None:
 def _bootstrap_adapter_path(
     value: Path | None,
     *,
-    action: Literal["activate-controller", "enrol-host-agent"],
+    action: Literal["activate-controller", "reconcile-controller-activation", "enrol-host-agent"],
 ) -> Path | None:
     candidate = value
     if candidate is None:
-        if action == "activate-controller":
+        if action in CONTROLLER_TUPLE_ACTIONS:
             configured = os.environ.get("QDEV_FLEET_ACTIVATION_EXECUTABLE", "").strip()
             candidate = Path(configured) if configured else _DEFAULT_ACTIVATION_ADAPTER
         else:
@@ -164,7 +258,7 @@ def _bootstrap_target(
     request: FleetBootstrapRequest,
     controller_runtime: tuple[str, str] | None = None,
 ) -> tuple[dict[str, Any], ReleaseLane | None]:
-    if request.action == "activate-controller":
+    if request.action in CONTROLLER_TUPLE_ACTIONS:
         rollback_revision = controller_runtime[0] if controller_runtime is not None else None
         rollback_release_digest = controller_runtime[1] if controller_runtime is not None else None
         return (
@@ -224,6 +318,14 @@ def _invoke_bootstrap_adapter(
     except (OSError, subprocess.TimeoutExpired):
         return "failed", {"error_code": "adapter_unavailable"}
     if completed.returncode != 0:
+        if request.action in CONTROLLER_TUPLE_ACTIONS:
+            receipt = _parse_activation_failure(completed.stdout)
+            if receipt is not None:
+                return "failed", {
+                    "schema": ACTIVATION_FAILURE_SCHEMA,
+                    "error_code": receipt["failure_code"],
+                    **receipt,
+                }
         return "failed", {"error_code": "adapter_exit"}
     try:
         raw = json.loads(completed.stdout)
@@ -427,8 +529,10 @@ def execute_bootstrap_operation(
     """
 
     policy.validate(request)
-    if request.action not in {"activate-controller", "enrol-host-agent"}:
-        raise FleetBootstrapError("executor accepts only activation or host-agent enrolment")
+    if request.action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
+        raise FleetBootstrapError(
+            "executor accepts only activation, reconciliation or host-agent enrolment"
+        )
     controller_revision = request.controller_revision
     controller_release_digest = request.controller_release_digest
     controller_image_digest = request.controller_image_digest
@@ -442,7 +546,10 @@ def execute_bootstrap_operation(
         or activation_envelope_digest is None
     ):
         raise FleetBootstrapError("controller activation binding is incomplete")
-    action = cast(Literal["activate-controller", "enrol-host-agent"], request.action)
+    action = cast(
+        Literal["activate-controller", "reconcile-controller-activation", "enrol-host-agent"],
+        request.action,
+    )
     target, lane = _bootstrap_target(
         policy=policy,
         request=request,
@@ -491,7 +598,7 @@ def execute_bootstrap_operation(
             "pending",
             error_code=(
                 "activation_adapter_unavailable"
-                if action == "activate-controller"
+                if action in CONTROLLER_TUPLE_ACTIONS
                 else "enrolment_adapter_unavailable"
             ),
         )
@@ -507,6 +614,12 @@ def execute_bootstrap_operation(
             "access_blocked" if adapter_status == "access_blocked" else "failed",
             "pending",
             error_code=(adapter_result or {}).get("error_code", "adapter_rejected"),
+            # A structured activation failure receipt stays on the mTLS
+            # internal operations surface only; the public health projection
+            # never carries the transaction tuple or diagnostic digest.
+            result=(
+                activation_failure_result(adapter_result) if adapter_status == "failed" else None
+            ),
         )
     completion_result: dict[str, Any] = {
         "action": action,
