@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import stat
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -18,6 +20,14 @@ from .models import GitHubRegistrationToken, GitHubRunnerObservation
 
 class GitHubError(RuntimeError):
     pass
+
+
+_ACTIONS_ARTIFACT_CHUNK_BYTES = 1024 * 1024
+_ACTIONS_ARTIFACT_HOST_SUFFIXES = (
+    "actions.githubusercontent.com",
+    "githubusercontent.com",
+    "blob.core.windows.net",
+)
 
 
 def _b64url(value: bytes) -> str:
@@ -402,6 +412,150 @@ class GitHubAppClient:
         if not isinstance(data, dict):
             raise GitHubError("workflow run response is malformed")
         return cast(dict[str, Any], data)
+
+    def workflow_run_artifacts(
+        self, installation_id: int, repository: str, run_id: int
+    ) -> list[dict[str, Any]]:
+        """Return the complete artifact set for one exact workflow run."""
+
+        if run_id < 1:
+            raise GitHubError("workflow run artifact request identity is invalid")
+        return self._paginated_collection(
+            path=f"/repos/{repository}/actions/runs/{run_id}/artifacts",
+            token=self.installation_token(installation_id),
+            key="artifacts",
+            description="workflow run artifacts",
+        )
+
+    def download_actions_artifact_to_file(
+        self,
+        installation_id: int,
+        repository: str,
+        artifact_id: int,
+        destination: Path,
+        *,
+        maximum_bytes: int,
+    ) -> None:
+        """Stream one Actions artifact into a controller-private temporary file.
+
+        GitHub responds to the authenticated API request with a one-time
+        download location. The installation token is deliberately never sent
+        to that location, and redirects there are rejected so a provider
+        response cannot turn this into a general-purpose downloader.
+        """
+
+        if artifact_id < 1 or maximum_bytes < 1:
+            raise GitHubError("Actions artifact download identity is invalid")
+        self._validate_private_destination(destination)
+        response = self._request(
+            "GET",
+            f"/repos/{repository}/actions/artifacts/{artifact_id}/zip",
+            headers=self._headers(self.installation_token(installation_id)),
+            follow_redirects=False,
+        )
+        if response.status_code != 302:
+            raise GitHubError(f"Actions artifact download request failed: {response.status_code}")
+        location = response.headers.get("location")
+        download_url = self._validate_actions_artifact_location(location)
+        descriptor: int | None = None
+        wrote_destination = False
+        try:
+            try:
+                with self._client.stream(
+                    "GET",
+                    download_url,
+                    headers={"User-Agent": "qdev-runner-control-plane/0.1"},
+                    follow_redirects=False,
+                ) as streamed:
+                    if streamed.status_code != 200:
+                        raise GitHubError(
+                            f"Actions artifact content request failed: {streamed.status_code}"
+                        )
+                    content_length = streamed.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError as error:
+                            raise GitHubError(
+                                "Actions artifact content length is invalid"
+                            ) from error
+                        if declared_size < 0 or declared_size > maximum_bytes:
+                            raise GitHubError("Actions artifact exceeds its permitted size")
+                    descriptor = os.open(
+                        destination,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                    )
+                    wrote_destination = True
+                    with os.fdopen(descriptor, "wb") as stream:
+                        descriptor = None
+                        received = 0
+                        for chunk in streamed.iter_bytes(_ACTIONS_ARTIFACT_CHUNK_BYTES):
+                            received += len(chunk)
+                            if received > maximum_bytes:
+                                raise GitHubError("Actions artifact exceeds its permitted size")
+                            stream.write(chunk)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+            except httpx.HTTPError as error:
+                raise GitHubError(
+                    f"Actions artifact download transport failure: {error}"
+                ) from error
+        except BaseException:
+            if wrote_destination:
+                try:
+                    destination.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    raise GitHubError(
+                        "Actions artifact temporary file cannot be removed"
+                    ) from error
+            raise
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _validate_private_destination(destination: Path) -> None:
+        try:
+            parent_metadata = destination.parent.lstat()
+        except OSError as error:
+            raise GitHubError("Actions artifact destination is unavailable") from error
+        if (
+            stat.S_ISLNK(parent_metadata.st_mode)
+            or not stat.S_ISDIR(parent_metadata.st_mode)
+            or stat.S_IMODE(parent_metadata.st_mode) & 0o077
+        ):
+            raise GitHubError("Actions artifact destination must be controller-private")
+        try:
+            destination.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise GitHubError("Actions artifact destination cannot be inspected") from error
+        raise GitHubError("Actions artifact destination already exists")
+
+    @staticmethod
+    def _validate_actions_artifact_location(location: str | None) -> str:
+        if not location:
+            raise GitHubError("Actions artifact download location is missing")
+        parsed = urlsplit(location)
+        host = parsed.hostname.lower() if parsed.hostname else None
+        valid_host = host is not None and any(
+            host == suffix or host.endswith(f".{suffix}")
+            for suffix in _ACTIONS_ARTIFACT_HOST_SUFFIXES
+        )
+        if (
+            parsed.scheme != "https"
+            or not valid_host
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or (parsed.port is not None and parsed.port != 443)
+        ):
+            raise GitHubError("Actions artifact download location is unsafe")
+        return location
 
     def workflow_run_jobs(
         self,
