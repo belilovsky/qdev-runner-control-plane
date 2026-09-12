@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import warnings
 import zipfile
 from pathlib import Path
@@ -145,6 +146,33 @@ def test_store_retains_validated_archive_idempotently(tmp_path) -> None:
     assert first.archive_path.parent.name == SOURCE_SHA
     assert first.archive_path.name == f"{first.evidence.archive_sha256}.zip"
     assert first.archive_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_store_opens_only_the_verified_immutable_archive_for_delivery(tmp_path: Path) -> None:
+    payload = _archive()
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+    stored = store.ingest(payload, expected_source_sha=SOURCE_SHA)
+
+    descriptor, size = store.open_verified_for_delivery(
+        source_sha=SOURCE_SHA, archive_sha256=stored.evidence.archive_sha256
+    )
+    try:
+        assert size == len(payload)
+        assert b"".join(iter(lambda: os.read(descriptor, 1024), b"")) == payload
+    finally:
+        os.close(descriptor)
+
+
+def test_store_refuses_tampered_archive_before_delivery(tmp_path: Path) -> None:
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+    stored = store.ingest(_archive(), expected_source_sha=SOURCE_SHA)
+    stored.archive_path.write_bytes(b"tampered")
+    stored.archive_path.chmod(0o600)
+
+    with pytest.raises(QazPolitArtifactStorageError, match="digest does not match"):
+        store.open_verified_for_delivery(
+            source_sha=SOURCE_SHA, archive_sha256=stored.evidence.archive_sha256
+        )
 
 
 def test_store_copies_and_validates_a_downloaded_archive_file(tmp_path: Path) -> None:

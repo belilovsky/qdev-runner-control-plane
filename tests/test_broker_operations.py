@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -758,6 +759,181 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
         == hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
     )
     assert signing_key not in response.text
+
+
+def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_lease(
+    tmp_path: Path,
+) -> None:
+    client = _app(tmp_path)
+    settings: BrokerSettings = client.app.state.settings
+    lane_document = {
+        "project_id": "qazpolit",
+        "placement": "vps-hostinger-186",
+        "client_mtls_identity": "qdev-release-client:qazpolit",
+        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+        "minimum_free_gib": 60,
+        "heartbeat_ttl_seconds": 90,
+        "artifact_repository": "qazpolit",
+        "canonical_repository": "belilovsky/qazpolit",
+        "artifact_ref_prefix": "registry.ci.qdev.run/qazpolit",
+        "native_host_adapter": "qazpolit-v1",
+        "runtime_endpoints": ["https://qazpolit.com/api/runtime"],
+        "rollback_reference": "qdev-release-host-state-v1",
+        "required_readiness": ["qazgeo"],
+    }
+    settings.release_lanes_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "qdev-release-lanes-v2",
+                "lanes": {"qdev-release-qazpolit": lane_document},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    host_headers = {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186"}
+    heartbeat = _release_heartbeat()
+    heartbeat.update(
+        {
+            "release_lane": "qdev-release-qazpolit",
+            "project_id": "qazpolit",
+            "bootstrap": True,
+        }
+    )
+    heartbeat["active_release"] = {
+        "source_sha": "c" * 40,
+        "artifact_digest": "sha256:" + "c" * 64,
+        "artifact_ref": "registry.ci.qdev.run/qazpolit@sha256:" + "c" * 64,
+    }
+    heartbeat["rollback"] = {"verified": True, **heartbeat["active_release"]}
+    assert (
+        client.post(
+            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            json=heartbeat,
+            headers=host_headers,
+        ).status_code
+        == 200
+    )
+
+    source_sha = "a" * 40
+    artifact_digest = "sha256:" + "b" * 64
+    archive_sha256 = "1" * 64
+    payload_sha256 = "2" * 64
+    artifact_ref = f"registry.ci.qdev.run/qazpolit@{artifact_digest}"
+    request = {
+        "schema": "qdev-controller-release-request-v1",
+        "release_lane": "qdev-release-qazpolit",
+        "project_id": "qazpolit",
+        "placement": "vps-hostinger-186",
+        "source_sha": source_sha,
+        "artifact_digest": artifact_digest,
+        "artifact_ref": artifact_ref,
+        "candidate_receipt": {
+            "schema": "qdev-release-candidate-receipt-v1",
+            "status": "passed",
+            "source_sha": source_sha,
+            "artifact_digest": artifact_digest,
+            "artifact_ref": artifact_ref,
+            "artifact_type": "controller-private-archive",
+            "archive_sha256": archive_sha256,
+            "payload_sha256": payload_sha256,
+            "archive_size_bytes": 29,
+            "repository": "belilovsky/qazpolit",
+            "workflow": "QazPolit production",
+            "job": "release-artifact",
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "runner_profile": "qdev-ci-docker",
+        },
+    }
+    lane = ReleaseLanePolicy(settings.release_lanes_path).lane("qdev-release-qazpolit")
+    admission_now = int(time.time())
+    candidate = ReleaseAdmissionRequest.model_validate(request)
+    controller_claim = controller_claim_payload(
+        candidate,
+        lane,
+        issued_at=admission_now,
+        expires_at=admission_now + 120,
+        nonce="qazpolit-controller-claim-nonce-0001",
+    )
+    request["controller_claim"] = controller_claim
+    request["controller_claim_signature"] = hmac.new(
+        b"managed-controller-claim-key-for-test",
+        json.dumps(
+            controller_claim,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    client.app.state.release_store.admit(
+        ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now
+    )
+
+    signing_key = "qazpolit-host-dispatch-key-for-test-0001"
+    secret_path = tmp_path / "qazpolit-host-dispatch.secret"
+    secret_path.write_text(signing_key + "\n", encoding="utf-8")
+    secret_path.chmod(0o600)
+    settings.release_host_dispatch_keys_file.write_text(
+        json.dumps({"qdev-host-agent:vps-hostinger-186": str(secret_path)}),
+        encoding="utf-8",
+    )
+    settings.release_host_dispatch_keys_file.chmod(0o600)
+
+    next_path = (
+        "/internal/v1/release-hosts/vps-hostinger-186/jobs/next?release_lane=qdev-release-qazpolit"
+    )
+    dispatched = client.get(next_path, headers=host_headers)
+    assert dispatched.status_code == 200
+    job = dispatched.json()
+    assert job["dispatch_claim"]["artifact_delivery"] == {
+        "schema": "qdev-controller-private-archive-delivery-v1",
+        "source_sha": source_sha,
+        "archive_sha256": archive_sha256,
+        "payload_sha256": payload_sha256,
+        "archive_size_bytes": 29,
+    }
+
+    class PrivateArchiveStore:
+        def __init__(self) -> None:
+            self.payload = b"controller-owned-qazpolit-zip"
+            self.calls: list[tuple[str, str]] = []
+
+        def open_verified_for_delivery(
+            self, *, source_sha: str, archive_sha256: str
+        ) -> tuple[int, int]:
+            self.calls.append((source_sha, archive_sha256))
+            path = tmp_path / "controller-private-qazpolit.zip"
+            path.write_bytes(self.payload)
+            path.chmod(0o600)
+            return os.open(path, os.O_RDONLY), len(self.payload)
+
+    private_store = PrivateArchiveStore()
+    client.app.state.qazpolit_artifact_store = private_store
+    artifact_path = (
+        f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{job['release_id']}/artifact"
+        "?release_lane=qdev-release-qazpolit"
+    )
+    lease_headers = {
+        **host_headers,
+        "X-QDev-Release-Lease": job["lease_id"],
+        "X-QDev-Release-Fence": job["fence"],
+    }
+    response = client.get(artifact_path, headers=lease_headers)
+    assert response.status_code == 200
+    assert response.content == private_store.payload
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-qdev-qazpolit-source-sha"] == source_sha
+    assert response.headers["x-qdev-qazpolit-payload-sha256"] == payload_sha256
+    assert private_store.calls == [(source_sha, archive_sha256)]
+
+    stale = client.get(
+        artifact_path,
+        headers={**lease_headers, "X-QDev-Release-Fence": "999"},
+    )
+    assert stale.status_code == 409
 
 
 def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) -> None:
