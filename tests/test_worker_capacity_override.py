@@ -60,6 +60,7 @@ def _worker(tmp_path: Path) -> Worker:
             worker_token="token",
             worker_name="srv1879763-light-primary",
             tier="primary",
+            claim_scope_id="scope-v2-test",
             profiles=("qdev-ci", "qdev-ci-docker"),
             concurrency=1,
             poll_seconds=3,
@@ -115,6 +116,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
@@ -152,6 +154,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci",),
@@ -189,6 +192,7 @@ async def test_worker_keeps_admitted_job_when_capacity_override_expires(tmp_path
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci",),
@@ -226,6 +230,7 @@ async def test_expired_override_keeps_frozen_running_job_disk_floor(tmp_path: Pa
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci",),
@@ -263,6 +268,7 @@ async def test_worker_rejects_tampered_or_non_disk_override(tmp_path: Path) -> N
     )
     directive = store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),

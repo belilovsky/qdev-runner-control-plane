@@ -63,26 +63,17 @@ else
   tier_min_free_gib=30
   tier_max_disk_used_pct=85
 fi
-provision_min_free_gib="${QDEV_WORKER_PROVISION_MIN_FREE_GIB:-$tier_min_free_gib}"
-provision_max_disk_used_pct="${QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-$tier_max_disk_used_pct}"
-allow_capacity_override="${QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false}"
-
-if [[ ! "$provision_min_free_gib" =~ ^[0-9]+$ ]] || (( provision_min_free_gib < 5 || provision_min_free_gib > 30 )); then
-  printf 'QDEV_WORKER_PROVISION_MIN_FREE_GIB must be an integer from 5 to 30\n' >&2
-  exit 1
-fi
-if [[ ! "$provision_max_disk_used_pct" =~ ^[0-9]+$ ]] || (( provision_max_disk_used_pct < 85 || provision_max_disk_used_pct > 90 )); then
-  printf 'QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT must be an integer from 85 to 90\n' >&2
-  exit 1
-fi
-if [[ "$allow_capacity_override" != "true" && "$allow_capacity_override" != "false" ]]; then
-  printf 'QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE must be true or false\n' >&2
-  exit 1
-fi
-if (( provision_min_free_gib != tier_min_free_gib || provision_max_disk_used_pct != tier_max_disk_used_pct )) && [[ "$allow_capacity_override" != "true" ]]; then
-  printf 'a relaxed provisioning capacity gate requires QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE=true\n' >&2
-  exit 1
-fi
+for retired_capacity_variable in \
+  QDEV_WORKER_PROVISION_MIN_FREE_GIB \
+  QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT \
+  QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE; do
+  if [[ -n "${!retired_capacity_variable:-}" ]]; then
+    printf '%s is retired; provisioning uses the sealed tier gate and runtime relief requires a controller-signed claim-scope-v2 directive\n' "$retired_capacity_variable" >&2
+    exit 1
+  fi
+done
+provision_min_free_gib="$tier_min_free_gib"
+provision_max_disk_used_pct="$tier_max_disk_used_pct"
 provision_min_free_kib=$((provision_min_free_gib * 1024 * 1024))
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \

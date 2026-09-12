@@ -1488,6 +1488,32 @@ def _seed_pending_job(
     )
 
 
+def _issue_capacity_scope(
+    client: TestClient,
+    *,
+    job_id: int,
+    scope_id: str,
+    correlation_id: str,
+    runner: str = "qdev-ci-docker",
+) -> None:
+    response = client.post(
+        f"/internal/v1/operations/jobs/{job_id}/claim-scope",
+        headers=OPERATOR_HEADERS,
+        json={
+            "job_id": job_id,
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "scope_id": scope_id,
+            "host": "srv1879763-light-primary",
+            "runner": runner,
+            "worker_certificate_sha256": "c" * 64,
+            "correlation_id": correlation_id,
+            "duration_seconds": 900,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
 def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path: Path) -> None:
     run_id = 84000000042
     labels = (
@@ -2426,13 +2452,20 @@ def test_controller_release_status_rejects_unverifiable_values(
 
 def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Path) -> None:
     client = _app(tmp_path)
-    _heartbeat(client)
+    scope_id = "qazshield-capacity-scope"
+    _heartbeat(client, scope_id=scope_id)
     _seed_pending_job(
         client,
         42,
         "qazshield-head",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
+    )
+    _issue_capacity_scope(
+        client,
+        job_id=42,
+        scope_id=scope_id,
+        correlation_id="qazshield-capacity-override",
     )
 
     unauthorized = client.get("/internal/v1/operations/workers")
@@ -2465,6 +2498,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazshield",
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -2483,7 +2517,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert operation["head_sha"] == "a" * 40
     assert operation["min_disk_free_gib"] == 4.5
 
-    directive_response = _heartbeat(client)
+    directive_response = _heartbeat(client, scope_id=scope_id)
     directive = directive_response["capacity_override"]
     assert isinstance(directive, dict)
     assert directive["operation_id"] == operation["operation_id"]
@@ -2496,7 +2530,10 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     )
     assert changed.status_code == 409
     assert changed.json()["detail"] == "capacity override operation changed"
-    assert _heartbeat(client)["capacity_override"]["operation_id"] == operation["operation_id"]
+    assert (
+        _heartbeat(client, scope_id=scope_id)["capacity_override"]["operation_id"]
+        == operation["operation_id"]
+    )
 
     cancelled = client.delete(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override"
@@ -3258,6 +3295,7 @@ def test_active_controller_scope_supersedes_stale_capacity_tuple_for_claim(
     )
     operation = client.app.state.operations.create_capacity_override(
         worker_name=WORKER_NAME,
+        claim_scope_id=scope_id,
         repository="belilovsky/example",
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
@@ -3437,6 +3475,7 @@ def test_cross_profile_rollover_claim_uses_registered_profiles_for_scope_identit
 
     operation = client.app.state.operations.create_capacity_override(
         worker_name=WORKER_NAME,
+        claim_scope_id="srv1879763-primary",
         repository="belilovsky/example",
         head_sha="a" * 40,
         profiles=("qdev-ci-browser",),
@@ -3643,6 +3682,7 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": "active-worker-capacity-scope",
             "repository": "belilovsky/qazshield",
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -3669,6 +3709,7 @@ def test_override_rejects_every_disk_threshold_above_ninety(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": "unsafe-capacity-scope",
             "repository": "belilovsky/qazshield",
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -3692,7 +3733,8 @@ def test_override_rejects_every_disk_threshold_above_ninety(
 
 def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) -> None:
     client = _app(tmp_path)
-    _heartbeat(client, disk_free_gib=17.0)
+    scope_id = "qazlake-capacity-scope"
+    _heartbeat(client, disk_free_gib=17.0, scope_id=scope_id)
     _seed_pending_job(
         client,
         42,
@@ -3700,11 +3742,18 @@ def test_override_uses_only_the_pinned_repository_reservation(tmp_path: Path) ->
         repository="belilovsky/qazlake",
         head_sha="a" * 40,
     )
+    _issue_capacity_scope(
+        client,
+        job_id=42,
+        scope_id=scope_id,
+        correlation_id="qazlake-capacity-override",
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazlake",
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -3740,15 +3789,34 @@ def test_qazgeo_capacity_override_cannot_weaken_repository_constraints(
     github.job_status = "queued"
     github.job_conclusion = None
     client = _app(tmp_path, github=github, include_qgeo=True)
-    _heartbeat(client, disk_free_gib=disk_free_gib, concurrency=concurrency)
+    scope_id = "qazgeo-capacity-scope"
+    _heartbeat(
+        client,
+        disk_free_gib=40.0,
+        concurrency=1,
+        scope_id=scope_id,
+    )
     binding = next(item for item in github.bindings if item["profile"] == "qdev-ci-docker")
     _seed_qgeo_jobs(client, (binding,))
     _register_qgeo_bindings(client, (binding,))
+    _issue_capacity_scope(
+        client,
+        job_id=int(binding["job_id"]),
+        scope_id=scope_id,
+        correlation_id="qazgeo-capacity-boundary",
+    )
+    _heartbeat(
+        client,
+        disk_free_gib=disk_free_gib,
+        concurrency=concurrency,
+        scope_id=scope_id,
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazgeo",
             "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
@@ -3778,15 +3846,23 @@ def test_qazgeo_capacity_override_accepts_exact_server_owned_boundary(tmp_path: 
     github.job_status = "queued"
     github.job_conclusion = None
     client = _app(tmp_path, github=github, include_qgeo=True)
-    _heartbeat(client, disk_free_gib=35.0, concurrency=1)
+    scope_id = "qazgeo-capacity-scope"
+    _heartbeat(client, disk_free_gib=35.0, concurrency=1, scope_id=scope_id)
     binding = next(item for item in github.bindings if item["profile"] == "qdev-ci-docker")
     _seed_qgeo_jobs(client, (binding,))
     _register_qgeo_bindings(client, (binding,))
+    _issue_capacity_scope(
+        client,
+        job_id=int(binding["job_id"]),
+        scope_id=scope_id,
+        correlation_id="qazgeo-capacity-boundary",
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazgeo",
             "head_sha": QGEO_PR_CHECKOUT_SHA,
             "profiles": ["qdev-ci-docker"],
@@ -3807,11 +3883,13 @@ def test_qazgeo_capacity_override_accepts_exact_server_owned_boundary(tmp_path: 
 
 def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
     client = _app(tmp_path)
-    _heartbeat(client, admitted=True)
+    scope_id = "expired-capacity-scope"
+    _heartbeat(client, admitted=True, scope_id=scope_id)
     operation_store = client.app.state.operations
     assert operation_store is not None
     directive = operation_store.create_capacity_override(
         worker_name=WORKER_NAME,
+        claim_scope_id=scope_id,
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
@@ -3846,7 +3924,8 @@ def test_worker_audit_closes_expired_capacity_directive(tmp_path: Path) -> None:
 
 def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path) -> None:
     client = _app(tmp_path, FakeGitHub())
-    _heartbeat(client)
+    scope_id = "qazlake-capacity-scope"
+    _heartbeat(client, scope_id=scope_id)
     store: Store = client.app.state.store
     assert store.enqueue(
         QueuedJob(
@@ -3876,10 +3955,17 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
             payload={"workflow_job": {"run_attempt": 1}},
         )
     )
+    _issue_capacity_scope(
+        client,
+        job_id=102,
+        scope_id=scope_id,
+        correlation_id="qazlake-capacity-binding",
+    )
     override_response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazlake",
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -3893,14 +3979,22 @@ def test_capacity_override_claim_is_bound_to_directive_repository(tmp_path: Path
     operation = verify_controller_receipt(override_response.json(), receipt_key=RECEIPT_KEY)[
         "payload"
     ]["operation"]
+    _heartbeat(
+        client,
+        admitted=True,
+        disk_free_gib=20.0,
+        scope_id=scope_id,
+        capacity_directive_id=operation["operation_id"],
+    )
     claim = {
         "worker_name": WORKER_NAME,
         "tier": "primary",
+        "claim_scope_id": scope_id,
         "profiles": ["qdev-ci-docker"],
         "disk_free_gib": 20.0,
         "min_disk_free_gib": 4.5,
     }
-    headers = {"X-QDev-Worker-Token": WORKER_TOKEN}
+    headers = {"X-QDev-Client-Certificate-SHA256": "c" * 64}
 
     missing_binding = client.post("/internal/v1/jobs/claim", headers=headers, json=claim)
     wrong_repository = client.post(
@@ -3968,6 +4062,7 @@ def test_capacity_override_rejects_non_fifo_target(tmp_path: Path) -> None:
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": "later-capacity-scope",
             "repository": "belilovsky/qazlake",
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -3994,7 +4089,8 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
     tmp_path: Path,
 ) -> None:
     client = _app(tmp_path)
-    _heartbeat(client)
+    scope_id = "qazlake-capacity-scope"
+    _heartbeat(client, scope_id=scope_id)
     stale_sha = "9ebf6718c2085d1a58f59323f37b1e1dd707225f"
     _seed_pending_job(
         client,
@@ -4010,11 +4106,18 @@ def test_capacity_override_skips_inadmissible_admin_platform_fifo_rows(
         repository="belilovsky/qazlake",
         head_sha="b" * 40,
     )
+    _issue_capacity_scope(
+        client,
+        job_id=42,
+        scope_id=scope_id,
+        correlation_id="qazlake-after-admin-skip",
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazlake",
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -4047,7 +4150,8 @@ def test_capacity_override_skips_superseded_managed_production_fifo_rows(
     tmp_path: Path,
 ) -> None:
     client = _app(tmp_path, include_qgeo=True)
-    _heartbeat(client)
+    scope_id = "qazlake-capacity-scope"
+    _heartbeat(client, scope_id=scope_id)
     stale_sha = "5dff352e7ddfbb7e4a8c94643d87f7c24cfaf6ea"
     _seed_pending_job(
         client,
@@ -4063,11 +4167,18 @@ def test_capacity_override_skips_superseded_managed_production_fifo_rows(
         repository="belilovsky/qazlake",
         head_sha="b" * 40,
     )
+    _issue_capacity_scope(
+        client,
+        job_id=42,
+        scope_id=scope_id,
+        correlation_id="qazlake-after-qazgeo-skip",
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qazlake",
             "head_sha": "b" * 40,
             "profiles": ["qdev-ci-docker"],
@@ -4100,7 +4211,8 @@ def test_capacity_override_prioritizes_exact_active_controller_candidate(
     tmp_path: Path,
 ) -> None:
     client = _app(tmp_path)
-    _heartbeat(client)
+    scope_id = "controller-capacity-scope"
+    _heartbeat(client, scope_id=scope_id)
     _seed_pending_job(client, 41, "unrelated-earlier-row")
     template = yaml.safe_load(
         (Path(__file__).parents[1] / "config" / "admin-platform-ledger-v2.yml").read_text(
@@ -4115,11 +4227,18 @@ def test_capacity_override_prioritizes_exact_active_controller_candidate(
         repository="belilovsky/qdev-runner-control-plane",
         head_sha=controller_sha,
     )
+    _issue_capacity_scope(
+        client,
+        job_id=42,
+        scope_id=scope_id,
+        correlation_id="controller-capacity-priority",
+    )
 
     response = client.post(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": scope_id,
             "repository": "belilovsky/qdev-runner-control-plane",
             "head_sha": controller_sha,
             "profiles": ["qdev-ci-docker"],
@@ -4167,6 +4286,7 @@ def test_capacity_override_does_not_prioritize_non_active_controller_sha(
         f"/internal/v1/operations/workers/{WORKER_NAME}/capacity-override",
         headers=OPERATOR_HEADERS,
         json={
+            "claim_scope_id": "inactive-controller-capacity-scope",
             "repository": "belilovsky/qdev-runner-control-plane",
             "head_sha": "f" * 40,
             "profiles": ["qdev-ci-docker"],

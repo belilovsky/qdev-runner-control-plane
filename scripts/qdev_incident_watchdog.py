@@ -46,6 +46,12 @@ AUDIENCES = (OPERATOR_AUDIENCE, TASK_AUDIENCE)
 SEVERITY_WARNING = "warning"
 SEVERITY_CRITICAL = "critical"
 
+# The watchdog is a sealed part of the four-VPS capacity contract. It must
+# never turn an arbitrary name emitted by an internal observation into a
+# recovery target. Registration alone is not admission: this target still
+# requires a signed host audit and controller-side reconciliation.
+SEALED_RESERVE_HOSTS = frozenset({"mail-general-reserve"})
+
 
 class WatchdogError(RuntimeError):
     """The observation document or the durable ledger is unusable."""
@@ -238,6 +244,14 @@ def evaluate(
                 "provider or billing block is in effect",
             )
         )
+    if set(observation.registered_reserve_hosts).difference(SEALED_RESERVE_HOSTS):
+        breaches.append(
+            Breach(
+                "unsealed_reserve_observed",
+                SEVERITY_CRITICAL,
+                "internal observation contains a reserve outside the sealed four-VPS topology",
+            )
+        )
     return tuple(breaches)
 
 
@@ -371,8 +385,11 @@ def plan_reserve(
     eligible, and at least one active job is holding the fleet.
     """
 
+    observed = set(observation.registered_reserve_hosts)
+    if observed.difference(SEALED_RESERVE_HOSTS):
+        return None
     used = set(already_activated)
-    available = [host for host in observation.registered_reserve_hosts if host not in used]
+    available = sorted(observed.intersection(SEALED_RESERVE_HOSTS).difference(used))
     if not available:
         return None
     if observation.fifo_head_age_seconds < FIFO_HEAD_WARN_SECONDS:
@@ -384,7 +401,7 @@ def plan_reserve(
     if observation.healthy_workers < 1 or observation.active_jobs < 1:
         return None
     return ReserveDecision(
-        host_id=sorted(available)[0],
+        host_id=available[0],
         action="activate-reserve",
         follow_up=("host-audit", "capacity-calculation"),
     )

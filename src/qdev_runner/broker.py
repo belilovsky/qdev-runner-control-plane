@@ -340,6 +340,7 @@ class HeartbeatRequest(BaseModel):
 class CapacityOverrideRequest(BaseModel):
     repository: str = Field(min_length=1, max_length=256)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    claim_scope_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
     profiles: list[str] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
     max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
@@ -1008,6 +1009,7 @@ def _worker_audit(
             directive = operations.active(
                 str(worker.get("name") or ""),
                 registered_profiles=profiles,
+                claim_scope_id=(str(detail.get("configured_claim_scope_id") or "").strip() or None),
                 now=datetime.fromtimestamp(now, UTC),
             )
             capacity_allowed = bool(
@@ -3942,8 +3944,29 @@ def create_app(
             raise HTTPException(status_code=409, detail="worker still has active jobs")
         if int(audit.get("slots_available") or 0) < 1:
             raise HTTPException(status_code=409, detail="worker has no available slot")
+        pending_capacity_override = False
         if not audit.get("capacity_allowed"):
-            raise HTTPException(status_code=409, detail="worker capacity admission is closed")
+            baseline = audit.get("baseline_capacity", {})
+            raw = audit.get("raw_capacity", {})
+            blockers = {str(value) for value in baseline.get("blockers", [])}
+            try:
+                raw_free_gib = float(raw["disk_free_gib"])
+                raw_used_pct = float(raw["disk_used_pct"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=409, detail="worker capacity admission is closed"
+                ) from error
+            if (
+                not blockers
+                or not blockers.issubset(DISK_ONLY_BLOCKERS)
+                or raw_free_gib < HARD_MIN_FREE_GIB
+                or raw_used_pct >= HARD_MAX_DISK_USED_PCT
+                or audit.get("admission", {}).get("directive_id")
+            ):
+                raise HTTPException(status_code=409, detail="worker capacity admission is closed")
+            # The scope names one exact pending tuple but cannot itself admit
+            # work. Claim still needs its matching, live capacity directive.
+            pending_capacity_override = True
         if audit.get("configured_claim_scope_id") != request.scope_id:
             raise HTTPException(
                 status_code=409,
@@ -3966,7 +3989,10 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if profile.name not in audit.get("profiles", []):
             raise HTTPException(status_code=409, detail="worker is not registered for job profile")
-        if profile.name not in audit.get("admission", {}).get("profiles", []):
+        if (
+            profile.name not in audit.get("admission", {}).get("profiles", [])
+            and not pending_capacity_override
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="profile admission is not confirmed for worker",
@@ -4642,6 +4668,41 @@ def create_app(
                 status_code=409,
                 detail="capacity override target is not the durable FIFO head",
             )
+        try:
+            claim_scope = resolve_claim_scope(
+                settings.claim_scopes_path,
+                request.claim_scope_id,
+                worker_name,
+                str(audit.get("tier") or ""),
+                registered_profiles,
+            )
+        except ClaimScopeError as error:
+            raise HTTPException(
+                status_code=409, detail="capacity override claim scope rejected"
+            ) from error
+        if claim_scope is None:
+            raise HTTPException(
+                status_code=409, detail="capacity override requires a bound claim scope"
+            )
+        if claim_scope.schema != SCHEMA_V2:
+            raise HTTPException(status_code=409, detail="capacity override requires claim-scope-v2")
+        if audit.get("configured_claim_scope_id") != claim_scope.scope_id:
+            raise HTTPException(
+                status_code=409,
+                detail="worker is not enrolled for capacity override claim scope",
+            )
+        if not claim_scope.permits(
+            int(fifo_head["job_id"]),
+            repository_name,
+            request.head_sha,
+            requested_profiles[0],
+            run_id=int(fifo_head["run_id"]),
+            attempt=int(fifo_head["attempt"]),
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="capacity override scope does not permit the durable FIFO head",
+            )
         baseline = audit["baseline_capacity"]
         raw = audit["raw_capacity"]
         blockers = {str(value) for value in baseline.get("blockers", [])}
@@ -4694,6 +4755,7 @@ def create_app(
         try:
             directive = operation_store.create_capacity_override(
                 worker_name=worker_name,
+                claim_scope_id=claim_scope.scope_id,
                 repository=repository_name,
                 head_sha=request.head_sha,
                 profiles=requested_profiles,
@@ -5170,6 +5232,11 @@ def create_app(
             operations.active(
                 request.worker_name,
                 registered_profiles=tuple(policy.profiles),
+                claim_scope_id=(
+                    claim_scope.scope_id
+                    if claim_scope is not None and claim_scope.schema == SCHEMA_V2
+                    else None
+                ),
             )
             if operations is not None
             else None
@@ -5527,6 +5594,11 @@ def create_app(
             operations.active(
                 request.worker_name,
                 registered_profiles=tuple(request.profiles),
+                claim_scope_id=(
+                    claim_scope.scope_id
+                    if claim_scope is not None and claim_scope.schema == SCHEMA_V2
+                    else None
+                ),
             )
             if operations is not None
             else None

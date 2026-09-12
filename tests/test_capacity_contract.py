@@ -134,7 +134,8 @@ def test_shell_activation_and_provisioning_share_the_same_ceiling() -> None:
     assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90" in payload
     assert "max_disk_used_pct > 90" in payload
     assert "min_free_gib < 5" in payload
-    assert "provision_max_disk_used_pct > 90" in provision
+    assert 'provision_max_disk_used_pct="$tier_max_disk_used_pct"' in provision
+    assert "QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT" in provision
     assert "> 95" not in provision
     assert "tier_max_disk_used_pct=90" in provision
 
@@ -150,6 +151,7 @@ def test_ttl_longer_than_nine_hundred_seconds_is_rejected(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="outside the allowed range"):
         store.create_capacity_override(
             worker_name="srv1879763-primary",
+            claim_scope_id="scope-v2-test",
             repository="belilovsky/qazgeo",
             head_sha="a" * 40,
             profiles=("qdev-ci",),
@@ -163,6 +165,7 @@ def test_ttl_longer_than_nine_hundred_seconds_is_rejected(tmp_path: Path) -> Non
 
     directive = store.create_capacity_override(
         worker_name="srv1879763-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazgeo",
         head_sha="a" * 40,
         profiles=("qdev-ci",),

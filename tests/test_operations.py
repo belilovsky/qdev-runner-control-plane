@@ -36,6 +36,7 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
     now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
     directive = operation_store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci", "qdev-ci-docker", "qdev-ci"),
@@ -53,6 +54,7 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
         operation_store.active(
             "srv1879763-light-primary",
             registered_profiles=("qdev-ci", "qdev-ci-docker", "qdev-ci-browser"),
+            claim_scope_id="scope-v2-test",
             now=now + timedelta(minutes=1),
         )
         == directive
@@ -61,6 +63,7 @@ def test_capacity_override_is_signed_scoped_expiring_and_cancellable(
         operation_store.active(
             "srv1879763-light-primary",
             registered_profiles=("qdev-ci", "qdev-ci-docker", "qdev-ci-browser"),
+            claim_scope_id="scope-v2-test",
             now=now + timedelta(minutes=11),
         )
         is None
@@ -89,6 +92,7 @@ def test_capacity_override_cancel_is_compare_and_swap(
     now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
     directive = operation_store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci",),
@@ -129,6 +133,7 @@ def test_concurrent_capacity_override_create_has_one_winner(
         try:
             directive = operation_store.create_capacity_override(
                 worker_name="srv1879763-light-primary",
+                claim_scope_id="scope-v2-test",
                 repository=repository,
                 head_sha="a" * 40,
                 profiles=("qdev-ci",),
@@ -169,6 +174,7 @@ def test_capacity_override_rejects_tamper_profile_mismatch_and_expiry(
     now = datetime(2026, 8, 31, 8, 0, tzinfo=UTC)
     directive = operation_store.create_capacity_override(
         worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
         repository="belilovsky/qazshield",
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
@@ -195,6 +201,15 @@ def test_capacity_override_rejects_tamper_profile_mismatch_and_expiry(
             signing_key="worker-signing-key",
             worker_name="srv1879763-light-primary",
             registered_profiles=("qdev-ci",),
+            now=now,
+        )
+    with pytest.raises(ValueError, match="claim scope mismatch"):
+        verify_capacity_override(
+            payload,
+            signing_key="worker-signing-key",
+            worker_name="srv1879763-light-primary",
+            registered_profiles=("qdev-ci-docker",),
+            claim_scope_id="other-scope-v2",
             now=now,
         )
     with pytest.raises(ValueError, match="expired"):
@@ -559,6 +574,7 @@ def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -
     with pytest.raises(ValueError, match="hard floor"):
         store.create_capacity_override(
             worker_name="worker-primary",
+            claim_scope_id="scope-v2-test",
             repository="belilovsky/qazshield",
             head_sha="a" * 40,
             profiles=("qdev-ci",),
@@ -571,6 +587,7 @@ def test_operation_store_requires_keys_and_enforces_hard_floor(tmp_path: Path) -
     with pytest.raises(ValueError, match="hard ceiling"):
         store.create_capacity_override(
             worker_name="worker-primary",
+            claim_scope_id="scope-v2-test",
             repository="belilovsky/qazgeo",
             head_sha="a" * 40,
             profiles=("qdev-ci-docker",),

@@ -7,6 +7,7 @@
   "required": [
     "schema",
     "operation_id",
+    "claim_scope_id",
     "worker_name",
     "repository",
     "head_sha",
@@ -24,6 +25,10 @@
   "properties": {
     "schema": {"const": "qdev-capacity-override-v2"},
     "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "claim_scope_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+    },
     "worker_name": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
@@ -37,7 +42,7 @@
       "items": {"type": "string", "minLength": 1}
     },
     "min_disk_free_gib": {"type": "number", "minimum": 4.5},
-    "max_disk_used_pct": {"type": "number", "minimum": 0, "maximum": 95},
+    "max_disk_used_pct": {"type": "number", "minimum": 0, "maximum": 90},
     "owner": {"type": "string", "minLength": 1, "maxLength": 200},
     "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
     "issued_at": {"type": "string", "format": "date-time"},
