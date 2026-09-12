@@ -112,7 +112,7 @@ def test_handoff_payload_and_submit_cannot_carry_dispatch_knobs(
 
     assert set(payload) == {"request", "idempotency_key"}
     assert "schema" not in intent
-    assert intent["worker_name"] is None
+    assert "worker_name" not in intent
     assert not {"active_jobs", "timeout_seconds"} & set(intent)
 
     posted: dict[str, object] = {}
@@ -142,6 +142,26 @@ def test_handoff_payload_and_submit_cannot_carry_dispatch_knobs(
     assert posted["endpoint"] == module.ingress_endpoint("activate-controller")
     assert posted["token"] == credential_proof
     assert posted["body"] == payload
+
+
+def test_restore_handoff_includes_the_only_allowed_worker_name() -> None:
+    module = _module()
+    request = FleetBootstrapRequest.model_validate(
+        {
+            "schema": REQUEST_SCHEMA,
+            "action": "restore-existing-worker",
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "claim_ttl_seconds": 300,
+            "worker_name": "srv1879763-primary",
+        }
+    )
+
+    intent = module.handoff_payload(request, "handoff-submit-001")["request"]
+
+    assert intent["worker_name"] == "srv1879763-primary"
 
 
 def test_handoff_rejects_a_non_durable_or_malformed_execution_acknowledgement() -> None:
