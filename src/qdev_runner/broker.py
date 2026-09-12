@@ -1143,7 +1143,6 @@ def create_app(
         )
 
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
-    qazpolit_artifact_store = QazPolitArtifactStore(settings.artifact_root)
     artifact_token_key = settings.artifact_token_key
     if settings.surface == "test" and artifact_token_key is None:
         # Directly constructed legacy test settings remain source-compatible;
@@ -1863,7 +1862,7 @@ def create_app(
     app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
     app.state.fleet_bootstrap_oidc_verifier_factory = build_fleet_bootstrap_oidc_verifier
     app.state.operations = operations
-    app.state.qazpolit_artifact_store = qazpolit_artifact_store
+    app.state.qazpolit_artifact_store = None
     worker_recovery = WorkerRecoveryController(
         settings=settings,
         store=store,
@@ -2817,7 +2816,11 @@ def create_app(
         payload_sha256 = cast(str, delivery["payload_sha256"])
         archive_size = cast(int, delivery["archive_size_bytes"])
         try:
-            descriptor, stored_size = app.state.qazpolit_artifact_store.open_verified_for_delivery(
+            artifact_store = app.state.qazpolit_artifact_store
+            if artifact_store is None:
+                artifact_store = QazPolitArtifactStore(settings.artifact_root)
+                app.state.qazpolit_artifact_store = artifact_store
+            descriptor, stored_size = artifact_store.open_verified_for_delivery(
                 source_sha=job["source_sha"], archive_sha256=archive_sha256
             )
         except QazPolitArtifactStorageError as error:
