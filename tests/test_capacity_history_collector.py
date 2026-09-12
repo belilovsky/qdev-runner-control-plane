@@ -90,3 +90,22 @@ def test_history_does_not_count_incomplete_or_negative_duration(collector, tmp_p
     ci = next(item for item in history["profiles"] if item["profile"] == "qdev-ci")
     assert sum(ci["hourly_arrivals"]) == 2
     assert ci["durations_minutes"] == []
+
+
+def test_weekly_systemd_plan_is_local_and_has_no_admission_surface():
+    service = (ROOT / "deploy" / "qdev-capacity-plan.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "qdev-capacity-plan.timer").read_text(encoding="utf-8")
+
+    assert "User=root" in service
+    assert "ConditionPathIsRegular=/var/lib/qdev-runner/broker-state/broker.db" in service
+    assert "qdev_capacity_history_collector.py" in service
+    assert "qdev_capacity_planner.py" in service
+    assert (
+        "ReadOnlyPaths=/opt/qdev-runner-control-plane /var/lib/qdev-runner/broker-state" in service
+    )
+    assert "ReadWritePaths=/var/lib/qdev-runner/capacity" in service
+    assert "ProtectSystem=full" in service
+    assert "claim" not in service.lower()
+    assert "runner" not in service.lower().replace("qdev-runner", "")
+    assert "ExecStart=" not in timer
+    assert "OnCalendar=Sun *-*-* 03:17:00 UTC" in timer

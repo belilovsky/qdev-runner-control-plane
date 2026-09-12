@@ -1357,6 +1357,7 @@ restore_rollback_anchor() {
 
 install_fleet_host_dispatch() {
   install -d -o root -g root -m 0755 /usr/local/sbin || return 1
+  install -d -o root -g root -m 0700 /var/lib/qdev-runner/capacity || return 1
   atomic_install \
     "$release/scripts/bootstrap_admin_platform_ledger_v3.py" \
     /usr/local/sbin/qdev-admin-platform-ledger-bootstrap 0755 || return 1
@@ -1422,6 +1423,12 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/deploy/qdev-task-delivery-executor.timer" \
     /etc/systemd/system/qdev-task-delivery-executor.timer 0644 || return 1
+  atomic_install \
+    "$release/deploy/qdev-capacity-plan.service" \
+    /etc/systemd/system/qdev-capacity-plan.service 0644 || return 1
+  atomic_install \
+    "$release/deploy/qdev-capacity-plan.timer" \
+    /etc/systemd/system/qdev-capacity-plan.timer 0644 || return 1
   systemctl daemon-reload || return 1
   # Starting only the watcher is safe when activation itself is executing as
   # the current oneshot.  That invocation writes its durable result before a
@@ -1429,6 +1436,7 @@ install_fleet_host_dispatch() {
   systemctl enable --now qdev-fleet-host-dispatch.path || return 1
   systemctl enable --now qdev-reserve-capacity-executor.path || return 1
   systemctl enable --now qdev-task-delivery-executor.timer || return 1
+  systemctl enable --now qdev-capacity-plan.timer || return 1
 }
 
 admission_host_tool_path=/usr/local/sbin/qdev-controller-admission

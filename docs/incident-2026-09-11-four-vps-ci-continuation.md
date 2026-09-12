@@ -276,11 +276,13 @@ recovery details доступны исключительно на существ
   чистом worktree.
   Отдельный `qdev_capacity_history_collector.py` теперь materialized в том же
   чистом source candidate: он выдаёт sealed seven-day input для planner без
-  нового API или фоновой мутации. Последний source commit — `3429e38`; его
-  focused tests, planner tests, watchdog, reserve executor и release-script
-  tests прошли локально `89/89` вместе с static check. Состояние history пока
-  не объявляется complete: для этого collector должен быть запущен локально
-  на активном controller store после R1 receipt.
+  нового API или фоновой мутации. Вместе с ним controller provisioning и
+  immutable activation устанавливают root-only weekly
+  `qdev-capacity-plan.timer`: он читает только local `broker.db`, пишет только
+  aggregate plan в `/var/lib/qdev-runner/capacity` и не имеет provider, runner,
+  queue, registry или admission path. История остаётся неполной до первого
+  фактического run после R1 receipt; это не мешает fixed baseline `6 + 2`, но
+  запрещает выдавать расчёт за наблюдённую нагрузку.
   Отдельный `qdev_default_branch_audit.py` materialized в том же candidate:
   он перед scan заново сверяет repository identity и default branch через
   provider API, фиксирует точный resolved commit SHA и только затем вызывает
@@ -304,7 +306,7 @@ recovery details доступны исключительно на существ
   materialized остаются только реальный task-delivery adapter с root-owned
   mapping и private registry binding к уже существующему host-agent. Поэтому
   ни одно сообщение и ни один VPS не выдаются за фактически активированные,
-  а plan/collector не запускаются автоматически.
+  а планировщик не может сам активировать host или выдать claim.
 - Hosted build №76 завершился с provider warning о переходе GitHub Actions с
   Node.js 20 на Node.js 24 для двух pinned actions. Это не блокирует текущий
   runtime; обновление pinned action revisions — отдельная проверяемая

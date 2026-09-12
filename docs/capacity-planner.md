@@ -39,10 +39,19 @@ duration sample.
 
 ```bash
 python3.12 scripts/qdev_capacity_history_collector.py \
-  --database /var/lib/qdev-runner/controller.db \
+  --database /var/lib/qdev-runner/broker-state/broker.db \
   --output /var/lib/qdev-runner/capacity/seven-day-history.json
 ```
 
 The collector rejects a symbolic-link or group/world-writable database. Run it
 as the controller's local root-owned release process; it is evidence for a
 review, not controller-admission authority.
+
+## Controller installation
+
+The immutable controller activation and initial provisioning both install and
+enable `qdev-capacity-plan.timer`. It runs the collector and planner once a
+week against the local controller store and writes root-only output under
+`/var/lib/qdev-runner/capacity`. The timer has no provider, worker, queue,
+host-registry or admission credentials: a refreshed plan is still only review
+input for the existing sealed host-audit and controller-admission path.

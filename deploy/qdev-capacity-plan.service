@@ -1,0 +1,23 @@
+[Unit]
+Description=Materialize QDev CI seven-day capacity review input
+After=local-fs.target qdev-runner-broker.service
+ConditionPathIsRegular=/var/lib/qdev-runner/broker-state/broker.db
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStartPre=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_capacity_history_collector.py --database /var/lib/qdev-runner/broker-state/broker.db --output /var/lib/qdev-runner/capacity/seven-day-history.json
+ExecStart=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_capacity_planner.py --history /var/lib/qdev-runner/capacity/seven-day-history.json --output /var/lib/qdev-runner/capacity/latest-plan.json
+TimeoutStartSec=2min
+UMask=0077
+Environment=PYTHONNOUSERSITE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/qdev-runner-control-plane /var/lib/qdev-runner/broker-state
+ReadWritePaths=/var/lib/qdev-runner/capacity
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX

@@ -43,6 +43,7 @@ install -d -o root -g root -m 0755 /var/lib/qdev-runner/admin-platform-state
 install -d -o root -g root -m 0700 /var/lib/qdev-runner/controller-status-migrations
 install -d -o root -g root -m 0700 /var/lib/qdev-runner/admin-platform-bootstrap
 install -d -o root -g root -m 0700 /var/lib/qdev-runner/admin-platform-ledger-migrations
+install -d -o root -g root -m 0700 /var/lib/qdev-runner/capacity
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/release-jobs
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/operations
 install -d -o 9020 -g 9020 -m 0700 /var/lib/qdev-runner/operations/fleet-bootstrap
@@ -100,6 +101,10 @@ install -m 0644 deploy/qdev-task-delivery-executor.service \
   /etc/systemd/system/qdev-task-delivery-executor.service
 install -m 0644 deploy/qdev-task-delivery-executor.timer \
   /etc/systemd/system/qdev-task-delivery-executor.timer
+install -m 0644 deploy/qdev-capacity-plan.service \
+  /etc/systemd/system/qdev-capacity-plan.service
+install -m 0644 deploy/qdev-capacity-plan.timer \
+  /etc/systemd/system/qdev-capacity-plan.timer
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
 install -o root -g root -m 0644 config/admin-platform-package-bindings.json \
   /etc/qdev-runner/admin-platform-package-bindings.json
@@ -112,6 +117,7 @@ systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path
 systemctl enable --now qdev-reserve-capacity-executor.path
 systemctl enable --now qdev-task-delivery-executor.timer
+systemctl enable --now qdev-capacity-plan.timer
 # Reconcile any processing record that survived a dispatcher or host crash.
 systemctl start qdev-fleet-host-dispatch.service
 printf 'controller provisioning complete; install broker.env, GitHub App key, mTLS files and recovery bindings before start\n'

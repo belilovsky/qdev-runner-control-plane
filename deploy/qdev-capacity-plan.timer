@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh QDev CI seven-day capacity review input weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 03:17:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=qdev-capacity-plan.service
+
+[Install]
+WantedBy=timers.target

@@ -49,6 +49,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "systemctl enable --now qdev-fleet-host-dispatch.path" in script
     assert "systemctl enable --now qdev-reserve-capacity-executor.path" in script
     assert "systemctl enable --now qdev-task-delivery-executor.timer" in script
+    assert "systemctl enable --now qdev-capacity-plan.timer" in script
     assert "controller_activation_material.py" in script
     assert "os.replace(" in _activation_material_helper()
     assert "rollback" in script
@@ -149,6 +150,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/qdev_fixed_task_delivery_executor.py" in script
     assert "deploy/qdev-task-delivery-executor.service" in script
     assert "deploy/qdev-task-delivery-executor.timer" in script
+    assert "deploy/qdev-capacity-plan.service" in script
+    assert "deploy/qdev-capacity-plan.timer" in script
     assert '"$release/config/profiles.yml" /etc/qdev-runner/profiles.yml' in script
     assert '"$release/config/admin-platform-package-bindings.json"' in script
     assert '"$release/config/release-lanes.yml" /etc/qdev-runner/release-lanes.yml' in script
@@ -218,6 +221,8 @@ def test_controller_provisions_only_the_operator_identity_permissions() -> None:
     assert "/var/lib/qdev-runner/controller-status" in provisioning
     assert "/var/lib/qdev-runner/admin-platform-state" in provisioning
     assert "/var/lib/qdev-runner/controller-status-migrations" in provisioning
+    assert "/var/lib/qdev-runner/capacity" in provisioning
+    assert "systemctl enable --now qdev-capacity-plan.timer" in provisioning
 
 
 def test_controller_provisions_root_owned_admission_signer() -> None:
