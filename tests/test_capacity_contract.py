@@ -192,3 +192,12 @@ def test_repository_documentation_states_the_same_bounds() -> None:
     assert "clamps it to the published 90% ceiling" in recovery
     assert "30 GiB free and 85% used" in operating
     assert "10 GiB/90%" in operating
+
+
+def test_profile_comments_distinguish_job_budget_from_live_free_space_floor() -> None:
+    profiles = (ROOT / "config/profiles.yml").read_text(encoding="utf-8")
+
+    assert "independent 4 GiB free-space floor" not in profiles
+    assert "4096 MiB admission budget" in profiles
+    assert "4096 MiB job reservation" in profiles
+    assert "mandatory 4.5 GiB live free-space floor" in profiles

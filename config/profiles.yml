@@ -6,8 +6,8 @@ repository_admission_disk_mb:
   # The controller recovery build uses the already-cached 2.11 GiB runner
   # image and a 24 MiB checked-out source tree.  The build is the only
   # bootstrap path for restoring a controller with constrained capacity, so
-  # reserve the policy minimum of 4 GiB for this exact Docker lane while the
-  # worker's independent 4.5 GiB free-space floor remains mandatory.
+  # reserve a 4096 MiB admission budget for this exact Docker lane; it is
+  # separate from the worker's mandatory 4.5 GiB live free-space floor.
   belilovsky/qdev-runner-control-plane:
     qdev-ci-docker: 4096
   belilovsky/qazshield:
@@ -32,7 +32,7 @@ repository_admission_disk_mb:
     qdev-ci-docker: 12288
   # Adilet Digest Studio declares a 12 GiB bounded Docker verification scope
   # in its exact-SHA runner manifest.  Reserve that source-owned minimum for
-  # admission only; the worker's independent 4 GiB free-space floor still
+  # admission only; the worker's independent 4.5 GiB free-space floor still
   # applies throughout execution and the default Docker profile stays 20 GiB
   # for every other repository.
   belilovsky/adilet-digest-studio:
@@ -79,8 +79,8 @@ profiles:
     # qdev-ci is the dependency-light contract/test lane. Image builds and
     # browser runtimes use their separately sized profiles below. The measured
     # queue head and AVDS foundation candidate each require under 1 GiB, so a
-    # 4 GiB reservation keeps more than 4x headroom while the worker's
-    # independent 4.5 GiB running floor remains enforced.
+    # 4096 MiB job reservation keeps more than 4x headroom; it is separate
+    # from the worker's independent 4.5 GiB running floor.
     resources: {cpu: 1.0, memory_mb: 3072, disk_mb: 4096, pids_limit: 512}
     timeout_minutes: 45
     # Public repositories may run trusted same-repository PR branches. The
