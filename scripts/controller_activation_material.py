@@ -25,6 +25,14 @@ TX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PHASES = {
     "prepared",
+    # These checkpoints occur after the durable transaction and rollback
+    # material exist, but before any host configuration or runtime mutation.
+    # They let the next signed attempt distinguish a rejected preflight from a
+    # partially applied activation without publishing command output.
+    "preflight-cas",
+    "preflight-hook",
+    "preflight-status",
+    "preflight-validated",
     "mutating",
     "config-installed",
     "candidate-active",

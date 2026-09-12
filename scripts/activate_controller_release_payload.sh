@@ -1767,12 +1767,16 @@ fi
 
 # Recheck at the last non-mutating boundary. The process lock prevents another
 # conforming activation from racing any configuration or runtime mutation.
+set_transaction_phase preflight-cas || exit 1
 assert_expected_current_revision
+set_transaction_phase preflight-hook || exit 1
 "$transaction_hook" __transaction_hook__ pre-flip >/dev/null
+set_transaction_phase preflight-status || exit 1
 if ! validate_previous_release_status "$previous_public_image" "$previous_internal_image"; then
   printf 'existing controller status is not bound to a recoverable runtime\n' >&2
   exit 66
 fi
+set_transaction_phase preflight-validated || exit 1
 
 # From this point every non-zero exit is transactionally rolled back while the
 # exact configuration and image backups are still retained by this process.
