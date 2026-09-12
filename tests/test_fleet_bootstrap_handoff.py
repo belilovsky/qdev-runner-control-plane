@@ -94,8 +94,9 @@ def test_handoff_uses_fixed_allowlisted_origin_despite_environment_override(
     assert module.ingress_endpoint("enrol-host-agent") == (
         "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/enrol-host-agent"
     )
-    with pytest.raises(module.BootstrapHandoffError, match="not allowed"):
-        module.ingress_endpoint("restore-existing-worker")
+    assert module.ingress_endpoint("restore-existing-worker") == (
+        "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/restore-existing-worker"
+    )
 
 
 def test_handoff_payload_and_submit_cannot_carry_dispatch_knobs(
@@ -110,7 +111,8 @@ def test_handoff_payload_and_submit_cannot_carry_dispatch_knobs(
 
     assert set(payload) == {"request", "idempotency_key"}
     assert "schema" not in intent
-    assert not {"worker_name", "active_jobs", "timeout_seconds"} & set(intent)
+    assert intent["worker_name"] is None
+    assert not {"active_jobs", "timeout_seconds"} & set(intent)
 
     posted: dict[str, object] = {}
     monkeypatch.setattr(

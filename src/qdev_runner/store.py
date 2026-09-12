@@ -2712,6 +2712,27 @@ class Store:
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def active_worker_job_count(self, worker_name: str) -> int:
+        """Return the controller's durable active-work observation for one worker.
+
+        Restoration never trusts a workflow-supplied idle flag.  The only
+        supported source is the controller job ledger, which records work
+        already claimed or running under that immutable worker identity.
+        Pending work is deliberately not counted: it has no worker binding.
+        """
+
+        if not isinstance(worker_name, str) or not worker_name:
+            raise ValueError("worker name is invalid")
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM jobs
+                WHERE worker_name = ? AND status IN ('claimed', 'running')
+                """,
+                (worker_name,),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def clear_test_retry(self, job_id: int) -> None:
         with self.connect() as connection:
             connection.execute("DELETE FROM test_retry_requests WHERE job_id=?", (job_id,))

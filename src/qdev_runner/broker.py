@@ -62,6 +62,7 @@ from .fleet_bootstrap import (
     FleetBootstrapRequest,
     bootstrap_ingress_operation_key,
     validate_github_bootstrap_observation,
+    validate_github_bootstrap_request,
 )
 from .fleet_host_dispatch import FleetHostDispatchSpool
 from .github import GitHubAppClient, GitHubError
@@ -417,13 +418,19 @@ class FleetBootstrapIngressIntent(BaseModel):
     """The closed GitHub workflow intent shape for controller bootstrap.
 
     This is intentionally narrower than :class:`FleetBootstrapRequest`: the
-    GitHub ingress has no schema selector or worker-recovery fields.  The
-    server supplies the fixed request schema before the policy sees it.
+    GitHub ingress has no schema selector or dispatch knobs.  The server
+    supplies the fixed request schema before the policy sees it; the only
+    worker value it can carry is independently restricted by policy.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["activate-controller", "reconcile-controller-activation", "enrol-host-agent"]
+    action: Literal[
+        "activate-controller",
+        "reconcile-controller-activation",
+        "enrol-host-agent",
+        "restore-existing-worker",
+    ]
     source_sha: str
     run_id: int = Field(ge=1)
     job_id: int = Field(ge=1)
@@ -435,6 +442,7 @@ class FleetBootstrapIngressIntent(BaseModel):
     controller_internal_image_digest: str | None = None
     activation_envelope_digest: str | None = None
     release_lane: str | None = None
+    worker_name: str | None = None
 
     def bootstrap_request(self) -> FleetBootstrapRequest:
         """Attach the fixed internal schema without accepting it from HTTP."""
@@ -3293,7 +3301,10 @@ def create_app(
 
     def prepare_fleet_bootstrap_operation(
         expected_action: Literal[
-            "activate-controller", "reconcile-controller-activation", "enrol-host-agent"
+            "activate-controller",
+            "reconcile-controller-activation",
+            "enrol-host-agent",
+            "restore-existing-worker",
         ],
         raw_request: dict[str, Any] | FleetBootstrapRequest,
     ) -> tuple[FleetBootstrapPolicy, FleetBootstrapRequest]:
@@ -3320,6 +3331,8 @@ def create_app(
         policy_value: FleetBootstrapPolicy,
         bootstrap_request: FleetBootstrapRequest,
         idempotency_key: str,
+        *,
+        active_jobs: int | None = None,
     ) -> Any:
         """Durably submit a request through the unchanged protected spool."""
 
@@ -3332,11 +3345,15 @@ def create_app(
             store=BootstrapOperationStore(operation_path),
             request=bootstrap_request,
             idempotency_key=idempotency_key,
+            active_jobs=active_jobs,
         )
 
     def run_fleet_bootstrap_ingress(
         expected_action: Literal[
-            "activate-controller", "reconcile-controller-activation", "enrol-host-agent"
+            "activate-controller",
+            "reconcile-controller-activation",
+            "enrol-host-agent",
+            "restore-existing-worker",
         ],
         request: FleetBootstrapIngressRequest,
         oidc_token: str | None,
@@ -3355,6 +3372,13 @@ def create_app(
                 request.request.bootstrap_request(),
             )
         except (FleetBootstrapError, ValidationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="fleet bootstrap operation request is invalid",
+            ) from error
+        try:
+            validate_github_bootstrap_request(policy_value, bootstrap_request)
+        except FleetBootstrapError as error:
             raise HTTPException(
                 status_code=422,
                 detail="fleet bootstrap operation request is invalid",
@@ -3416,10 +3440,20 @@ def create_app(
 
         try:
             operation_key = bootstrap_ingress_operation_key(policy_value, bootstrap_request)
+            # The workflow never declares idleness.  This value is derived at
+            # submission time from the controller's durable claim/running-job
+            # ledger, after GitHub and OIDC binding have completed.
+            active_jobs = (
+                store.active_worker_job_count(bootstrap_request.worker_name)
+                if bootstrap_request.action == "restore-existing-worker"
+                and bootstrap_request.worker_name is not None
+                else None
+            )
             execution = submit_fleet_bootstrap_operation(
                 policy_value,
                 bootstrap_request,
                 operation_key,
+                active_jobs=active_jobs,
             )
         except FleetBootstrapError as error:
             raise HTTPException(
@@ -3528,6 +3562,17 @@ def create_app(
     ) -> dict[str, Any]:
         return run_fleet_bootstrap_ingress(
             "enrol-host-agent",
+            request,
+            require_fleet_bootstrap_ingress_oidc(raw_request),
+        )
+
+    @app.post("/internal/v1/ingress/fleet-bootstrap/restore-existing-worker")
+    def ingress_restore_existing_worker(
+        request: FleetBootstrapIngressRequest,
+        raw_request: Request,
+    ) -> dict[str, Any]:
+        return run_fleet_bootstrap_ingress(
+            "restore-existing-worker",
             request,
             require_fleet_bootstrap_ingress_oidc(raw_request),
         )

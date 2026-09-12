@@ -153,18 +153,22 @@ def test_github_observation_rejects_wrong_or_incomplete_identity(
         validate_github_bootstrap_observation(policy, _request(), run, jobs)
 
 
-def test_github_observation_does_not_admit_worker_restoration() -> None:
+def test_github_observation_admits_only_the_fixed_primary_worker_restoration() -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     request = _request(
         action="restore-existing-worker",
         release_lane=None,
-        worker_name="qdev-platform-ci-187",
+        worker_name="srv1879763-primary",
         controller_revision=None,
         controller_release_digest=None,
         controller_image_digest=None,
         activation_envelope_digest=None,
     )
-    with pytest.raises(FleetBootstrapError, match="ingress action"):
+    validate_github_bootstrap_observation(policy, request, _github_run(), _github_jobs())
+
+    other_worker = request.model_copy(update={"worker_name": "qdev-platform-ci-187"})
+    with pytest.raises(FleetBootstrapError, match="recovery worker"):
+        validate_github_bootstrap_observation(policy, other_worker, _github_run(), _github_jobs())
         validate_github_bootstrap_observation(policy, request, _github_run(), _github_jobs())
 
 
