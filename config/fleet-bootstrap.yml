@@ -17,6 +17,7 @@ enrolment:
     - qdev-release-total
     - qdev-release-qazposter
     - qdev-release-qmt
+    - qdev-release-qazpolit
     - qdev-release-qazgeo
     - qdev-release-qazagents-static
 workers:

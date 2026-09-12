@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one compiled QDev Admin Platform release lane through mTLS.
 
-This agent deliberately knows four and only four product lanes.  It never
+This agent deliberately knows a compiled, finite set of product lanes.  It never
 accepts a host path, registry, public URL, deploy command, or rollback command
 from a release request or its configuration file.  Product-owned root
 dispatchers own the native deploy details; they receive an immutable tuple and
@@ -12,6 +12,7 @@ verified.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -88,6 +89,7 @@ class Profile:
     release_dispatcher: Path
     rollback_dispatcher: Path
     receipt_dispatcher: Path
+    private_artifact_delivery: bool = False
 
     @property
     def readiness(self) -> dict[str, str]:
@@ -176,7 +178,32 @@ PROFILES = {
         rollback_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
         receipt_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
     ),
+    # QazPolit shares its host with QMT.  It must therefore use an explicit
+    # controller lane and the controller-private artifact stream; neither the
+    # generic registry reference nor a caller-supplied URL is a deploy input.
+    "qazpolit": Profile(
+        name="qazpolit",
+        lane="qdev-release-qazpolit",
+        project_id="qazpolit",
+        repository="belilovsky/qazpolit",
+        placement="srv138jump",
+        artifact_prefix="registry.ci.qdev.run/qazpolit",
+        adapter="qazpolit-native-release-v1",
+        # The native adapter measures its exact archive/unpack/image peak and
+        # preserves the required 2 GiB reserve.  A static per-lane number
+        # would be both stale and less safe than that measurement.
+        minimum_free_gib=0,
+        state_path=_STATE_ROOT / "qazpolit.json",
+        lock_path=_LOCK_ROOT / "qdev-admin-platform-qazpolit.lock",
+        release_dispatcher=Path("/usr/local/sbin/qazpolit-controller-adapter"),
+        rollback_dispatcher=Path("/usr/local/sbin/qazpolit-controller-adapter"),
+        receipt_dispatcher=Path("/usr/local/sbin/qazpolit-controller-adapter"),
+        private_artifact_delivery=True,
+    ),
 }
+
+_PRIVATE_ARTIFACT_ROOT = _STATE_ROOT / "qazpolit-artifacts"
+_PRIVATE_ARCHIVE_MAX_BYTES = 8 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -456,7 +483,7 @@ def native_receipt(
     _ensure_dispatcher(profile.receipt_dispatcher)
     try:
         args = _current_dispatcher_args() if current else _dispatcher_args(release or {})
-        if profile.name == "qmt":
+        if profile.name in {"qmt", "qazpolit"}:
             args = ["--action", "receipt", *args]
         document = json.loads(_run([str(profile.receipt_dispatcher), *args]))
     except json.JSONDecodeError as error:
@@ -495,6 +522,7 @@ def invoke_native(
     action: str,
     release: dict[str, str],
     candidate_evidence: dict[str, Any] | None = None,
+    artifact_delivery: dict[str, Any] | None = None,
 ) -> None:
     dispatchers = {"release": profile.release_dispatcher, "rollback": profile.rollback_dispatcher}
     dispatcher = dispatchers.get(action)
@@ -517,6 +545,21 @@ def invoke_native(
                     candidate_evidence["migration_receipt_digest"],
                     "--contract-digest",
                     candidate_evidence["contract_digest"],
+                ]
+            )
+    elif profile.name == "qazpolit":
+        args = ["--action", action, *args]
+        if action == "release":
+            if artifact_delivery is None:
+                raise AgentError("QazPolit release requires signed private artifact delivery")
+            args.extend(
+                [
+                    "--private-archive-sha256",
+                    artifact_delivery["archive_sha256"],
+                    "--private-archive-size-bytes",
+                    str(artifact_delivery["archive_size_bytes"]),
+                    "--private-payload-sha256",
+                    artifact_delivery["payload_sha256"],
                 ]
             )
     _run([str(dispatcher), *args])
@@ -552,6 +595,131 @@ def _candidate_evidence(document: object, profile: Profile) -> dict[str, Any]:
     ):
         raise AgentError("controller QMT candidate evidence is invalid")
     return document
+
+
+def _private_artifact_delivery(document: object, release: dict[str, str]) -> dict[str, Any]:
+    """Validate the signed metadata for a controller-private QazPolit archive.
+
+    The host derives its destination and download endpoint from the compiled
+    profile.  The controller claim may bind an immutable archive to a release,
+    but it never supplies a URL or a path that the host will execute from.
+    """
+    expected = {
+        "schema",
+        "source_sha",
+        "archive_sha256",
+        "payload_sha256",
+        "archive_size_bytes",
+    }
+    if not isinstance(document, dict) or set(document) != expected:
+        raise AgentError("controller private artifact delivery shape is invalid")
+    archive_size = document.get("archive_size_bytes")
+    if (
+        document.get("schema") != "qdev-controller-private-archive-delivery-v1"
+        or document.get("source_sha") != release["source_sha"]
+        or not isinstance(document.get("archive_sha256"), str)
+        or not _HEX64.fullmatch(document["archive_sha256"])
+        or not isinstance(document.get("payload_sha256"), str)
+        or not _HEX64.fullmatch(document["payload_sha256"])
+        or not isinstance(archive_size, int)
+        or isinstance(archive_size, bool)
+        or archive_size <= 0
+        or archive_size > _PRIVATE_ARCHIVE_MAX_BYTES
+    ):
+        raise AgentError("controller private artifact delivery identity is invalid")
+    return document
+
+
+def _lane_endpoint(profile: Profile, path: str) -> str:
+    """Bind every shared-host broker operation to its compiled release lane."""
+    if not path.startswith("/") or "?" in path:
+        raise AgentError("controller endpoint path is invalid")
+    return f"{path}?release_lane={profile.lane}"
+
+
+def _private_directory(path: Path) -> None:
+    """Create a root-only cache directory without trusting an existing path."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _root_directory(path)
+    os.chmod(path, 0o700)
+    _root_directory(path)
+
+
+def _archive_matches(path: Path, delivery: dict[str, Any]) -> bool:
+    try:
+        _private(path)
+        if not path.is_file() or path.stat().st_size != delivery["archive_size_bytes"]:
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return hmac.compare_digest(digest.hexdigest(), delivery["archive_sha256"])
+    except (AgentError, OSError):
+        return False
+
+
+def _stage_private_artifact(
+    config: Config,
+    profile: Profile,
+    release_id: str,
+    lease_id: str,
+    fence: str,
+    lease_expires_at: int,
+    delivery: dict[str, Any],
+) -> None:
+    """Fetch and verify one signed QazPolit archive into a fixed private cache."""
+    if not profile.private_artifact_delivery:
+        raise AgentError("private artifact staging is not allowed for this lane")
+    _ensure_live_lease(lease_expires_at)
+    root = _PRIVATE_ARTIFACT_ROOT / delivery["source_sha"]
+    _private_directory(_PRIVATE_ARTIFACT_ROOT)
+    _private_directory(root)
+    archive = root / f"{delivery['archive_sha256']}.zip"
+    if _archive_matches(archive, delivery):
+        return
+    if archive.exists() or archive.is_symlink():
+        raise AgentError("private artifact cache contains an unexpected archive")
+    fd, temporary_name = tempfile.mkstemp(prefix=".download-", suffix=".tmp", dir=root)
+    temporary = Path(temporary_name)
+    os.close(fd)
+    try:
+        _private(temporary)
+        endpoint = _lane_endpoint(
+            profile,
+            f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/artifact",
+        )
+        command = [
+            "/usr/bin/curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "600",
+            "--cert",
+            str(config.client_cert),
+            "--key",
+            str(config.client_key),
+            "--cacert",
+            str(config.controller_ca),
+            "--header",
+            f"X-QDev-Release-Lease: {lease_id}",
+            "--header",
+            f"X-QDev-Release-Fence: {fence}",
+            "--output",
+            str(temporary),
+            f"{config.controller_url}{endpoint}",
+        ]
+        _run(command)
+        _ensure_live_lease(lease_expires_at)
+        if not _archive_matches(temporary, delivery):
+            raise AgentError("controller private artifact does not match its signed delivery claim")
+        os.replace(temporary, archive)
+        _fsync_directory(root)
+    finally:
+        if temporary.exists() or temporary.is_symlink():
+            with contextlib.suppress(OSError):
+                temporary.unlink()
 
 
 def heartbeat(
@@ -601,6 +769,7 @@ def _validated_job(
     int,
     dict[str, str],
     dict[str, Any],
+    dict[str, Any] | None,
 ]:
     expected = {
         "schema",
@@ -619,6 +788,8 @@ def _validated_job(
         "dispatch_claim",
         "dispatch_claim_signature",
     }
+    if profile.private_artifact_delivery:
+        expected.add("artifact_delivery")
     if (
         not isinstance(document, dict)
         or set(document) != expected
@@ -670,6 +841,8 @@ def _validated_job(
         "expires_at",
         "nonce",
     }
+    if profile.private_artifact_delivery:
+        claim_fields.add("artifact_delivery")
     if not isinstance(claim, dict) or set(claim) != claim_fields:
         raise AgentError("controller host dispatch claim shape is invalid")
     if not isinstance(signature, str) or not _HEX64.fullmatch(signature):
@@ -710,6 +883,11 @@ def _validated_job(
         raise AgentError("controller host dispatch CI identity is invalid")
     rollback_anchor = _release(document.get("rollback_anchor"), profile)
     candidate_evidence = _candidate_evidence(document.get("candidate_evidence"), profile)
+    artifact_delivery = (
+        _private_artifact_delivery(document.get("artifact_delivery"), release)
+        if profile.private_artifact_delivery
+        else None
+    )
     if rollback_anchor == release:
         raise AgentError("controller rollback anchor matches the candidate")
     expected_claim = {
@@ -738,6 +916,8 @@ def _validated_job(
         "expires_at": expires_at,
         "nonce": nonce,
     }
+    if profile.private_artifact_delivery:
+        expected_claim["artifact_delivery"] = artifact_delivery
     expected_host_identity = f"qdev-host-agent:{profile.placement}"
     if config.host_identity != expected_host_identity or claim != expected_claim:
         raise AgentError("controller host dispatch claim does not bind this host and job")
@@ -755,6 +935,7 @@ def _validated_job(
         lease_expires_at,
         rollback_anchor,
         candidate_evidence,
+        artifact_delivery,
     )
 
 
@@ -766,7 +947,9 @@ def validate_job(
     now: float | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Validate one signed, short-lived controller dispatch for this fixed host."""
-    release_id, release, _, _, nonce, _, _, _ = _validated_job(document, profile, config, now=now)
+    release_id, release, _, _, nonce, _, _, _, _ = _validated_job(
+        document, profile, config, now=now
+    )
     if _dispatch_nonce_seen(profile, nonce):
         raise AgentError("controller host dispatch claim was already consumed")
     return release_id, release
@@ -941,6 +1124,28 @@ def _runtime_evidence(
                 raise AgentError("native QMT legacy provenance is invalid")
         else:
             raise AgentError("native QMT artifact provenance is invalid")
+    elif profile.name == "qazpolit":
+        private_fields = {"archive_sha256", "payload_sha256", "archive_size_bytes"}
+        legacy_fields = {"legacy_runtime_receipt_sha256"}
+        if set(provenance) == private_fields:
+            if (
+                not isinstance(provenance["archive_sha256"], str)
+                or not _HEX64.fullmatch(provenance["archive_sha256"])
+                or not isinstance(provenance["payload_sha256"], str)
+                or not _HEX64.fullmatch(provenance["payload_sha256"])
+                or not isinstance(provenance["archive_size_bytes"], int)
+                or isinstance(provenance["archive_size_bytes"], bool)
+                or provenance["archive_size_bytes"] <= 0
+                or provenance["archive_size_bytes"] > _PRIVATE_ARCHIVE_MAX_BYTES
+            ):
+                raise AgentError("native QazPolit artifact provenance is invalid")
+        elif set(provenance) == legacy_fields:
+            if not isinstance(
+                provenance["legacy_runtime_receipt_sha256"], str
+            ) or not _HEX64.fullmatch(provenance["legacy_runtime_receipt_sha256"]):
+                raise AgentError("native QazPolit legacy provenance is invalid")
+        else:
+            raise AgentError("native QazPolit artifact provenance is invalid")
     else:
         if set(provenance) != {
             "qak_wheel_sha256",
@@ -1186,7 +1391,9 @@ def _submit_completion(
     status, body = request(
         config,
         "POST",
-        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete",
+        _lane_endpoint(
+            profile, f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/complete"
+        ),
         receipt,
         headers=_controller_headers(lease_id, fence),
     )
@@ -1210,7 +1417,9 @@ def _submit_rollback(
     status, body = request(
         config,
         "POST",
-        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/rollback",
+        _lane_endpoint(
+            profile, f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}/rollback"
+        ),
         receipt,
         headers=_controller_headers(lease_id, fence),
     )
@@ -1236,7 +1445,9 @@ def _controller_status(
     status, body = request(
         config,
         "GET",
-        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}",
+        _lane_endpoint(
+            profile, f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}"
+        ),
         headers=_controller_headers(lease_id, fence),
     )
     if status != 200:
@@ -2191,7 +2402,9 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         if status != 200:
             raise AgentError("controller rejected host-agent heartbeat")
         status, body = request(
-            config, "GET", f"/internal/v1/release-hosts/{profile.placement}/jobs/next"
+            config,
+            "GET",
+            _lane_endpoint(profile, f"/internal/v1/release-hosts/{profile.placement}/jobs/next"),
         )
         if status == 204:
             return {"status": "idle", "capacity_free_gib": beat["capacity_free_gib"]}
@@ -2210,9 +2423,20 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             lease_expires_at,
             rollback_anchor,
             candidate_evidence,
+            artifact_delivery,
         ) = _validated_job(job_document, profile, config)
         if _dispatch_nonce_seen(profile, dispatch_nonce):
             raise AgentError("controller host dispatch claim was already consumed")
+        if artifact_delivery is not None:
+            _stage_private_artifact(
+                config,
+                profile,
+                release_id,
+                lease_id,
+                fence,
+                lease_expires_at,
+                artifact_delivery,
+            )
         context = _operation_context(
             profile,
             candidate,
@@ -2242,6 +2466,13 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
             _ensure_live_lease(lease_expires_at)
             if profile.name == "qmt":
                 invoke_native(profile, "release", candidate, candidate_evidence)
+            elif profile.name == "qazpolit":
+                invoke_native(
+                    profile,
+                    "release",
+                    candidate,
+                    artifact_delivery=artifact_delivery,
+                )
             else:
                 invoke_native(profile, "release", candidate)
             candidate_native = native_receipt(profile, current=True)
@@ -2260,6 +2491,15 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 }
             ):
                 raise AgentError("native QMT receipt does not bind candidate evidence")
+            if profile.name == "qazpolit" and (
+                artifact_delivery is None
+                or candidate_native.get("artifact_provenance")
+                != {
+                    key: artifact_delivery[key]
+                    for key in ("archive_sha256", "payload_sha256", "archive_size_bytes")
+                }
+            ):
+                raise AgentError("native QazPolit receipt does not bind private artifact delivery")
             runtime_receipt = _completion_receipt(profile, candidate, active, candidate_native)
             context = _operation_context(
                 profile,

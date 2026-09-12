@@ -62,6 +62,13 @@ def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
             "migration_receipt_digest": "sha256:" + "5" * 64,
             "contract_digest": "6" * 64,
         }
+    elif profile.name == "qazpolit":
+        dependencies = {"qazstack": "1.37.0", "database_schema": "035"}
+        provenance = {
+            "archive_sha256": "7" * 64,
+            "payload_sha256": "8" * 64,
+            "archive_size_bytes": 155_683_510,
+        }
     else:
         dependencies = {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"}
         provenance = {
@@ -96,6 +103,18 @@ def _candidate_evidence(profile: object) -> dict[str, str]:
     }
 
 
+def _artifact_delivery(profile: object, release: dict[str, str]) -> dict[str, Any] | None:
+    if not profile.private_artifact_delivery:
+        return None
+    return {
+        "schema": "qdev-controller-private-archive-delivery-v1",
+        "source_sha": release["source_sha"],
+        "archive_sha256": "7" * 64,
+        "payload_sha256": "8" * 64,
+        "archive_size_bytes": 155_683_510,
+    }
+
+
 def _config(profile: object) -> object:
     return AGENT.Config(
         controller_url="https://worker.ci.qdev.run",
@@ -125,6 +144,7 @@ def _signed_job(
     if rollback_anchor is None:
         rollback_anchor = _variant(profile, "b")
     candidate_evidence = _candidate_evidence(profile)
+    artifact_delivery = _artifact_delivery(profile, candidate)
     claim = {
         "schema": AGENT.HOST_DISPATCH_CLAIM_SCHEMA,
         "repository": profile.repository,
@@ -151,7 +171,9 @@ def _signed_job(
         "expires_at": min(issued_at + 120, lease_expires_at),
         "nonce": nonce,
     }
-    return {
+    if artifact_delivery is not None:
+        claim["artifact_delivery"] = artifact_delivery
+    document = {
         "schema": "qdev-release-host-agent-job-v1",
         "release_id": RELEASE_ID,
         "release_lane": profile.lane,
@@ -168,6 +190,9 @@ def _signed_job(
             SECRET, AGENT._canonical_bytes(claim), hashlib.sha256
         ).hexdigest(),
     }
+    if artifact_delivery is not None:
+        document["artifact_delivery"] = artifact_delivery
+    return document
 
 
 def _test_profile(tmp_path: Path, name: str = "total") -> object:
@@ -609,7 +634,7 @@ def test_controller_initial_heartbeat_establishes_one_measured_anchor(
 
 
 def test_agent_profiles_bind_each_release_to_a_compiled_native_adapter() -> None:
-    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt"}
+    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt", "qazpolit"}
     for profile in AGENT.PROFILES.values():
         release = _release(profile)
         assert AGENT._release(release, profile) == release
@@ -713,6 +738,7 @@ def test_agent_rejects_unsigned_expired_or_foreign_dispatch_claims() -> None:
         now + 3600,
         _variant(profile, "b"),
         _candidate_evidence(profile),
+        None,
     )
     with pytest.raises(AGENT.AgentError):
         AGENT._validated_job({**job, "placement": "arbitrary-host"}, profile, config, now=now)
@@ -910,11 +936,11 @@ def test_agent_run_once_completes_signed_managed_release_without_name_or_type_er
     ) -> tuple[int, bytes]:
         if path.endswith("/heartbeat"):
             return 200, b""
-        if path.endswith("/jobs/next"):
+        if path.split("?", 1)[0].endswith("/jobs/next"):
             return 200, json.dumps(job).encode()
-        if method == "GET" and path.endswith(f"/jobs/{RELEASE_ID}"):
+        if method == "GET" and path.split("?", 1)[0].endswith(f"/jobs/{RELEASE_ID}"):
             return 200, json.dumps(_controller_status(profile, candidate)).encode()
-        if method == "POST" and path.endswith(f"/jobs/{RELEASE_ID}/complete"):
+        if method == "POST" and path.split("?", 1)[0].endswith(f"/jobs/{RELEASE_ID}/complete"):
             assert headers == AGENT._controller_headers(LEASE_ID, FENCE)
             assert payload is not None
             return 200, AGENT._canonical_bytes(payload)
@@ -980,7 +1006,7 @@ def test_agent_release_failure_passes_full_safe_rollback_context(
         del method, payload, headers
         if path.endswith("/heartbeat"):
             return 200, b""
-        if path.endswith("/jobs/next"):
+        if path.split("?", 1)[0].endswith("/jobs/next"):
             return 200, json.dumps(job).encode()
         raise AssertionError(f"unexpected controller request: {path}")
 
@@ -1049,12 +1075,12 @@ def test_agent_unknown_completion_is_reconciled_without_blind_rollback(
         del payload, headers
         if path.endswith("/heartbeat"):
             return 200, b""
-        if path.endswith("/jobs/next"):
+        if path.split("?", 1)[0].endswith("/jobs/next"):
             return 200, json.dumps(job).encode()
-        if method == "GET" and path.endswith(f"/jobs/{RELEASE_ID}"):
+        if method == "GET" and path.split("?", 1)[0].endswith(f"/jobs/{RELEASE_ID}"):
             status_reads += 1
             return 200, json.dumps(_controller_status(profile, candidate)).encode()
-        if method == "POST" and path.endswith(f"/jobs/{RELEASE_ID}/complete"):
+        if method == "POST" and path.split("?", 1)[0].endswith(f"/jobs/{RELEASE_ID}/complete"):
             raise AGENT.ControllerTransportError("unknown write outcome")
         raise AssertionError(f"unexpected controller request: {method} {path}")
 
