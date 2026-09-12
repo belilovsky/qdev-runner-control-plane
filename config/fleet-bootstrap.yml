@@ -45,3 +45,40 @@ worker_targets:
     service_unit: qdev-runner-worker.service
     host_binding: controller-registry
     labels: [self-hosted, Linux, X64, qdev-ci, qdev-ci-browser, qdev-ci-docker]
+capacity_topology:
+  schema: qdev-ci-four-vps-capacity-v1
+  minimum_safe_slots: 6
+  minimum_docker_hosts: 2
+  reserve_hosts: [mail-general-reserve]
+  hosts:
+    - host_id: srv1879763-primary
+      role: primary
+      worker_name: srv1879763-primary
+      worker_tier: primary
+      slots: 2
+      profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+      max_docker_jobs: 1
+    - host_id: srv1626458-build
+      role: build
+      # This is a physical capacity target, not a claimed runner identity.
+      # The worker name is filled only by the controller's private registry
+      # after a signed host audit and GitHub registration reconciliation.
+      worker_name: null
+      worker_tier: primary
+      slots: 2
+      profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+      max_docker_jobs: 1
+    - host_id: srv138jump-general
+      role: general
+      worker_name: null
+      worker_tier: primary
+      slots: 2
+      profiles: [qdev-ci, qdev-ci-browser]
+      max_docker_jobs: 0
+    - host_id: mail-general-reserve
+      role: reserve
+      worker_name: null
+      worker_tier: reserve
+      slots: 2
+      profiles: [qdev-ci, qdev-ci-browser]
+      max_docker_jobs: 0

@@ -21,7 +21,7 @@ from .operations import payload_digest, sign_payload, validate_controller_receip
 from .worker_recovery import INTERFACE_DIGEST, INTERFACE_VERSION
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _ENDPOINT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -267,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("worker")
     create.add_argument("--repository", required=True)
     create.add_argument("--head-sha", required=True)
+    create.add_argument("--claim-scope-id", required=True)
     create.add_argument("--profile", action="append", required=True, dest="profiles")
     create.add_argument("--min-disk-free-gib", type=float, default=4.5)
     create.add_argument("--max-disk-used-pct", type=float, default=90.0)
@@ -407,6 +408,7 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
             body={
                 "repository": arguments.repository,
                 "head_sha": arguments.head_sha,
+                "claim_scope_id": _scope_id(arguments.claim_scope_id),
                 "profiles": arguments.profiles,
                 "min_disk_free_gib": arguments.min_disk_free_gib,
                 "max_disk_used_pct": arguments.max_disk_used_pct,

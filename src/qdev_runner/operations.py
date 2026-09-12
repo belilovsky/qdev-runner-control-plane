@@ -33,6 +33,7 @@ _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _REPOSITORY = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _PROGRAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_CLAIM_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
 _ADMIN_PLATFORM_STAGE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ADMIN_PLATFORM_LANES = frozenset(
     {"source", "ci", "publication", "deploy", "browser", "rollback", "observation"}
@@ -807,6 +808,7 @@ class CapacityOverrideDirective(BaseModel):
 
     schema_name: Literal["qdev-capacity-override-v2"] = Field(alias="schema")
     operation_id: str = Field(min_length=1, max_length=128)
+    claim_scope_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
     worker_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     repository: str = Field(min_length=1, max_length=256)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -835,6 +837,7 @@ def verify_capacity_override(
     signing_key: str,
     worker_name: str,
     registered_profiles: tuple[str, ...],
+    claim_scope_id: str | None = None,
     now: datetime | None = None,
 ) -> CapacityOverrideDirective:
     if not signing_key:
@@ -852,6 +855,8 @@ def verify_capacity_override(
         raise ValueError("capacity override is not active")
     if directive.worker_name != worker_name:
         raise ValueError("capacity override worker mismatch")
+    if claim_scope_id is not None and directive.claim_scope_id != claim_scope_id:
+        raise ValueError("capacity override claim scope mismatch")
     if not directive.profiles or not set(directive.profiles).issubset(registered_profiles):
         raise ValueError("capacity override profile mismatch")
     if directive.min_disk_free_gib < HARD_MIN_FREE_GIB:
@@ -919,6 +924,7 @@ class OperationStore:
         worker_name: str,
         *,
         registered_profiles: tuple[str, ...],
+        claim_scope_id: str | None = None,
         now: datetime | None = None,
     ) -> CapacityOverrideDirective | None:
         path = self._path(worker_name)
@@ -934,6 +940,7 @@ class OperationStore:
                 signing_key=self.worker_signing_key,
                 worker_name=worker_name,
                 registered_profiles=registered_profiles,
+                claim_scope_id=claim_scope_id,
                 now=now,
             )
         except ValueError:
@@ -943,6 +950,7 @@ class OperationStore:
         self,
         *,
         worker_name: str,
+        claim_scope_id: str,
         repository: str,
         head_sha: str,
         profiles: tuple[str, ...],
@@ -954,6 +962,8 @@ class OperationStore:
         registered_profiles: tuple[str, ...] | None = None,
         now: datetime | None = None,
     ) -> CapacityOverrideDirective:
+        if not _CLAIM_SCOPE_ID.fullmatch(claim_scope_id):
+            raise ValueError("claim scope ID is invalid")
         if not profiles:
             raise ValueError("at least one profile is required")
         if min_disk_free_gib < HARD_MIN_FREE_GIB:
@@ -980,6 +990,7 @@ class OperationStore:
             unsigned: dict[str, Any] = {
                 "schema": "qdev-capacity-override-v2",
                 "operation_id": str(uuid4()),
+                "claim_scope_id": claim_scope_id,
                 "worker_name": worker_name,
                 "repository": repository.strip().lower(),
                 "head_sha": head_sha.strip().lower(),

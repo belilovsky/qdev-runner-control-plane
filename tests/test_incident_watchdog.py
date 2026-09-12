@@ -65,7 +65,7 @@ def healthy_observation(watchdog, **overrides):
         "provider_block": None,
         "healthy_workers": 3,
         "active_jobs": 0,
-        "registered_reserve_hosts": ["srv138jump"],
+        "registered_reserve_hosts": ["mail-general-reserve"],
         "waiting_jobs": [],
         "observed_at": "2026-09-11T00:00:00Z",
     }
@@ -239,23 +239,34 @@ def test_task_audience_tracks_the_whole_incident(watchdog):
     assert operator["dedupe_key"] != tasks["dedupe_key"]
 
 
-def test_reserve_escalation_covers_one_registered_host_at_a_time(watchdog):
+def test_reserve_escalation_covers_only_the_sealed_reserve_host(watchdog):
     busy = healthy_observation(
         watchdog,
         pending_jobs=3,
         eligible_slots=0,
         fifo_head_age_seconds=400,
         active_jobs=2,
-        registered_reserve_hosts=["srv138jump", "vps-apps-148"],
+        registered_reserve_hosts=["mail-general-reserve"],
     )
     first = watchdog.plan_reserve(busy, already_activated=[])
     assert first is not None
-    assert first.host_id == "srv138jump"
+    assert first.host_id == "mail-general-reserve"
     assert first.action == "activate-reserve"
     assert first.follow_up == ("host-audit", "capacity-calculation")
-    second = watchdog.plan_reserve(busy, already_activated=["srv138jump"])
-    assert second is not None and second.host_id == "vps-apps-148"
-    assert watchdog.plan_reserve(busy, already_activated=["srv138jump", "vps-apps-148"]) is None
+    assert watchdog.plan_reserve(busy, already_activated=["mail-general-reserve"]) is None
+
+
+def test_unsealed_reserve_is_alerted_and_never_selected(watchdog):
+    busy = healthy_observation(
+        watchdog,
+        pending_jobs=3,
+        eligible_slots=0,
+        fifo_head_age_seconds=400,
+        active_jobs=2,
+        registered_reserve_hosts=["mail-general-reserve", "unapproved-reserve"],
+    )
+    assert "unsealed_reserve_observed" in codes(watchdog.evaluate(busy))
+    assert watchdog.plan_reserve(busy, already_activated=[]) is None
 
 
 @pytest.mark.parametrize(
@@ -277,7 +288,7 @@ def test_reserve_escalation_is_denied_outside_its_contract(watchdog, overrides):
         "active_jobs": 2,
         "worker_heartbeat_age_seconds": 0,
         "healthy_workers": 3,
-        "registered_reserve_hosts": ["srv138jump"],
+        "registered_reserve_hosts": ["mail-general-reserve"],
     }
     busy.update(overrides)
     assert (
@@ -294,16 +305,16 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
         eligible_slots=0,
         fifo_head_age_seconds=400,
         active_jobs=1,
-        registered_reserve_hosts=["srv138jump"],
+        registered_reserve_hosts=["mail-general-reserve"],
     )
     first = watchdog.run_once(busy, state_root=state_root, outbox=outbox)
     assert first["reserve"] == {
-        "host_id": "srv138jump",
+        "host_id": "mail-general-reserve",
         "action": "activate-reserve",
         "follow_up": ["host-audit", "capacity-calculation"],
     }
     ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
-    assert ledger["activated_reserves"] == ["srv138jump"]
+    assert ledger["activated_reserves"] == ["mail-general-reserve"]
     records = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["record"] == "reserve-decision"
     second = watchdog.run_once(busy, state_root=state_root, outbox=outbox)
@@ -472,7 +483,7 @@ def test_collector_merges_the_aggregate_internal_document(collector):
         "provider_block": "blocked",
         "healthy_workers": 3,
         "active_jobs": 1,
-        "registered_reserve_hosts": ["srv138jump"],
+        "registered_reserve_hosts": ["mail-general-reserve"],
         "waiting_jobs": [
             {
                 "repository": "belilovsky/qazlake",

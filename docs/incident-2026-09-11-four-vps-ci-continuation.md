@@ -1,300 +1,210 @@
-# QDev CI four-VPS incident — continuation runbook (2026-09-11)
+# QDev CI: завершение инцидента на четырёх существующих VPS
 
-Closure work for the 2026-09-11 QDev CI incident across the four existing VPS.
-Single operator, one queue owner at a time; no parallel queue operators, no
-sub-agents, no invented hosts and no purchased capacity.
+Актуализировано 2026-09-12. Это исполнимый runbook для одного владельца
+очереди и одного контроллера. Он заменяет исторические шаги активации и не
+содержит адресов, секретных путей или ручных команд на хостах.
 
-This runbook is written to be resumed from a cold start. Read it top to bottom
-before issuing any claim or touching a host.
+## 1. Подтверждённая стартовая точка
 
-## 1. Status at handoff
+Публичный health-снимок от 2026-09-12 подтверждает:
 
-Done and verified:
+- контроллер активен на `7433e4909bc92d23cc26fd3d6bf9fe939b99ebd8`;
+- `controller_release` и `controller_activation` совпадают по SHA, а
+  public/internal immutable image digests совпадают с release tuple;
+- в очереди 30 заданий: 24 `qdev-ci`, 2 `qdev-ci-browser` и 4
+  `qdev-ci-docker`;
+- oldest pending age превышает 18 минут;
+- безопасных допустимых слотов — 0 для обоих профилей.
 
-- Root cause identified and fixed in the candidate artifact (PR #188, squash
-  merged to `main`). The blocker that made **every** activation impossible is
-  removed.
-- Local verification green: `ruff check .` clean, `ruff format --check .` clean,
-  `pytest -q` -> 1205 passed (+2 new tests over the 1203 baseline).
-- GitHub CI on the PR: `verify` pass, `qdev-runner-contract` pass.
+Исходный `main` уже продвинулся до
+`471f46b216a067da9380446259ef7a8332439d36`. Hosted recovery build для этого
+точного SHA завершился успешно, однако нет runtime receipt его подписанной
+активации: живой контроллер пока остаётся на `7433e49`. Непосредственная
+причина простоя очереди — отсутствие хотя бы одного прошедшего аудит,
+зарегистрированного и совместимого слота. Нельзя исправлять это отменой,
+повторным dispatch, перестановкой FIFO или ручной заменой labels.
 
-In flight:
+Исторический отменённый Platform job остаётся terminal. Его не воспроизводят;
+ошибки тестов проектов после фактического старта фиксируются отдельно от
+runner-инцидента.
 
-- Hosted recovery build for the new `main` revision, run
-  `34588295309` (`controller-recovery-build.yml`, `expected_sha` =
-  `7433e4909bc92d23cc26fd3d6bf9fe939b99ebd8`). **Status was `in_progress` at
-  handoff.** Resume by checking the run, then download the sealed artifact
-  `controller-recovery-7433e49...`.
+## 2. Цель уровня 9/10
 
-Not started (the whole operational remainder, sections 4-9 below).
+CI достигает 9/10, когда одновременно выполнены все условия:
 
-Safety invariant honoured so far: **nothing on any host was mutated**. All VPS
-work in this run was read-only. The active runtime is still the incumbent
-`eb9eea64...` and the broker containers were never restarted.
+1. Точный activation tuple остаётся `active` и связан с immutable release,
+   public/internal images и подписанным ledger.
+2. Есть минимум шесть безопасно допущенных слотов на трёх независимых VPS;
+   четвёртый VPS прошёл аудит и остаётся N+1 reserve.
+3. Ровно два хоста поддерживают `qdev-ci-docker`, максимум один Docker job на
+   каждом; Platform-only runner не входит в общий пул.
+4. Вся существующая очередь движется естественно в profile FIFO; нет
+   дубликата, потери claim, requeue или старта на неправильном runner.
+5. Прошли exact-SHA canary: `qdev-ci`, `qdev-ci-browser`, `qdev-ci-docker` и
+   Platform recovery.
+6. Watchdog каждые две минуты подтверждает переходы start/change/recovery и
+   реально доставляет дедуплицированные уведомления ожидающим deployment-задачам
+   только после старта соответствующего run/job.
+7. В течение 24 часов после восстановления нет `activation unavailable`,
+   stale claim, ошибки image digest, нарушения resource floor или head-of-queue
+   SLO более 15 минут.
 
-## 2. Pinned identities
+До окончания 24-часового soak состояние честно называется «восстановление
+подтверждено», а не 10/10. Уровень 10/10 дополнительно требует успешного
+rollback-drill без прерывания активных jobs и планирования мощности по семи
+дням истории.
 
-| Item | Value |
-| --- | --- |
-| Candidate revision (new `origin/main`) | `7433e4909bc92d23cc26fd3d6bf9fe939b99ebd8` |
-| Previous `origin/main` | `7d9542023e7f74690ad27ae4d681fb5f8f6caca5` |
-| Active runtime (rollback candidate) | `eb9eea64cb35abf1a2bbc53dfe1ec1a8a10f6dbf` |
-| Active release digest | `sha256:cae88721bc7ac756fa3cb87f61d7ba3d549b21991af03e1a067f9cb406e7a91a` |
-| Active runtime images (public = internal) | `sha256:7b293fe650049099f4e5bfc2115fc1e7d57ea82f2fdf3f0154a823b4d3bd8341` |
-| Active policy bundle | `f193628c0387d8cd2d35c4209e75334fff6428fdd54641c0beb7e607fbccddde` |
-| R1 transaction (closure target) | `controller-eb9eea64-34515000659-r1` |
-| R2 transaction (historical, no-mutation) | `controller-eb9eea64-34537511259-r2` |
-| Cancelled terminal Platform job | `102459781441` (terminal `cancelled`, recoverable = no) |
-| Failed activation transaction | `controller-7d954202-34586195052-r1` |
-| Fixed Platform runner | `qdev-platform-ci-187`, GitHub runner ID `278` |
+## 3. Каноническая ёмкость
 
-Release pointer semantics on the controller host:
+Политика `qdev-ci-four-vps-capacity-v1` фиксирует только opaque
+controller-registered identities. Она не содержит маршрутизируемых адресов и
+не создаёт API для произвольного назначения хоста.
 
-- Canonical release symlink: `/opt/qdev-runner-control-plane/current` ->
-  `/opt/qdev-runner-control-plane/releases/<sha>` (currently `eb9eea64...`).
-- Activation status:
-  `/var/lib/qdev-runner/controller-activation/activation-status.json`.
-- Public projection:
-  `/var/lib/qdev-runner/controller-status/controller-activation.json`.
-- Transaction material:
-  `/var/lib/qdev-runner/controller-activation-transactions/<transaction>/`.
+| Роль | Статус controller identity | Слоты после admission | Профили | Docker |
+| --- | --- | ---: | --- | ---: |
+| primary | зарегистрированная `srv1879763-primary` | 2 | ci, browser, docker | 1 |
+| build | имя ещё не материализовано; допустим только tier `primary` | 2 | ci, browser, docker | 1 |
+| general | имя ещё не материализовано; допустим только tier `primary` | 2 | ci, browser | 0 |
+| N+1 reserve | имя ещё не материализовано; допустим только tier `reserve` | 2 | ci, browser | 0 |
 
-## 3. Root cause (verified live and in git)
+Это намерение, не заявление о том, что все хосты уже работают. Плановый host ID
+не является runner identity и не добавляет слот. Каждый слот учитывается только
+после свежего signed host audit, проверенной runner registration/heartbeat,
+controller-registry binding и resource admission. `qdev-platform-ci-187` сохраняет
+свою отдельную contract identity и не забирает обычный проектный CI.
 
-Activation of any candidate failed with `activation_failed` and exit 75.
+Единый контракт ресурсов:
 
-1. The adapter `_trusted_current` resolves the **active** release and execs
-   `$ACTIVE/scripts/activate_controller_release.sh <candidate>`; that wrapper
-   execs the **active (incumbent)** payload
-   `$ACTIVE/scripts/activate_controller_release_payload.sh`.
-2. The immutable incumbent payload (`eb9eea64...`) reads
-   `max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-96}"` and passes
-   `--max-disk-used-pct 96` to the capacity gate.
-3. It invokes the **candidate's** gate (`$release/scripts/controller_capacity_gate.py`,
-   absolute candidate path) whose `HARD_MAX_DISK_USED_PCT = 90.0` rejected `96`
-   with `SystemExit` -> payload `exit 75` -> adapter `activation_failed`.
-4. No mutation occurred. Host metrics already passed every other bound.
+- обычный worker: не менее 30 GiB свободно и не более 85% disk use;
+- shared worker: не менее 10 GiB и не более 90%;
+- точечное исключение: только `claim-scope-v2`, exact immutable job tuple,
+  не менее 4.5 GiB, не более 90%, TTL не более 900 секунд;
+- unscoped override и пороги 91%, 95%, 97% отвергаются.
 
-The earlier diagnosis blaming a gate *default* of 96 was wrong:
-`--max-disk-used-pct` is `required=True` and the payload always passes it
-explicitly, so the default is dead code. The transmitted **argument** was the
-problem, not any default.
+## 4. Порядок исполнения
 
-**Do not** work around this with a host-side env override
-(`QDEV_CONTROLLER_MAX_DISK_USED_PCT`, or an allow-build override). The incumbent
-guards overrides behind an explicit build override, and forcing a rebuild of the
-incumbent is out of scope. The fix belongs in the candidate artifact.
+### R0 — сохранить доказательства и не трогать очередь
 
-### Fix shipped
+1. Снять signed incident receipt: health, activation/release tuple, current
+   queue/claims, runner registrations, worker audits, temporary overrides и
+   image digests.
+2. Зафиксировать текущий active tuple как rollback anchor. Не останавливать
+   активные jobs, не удалять runner registrations и не менять FIFO.
+3. Работать из чистого checkout `origin/main`; пользовательские изменения и
+   исторические detached checkout не использовать и не очищать.
 
-`scripts/controller_capacity_gate.py` now accepts exactly the legacy incumbent
-default `96`, clamps it to the published `90%` ceiling and records the clamp on
-stderr. Every other above-ceiling value (`91`-`95`, `97`) still fails closed
-before any measurement or mutation. The operator override surface continues to
-refuse anything above `90%`. Contract documented in
-`docs/controller-capacity-recovery.md` under "Legacy incumbent activation
-ceiling" and pinned by tests in `tests/test_capacity_contract.py`.
+### R1 — активировать подготовленный recovery-контур и допустить четыре VPS
 
-## 4. Remaining work — activation (P2)
+Сначала root-side activation protocol должен установить ровно
+`471f46b216a067da9380446259ef7a8332439d36` из успешно собранного immutable
+artifact. До receipt, в котором `controller_release.revision`,
+`controller_activation.source_revision` и оба image digest совпадают с этим
+кандидатом, recovery ingress не вызывается и новые claims не выдаются.
 
-1. Confirm the hosted recovery build succeeded and fetch the sealed artifact:
+После такой активации разрешён один узкий recovery-переход для уже
+зарегистрированного `srv1879763-primary`: существующий hosted
+`restore-existing-worker` ingress не принимает произвольные имя, labels,
+host или tuple и восстанавливает только controller-recorded identity. Он не
+создаёт второй runner и не меняет очередь.
 
-   ```
-   gh run view 34588295309 --repo belilovsky/qdev-runner-control-plane
-   gh run download 34588295309 --repo belilovsky/qdev-runner-control-plane \
-     --name controller-recovery-7433e4909bc92d23cc26fd3d6bf9fe939b99ebd8
-   ```
+Для каждого хоста, строго по одному:
 
-   Alternatively build locally:
-   `scripts/controller_recovery_artifact.py build --release-root . --output <dir> --confirm-non-production-build-host`.
+1. В Hostinger/Comet выполнить read-only provider audit: ресурс существует,
+   доступен, включён и не имеет provider/billing block. Никаких покупок,
+   плановых изменений, DNS-изменений, бэкапов или перезапусков вне этого
+   процесса.
+2. Запросить signed host-agent audit через контроллер: CPU, memory, disk,
+   PID/load, immutable runner image, heartbeat, existing claims и service
+   identity.
+3. Если active job есть — дождаться drain. Затем вернуть только сохранённую
+   controller-managed конфигурацию, убрать только expired CI-temporary data
+   или разрешённые неиспользуемые промежуточные слои и повторить audit.
+4. Если пороги не выполнены, не открывать intake на этом хосте. Для primary
+   после безопасной уборки ниже 40 GiB свободного места — увеличить уже
+   существующий volume на 50 GiB либо перенести runner/BuildKit storage на
+   отдельный volume не менее 120 GiB через provider + controller change
+   receipt. Не применять general Docker prune и не удалять images, volumes,
+   releases, базы или backups.
+5. После успешного аудита восстановить только exact controller-registered
+   worker identity и проверить GitHub labels against policy. Новый runner или
+   label из operator input не принимается. Для `build`, `general` и `reserve`
+   admission включает materialization identity через controller registry только
+   после audit receipt; плановый host ID сам по себе registration не создаёт.
 
-2. Reconcile/verify the artifact on the controller host (`verify-artifact`,
-   manifest digest report) and CAS-install the adapter if its digest changed.
-   Current adapter digest: `sha256:382c85ec601d...` (`/usr/local/sbin/qdev-controller-activate`, mode 0700).
+Порядок: `primary` → `build` → `general` → `reserve`. После первых трёх
+прошедших аудитов доступно шесть слотов; reserve подключается по одному хосту
+после FIFO wait >5 минут при здоровых занятых workers.
 
-3. Re-issue activation assets with a **new** transaction ID via
-   `qdev-controller-activation-assets` (`issue-unsigned` -> `sign-envelope` ->
-   `stage`). Envelope TTL must be <= 1800 s. Re-check the generation counter
-   before issuing (was 12).
-   - Signing key: `/etc/qdev-runner/controller-activation-signing/ed25519-private.pem`
-   - Receipt key: `/root/controller-receipt-key.txt` (0600)
-   - Public key: `/etc/qdev-runner/trust/controller-activation-ed25519.pub`
-   - Tool path: `/usr/local/sbin/qdev-controller-activation-assets`
+### R2 — открыть admission и восстановить движение очереди
 
-4. Rebuild the adapter request JSON using the same `REQUEST_FIELDS`/`TARGET_FIELDS`
-   shape as `/root/activate-7d954202-request.json`, with
-   `rollback_revision = eb9eea64cb35abf1a2bbc53dfe1ec1a8a10f6dbf` and
-   `rollback_release_digest = sha256:cae88721bc7ac756fa3cb87f61d7ba3d549b21991af03e1a067f9cb406e7a91a`,
-   then:
+1. Контроллер сверяет exact job tuple, profile, eligibility и FIFO перед каждым
+   новым claim. Для новых/recovery claims допустим только `claim-scope-v2`.
+2. Первый допустимый слот берёт голову соответствующего профиля. Primary и
+   reserve могут работать параллельно, но reserve берёт только compatible
+   profile head при отсутствии compatible primary slot.
+3. Прогнать четыре canary на exact SHA. Каждый должен дать provider-terminal
+   receipt с ожидаемым profile/runner; неправильный runner, mismatch SHA/digest,
+   duplicate/lost job или resource-floor breach немедленно останавливает лишь
+   новую выдачу claims и откатывает затронутый компонент.
+4. После canary не «ускорять» очередь: наблюдать естественный start каждого
+   pending job и отдельно фиксировать тестовые ошибки проекта.
 
-   ```
-   sudo /usr/local/sbin/qdev-controller-activate < request.json
-   ```
+### R3 — сделать повторение инцидента наблюдаемым
 
-   Adapter env: `PATH=/usr/local/sbin:...`, `LANG=LC_ALL=C.UTF-8`,
-   `PYTHONNOUSERSITE=1`, `QDEV_CONTROLLER_ACTIVATION_ENVELOPE`,
-   `QDEV_CONTROLLER_ACTIVATION_PUBLIC_KEY`, `QDEV_CONTROLLER_ARTIFACT_MANIFEST`.
-   The wrapper holds `flock -n 9 /run/lock/qdev-controller-activation.lock`.
-   Exit codes: 64 usage, 66 missing inputs, 74 images unavailable, 75 lock held,
-   77 ownership/material unsafe, 78 attestation/identity mismatch.
-   Success is `status: completed` with `qdev-fleet-bootstrap-adapter-result-v2`.
+Watchdog запускается каждые две минуты и проверяет:
 
-5. Post-activation verification:
-   - `/opt/qdev-runner-control-plane/current` -> new release;
-   - broker containers on `qdev-runner-broker:controller-<newsha>`;
-   - `/health` `controller_activation.state == "active"` plus additive
-     aggregate fields only;
-   - `controller_release.revision == <newsha>`.
+- `controller_activation != active` более двух минут;
+- pending при нуле eligible slots более двух минут;
+- oldest FIFO head: warning >5 минут, critical >15 минут;
+- heartbeat старше 90 секунд, claim старше 300 секунд;
+- disk/memory/load threshold, missing immutable image и provider/billing block.
 
-6. Close R1 only through the fixed signed root-dispatch operation
-   `reconcile-controller-activation`, which accepts **only** an existing
-   immutable transaction ID and digest envelope — no shell commands, URLs,
-   hosts, labels or free parameters. It must verify activation status, runtime
-   SHA, public/internal image digests, current release link, health and staged
-   material before any change, and finish R1 only when the runtime already
-   matches the candidate exactly. A stale rollback anchor may only be
-   atomically re-published from the already staged and verified R1 anchor; any
-   foreign, missing or mismatched anchor chain is fail-closed with no rollback,
-   no runtime change and no new claims.
-   **Never dispatch reconcile while the runtime is still `eb9eea64...`** — it
-   raises `reconciliation_runtime_mismatch`. Re-verify that the R1 transaction
-   sentinel state is what a reconcile expects before dispatching.
+Ключ дедупликации: `incident_id + state_digest + audience`. Разрешены только
+start, существенное изменение и recovery. Watchdog формирует только durable
+outbox и sealed reserve-decision; он сам не меняет очередь, runner labels,
+host или provider state.
 
-7. R2 is a historical `unknown outcome`: verify it was not applied, produce a
-   `resolved_no_mutation` receipt, do **not** replay its activation, do not
-   change runtime and do not delete its material before retention expires. An
-   expired recovery envelope must never be plain-replayed. Envelope
-   `8d611aae...` already expired at 2026-09-11T10:11:32Z (issued 10:01:32Z,
-   TTL 600 s) — re-issue, never edit timestamps.
+Delivery adapter должен забрать outbox, получить подтверждение доставки и
+только после этого отправить связанной Codex deployment-задаче exact run/job и
+реальный status. Это ещё незакрытый 9/10 gate: файл outbox не является
+доставленным уведомлением. Сообщение «восстановлено» запрещено, пока её job
+ещё queued. Heartbeat-монитор молчит при неизменном здоровом состоянии и
+просыпается только на SLO breach, изменение или recovery.
 
-## 5. Remaining work — capacity (P8, critical path)
+## 5. Обязательная проверка изменений
 
-There are **zero eligible slots**, so capacity is on the critical path for any
-canary or queue drain.
+Перед rollout выполняются только затронутые проверки:
 
-Four existing VPS (never invent hosts):
+- bootstrap policy: sealed four-VPS topology, запрет подмены host/roles/slots,
+  Platform isolation и profile-to-label binding;
+- admission: FIFO, profile concurrency, no-double-claim, restart/replay и
+  offline exact-identity reconciliation without requeue;
+- security: `claim-scope-v2` expiry/replay, OIDC failure, TTL >900 и отказ
+  unscoped/91/95/97 overrides;
+- capacity: primary/reserve offline, both busy, missing image, resource floor,
+  one Docker job per host и drain without interrupting an active job;
+- observability: alert start/change/recovery deduplication plus successful
+  delivery adapter receipt;
+- default-branch audit of active repositories: zero critical
+  runner-label/fallback violations.
 
-| Name | Address | Notes |
-| --- | --- | --- |
-| `srv1879763` (controller) | `186.240.148.129` | 4 CPU, 193G disk 74%, 52G free, load 3.1-3.8 |
-| `mail.qdev.run` | `187.55.228.239` | hosts `qdev-platform-ci-187`; 4 CPU, 193G disk 74%, 51G free |
-| `srv1626458` | `148.230.117.131` | 8 CPU, 387G disk 73%, 105G free |
-| `srv138jump` | `62.72.32.112` | reachable only via `-o ProxyJump=root@187.55.228.239`; last audit call returned no output — re-audit |
+Публичные `/health` и `qdev-runner-health-v1` остаются обратно совместимыми:
+только additive aggregate fields. Exact tuples, identities, host/audit/claim и
+recovery details доступны исключительно на существующей mTLS internal surface.
 
-Procedure, strictly one host at a time: drain -> change -> re-audit -> return
-intake. Never stop active jobs. Remove the temporary 97% thresholds and
-unscoped overrides. Allow only allowlist cleanup of unused intermediate CI
-layers and expired temporary data; **no** general Docker prune, no removal of
-referenced images, volumes, rollback releases, databases or backups.
+## 6. Текущий прогресс и следующий безопасный переход
 
-Target topology: at least 6 slots on three independent hosts (two slots each),
-at least two Docker-capable hosts, at most one Docker job per host; the fourth
-VPS is the N+1 reserve. Primary and reserve run in parallel; the reserve takes a
-job only when the primary has no compatible free slot. FIFO is preserved
-per profile.
+- Активация `7433e49`: завершена и подтверждена live health; переход на
+  готовый `471f46b` ещё не имеет root-side activation receipt.
+- Политика четырёх VPS: закреплена в исходном коде как sealed intent и покрыта
+  targeted tests; до host audit она не считается доступной ёмкостью.
+- Capacity admission, canaries и queue drain: ожидают подписанной активации
+  `471f46b` и controller-managed host-agent receipts.
+- Notification delivery: outbox/deduplication готов, но delivery adapter с
+  receipt ещё не реализован; это не выдаётся за отправку сообщений.
 
-Sizing: `ceil(p95 hourly arrivals x p95 duration minutes / 60 / 0.7)` plus one
-N+1 host; fall back to a minimum of six slots when the 7-day history is
-incomplete. Relocate runner/BuildKit storage only if the primary cannot reach
-40 GiB free after safe cleanup, and only through the controller-managed
-procedure. Long-term contract: shared worker 10 GiB/90%, ordinary worker
-30 GiB/85%. Single capacity contract everywhere: at minimum 4.5 GiB free and at
-most 90% usage for an exact TTL claim.
-
-## 6. Remaining work — Platform and queue closure (P9)
-
-1. Take a **fresh** full queue snapshot before opening intake; never use
-   historical queue numbers as current.
-2. Provider-terminal reconciliation for job `102459781441`: verify the tuple,
-   close the associated hold/claim without requeue and without creating a second
-   identity. Delete the one-off registration only after retention and with no
-   durable references.
-3. Restore `qdev-platform-ci-187` only through the standard controller recovery
-   path; confirm GitHub runner ID `278`, labels
-   `[self-hosted, Linux, X64, qdev-platform-ci]`, and idle/online status.
-4. Run its canonical `runner-smoke.yml` on the default branch as a separate
-   Platform recovery canary.
-5. If Platform needs a new required check to replace the cancelled terminal
-   job, allow exactly one new controller-authorized run on the same SHA after
-   the activation/capacity gate. This is the only exception caused by the
-   provider cancellation: no mass reruns, no manual requeue, no FIFO reorder,
-   no label substitution.
-6. Exact-SHA canaries for `qdev-ci`, `qdev-ci-browser`, `qdev-ci-docker` and the
-   Platform recovery. Each must start on the expected profile/runner and finish
-   with a provider-terminal receipt.
-7. Open intake and let the current queue drain naturally. Record project test
-   failures after start separately from the runner incident.
-
-## 7. Remaining work — observability and closeout (P10)
-
-- Two-minute watchdog: activation not `active` for > 2 min; pending with zero
-  eligible slots for > 2 min; FIFO head older than 5/15 min; heartbeat older
-  than 90 s; claim older than 300 s; resource violation; missing image;
-  provider/billing block.
-- If the queue head waits more than 5 min on healthy busy workers, bring in one
-  pre-registered reserve host at a time, then repeat the audit and capacity
-  calculation.
-- Deduplicate alerts by `incident_id + state_digest + audience`; emit only
-  start, material change and recovery.
-- After each pending deployment job actually starts, send the exact run/job
-  status to the linked active Codex tasks. Never send "fixed" for a queued job.
-- Create an incident heartbeat monitor: silent while healthy and unchanged,
-  notifies on SLO breach, recovery, or operator action required.
-- Signed incident receipt: controller release/activation, immutable digests,
-  queues and claims, runner registrations, host audits, capacity, temporary
-  overrides, R1/R2 activation transactions. No secrets, no raw stderr, no
-  private runner data on public surfaces.
-
-## 8. Required checks before closeout
-
-- R1 expired-but-committed reconciliation; stale/foreign anchor rejection; wrong
-  SHA/digest/current-link rejection; idempotent repeat; R2 no-mutation
-  reconciliation.
-- FIFO, profile concurrency, no double claim, restart/replay without queue loss.
-- Offline one-off identity recovery for a still-queued exact job and
-  provider-terminal closure without requeue.
-- `claim-scope-v2` expiry/replay, OIDC failure, activation SHA mismatch,
-  TTL > 900 s, and 91/95/97% override rejection.
-- Primary/reserve offline, both busy, disk floor, missing immutable image, drain
-  of an active job.
-- Alert start/change/recovery deduplication and delivery of statuses to waiting
-  tasks.
-- Default-branch audit of active repositories: zero critical runner-label or
-  fallback contract violations (`scripts/audit_workflows.py`).
-
-## 9. Abort, rollback and closeout gate
-
-Stop issuing new claims immediately and roll back only the affected
-control-plane component — without interrupting active jobs — on: SHA/digest
-mismatch, wrong runner for a canary, FIFO violation, duplicate or lost job, or
-crossing a resource floor.
-
-The incident closes only after all of: `controller_activation=active`;
-confirmed R1 transaction closure; six safe slots; four successful canaries;
-natural queue start; no infrastructure holds; and a 24-hour soak with no
-activation failure, stale claims, duplicate/lost jobs or head-of-queue SLO
-breach.
-
-## 10. Environment notes
-
-- Controller host release root: `/opt/qdev-runner-control-plane`; broker state
-  `/var/lib/qdev-runner`.
-- Broker `/health` is only reachable on the container network, port `9020`:
-
-  ```
-  ip=$(docker inspect qdev-runner-broker-public \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' | awk '{print $1}')
-  curl -s "http://$ip:9020/health"
-  ```
-
-- Internal detail (`/internal/v1/operations/*`) is mTLS-only and returns nothing
-  unauthenticated.
-- `/health` and `qdev-runner-health-v1` must stay backward compatible; only
-  additive aggregate fields are allowed (activation aggregate, eligible-slot
-  counts, oldest pending age). Never add repository, SHA, job ID, runner name or
-  secrets.
-- New and recovery claims must use `claim-scope-v2`: TTL <= 900 s, scope bound
-  strictly to the immutable job tuple. `claim-scope-v1` is history only.
-- Tooling on the operator Mac: no `rg`, no `timeout`, no local `sqlite3` — use
-  `grep -rn`. Run Python tooling as `.venv/bin/python -m ruff|pytest`. Quote
-  globs for zsh.
+Следующий переход — подписанная activation нового контроллера, затем
+read-only inventory четырёх существующих VPS в Hostinger и signed audit
+primary. Если любой из них не проходит, очередь остаётся нетронутой, а план
+переключается на следующий уже существующий host; никаких самодельных runners,
+новых VPS или обхода контроллера.

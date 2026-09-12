@@ -136,7 +136,7 @@ def test_scoped_worker_can_omit_static_token_but_unscoped_worker_cannot(
         WorkerSettings.from_env()
 
 
-def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
+def test_worker_rejects_retired_runtime_capacity_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name, value in {
@@ -158,13 +158,12 @@ def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
         WorkerSettings.from_env()
 
     monkeypatch.setenv("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE", "true")
-    settings = WorkerSettings.from_env()
-    assert settings.capacity_override_active is True
-    assert settings.min_disk_free_gib == 4.5
-    assert settings.max_disk_used_pct == 90
+    with pytest.raises(RuntimeError, match="is retired"):
+        WorkerSettings.from_env()
 
+    monkeypatch.delenv("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE")
     monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "4")
-    with pytest.raises(RuntimeError, match="bounded range"):
+    with pytest.raises(RuntimeError, match="durable worker capacity gate"):
         WorkerSettings.from_env()
 
 

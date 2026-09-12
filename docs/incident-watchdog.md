@@ -57,21 +57,24 @@ incident. A publication contains only `incident_id`, `schema`, `audience`,
 `state_digest`, `dedupe_key`, `severity`, `codes` and `observed_at`. Repository,
 run id, job id, runner name, host, SHA and secrets are never included.
 
-Waiting jobs are announced to the task audience only after they actually start:
-an entry with `started: false` or provider status `queued` is never delivered
-as recovery, and a status change is delivered exactly once. Each delivery
+The watchdog writes a job-status item to its durable outbox only after the job
+actually starts: an entry with `started: false` or provider status `queued` is
+never eligible for recovery notification. A status change is emitted once and
 carries the exact repository, run id and job id of the started job.
+
+The outbox is not a delivery adapter. An external adapter must persist its own
+delivery receipt before a message to a Codex task is considered sent; without
+that receipt, no job is reported to an operator as notified.
 
 ## Reserve escalation
 
 When the FIFO head has waited at least 300 s, no slot is eligible, the
 heartbeat is healthy and at least one healthy worker is executing at least one
-job, the watchdog emits one `reserve-decision` record for the first
-pre-registered reserve host that has not been used yet. The decision requires a
-`host-audit` and a `capacity-calculation` follow-up, so the next reserve host
-is only considered after the previous host has been audited and the capacity
-recalculated. A reserve host is never used while a compatible slot is
-available.
+job, the watchdog emits at most one `reserve-decision` record for the sealed
+`mail-general-reserve` target. It refuses to select an arbitrary reserve name
+from an observation; an unexpected name is a critical topology-drift alert.
+The decision requires a `host-audit` and a `capacity-calculation` follow-up,
+and the target is never used while a compatible slot is available.
 
 ## Internal observation document
 

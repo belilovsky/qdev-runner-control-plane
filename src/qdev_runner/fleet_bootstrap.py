@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .release_lane import ReleaseLane, ReleaseLanePolicy
 
 POLICY_SCHEMA = "qdev-fleet-bootstrap-policy-v2"
+CAPACITY_TOPOLOGY_SCHEMA = "qdev-ci-four-vps-capacity-v1"
 REQUEST_SCHEMA = "qdev-fleet-bootstrap-request-v2"
 ALLOWED_ACTIONS = frozenset(
     {
@@ -93,6 +94,34 @@ class WorkerRecoveryTarget:
     service_unit: str
     host_binding: str
     labels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CapacityHost:
+    """One approved physical capacity target, with no routable address.
+
+    Only an already reconciled controller identity may occupy ``worker_name``.
+    A null value deliberately represents a VPS that is planned but not yet
+    admitted; it contributes no live capacity.
+    """
+
+    host_id: str
+    role: str
+    worker_name: str | None
+    worker_tier: str
+    slots: int
+    profiles: tuple[str, ...]
+    max_docker_jobs: int
+
+
+@dataclass(frozen=True)
+class CapacityTopology:
+    """The sealed four-VPS baseline used by capacity admission."""
+
+    minimum_safe_slots: int
+    minimum_docker_hosts: int
+    reserve_hosts: tuple[str, ...]
+    hosts: tuple[CapacityHost, ...]
 
 
 class FleetBootstrapRequest(BaseModel):
@@ -187,6 +216,7 @@ class FleetBootstrapPolicy:
             "enrolment",
             "workers",
             "worker_targets",
+            "capacity_topology",
         }:
             raise FleetBootstrapError("fleet bootstrap policy shape is invalid")
         if document["schema_version"] != POLICY_SCHEMA:
@@ -197,6 +227,9 @@ class FleetBootstrapPolicy:
         self._allowed_lanes = self._parse_lanes(document["enrolment"], self._release_lanes)
         self._allowed_workers = self._parse_workers(document["workers"])
         self._worker_targets = self._parse_worker_targets(document["worker_targets"])
+        self.capacity_topology = self._parse_capacity_topology(
+            document["capacity_topology"], self._worker_targets
+        )
 
     @staticmethod
     def _identity(raw: object) -> BootstrapIdentity:
@@ -308,7 +341,7 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap worker target mapping is invalid")
         targets: dict[str, WorkerRecoveryTarget] = {}
         seen_target_ids: set[str] = set()
-        seen_services: set[str] = set()
+        seen_service_units: set[str] = set()
         for entry in raw:
             if not isinstance(entry, dict) or set(entry) != {
                 "worker_name",
@@ -332,7 +365,6 @@ class FleetBootstrapPolicy:
                 or target_id in seen_target_ids
                 or not isinstance(service_unit, str)
                 or not _SERVICE_UNIT.fullmatch(service_unit)
-                or service_unit in seen_services
                 or host_binding != "controller-registry"
                 or not isinstance(labels, list)
                 or not labels
@@ -341,6 +373,8 @@ class FleetBootstrapPolicy:
                 or not {"self-hosted", "Linux", "X64"}.issubset(labels)
             ):
                 raise FleetBootstrapError("bootstrap worker target mapping is invalid")
+            if service_unit in seen_service_units:
+                raise FleetBootstrapError("bootstrap worker target service unit is not unique")
             targets[worker_name] = WorkerRecoveryTarget(
                 worker_name=worker_name,
                 target_id=target_id,
@@ -349,8 +383,123 @@ class FleetBootstrapPolicy:
                 labels=tuple(labels),
             )
             seen_target_ids.add(target_id)
-            seen_services.add(service_unit)
+            seen_service_units.add(service_unit)
         return targets
+
+    @staticmethod
+    def _parse_capacity_topology(
+        raw: object, targets: dict[str, WorkerRecoveryTarget]
+    ) -> CapacityTopology:
+        expected = {
+            "schema",
+            "minimum_safe_slots",
+            "minimum_docker_hosts",
+            "reserve_hosts",
+            "hosts",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise FleetBootstrapError("capacity topology shape is invalid")
+        if raw["schema"] != CAPACITY_TOPOLOGY_SCHEMA:
+            raise FleetBootstrapError("capacity topology schema is invalid")
+        minimum_safe_slots = raw["minimum_safe_slots"]
+        minimum_docker_hosts = raw["minimum_docker_hosts"]
+        reserve_hosts = raw["reserve_hosts"]
+        entries = raw["hosts"]
+        if (
+            isinstance(minimum_safe_slots, bool)
+            or not isinstance(minimum_safe_slots, int)
+            or minimum_safe_slots != 6
+            or isinstance(minimum_docker_hosts, bool)
+            or not isinstance(minimum_docker_hosts, int)
+            or minimum_docker_hosts != 2
+            or not isinstance(reserve_hosts, list)
+            or reserve_hosts != ["mail-general-reserve"]
+            or not isinstance(entries, list)
+            or len(entries) != 4
+        ):
+            raise FleetBootstrapError("capacity topology values are invalid")
+
+        expected_hosts = {
+            "srv1879763-primary": ("primary", "primary", 1),
+            "srv1626458-build": ("build", "primary", 1),
+            "srv138jump-general": ("general", "primary", 0),
+            "mail-general-reserve": ("reserve", "reserve", 0),
+        }
+        parsed: list[CapacityHost] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {
+                "host_id",
+                "role",
+                "worker_name",
+                "worker_tier",
+                "slots",
+                "profiles",
+                "max_docker_jobs",
+            }:
+                raise FleetBootstrapError("capacity host shape is invalid")
+            host_id = entry["host_id"]
+            role = entry["role"]
+            worker_name = entry["worker_name"]
+            worker_tier = entry["worker_tier"]
+            slots = entry["slots"]
+            profiles = entry["profiles"]
+            max_docker_jobs = entry["max_docker_jobs"]
+            if (
+                not isinstance(host_id, str)
+                or host_id not in expected_hosts
+                or host_id in seen
+                or not isinstance(role, str)
+                or role != expected_hosts[host_id][0]
+                or worker_tier != expected_hosts[host_id][1]
+                or worker_tier not in {"primary", "reserve"}
+                or worker_name is not None
+                and (
+                    not isinstance(worker_name, str)
+                    or worker_name not in targets
+                    or not worker_name.endswith(f"-{worker_tier}")
+                )
+                or isinstance(slots, bool)
+                or slots != 2
+                or not isinstance(profiles, list)
+                or len(profiles) != len(set(profiles))
+                or not all(
+                    profile in {"qdev-ci", "qdev-ci-browser", "qdev-ci-docker"}
+                    for profile in profiles
+                )
+                or isinstance(max_docker_jobs, bool)
+                or max_docker_jobs != expected_hosts[host_id][2]
+            ):
+                raise FleetBootstrapError("capacity host values are invalid")
+            required_profiles = {"qdev-ci", "qdev-ci-browser"}
+            if max_docker_jobs:
+                required_profiles.add("qdev-ci-docker")
+            if set(profiles) != required_profiles or (
+                worker_name is not None and not set(profiles).issubset(targets[worker_name].labels)
+            ):
+                raise FleetBootstrapError("capacity host profile mapping is invalid")
+            parsed.append(
+                CapacityHost(
+                    host_id=host_id,
+                    role=role,
+                    worker_name=worker_name,
+                    worker_tier=worker_tier,
+                    slots=slots,
+                    profiles=tuple(profiles),
+                    max_docker_jobs=max_docker_jobs,
+                )
+            )
+            seen.add(host_id)
+        if set(seen) != set(expected_hosts) or sum(host.slots for host in parsed) != 8:
+            raise FleetBootstrapError("capacity topology hosts are incomplete")
+        if sum(host.max_docker_jobs for host in parsed) != minimum_docker_hosts:
+            raise FleetBootstrapError("capacity topology Docker capacity is invalid")
+        return CapacityTopology(
+            minimum_safe_slots=minimum_safe_slots,
+            minimum_docker_hosts=minimum_docker_hosts,
+            reserve_hosts=tuple(reserve_hosts),
+            hosts=tuple(parsed),
+        )
 
     def worker_target(self, worker_name: str) -> WorkerRecoveryTarget | None:
         """Return the exact registered target for an existing worker name."""

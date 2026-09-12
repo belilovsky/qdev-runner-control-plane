@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
@@ -189,6 +190,86 @@ def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
     assert target.target_id == ("actions.runner.belilovsky-platform-portal.qdev-platform-ci-187")
     assert target.service_unit.endswith(".service")
     assert target.host_binding == "controller-registry"
+
+
+def test_bootstrap_policy_seals_the_four_vps_capacity_baseline() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+
+    assert policy.capacity_topology.minimum_safe_slots == 6
+    assert policy.capacity_topology.minimum_docker_hosts == 2
+    assert policy.capacity_topology.reserve_hosts == ("mail-general-reserve",)
+    assert {host.host_id for host in policy.capacity_topology.hosts} == {
+        "srv1879763-primary",
+        "srv1626458-build",
+        "srv138jump-general",
+        "mail-general-reserve",
+    }
+    assert sum(host.slots for host in policy.capacity_topology.hosts) == 8
+    assert sum(host.max_docker_jobs for host in policy.capacity_topology.hosts) == 2
+    assert "qdev-platform-ci-187" not in {
+        host.worker_name for host in policy.capacity_topology.hosts
+    }
+    assert {
+        host.host_id: (host.worker_name, host.worker_tier)
+        for host in policy.capacity_topology.hosts
+    } == {
+        "srv1879763-primary": ("srv1879763-primary", "primary"),
+        "srv1626458-build": (None, "primary"),
+        "srv138jump-general": (None, "primary"),
+        "mail-general-reserve": (None, "reserve"),
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda document: document["capacity_topology"].update({"minimum_safe_slots": 5}),
+        lambda document: document["capacity_topology"].update(
+            {"reserve_hosts": ["srv138jump-general"]}
+        ),
+        lambda document: document["capacity_topology"]["hosts"][0].update({"max_docker_jobs": 2}),
+        lambda document: document["capacity_topology"]["hosts"][1].update(
+            {"host_id": "unapproved-host"}
+        ),
+        lambda document: document["capacity_topology"]["hosts"][1].update(
+            {"worker_name": "invented-build-primary"}
+        ),
+        lambda document: document["capacity_topology"]["hosts"][3].update(
+            {"worker_tier": "primary"}
+        ),
+    ],
+)
+def test_bootstrap_policy_rejects_capacity_topology_drift(tmp_path: Path, mutate: object) -> None:
+    document = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    assert callable(mutate)
+    mutate(document)
+    policy_path = tmp_path / "fleet-bootstrap.yml"
+    policy_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(FleetBootstrapError, match="capacity"):
+        FleetBootstrapPolicy(policy_path, RELEASE_LANES)
+
+
+def test_bootstrap_policy_rejects_shared_service_unit(
+    tmp_path: Path,
+) -> None:
+    document = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    targets = document["worker_targets"]
+    assert isinstance(targets, list)
+    for target in targets:
+        assert isinstance(target, dict)
+        if target["worker_name"] == "qdev-platform-ci-187":
+            target["service_unit"] = "qdev-runner-worker.service"
+            break
+    else:
+        raise AssertionError("platform-only target is missing")
+    policy_path = tmp_path / "fleet-bootstrap.yml"
+    policy_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(FleetBootstrapError, match="service unit"):
+        FleetBootstrapPolicy(policy_path, RELEASE_LANES)
 
 
 def test_bootstrap_policy_allows_qazagents_static_enrolment_without_a_host_target() -> None:

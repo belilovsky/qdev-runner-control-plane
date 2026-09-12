@@ -12,7 +12,6 @@ _DEFAULT_WORKER_MIN_FREE_GIB = 30.0
 _DEFAULT_WORKER_MAX_DISK_USED_PCT = 85.0
 _DURABLE_WORKER_MIN_FREE_GIB = 10.0
 _DURABLE_WORKER_MAX_DISK_USED_PCT = 90.0
-_SCOPED_WORKER_MIN_FREE_GIB = 4.5
 
 
 def _required(name: str) -> str:
@@ -407,27 +406,14 @@ class WorkerSettings:
             os.environ.get("QDEV_WORKER_MIN_MEMORY_AVAILABLE_GIB", "4")
         )
         max_load_per_cpu = float(os.environ.get("QDEV_WORKER_MAX_LOAD_PER_CPU", "2"))
-        allow_capacity_override = (
-            os.environ.get("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE", "false").strip().lower()
-        )
-        if allow_capacity_override not in {"true", "false"}:
-            raise RuntimeError("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE must be true or false")
-        capacity_gate_relaxed = (
-            min_disk_free_gib < _DEFAULT_WORKER_MIN_FREE_GIB
-            or max_disk_used_pct > _DEFAULT_WORKER_MAX_DISK_USED_PCT
-        )
-        capacity_override_active = allow_capacity_override == "true"
+        if "QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE" in os.environ:
+            raise RuntimeError(
+                "QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE is retired; "
+                "use a controller-signed claim-scope-v2 capacity directive"
+            )
         if min_memory_available_gib < 4 or max_load_per_cpu > 2:
             raise RuntimeError("worker memory and load gates cannot be relaxed")
-        if capacity_override_active:
-            if not claim_scope_id or not capacity_gate_relaxed:
-                raise RuntimeError("worker capacity override is not active and scoped")
-            if (
-                min_disk_free_gib < _SCOPED_WORKER_MIN_FREE_GIB
-                or max_disk_used_pct > _DURABLE_WORKER_MAX_DISK_USED_PCT
-            ):
-                raise RuntimeError("worker capacity override is outside the bounded range")
-        elif (
+        if (
             min_disk_free_gib < _DURABLE_WORKER_MIN_FREE_GIB
             or max_disk_used_pct > _DURABLE_WORKER_MAX_DISK_USED_PCT
         ):
@@ -471,7 +457,7 @@ class WorkerSettings:
                 if (value := os.environ.get("QDEV_WORKER_MAX_CPU_PSI_AVG10", "").strip())
                 else None
             ),
-            capacity_override_active=capacity_override_active,
+            capacity_override_active=False,
             mtls_ca=_required("QDEV_MTLS_CA"),
             mtls_cert=_required("QDEV_MTLS_CERT"),
             mtls_key=_required("QDEV_MTLS_KEY"),

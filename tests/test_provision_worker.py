@@ -18,7 +18,7 @@ def test_provision_archives_exact_legacy_rollout_gate() -> None:
     assert 'mv -- "$legacy_path" "$legacy_gate_backup/"' in script
 
 
-def test_provision_capacity_override_is_explicit_and_lower_only() -> None:
+def test_provision_capacity_policy_is_sealed_to_a_durable_tier() -> None:
     script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
 
     # The published contract has exactly two tiers: 30 GiB/85% for a normal
@@ -28,16 +28,13 @@ def test_provision_capacity_override_is_explicit_and_lower_only() -> None:
     assert "tier_max_disk_used_pct=90" in script
     assert "tier_min_free_gib=30" in script
     assert "tier_max_disk_used_pct=85" in script
-    assert "QDEV_WORKER_PROVISION_MIN_FREE_GIB:-$tier_min_free_gib" in script
-    assert "QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT:-$tier_max_disk_used_pct" in script
-    assert "QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE:-false" in script
-    assert "provision_min_free_gib < 5" in script
-    assert "provision_min_free_gib > 30" in script
-    assert "provision_max_disk_used_pct < 85" in script
-    assert "provision_max_disk_used_pct > 90" in script
-    assert "provision_min_free_gib != tier_min_free_gib" in script
-    assert "provision_max_disk_used_pct != tier_max_disk_used_pct" in script
-    assert "allow_capacity_override" in script
+    assert 'provision_min_free_gib="$tier_min_free_gib"' in script
+    assert 'provision_max_disk_used_pct="$tier_max_disk_used_pct"' in script
+    assert "QDEV_WORKER_PROVISION_MIN_FREE_GIB \\" in script
+    assert "QDEV_WORKER_PROVISION_MAX_DISK_USED_PCT \\" in script
+    assert "QDEV_WORKER_ALLOW_PROVISION_CAPACITY_OVERRIDE; do" in script
+    assert "is retired; provisioning uses the sealed tier gate" in script
+    assert "allow_capacity_override" not in script
     assert 'min_free="$provision_min_free_kib"' in script
     assert "used > max_used" in script
     assert "mem < 4194304" in script

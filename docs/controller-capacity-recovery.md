@@ -233,16 +233,20 @@ qdev-runner-operator queue-audit > durable-queue-audit-receipt.json
 ```
 
 An override is admitted only for a fresh, idle worker with a registered
-repository/profile, disk-only blockers, measured metrics and no other active
-override. It is applied by the worker's normal authenticated heartbeat; the
-operator endpoint never dispatches a job. Cancel it after the provider-visible
-terminal result or let expiry restore normal thresholds:
+repository/profile, a matching controller-issued `claim-scope-v2`, disk-only
+blockers, measured metrics and no other active override. The scope must bind
+the exact durable FIFO head, worker certificate and configured worker scope;
+an unscoped request is rejected. It is applied by the worker's normal
+authenticated heartbeat; the operator endpoint never dispatches a job. Cancel
+it after the provider-visible terminal result or let expiry restore normal
+thresholds:
 
 ```bash
 qdev-runner-operator override srv1879763-light-primary \
   --repository belilovsky/qazlake \
   --head-sha 0123456789abcdef0123456789abcdef01234567 \
   --profile qdev-ci-docker \
+  --claim-scope-id "$SCOPE_ID_FROM_SIGNED_CLAIM_SCOPE" \
   --min-disk-free-gib 4.5 --max-disk-used-pct 90 \
   --duration-seconds 900 --owner qdev-fleet-operations \
   --reason 'bounded exact-SHA FIFO recovery' \
