@@ -114,6 +114,8 @@ def test_capacity_override_sends_exact_source_binding(
             "belilovsky/qazlake",
             "--head-sha",
             "b" * 40,
+            "--claim-scope-id",
+            "qazlake-claim-scope-1",
             "--profile",
             "qdev-ci-docker",
             "--owner",
@@ -129,6 +131,7 @@ def test_capacity_override_sends_exact_source_binding(
     assert captured["body"] == {
         "repository": "belilovsky/qazlake",
         "head_sha": "b" * 40,
+        "claim_scope_id": "qazlake-claim-scope-1",
         "profiles": ["qdev-ci-docker"],
         "min_disk_free_gib": 4.5,
         "max_disk_used_pct": 90.0,
