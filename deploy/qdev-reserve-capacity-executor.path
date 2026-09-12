@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch QDev CI sealed reserve-capacity outbox
+After=local-fs.target
+
+[Path]
+PathChanged=/var/lib/qdev-runner/incident-watchdog/reserve-capacity-outbox.json
+Unit=qdev-reserve-capacity-executor.service
+
+[Install]
+WantedBy=multi-user.target

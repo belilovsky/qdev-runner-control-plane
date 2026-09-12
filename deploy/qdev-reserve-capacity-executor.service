@@ -1,0 +1,22 @@
+[Unit]
+Description=Consume one sealed QDev CI reserve-capacity request
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_fixed_reserve_capacity_executor.py
+TimeoutStartSec=11min
+UMask=0027
+Environment=PYTHONNOUSERSITE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/qdev-runner-control-plane /etc/qdev-runner
+ReadWritePaths=/var/lib/qdev-runner
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
