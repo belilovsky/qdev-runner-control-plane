@@ -19,7 +19,7 @@ ci.qdev.run {
   # identity and policy-shaped request before it can create a host dispatch.
   @fleet_bootstrap_ingress {
     method POST
-    path /internal/v1/ingress/fleet-bootstrap/activate-controller /internal/v1/ingress/fleet-bootstrap/reconcile-controller-activation /internal/v1/ingress/fleet-bootstrap/enrol-host-agent
+    path /internal/v1/ingress/fleet-bootstrap/activate-controller /internal/v1/ingress/fleet-bootstrap/reconcile-controller-activation /internal/v1/ingress/fleet-bootstrap/enrol-host-agent /internal/v1/ingress/fleet-bootstrap/restore-existing-worker
   }
   handle @fleet_bootstrap_ingress {
     request_body {
