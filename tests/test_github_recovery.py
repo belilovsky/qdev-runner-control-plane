@@ -15,6 +15,115 @@ def _client(tmp_path: Path, handler: httpx.MockTransport) -> GitHubAppClient:
     return GitHubAppClient("1", tmp_path / "unused.pem", transport=handler)
 
 
+def _private_directory(tmp_path: Path) -> Path:
+    directory = tmp_path / "controller-private"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o700)
+    return directory
+
+
+def test_actions_artifact_download_streams_provider_location_without_installation_token(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "api.github.com":
+            assert request.headers["authorization"] == "Bearer installation-token"
+            return httpx.Response(
+                302,
+                headers={
+                    "location": (
+                        "https://pipelines.actions.githubusercontent.com/"
+                        "download?one-time-signature=opaque"
+                    )
+                },
+            )
+        assert request.headers.get("authorization") is None
+        assert request.headers["user-agent"] == "qdev-runner-control-plane/0.1"
+        return httpx.Response(200, content=b"release-archive")
+
+    client = _client(tmp_path, httpx.MockTransport(respond))
+    client.installation_token = lambda _installation_id: "installation-token"  # type: ignore[method-assign]
+    destination = _private_directory(tmp_path) / "archive.zip"
+    try:
+        client.download_actions_artifact_to_file(
+            7,
+            "belilovsky/qazpolit",
+            11,
+            destination,
+            maximum_bytes=1024,
+        )
+    finally:
+        client.close()
+
+    assert destination.read_bytes() == b"release-archive"
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://pipelines.actions.githubusercontent.com/archive",
+        "https://github.example.invalid/archive",
+        "https://user@pipelines.actions.githubusercontent.com/archive",
+    ],
+)
+def test_actions_artifact_download_rejects_unsafe_provider_location(
+    tmp_path: Path, location: str
+) -> None:
+    client = _client(
+        tmp_path,
+        httpx.MockTransport(lambda _request: httpx.Response(302, headers={"location": location})),
+    )
+    client.installation_token = lambda _installation_id: "installation-token"  # type: ignore[method-assign]
+    destination = _private_directory(tmp_path) / "archive.zip"
+    try:
+        with pytest.raises(GitHubError, match="location is unsafe"):
+            client.download_actions_artifact_to_file(
+                7,
+                "belilovsky/qazpolit",
+                11,
+                destination,
+                maximum_bytes=1024,
+            )
+    finally:
+        client.close()
+
+    assert not destination.exists()
+
+
+def test_actions_artifact_download_removes_partial_file_after_size_limit(tmp_path: Path) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://pipelines.actions.githubusercontent.com/download?signature=x"
+                },
+            )
+        return httpx.Response(200, content=b"too-large")
+
+    client = _client(tmp_path, httpx.MockTransport(respond))
+    client.installation_token = lambda _installation_id: "installation-token"  # type: ignore[method-assign]
+    destination = _private_directory(tmp_path) / "archive.zip"
+    try:
+        with pytest.raises(GitHubError, match="exceeds its permitted size"):
+            client.download_actions_artifact_to_file(
+                7,
+                "belilovsky/qazpolit",
+                11,
+                destination,
+                maximum_bytes=1,
+            )
+    finally:
+        client.close()
+
+    assert not destination.exists()
+
+
 def test_paginated_collection_traverses_more_than_one_page(tmp_path: Path) -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["page"])

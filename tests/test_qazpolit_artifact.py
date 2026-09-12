@@ -154,6 +154,31 @@ def test_store_copies_and_validates_a_downloaded_archive_file(tmp_path: Path) ->
     assert stored.archive_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_store_validates_a_controller_directed_download(tmp_path: Path) -> None:
+    payload = _archive()
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    def download_to(destination: Path) -> None:
+        destination.write_bytes(payload)
+        destination.chmod(0o600)
+
+    stored = store.ingest_download(download_to, expected_source_sha=SOURCE_SHA)
+
+    assert stored.archive_path.read_bytes() == payload
+    assert stored.archive_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_store_refuses_non_private_controller_directed_download(tmp_path: Path) -> None:
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    def download_to(destination: Path) -> None:
+        destination.write_bytes(_archive())
+        destination.chmod(0o644)
+
+    with pytest.raises(QazPolitArtifactStorageError, match="private regular file"):
+        store.ingest_download(download_to, expected_source_sha=SOURCE_SHA)
+
+
 def test_store_refuses_a_symlinked_downloaded_archive_file(tmp_path: Path) -> None:
     downloaded_archive = tmp_path / "downloaded-release.zip"
     downloaded_archive.write_bytes(_archive())

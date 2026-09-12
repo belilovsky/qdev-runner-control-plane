@@ -12,6 +12,7 @@ import hashlib
 import os
 import secrets
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,6 +146,38 @@ class QazPolitArtifactStore:
                     "unable to remove temporary QazPolit archive"
                 ) from error
 
+    def ingest_download(
+        self,
+        download_to: Callable[[Path], None],
+        *,
+        expected_source_sha: str,
+    ) -> StoredQazPolitReleaseArtifact:
+        """Accept one controller-directed streaming download into private storage.
+
+        The downloader receives a newly allocated private path and must create
+        one regular private file there. The path is never supplied by an API
+        caller. Validation and immutable promotion occur before the file can
+        become a release candidate.
+        """
+
+        temporary = self.root / f".incoming.{secrets.token_hex(16)}.tmp"
+        try:
+            download_to(temporary)
+            self._verify_private_temporary(temporary)
+            evidence = validate_qazpolit_release_archive_file(
+                temporary, expected_source_sha=expected_source_sha
+            )
+            return self._retain_private_temporary(temporary, evidence)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                raise QazPolitArtifactStorageError(
+                    "unable to remove temporary QazPolit archive"
+                ) from error
+
     def _retain_private_temporary(
         self, temporary: Path, evidence: QazPolitArtifactEvidence
     ) -> StoredQazPolitReleaseArtifact:
@@ -211,6 +244,23 @@ class QazPolitArtifactStore:
                 os.close(source_descriptor)
             if destination_descriptor is not None:
                 os.close(destination_descriptor)
+
+    @staticmethod
+    def _verify_private_temporary(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise QazPolitArtifactStorageError(
+                "downloaded QazPolit archive is unavailable"
+            ) from error
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise QazPolitArtifactStorageError(
+                "downloaded QazPolit archive must be a private regular file"
+            )
 
     @staticmethod
     def _verify_existing(path: Path, expected_digest: str) -> None:
