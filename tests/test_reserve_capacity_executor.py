@@ -181,6 +181,7 @@ def test_service_watches_only_the_sealed_outbox(executor):
     )
     assert "User=root" in service
     assert "NoNewPrivileges=true" in service
+    assert "ConditionPathIsRegular=/etc/qdev-runner/reserve-capacity-targets.json" in service
     assert (
         "PathChanged=/var/lib/qdev-runner/incident-watchdog/reserve-capacity-outbox.json"
         in path_unit

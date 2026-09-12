@@ -1407,11 +1407,18 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/deploy/qdev-fleet-host-dispatch.path" \
     /etc/systemd/system/qdev-fleet-host-dispatch.path 0644 || return 1
+  atomic_install \
+    "$release/deploy/qdev-reserve-capacity-executor.service" \
+    /etc/systemd/system/qdev-reserve-capacity-executor.service 0644 || return 1
+  atomic_install \
+    "$release/deploy/qdev-reserve-capacity-executor.path" \
+    /etc/systemd/system/qdev-reserve-capacity-executor.path 0644 || return 1
   systemctl daemon-reload || return 1
   # Starting only the watcher is safe when activation itself is executing as
   # the current oneshot.  That invocation writes its durable result before a
   # subsequently queued service run can begin.
   systemctl enable --now qdev-fleet-host-dispatch.path || return 1
+  systemctl enable --now qdev-reserve-capacity-executor.path || return 1
 }
 
 admission_host_tool_path=/usr/local/sbin/qdev-controller-admission

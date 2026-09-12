@@ -90,6 +90,10 @@ install -m 0644 deploy/qdev-fleet-host-dispatch.service \
   /etc/systemd/system/qdev-fleet-host-dispatch.service
 install -m 0644 deploy/qdev-fleet-host-dispatch.path \
   /etc/systemd/system/qdev-fleet-host-dispatch.path
+install -m 0644 deploy/qdev-reserve-capacity-executor.service \
+  /etc/systemd/system/qdev-reserve-capacity-executor.service
+install -m 0644 deploy/qdev-reserve-capacity-executor.path \
+  /etc/systemd/system/qdev-reserve-capacity-executor.path
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
 install -o root -g root -m 0644 config/admin-platform-package-bindings.json \
   /etc/qdev-runner/admin-platform-package-bindings.json
@@ -100,6 +104,7 @@ fi
 systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path
+systemctl enable --now qdev-reserve-capacity-executor.path
 # Reconcile any processing record that survived a dispatcher or host crash.
 systemctl start qdev-fleet-host-dispatch.service
 printf 'controller provisioning complete; install broker.env, GitHub App key, mTLS files and recovery bindings before start\n'

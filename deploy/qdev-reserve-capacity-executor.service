@@ -2,6 +2,7 @@
 Description=Consume one sealed QDev CI reserve-capacity request
 After=local-fs.target network-online.target
 Wants=network-online.target
+ConditionPathIsRegular=/etc/qdev-runner/reserve-capacity-targets.json
 
 [Service]
 Type=oneshot
