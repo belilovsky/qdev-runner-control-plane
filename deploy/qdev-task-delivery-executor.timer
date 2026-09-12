@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry receipt-bound QDev CI job-status delivery
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=qdev-task-delivery-executor.service
+
+[Install]
+WantedBy=timers.target

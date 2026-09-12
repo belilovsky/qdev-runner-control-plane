@@ -1,0 +1,24 @@
+[Unit]
+Description=Deliver receipt-bound QDev CI job-status notices
+After=local-fs.target network-online.target
+Wants=network-online.target
+ConditionPathIsRegular=/etc/qdev-runner/task-delivery-targets.json
+ConditionPathExists=/var/lib/qdev-runner/incident-watchdog/job-delivery-outbox.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /opt/qdev-runner-control-plane/current/scripts/qdev_fixed_task_delivery_executor.py
+TimeoutStartSec=3min
+UMask=0077
+Environment=PYTHONNOUSERSITE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadOnlyPaths=/opt/qdev-runner-control-plane /etc/qdev-runner
+ReadWritePaths=/var/lib/qdev-runner
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -74,6 +74,8 @@ install -o root -g root -m 0755 scripts/qdev_fleet_worker_recovery_adapter.py \
   /usr/local/sbin/qdev-fleet-worker-recovery
 install -o root -g root -m 0755 scripts/qdev_fixed_worker_recovery_dispatch.py \
   /usr/local/sbin/qdev-fixed-worker-recovery-dispatch
+install -o root -g root -m 0755 scripts/qdev_fixed_task_delivery_executor.py \
+  /usr/local/sbin/qdev-fixed-task-delivery-executor
 install -o root -g root -m 0755 scripts/qdev_recovery_host_enrol_adapter.py \
   /usr/local/sbin/qdev-recovery-host-enrol
 install -o root -g root -m 0755 scripts/provision_fleet_host_dispatch_state.py \
@@ -94,6 +96,10 @@ install -m 0644 deploy/qdev-reserve-capacity-executor.service \
   /etc/systemd/system/qdev-reserve-capacity-executor.service
 install -m 0644 deploy/qdev-reserve-capacity-executor.path \
   /etc/systemd/system/qdev-reserve-capacity-executor.path
+install -m 0644 deploy/qdev-task-delivery-executor.service \
+  /etc/systemd/system/qdev-task-delivery-executor.service
+install -m 0644 deploy/qdev-task-delivery-executor.timer \
+  /etc/systemd/system/qdev-task-delivery-executor.timer
 install -o root -g root -m 0755 scripts/qdev_controller_admission_host.sh /usr/local/sbin/qdev-controller-admission
 install -o root -g root -m 0644 config/admin-platform-package-bindings.json \
   /etc/qdev-runner/admin-platform-package-bindings.json
@@ -105,6 +111,7 @@ systemctl daemon-reload
 systemctl enable qdev-artifact-retention.timer
 systemctl enable --now qdev-fleet-host-dispatch.path
 systemctl enable --now qdev-reserve-capacity-executor.path
+systemctl enable --now qdev-task-delivery-executor.timer
 # Reconcile any processing record that survived a dispatcher or host crash.
 systemctl start qdev-fleet-host-dispatch.service
 printf 'controller provisioning complete; install broker.env, GitHub App key, mTLS files and recovery bindings before start\n'

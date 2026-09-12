@@ -66,11 +66,18 @@ repository, run id and job id of the started job, plus a deterministic
 The durable delivery spool is
 `/var/lib/qdev-runner/incident-watchdog/job-delivery-outbox.json`, not
 `alerts.jsonl`. It is root-owned `0600`, atomically rebuilt from pending
-deliveries, and is safe for at-least-once consumption by the fixed root-owned
-task delivery adapter. The adapter uses `delivery_id` as its idempotency key
-and writes a matching `qdev-ci-incident-delivery-receipt-v1` JSONL receipt to
+deliveries, and is consumed by `qdev-task-delivery-executor.timer` every two
+minutes. The executor resolves only
+`/usr/local/sbin/qdev-fixed-task-delivery-adapter` through the owner-only
+`/etc/qdev-runner/task-delivery-targets.json` binding; the binding never
+accepts a recipient, endpoint, command or task mapping from the spool. The
+adapter uses `delivery_id` as its idempotency key and writes a matching
+`qdev-ci-incident-delivery-receipt-v1` JSONL receipt to
 `delivery-receipts.jsonl` only after its message gateway confirms delivery.
-On the next watchdog pass, the exact tuple is checked and moved to the
+Explicit transient failures retry twice with bounded backoff. A permanent,
+malformed or ambiguous outcome is written to the executor's root-only DLQ
+state and is never resent automatically, preventing duplicate notices. On the
+next watchdog pass, the exact receipt tuple is checked and moved to the
 acknowledged ledger. Until then it remains pending and is never reported as
 notified. A mismatched, insecure, symlinked or unknown receipt fails closed.
 
