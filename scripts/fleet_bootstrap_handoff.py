@@ -147,9 +147,7 @@ def _post(endpoint: str, payload: dict[str, object], oidc_token: str) -> dict[st
     except urllib.error.HTTPError as error:
         # The status class is enough to distinguish edge, identity and broker
         # admission failures.  Do not expose a response body or JWT in logs.
-        raise BootstrapHandoffError(
-            f"bootstrap ingress rejected with HTTP {error.code}"
-        ) from error
+        raise BootstrapHandoffError(f"bootstrap ingress rejected with HTTP {error.code}") from error
     except (urllib.error.URLError, TimeoutError) as error:
         # Neither JWTs nor broker response bodies are safe Action-log content.
         raise BootstrapHandoffError("bootstrap ingress submission failed") from error
