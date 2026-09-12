@@ -327,7 +327,7 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
     ) == len(records)
 
 
-def _reserve_receipt_for(watchdog, request, *, status="admitted"):
+def _reserve_receipt_for(watchdog, request, *, status="admitted", audited_at=None):
     return {
         "schema": watchdog.RESERVE_RECEIPT_SCHEMA,
         "request_id": request["request_id"],
@@ -337,7 +337,8 @@ def _reserve_receipt_for(watchdog, request, *, status="admitted"):
         "slots": 2,
         "profiles": ["qdev-ci", "qdev-ci-browser"],
         "max_docker_jobs": 0,
-        "audited_at": "2026-09-11T00:01:00Z",
+        "audited_at": audited_at
+        or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "audit_digest": "a" * 64,
     }
 
@@ -397,6 +398,43 @@ def test_reserve_receipt_mismatch_fails_closed_without_capacity_promotion(watchd
     ledger = watchdog.load_ledger(state_root)
     assert ledger["activated_reserves"] == []
     assert "mail-general-reserve" in ledger["pending_reserve_requests"]
+
+
+def test_stale_reserve_audit_receipt_fails_closed_without_capacity_promotion(
+    watchdog, tmp_path: Path
+):
+    state_root = tmp_path / "state"
+    busy = healthy_observation(
+        watchdog,
+        pending_jobs=3,
+        eligible_slots=0,
+        fifo_head_age_seconds=400,
+        active_jobs=1,
+        registered_reserve_hosts=["mail-general-reserve"],
+    )
+    watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    request = json.loads(
+        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
+    )["requests"][0]
+    receipt_path = state_root / "reserve-capacity-receipts.jsonl"
+    receipt_path.write_text(
+        json.dumps(
+            _reserve_receipt_for(
+                watchdog,
+                request,
+                audited_at=(datetime.now(UTC) - timedelta(seconds=301))
+                .isoformat()
+                .replace("+00:00", "Z"),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(receipt_path, 0o600)
+
+    with pytest.raises(watchdog.WatchdogError, match="audit is not fresh"):
+        watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    assert watchdog.load_ledger(state_root)["activated_reserves"] == []
 
 
 def test_blocked_reserve_receipt_is_terminal_without_an_automatic_retry(watchdog, tmp_path: Path):

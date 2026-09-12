@@ -93,8 +93,8 @@ root-only request spool is
 request has a stable `request_id` and names only the sealed target. The fixed
 adapter may write a `qdev-ci-reserve-capacity-receipt-v1` JSONL record only
 after its host audit and capacity calculation. On the next pass the watchdog
-checks the exact request tuple, a timestamp and audit digest, and the sealed
-two-slot non-Docker topology before promoting the reserve. A `blocked` receipt
+checks the exact request tuple, an audit no older than 300 seconds, and the
+sealed two-slot non-Docker topology before promoting the reserve. A `blocked` receipt
 is recorded but never promoted or retried automatically; a new request needs a
 new controller-owned incident decision. A mismatched, insecure, symlinked or
 unknown receipt fails closed. The target is never used while a compatible slot

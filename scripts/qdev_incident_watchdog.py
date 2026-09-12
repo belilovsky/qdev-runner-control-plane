@@ -45,6 +45,7 @@ FIFO_HEAD_CRITICAL_SECONDS = 900
 HEARTBEAT_STALE_SECONDS = 90
 CLAIM_STALE_SECONDS = 300
 LOOP_SECONDS = 120
+RESERVE_AUDIT_MAX_AGE_SECONDS = 300
 
 OPERATOR_AUDIENCE = "qdev-fleet-operations"
 TASK_AUDIENCE = "codex-tasks"
@@ -640,6 +641,8 @@ def reconcile_delivery_receipts(
 def _validate_reserve_receipt(
     receipt: Mapping[str, Any],
     request: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Accept capacity only from the exact controller-owned reserve request."""
 
@@ -677,6 +680,10 @@ def _validate_reserve_receipt(
         raise WatchdogError("reserve receipt audit timestamp is invalid") from exc
     if parsed_timestamp.tzinfo is None:
         raise WatchdogError("reserve receipt audit timestamp must include an offset")
+    reference_time = now or datetime.now(UTC)
+    age_seconds = (reference_time - parsed_timestamp.astimezone(UTC)).total_seconds()
+    if age_seconds > RESERVE_AUDIT_MAX_AGE_SECONDS or age_seconds < -LOOP_SECONDS:
+        raise WatchdogError("reserve receipt audit is not fresh")
     audit_digest = receipt.get("audit_digest")
     if (
         not isinstance(audit_digest, str)
