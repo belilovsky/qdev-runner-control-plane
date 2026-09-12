@@ -16,7 +16,7 @@ recovery build №76 и проверки новых source-кандидатов.
 - `controller_activation` active на generation `15`;
 - в очереди 31 задание: 20 `qdev-ci`, 2 `qdev-ci-browser` и 9
   `qdev-ci-docker`;
-- oldest pending age составляет 4 804 секунды на момент последнего снимка;
+- oldest pending age составляет 5 053 секунды на момент последнего снимка;
 - безопасных допустимых слотов — 0 для обоих профилей.
 
 На момент актуализации `origin/main` уже продвинулся до
