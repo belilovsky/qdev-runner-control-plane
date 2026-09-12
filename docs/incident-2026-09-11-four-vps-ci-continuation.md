@@ -15,12 +15,12 @@ recovery build №76 и переноса проверенного source-кан�
 - `controller_release` и `controller_activation` совпадают по SHA, а
   public/internal immutable image digests совпадают с release tuple;
 - `controller_activation` active на generation `15`;
-- `pending=29`, oldest pending age — `6 183` секунды;
+- `pending=31`, oldest pending age — `6 526` секунд;
 - `eligible_slots.primary=0`, `eligible_slots.reserve=0` и total `0`; primary
   отсутствует в live view, reserve виден, но не предоставляет слот;
-- public health намеренно не раскрывает profile split. Историческое
-  распределение 20/2/9 нельзя использовать как текущий факт без нового
-  signed internal receipt.
+- additive profile aggregates показывают `19 qdev-ci`, `3 qdev-ci-browser` и
+  `9 qdev-ci-docker`; exact job, runner, host и claim data public health не
+  раскрывает.
 
 На момент актуализации `origin/main` уже продвинулся до
 `2ba23702fd76036a0de7d59c4d91a6db50988970`. Чистый recovery-кандидат
@@ -258,11 +258,11 @@ recovery details доступны исключительно на существ
   targeted tests; до host audit она не считается доступной ёмкостью.
 - Capacity admission, canaries и queue drain: ожидают reconciliation receipt
   для historical transactions и controller-managed host-agent receipts. На
-  последнем public health-снимке `pending=29`, oldest age — `6 183` секунды,
-  а eligible slots остаются нулевыми для primary и reserve. Profile split
-  недоступен на этой public surface. Изменение числа pending само по себе не
-  является восстановлением capacity и не даёт оснований для сообщения
-  ожидающим deployment-задачам.
+  последнем public health-снимке `pending=31` (`19 ci`, `3 browser`, `9
+  docker`), oldest age — `6 526` секунд, а eligible slots остаются нулевыми
+  для primary и reserve. Изменение числа pending само по себе не является
+  восстановлением capacity и не даёт оснований для сообщения ожидающим
+  deployment-задачам.
 - Notification delivery, reserve accounting и capacity planner: receipt-bound
   source-кандидаты локально готовы; reserve больше не может быть ложно отмечен
   активным при одной лишь записи watchdog. Watchdog уже materializes stable
