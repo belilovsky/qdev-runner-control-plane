@@ -67,6 +67,7 @@ def healthy_observation(watchdog, **overrides):
         "healthy_workers": 3,
         "active_jobs": 0,
         "registered_reserve_hosts": ["mail-general-reserve"],
+        "task_delivery_dead_letter_count": 0,
         "waiting_jobs": [],
         "observed_at": "2026-09-11T00:00:00Z",
     }
@@ -99,6 +100,7 @@ def test_healthy_state_has_no_breaches_and_stays_silent(watchdog, tmp_path: Path
         ("disk_used_pct", 91, "resource_floor_crossed"),
         ("missing_images", ["sha256:deadbeef"], "immutable_image_missing"),
         ("provider_block", "payment-required", "provider_block"),
+        ("task_delivery_dead_letter_count", 1, "task_delivery_dead_letter"),
     ],
 )
 def test_each_contract_breach_is_detected(watchdog, field, value, expected):
@@ -315,9 +317,7 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
     assert first["reserve"] == expected_reserve
     ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
     assert ledger["activated_reserves"] == []
-    assert ledger["pending_reserve_requests"] == {
-        "mail-general-reserve": expected_reserve
-    }
+    assert ledger["pending_reserve_requests"] == {"mail-general-reserve": expected_reserve}
     records = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["record"] == "reserve-decision"
     second = watchdog.run_once(busy, state_root=state_root, outbox=outbox)
@@ -337,8 +337,7 @@ def _reserve_receipt_for(watchdog, request, *, status="admitted", audited_at=Non
         "slots": 2,
         "profiles": ["qdev-ci", "qdev-ci-browser"],
         "max_docker_jobs": 0,
-        "audited_at": audited_at
-        or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "audited_at": audited_at or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "audit_digest": "a" * 64,
     }
 
@@ -354,9 +353,9 @@ def test_reserve_requires_a_matching_admitted_capacity_receipt(watchdog, tmp_pat
         registered_reserve_hosts=["mail-general-reserve"],
     )
     watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
-    request = json.loads(
-        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
-    )["requests"][0]
+    request = json.loads((state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8"))[
+        "requests"
+    ][0]
     assert request["host_id"] not in watchdog.load_ledger(state_root)["activated_reserves"]
 
     receipt_path = state_root / "reserve-capacity-receipts.jsonl"
@@ -384,9 +383,9 @@ def test_reserve_receipt_mismatch_fails_closed_without_capacity_promotion(watchd
         registered_reserve_hosts=["mail-general-reserve"],
     )
     watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
-    request = json.loads(
-        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
-    )["requests"][0]
+    request = json.loads((state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8"))[
+        "requests"
+    ][0]
     receipt = _reserve_receipt_for(watchdog, request)
     receipt["profiles"] = ["qdev-ci", "qdev-ci-docker"]
     receipt_path = state_root / "reserve-capacity-receipts.jsonl"
@@ -413,9 +412,9 @@ def test_stale_reserve_audit_receipt_fails_closed_without_capacity_promotion(
         registered_reserve_hosts=["mail-general-reserve"],
     )
     watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
-    request = json.loads(
-        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
-    )["requests"][0]
+    request = json.loads((state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8"))[
+        "requests"
+    ][0]
     receipt_path = state_root / "reserve-capacity-receipts.jsonl"
     receipt_path.write_text(
         json.dumps(
@@ -448,9 +447,9 @@ def test_blocked_reserve_receipt_is_terminal_without_an_automatic_retry(watchdog
         registered_reserve_hosts=["mail-general-reserve"],
     )
     watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
-    request = json.loads(
-        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
-    )["requests"][0]
+    request = json.loads((state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8"))[
+        "requests"
+    ][0]
     receipt_path = state_root / "reserve-capacity-receipts.jsonl"
     receipt_path.write_text(
         json.dumps(_reserve_receipt_for(watchdog, request, status="blocked")) + "\n",
@@ -557,9 +556,9 @@ def test_delivery_receipt_mismatch_fails_closed_without_acknowledging(watchdog, 
         waiting_jobs=[watchdog.WaitingJob("belilovsky/qazlake", 11, 23, "in_progress", True)],
     )
     watchdog.run_once(observation, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
-    delivery = json.loads(
-        (state_root / "job-delivery-outbox.json").read_text(encoding="utf-8")
-    )["deliveries"][0]
+    delivery = json.loads((state_root / "job-delivery-outbox.json").read_text(encoding="utf-8"))[
+        "deliveries"
+    ][0]
     receipt = _receipt_for(watchdog, delivery)
     receipt["status"] = "completed"
     receipt_path = state_root / "delivery-receipts.jsonl"
@@ -750,6 +749,33 @@ def test_collector_merges_the_aggregate_internal_document(collector):
     assert observation["missing_images"] == ["sha256:abc"]
     assert observation["provider_block"] == "blocked"
     assert observation["waiting_jobs"][0]["job_id"] == 2
+
+
+def test_collector_exports_only_the_aggregate_task_delivery_dlq_count(collector, tmp_path: Path):
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    state = state_root / "task-delivery-executor-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "schema": collector.TASK_DELIVERY_STATE_SCHEMA,
+                "deliveries": {
+                    "private-job": {"state": "dead_letter", "repository": "must-not-leave-host"},
+                    "retry": {"state": "retry_scheduled"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(state, 0o600)
+    observation, _ = collector.collect(
+        {"controller_activation": {"state": "active"}, "pending": 0},
+        internal={},
+        dwell={},
+        task_delivery_dead_letter_count=collector._task_delivery_dead_letter_count(state_root),
+    )
+    assert observation["task_delivery_dead_letter_count"] == 1
+    assert "must-not-leave-host" not in json.dumps(observation)
 
 
 def test_collector_fifo_age_falls_back_to_the_internal_document(collector):

@@ -76,6 +76,9 @@ adapter uses `delivery_id` as its idempotency key and writes a matching
 `delivery-receipts.jsonl` only after its message gateway confirms delivery.
 Explicit transient failures retry twice with bounded backoff. A permanent,
 malformed or ambiguous outcome is written to the executor's root-only DLQ
+and its aggregate count is a critical watchdog condition. The alert carries
+only the incident code; the job tuple remains in the root-only ledger for
+operator reconciliation.
 state and is never resent automatically, preventing duplicate notices. On the
 next watchdog pass, the exact receipt tuple is checked and moved to the
 acknowledged ledger. Until then it remains pending and is never reported as

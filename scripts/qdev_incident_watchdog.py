@@ -105,6 +105,7 @@ class Observation:
     healthy_workers: int = 0
     active_jobs: int = 0
     registered_reserve_hosts: tuple[str, ...] = ()
+    task_delivery_dead_letter_count: int = 0
     waiting_jobs: tuple[WaitingJob, ...] = ()
     observed_at: str = field(default_factory=lambda: _now())
 
@@ -127,6 +128,9 @@ class Observation:
             active_jobs=int(value.get("active_jobs", 0)),
             registered_reserve_hosts=tuple(
                 str(item) for item in value.get("registered_reserve_hosts", ())
+            ),
+            task_delivery_dead_letter_count=max(
+                0, int(value.get("task_delivery_dead_letter_count", 0))
             ),
             waiting_jobs=tuple(
                 WaitingJob.from_mapping(item) for item in value.get("waiting_jobs", ())
@@ -252,6 +256,14 @@ def evaluate(
                 "provider or billing block is in effect",
             )
         )
+    if observation.task_delivery_dead_letter_count:
+        breaches.append(
+            Breach(
+                "task_delivery_dead_letter",
+                SEVERITY_CRITICAL,
+                "a receipt-bound task notification requires operator reconciliation",
+            )
+        )
     if set(observation.registered_reserve_hosts).difference(SEALED_RESERVE_HOSTS):
         breaches.append(
             Breach(
@@ -281,6 +293,9 @@ def state_digest(breaches: Iterable[Breach], observation: Observation) -> str:
             "disk_used_bucket": _bucket_or_unknown(observation.disk_used_pct, (0, 70, 85, 90)),
             "missing_image_count": len(observation.missing_images),
             "provider_block": bool(observation.provider_block),
+            "task_delivery_dead_letter_bucket": _bucket(
+                observation.task_delivery_dead_letter_count, (0, 1, 5)
+            ),
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

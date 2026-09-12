@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 import urllib.error
 import urllib.request
@@ -31,6 +32,7 @@ from urllib.parse import urlparse
 SCHEMA = "qdev-ci-incident-observation-v1"
 DWELL_SCHEMA = "qdev-ci-incident-dwell-v1"
 INTERNAL_SCHEMA = "qdev-ci-incident-internal-observation-v1"
+TASK_DELIVERY_STATE_SCHEMA = "qdev-ci-task-delivery-executor-state-v1"
 
 ACTIVATION_DWELL_KEY = "activation_not_active_since"
 NO_SLOT_DWELL_KEY = "pending_without_slot_since"
@@ -128,6 +130,48 @@ def _load_internal(path: Path) -> Mapping[str, Any]:
     return document
 
 
+def _task_delivery_dead_letter_count(state_root: Path) -> int:
+    """Return the aggregate DLQ count without copying delivery identities.
+
+    The executor state includes private immutable job tuples.  The watchdog
+    needs only whether an operator must reconcile delivery, so this collector
+    reads the local root-owned ledger and exports its count alone.
+    """
+
+    path = state_root / "task-delivery-executor-state.json"
+    if not path.exists():
+        return 0
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+        # The production unit is explicitly User=root.  Matching the effective
+        # service identity also keeps deterministic non-root fixture checks
+        # possible without weakening the production binding.
+        or metadata.st_uid != os.geteuid()
+    ):
+        raise ObservationError("task delivery state must be a root-private regular file")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ObservationError("task delivery state is unreadable") from exc
+    if (
+        not isinstance(document, Mapping)
+        or set(document) != {"schema", "deliveries"}
+        or document.get("schema") != TASK_DELIVERY_STATE_SCHEMA
+        or not isinstance(document.get("deliveries"), Mapping)
+    ):
+        raise ObservationError("task delivery state has an unexpected schema")
+    count = 0
+    for entry in document["deliveries"].values():
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("state"), str):
+            raise ObservationError("task delivery state entry is invalid")
+        if entry["state"] == "dead_letter":
+            count += 1
+    return count
+
+
 def _load_dwell(state_root: Path) -> dict[str, Any]:
     path = state_root / "dwell.json"
     if not path.exists():
@@ -174,6 +218,7 @@ def collect(
     *,
     internal: Mapping[str, Any],
     dwell: dict[str, Any],
+    task_delivery_dead_letter_count: int = 0,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the observation document and the updated dwell document."""
@@ -222,6 +267,7 @@ def collect(
         "registered_reserve_hosts": [
             str(item) for item in internal.get("registered_reserve_hosts", ())
         ],
+        "task_delivery_dead_letter_count": task_delivery_dead_letter_count,
         "waiting_jobs": [
             {
                 "repository": str(item["repository"]),
@@ -263,7 +309,12 @@ def main(argv: list[str] | None = None) -> int:
         health = load_document(args.health)
         internal = _load_internal(internal_path)
         dwell = _load_dwell(args.state_root)
-        observation, dwell = collect(health, internal=internal, dwell=dwell)
+        observation, dwell = collect(
+            health,
+            internal=internal,
+            dwell=dwell,
+            task_delivery_dead_letter_count=_task_delivery_dead_letter_count(args.state_root),
+        )
         write_observation(output, observation)
         _save_dwell(args.state_root, dwell)
     except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
