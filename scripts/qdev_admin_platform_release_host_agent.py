@@ -90,6 +90,7 @@ class Profile:
     rollback_dispatcher: Path
     receipt_dispatcher: Path
     private_artifact_delivery: bool = False
+    action_dispatcher: bool = False
 
     @property
     def readiness(self) -> dict[str, str]:
@@ -177,6 +178,23 @@ PROFILES = {
         release_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
         rollback_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
         receipt_dispatcher=Path("/usr/local/sbin/qmt-controller-adapter"),
+        action_dispatcher=True,
+    ),
+    "rp": Profile(
+        name="rp",
+        lane="qdev-release-rp",
+        project_id="rp",
+        repository="belilovsky/ipos",
+        placement="rp-private-runtime",
+        artifact_prefix="registry.ci.qdev.run/belilovsky/ipos",
+        adapter="rp-native-immutable-release-v1",
+        minimum_free_gib=1,
+        state_path=_STATE_ROOT / "rp.json",
+        lock_path=_LOCK_ROOT / "qdev-admin-platform-rp.lock",
+        release_dispatcher=Path("/usr/local/sbin/rp-controller-adapter"),
+        rollback_dispatcher=Path("/usr/local/sbin/rp-controller-adapter"),
+        receipt_dispatcher=Path("/usr/local/sbin/rp-controller-adapter"),
+        action_dispatcher=True,
     ),
     # QazPolit shares its host with QMT.  It must therefore use an explicit
     # controller lane and the controller-private artifact stream; neither the
@@ -483,7 +501,7 @@ def native_receipt(
     _ensure_dispatcher(profile.receipt_dispatcher)
     try:
         args = _current_dispatcher_args() if current else _dispatcher_args(release or {})
-        if profile.name in {"qmt", "qazpolit"}:
+        if profile.action_dispatcher or profile.name == "qazpolit":
             args = ["--action", "receipt", *args]
         document = json.loads(_run([str(profile.receipt_dispatcher), *args]))
     except json.JSONDecodeError as error:
@@ -530,23 +548,23 @@ def invoke_native(
         raise AgentError("native action is not allowlisted")
     _ensure_dispatcher(dispatcher)
     args = _dispatcher_args(release)
-    if profile.name == "qmt":
+    if profile.action_dispatcher:
         args = ["--action", action, *args]
-        if action == "release":
-            if candidate_evidence is None:
-                raise AgentError("QMT release requires signed candidate evidence")
-            args.extend(
-                [
-                    "--candidate-receipt-sha256",
-                    candidate_evidence["candidate_receipt_sha256"],
-                    "--release-version",
-                    candidate_evidence["release_version"],
-                    "--migration-receipt-digest",
-                    candidate_evidence["migration_receipt_digest"],
-                    "--contract-digest",
-                    candidate_evidence["contract_digest"],
-                ]
-            )
+    if profile.name == "qmt" and action == "release":
+        if candidate_evidence is None:
+            raise AgentError("QMT release requires signed candidate evidence")
+        args.extend(
+            [
+                "--candidate-receipt-sha256",
+                candidate_evidence["candidate_receipt_sha256"],
+                "--release-version",
+                candidate_evidence["release_version"],
+                "--migration-receipt-digest",
+                candidate_evidence["migration_receipt_digest"],
+                "--contract-digest",
+                candidate_evidence["contract_digest"],
+            ]
+        )
     elif profile.name == "qazpolit":
         args = ["--action", action, *args]
         if action == "release":
@@ -1146,6 +1164,37 @@ def _runtime_evidence(
                 raise AgentError("native QazPolit legacy provenance is invalid")
         else:
             raise AgentError("native QazPolit artifact provenance is invalid")
+    elif profile.name == "rp":
+        expected_dependencies = {
+            "deployment_profile": "reports-private",
+            "qazstack_version": "1.53.0",
+            "qazstack_source_sha": "64e1ba4d65c3e2b5368636fafb0cdb4645c749b6",
+        }
+        expected_provenance = {
+            "release_manifest_sha256",
+            "dependency_lock_sha256",
+            "artifact_tree_sha256",
+            "method_bundle_digest",
+            "migration_revision",
+        }
+        if dependencies != expected_dependencies:
+            raise AgentError("native RP dependency identity is invalid")
+        if (
+            set(provenance) != expected_provenance
+            or not all(
+                isinstance(provenance.get(field), str) and _HEX64.fullmatch(provenance[field])
+                for field in (
+                    "release_manifest_sha256",
+                    "dependency_lock_sha256",
+                    "artifact_tree_sha256",
+                )
+            )
+            or not isinstance(provenance.get("method_bundle_digest"), str)
+            or not _DIGEST.fullmatch(provenance["method_bundle_digest"])
+            or not isinstance(provenance.get("migration_revision"), str)
+            or not re.fullmatch(r"[a-z0-9_]{4,128}", provenance["migration_revision"])
+        ):
+            raise AgentError("native RP artifact provenance is invalid")
     else:
         if set(provenance) != {
             "qak_wheel_sha256",

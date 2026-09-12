@@ -108,6 +108,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-qmt.service" in script
     assert "deploy/qdev-release-qmt.compose.yml" in script
     assert "deploy/qdev-release-qazpolit.service" in script
+    assert "deploy/qdev-release-rp.service" in script
+    assert "scripts/rp_native_immutable_release_adapter.py" in script
     assert "scripts/qdev_admin_platform_release_host_agent.py" in script
     assert "scripts/qazpolit_native_release_adapter.py" in script
     assert "deploy/qdev-release-ortcom.service" in script

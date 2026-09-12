@@ -69,6 +69,19 @@ def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
             "payload_sha256": "8" * 64,
             "archive_size_bytes": 155_683_510,
         }
+    elif profile.name == "rp":
+        dependencies = {
+            "deployment_profile": "reports-private",
+            "qazstack_version": "1.53.0",
+            "qazstack_source_sha": "64e1ba4d65c3e2b5368636fafb0cdb4645c749b6",
+        }
+        provenance = {
+            "release_manifest_sha256": "1" * 64,
+            "dependency_lock_sha256": "2" * 64,
+            "artifact_tree_sha256": "3" * 64,
+            "method_bundle_digest": "sha256:" + "4" * 64,
+            "migration_revision": "0010_reports_dispatch_binding",
+        }
     else:
         dependencies = {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"}
         provenance = {
@@ -335,6 +348,26 @@ def _host_heartbeat(
 
 
 def _native_lane_receipt(lane: object, release: dict[str, str]) -> dict[str, Any]:
+    if lane.project_id == "rp":
+        dependencies = {
+            "deployment_profile": "reports-private",
+            "qazstack_version": "1.53.0",
+            "qazstack_source_sha": "64e1ba4d65c3e2b5368636fafb0cdb4645c749b6",
+        }
+        provenance = {
+            "release_manifest_sha256": "1" * 64,
+            "dependency_lock_sha256": "2" * 64,
+            "artifact_tree_sha256": "3" * 64,
+            "method_bundle_digest": "sha256:" + "4" * 64,
+            "migration_revision": "0010_reports_dispatch_binding",
+        }
+    else:
+        dependencies = {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"}
+        provenance = {
+            "qak_wheel_sha256": "1" * 64,
+            "avds_artifact_sha256": "2" * 64,
+            "avds_source_sha": "3" * 40,
+        }
     return {
         "schema": "qdev-admin-platform-native-receipt-v1",
         "project_id": lane.project_id,
@@ -342,12 +375,8 @@ def _native_lane_receipt(lane: object, release: dict[str, str]) -> dict[str, Any
         **release,
         "readiness": {name: "ok" for name in lane.required_readiness},
         "runtime_identity": {**release, "measured": True},
-        "dependency_identity": {"qaz_admin_kit": "0.4.9", "avds": "0.2.2"},
-        "artifact_provenance": {
-            "qak_wheel_sha256": "1" * 64,
-            "avds_artifact_sha256": "2" * 64,
-            "avds_source_sha": "3" * 40,
-        },
+        "dependency_identity": dependencies,
+        "artifact_provenance": provenance,
     }
 
 
@@ -382,6 +411,7 @@ def test_admin_platform_lanes_are_exact_and_total_has_no_total_kz_endpoint() -> 
         "qdev-release-cmnt": ("belilovsky/cmnt-web", "cmnt-root-rolling-launcher-v1"),
         "qdev-release-total": ("belilovsky/total-kz", "total-qdev-native-release-v1"),
         "qdev-release-qazposter": ("belilovsky/qazposter", "qazposter-native-release-v1"),
+        "qdev-release-rp": ("belilovsky/ipos", "rp-native-immutable-release-v1"),
     }
     for lane_name, (repository, adapter) in expected.items():
         lane = policy.lane(lane_name)
@@ -402,6 +432,7 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
         "qdev-release-cmnt": "cmnt",
         "qdev-release-total": "total",
         "qdev-release-qazposter": "qazposter",
+        "qdev-release-rp": "rp",
         "qdev-release-qazagents-static": "qazagents",
     }
     for lane_name, registry_name in names.items():
@@ -634,7 +665,7 @@ def test_controller_initial_heartbeat_establishes_one_measured_anchor(
 
 
 def test_agent_profiles_bind_each_release_to_a_compiled_native_adapter() -> None:
-    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt", "qazpolit"}
+    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt", "qazpolit", "rp"}
     for profile in AGENT.PROFILES.values():
         release = _release(profile)
         assert AGENT._release(release, profile) == release
@@ -721,6 +752,51 @@ def test_qmt_runtime_receipt_must_match_signed_candidate_evidence() -> None:
             "contract_digest",
         )
     }
+
+
+def test_rp_native_release_uses_compiled_action_dispatcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = AGENT.PROFILES["rp"]
+    release = _release(profile)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(AGENT, "_ensure_dispatcher", lambda _: None)
+    monkeypatch.setattr(AGENT, "_run", lambda command, **_: commands.append(command) or b"")
+
+    AGENT.invoke_native(profile, "release", release)
+
+    assert commands == [
+        [
+            str(profile.release_dispatcher),
+            "--action",
+            "release",
+            *AGENT._dispatcher_args(release),
+        ]
+    ]
+
+
+def test_rp_runtime_receipt_requires_exact_contract() -> None:
+    profile = AGENT.PROFILES["rp"]
+    release = _release(profile)
+    receipt = _native_receipt(profile, release)
+
+    assert AGENT._validate_native_runtime(receipt, profile, release)
+    with pytest.raises(AGENT.AgentError, match="RP dependency identity"):
+        AGENT._validate_native_runtime(
+            {**receipt, "dependency_identity": {"deployment_profile": "reports-private"}},
+            profile,
+            release,
+        )
+    with pytest.raises(AGENT.AgentError, match="RP artifact provenance"):
+        AGENT._validate_native_runtime(
+            {
+                **receipt,
+                "artifact_provenance": {
+                    **receipt["artifact_provenance"],
+                    "artifact_tree_sha256": "not-a-sha256",
+                },
+            },
+            profile,
+            release,
+        )
 
 
 def test_agent_rejects_unsigned_expired_or_foreign_dispatch_claims() -> None:

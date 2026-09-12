@@ -1,0 +1,15 @@
+[Unit]
+Description=QDev controller-managed RP immutable release agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/qdev-runner-control-plane/current/scripts/qdev_admin_platform_release_host_agent.py --profile rp --config /etc/qdev-release-agents/admin-platform.env --once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/qdev-release-agents /opt/rp /etc/nginx /run /var/run/docker.sock
