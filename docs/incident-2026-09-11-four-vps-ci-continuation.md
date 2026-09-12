@@ -186,7 +186,8 @@ Delivery adapter должен забрать outbox, получить подтв
 - observability: alert start/change/recovery deduplication plus successful
   delivery adapter receipt;
 - default-branch audit of active repositories: zero critical
-  runner-label/fallback violations.
+  runner-label/fallback violations, bound to a freshly resolved default-branch
+  SHA rather than a potentially stale inventory branch name.
 
 Публичные `/health` и `qdev-runner-health-v1` остаются обратно совместимыми:
 только additive aggregate fields. Exact tuples, identities, host/audit/claim и
@@ -202,6 +203,9 @@ recovery details доступны исключительно на существ
   `471f46b` и controller-managed host-agent receipts.
 - Notification delivery: outbox/deduplication готов, но delivery adapter с
   receipt ещё не реализован; это не выдаётся за отправку сообщений.
+- Default-branch audit: `scripts/qdev_default_branch_audit.py` уже формирует
+  source-bound SHA receipt, но live audit отложен до снятия capacity block,
+  чтобы не расходовать provider/API budget во время инцидента.
 
 Следующий переход — подписанная activation нового контроллера, затем
 read-only inventory четырёх существующих VPS в Hostinger и signed audit
