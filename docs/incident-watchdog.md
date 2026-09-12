@@ -57,14 +57,27 @@ incident. A publication contains only `incident_id`, `schema`, `audience`,
 `state_digest`, `dedupe_key`, `severity`, `codes` and `observed_at`. Repository,
 run id, job id, runner name, host, SHA and secrets are never included.
 
-The watchdog writes a job-status item to its durable outbox only after the job
-actually starts: an entry with `started: false` or provider status `queued` is
-never eligible for recovery notification. A status change is emitted once and
-carries the exact repository, run id and job id of the started job.
+The watchdog writes an audit `job-status` record only after the job actually
+starts: an entry with `started: false` or provider status `queued` is never
+eligible for recovery notification. A status change carries the exact
+repository, run id and job id of the started job, plus a deterministic
+`delivery_id`.
 
-The outbox is not a delivery adapter. An external adapter must persist its own
-delivery receipt before a message to a Codex task is considered sent; without
-that receipt, no job is reported to an operator as notified.
+The durable delivery spool is
+`/var/lib/qdev-runner/incident-watchdog/job-delivery-outbox.json`, not
+`alerts.jsonl`. It is root-owned `0600`, atomically rebuilt from pending
+deliveries, and is safe for at-least-once consumption by the fixed root-owned
+task delivery adapter. The adapter uses `delivery_id` as its idempotency key
+and writes a matching `qdev-ci-incident-delivery-receipt-v1` JSONL receipt to
+`delivery-receipts.jsonl` only after its message gateway confirms delivery.
+On the next watchdog pass, the exact tuple is checked and moved to the
+acknowledged ledger. Until then it remains pending and is never reported as
+notified. A mismatched, insecure, symlinked or unknown receipt fails closed.
+
+The watchdog does not accept an arbitrary endpoint, executable or task mapping
+from an observation. The task mapping and adapter remain fixed root-owned
+configuration; no job is considered delivered merely because an audit record
+or an outbox entry exists.
 
 ## Reserve escalation
 

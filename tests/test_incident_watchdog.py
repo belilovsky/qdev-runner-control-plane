@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import sys
 from datetime import UTC, datetime, timedelta
@@ -334,10 +335,11 @@ def test_waiting_jobs_are_only_reported_once_they_started(watchdog):
         ],
     )
     deliveries = watchdog.status_deliveries(observation, {})
-    assert list(deliveries) == ["belilovsky/qazlake:12:24"]
-    assert deliveries["belilovsky/qazlake:12:24"]["status"] == "in_progress"
-    delivered = {key: value["status"] for key, value in deliveries.items()}
-    assert watchdog.status_deliveries(observation, delivered) == {}
+    assert len(deliveries) == 1
+    delivery = next(iter(deliveries.values()))
+    assert delivery["status"] == "in_progress"
+    assert len(delivery["delivery_id"]) == 64
+    assert watchdog.status_deliveries(observation, {delivery["delivery_id"]: {}}) == {}
 
 
 def test_waiting_job_status_change_is_delivered_again(watchdog):
@@ -349,10 +351,117 @@ def test_waiting_job_status_change_is_delivered_again(watchdog):
         watchdog,
         waiting_jobs=[watchdog.WaitingJob("belilovsky/qazlake", 11, 23, "completed", True)],
     )
-    delivered = {"belilovsky/qazlake:11:23": "in_progress"}
-    pending = watchdog.status_deliveries(second, delivered)
-    assert pending["belilovsky/qazlake:11:23"]["status"] == "completed"
-    assert watchdog.status_deliveries(first, delivered) == {}
+    first_delivery = next(iter(watchdog.status_deliveries(first, {}).values()))
+    acknowledged = {first_delivery["delivery_id"]: {}}
+    pending = watchdog.status_deliveries(second, acknowledged)
+    assert len(pending) == 1
+    assert next(iter(pending.values()))["status"] == "completed"
+    assert watchdog.status_deliveries(first, acknowledged) == {}
+
+
+def _receipt_for(watchdog, delivery, *, delivered_at="2026-09-11T00:01:00Z"):
+    return {
+        "schema": watchdog.DELIVERY_RECEIPT_SCHEMA,
+        "delivery_id": delivery["delivery_id"],
+        "repository": delivery["repository"],
+        "run_id": delivery["run_id"],
+        "job_id": delivery["job_id"],
+        "status": delivery["status"],
+        "delivered_at": delivered_at,
+    }
+
+
+def test_job_delivery_remains_pending_until_a_matching_receipt(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    outbox = tmp_path / "alerts.jsonl"
+    observation = healthy_observation(
+        watchdog,
+        waiting_jobs=[watchdog.WaitingJob("belilovsky/qazlake", 11, 23, "in_progress", True)],
+    )
+
+    first = watchdog.run_once(observation, state_root=state_root, outbox=outbox)
+    assert first["emitted"] == 1
+    assert first["pending_job_deliveries"] == 1
+    ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
+    assert ledger["acknowledged_job_deliveries"] == {}
+    assert len(ledger["pending_job_deliveries"]) == 1
+
+    delivery_spool = state_root / "job-delivery-outbox.json"
+    spool = json.loads(delivery_spool.read_text(encoding="utf-8"))
+    assert spool["schema"] == watchdog.DELIVERY_OUTBOX_SCHEMA
+    assert len(spool["deliveries"]) == 1
+    assert stat.S_IMODE(delivery_spool.stat().st_mode) == 0o600
+    delivery = spool["deliveries"][0]
+
+    retry = watchdog.run_once(observation, state_root=state_root, outbox=outbox)
+    assert retry["emitted"] == 0
+    assert retry["pending_job_deliveries"] == 1
+
+    receipt_path = state_root / "delivery-receipts.jsonl"
+    receipt_path.write_text(json.dumps(_receipt_for(watchdog, delivery)) + "\n", encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+    reconciled = watchdog.run_once(observation, state_root=state_root, outbox=outbox)
+    assert reconciled["delivery_receipts_reconciled"] == 1
+    assert reconciled["pending_job_deliveries"] == 0
+    ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
+    assert delivery["delivery_id"] in ledger["acknowledged_job_deliveries"]
+
+    after_receipt = watchdog.run_once(observation, state_root=state_root, outbox=outbox)
+    assert after_receipt["emitted"] == 0
+    assert after_receipt["pending_job_deliveries"] == 0
+
+
+def test_delivery_receipt_mismatch_fails_closed_without_acknowledging(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    observation = healthy_observation(
+        watchdog,
+        waiting_jobs=[watchdog.WaitingJob("belilovsky/qazlake", 11, 23, "in_progress", True)],
+    )
+    watchdog.run_once(observation, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    delivery = json.loads(
+        (state_root / "job-delivery-outbox.json").read_text(encoding="utf-8")
+    )["deliveries"][0]
+    receipt = _receipt_for(watchdog, delivery)
+    receipt["status"] = "completed"
+    receipt_path = state_root / "delivery-receipts.jsonl"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_once(observation, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
+    assert delivery["delivery_id"] in ledger["pending_job_deliveries"]
+    assert ledger["acknowledged_job_deliveries"] == {}
+
+
+def test_legacy_delivery_ledger_is_reissued_for_receipt_bound_delivery(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / "state.json").write_text(
+        json.dumps(
+            {
+                "schema": watchdog.LEGACY_STATE_SCHEMA,
+                "incident_id": watchdog.INCIDENT_ID,
+                "audience_digests": {},
+                "activated_reserves": [],
+                "delivered_jobs": {"belilovsky/qazlake:11:23": "in_progress"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    observation = healthy_observation(
+        watchdog,
+        waiting_jobs=[watchdog.WaitingJob("belilovsky/qazlake", 11, 23, "in_progress", True)],
+    )
+
+    summary = watchdog.run_once(
+        observation,
+        state_root=state_root,
+        outbox=tmp_path / "alerts.jsonl",
+    )
+    assert summary["emitted"] == 1
+    assert summary["pending_job_deliveries"] == 1
+    assert watchdog.load_ledger(state_root)["schema"] == watchdog.STATE_SCHEMA
 
 
 def test_ledger_is_owner_only_and_corruption_fails_closed(watchdog, tmp_path: Path):

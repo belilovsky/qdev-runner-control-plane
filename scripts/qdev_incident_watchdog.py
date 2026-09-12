@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -26,7 +27,10 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = "qdev-ci-incident-watchdog-v1"
-STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v1"
+LEGACY_STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v1"
+STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v2"
+DELIVERY_OUTBOX_SCHEMA = "qdev-ci-incident-delivery-outbox-v1"
+DELIVERY_RECEIPT_SCHEMA = "qdev-ci-incident-delivery-receipt-v1"
 INCIDENT_ID = "qdev-ci-four-vps-20260911"
 
 # Published SLO thresholds.  Every one of them is an operational contract, not
@@ -409,28 +413,165 @@ def plan_reserve(
 
 def status_deliveries(
     observation: Observation,
-    delivered: Mapping[str, str],
+    acknowledged: Mapping[str, Any],
+    pending: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Deliver exact run/job status once a waiting job has actually started."""
+    """Create exact job delivery records that do not yet have a receipt.
 
-    pending: dict[str, dict[str, Any]] = {}
+    A status is deliberately *not* treated as delivered merely because it was
+    written to an outbox.  The deterministic delivery ID gives the fixed
+    delivery adapter an idempotency key while a receipt remains the only
+    transition to acknowledged.
+    """
+
+    deliveries: dict[str, dict[str, Any]] = {}
+    known_pending = pending or {}
     for job in observation.waiting_jobs:
-        key = f"{job.repository}:{job.run_id}:{job.job_id}"
         if not job.started or job.status == "queued":
             # Never announce a queued job as recovered.
             continue
-        if delivered.get(key) == job.status:
+        delivery_id = _delivery_id(job)
+        if delivery_id in acknowledged or delivery_id in known_pending:
             continue
-        pending[key] = {
+        deliveries[delivery_id] = {
             "schema": f"{SCHEMA}-job-status",
             "incident_id": INCIDENT_ID,
+            "delivery_id": delivery_id,
             "repository": job.repository,
             "run_id": job.run_id,
             "job_id": job.job_id,
             "status": job.status,
             "observed_at": observation.observed_at,
         }
-    return pending
+    return deliveries
+
+
+def _delivery_id(job: WaitingJob) -> str:
+    """Return the stable idempotency key for one exact job status."""
+
+    payload = ":".join(
+        (
+            INCIDENT_ID,
+            "job-status",
+            job.repository,
+            str(job.run_id),
+            str(job.job_id),
+            job.status,
+        )
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _delivery_outbox_path(state_root: Path) -> Path:
+    return state_root / "job-delivery-outbox.json"
+
+
+def _delivery_receipts_path(state_root: Path) -> Path:
+    return state_root / "delivery-receipts.jsonl"
+
+
+def _write_delivery_outbox(path: Path, deliveries: Mapping[str, Any]) -> None:
+    """Atomically materialize the root-only, at-least-once delivery spool."""
+
+    document = {
+        "schema": DELIVERY_OUTBOX_SCHEMA,
+        "incident_id": INCIDENT_ID,
+        "deliveries": [deliveries[key] for key in sorted(deliveries)],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(document, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def _load_delivery_receipts(path: Path) -> tuple[dict[str, Any], ...]:
+    """Load root-only receipts written by the fixed delivery adapter."""
+
+    if not path.exists():
+        return ()
+    if path.is_symlink():
+        raise WatchdogError("delivery receipt path must not be a symlink")
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise WatchdogError("delivery receipt path must be owner-only")
+
+    receipts: list[dict[str, Any]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise WatchdogError(f"delivery receipt line {number} is invalid") from exc
+        if not isinstance(receipt, dict):
+            raise WatchdogError(f"delivery receipt line {number} is not an object")
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
+def _validate_delivery_receipt(
+    receipt: Mapping[str, Any],
+    delivery: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a receipt against the immutable outbox tuple."""
+
+    expected_fields = {
+        "schema",
+        "delivery_id",
+        "repository",
+        "run_id",
+        "job_id",
+        "status",
+        "delivered_at",
+    }
+    if set(receipt) != expected_fields or receipt.get("schema") != DELIVERY_RECEIPT_SCHEMA:
+        raise WatchdogError("delivery receipt has an unexpected schema")
+    for tuple_field in ("delivery_id", "repository", "run_id", "job_id", "status"):
+        if receipt.get(tuple_field) != delivery.get(tuple_field):
+            raise WatchdogError("delivery receipt does not match its outbox tuple")
+    delivered_at = receipt.get("delivered_at")
+    if not isinstance(delivered_at, str) or not delivered_at:
+        raise WatchdogError("delivery receipt timestamp is invalid")
+    try:
+        parsed_timestamp = datetime.fromisoformat(delivered_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WatchdogError("delivery receipt timestamp is invalid") from exc
+    if parsed_timestamp.tzinfo is None:
+        raise WatchdogError("delivery receipt timestamp must include an offset")
+    return dict(receipt)
+
+
+def reconcile_delivery_receipts(
+    ledger: dict[str, Any],
+    receipts: Iterable[Mapping[str, Any]],
+) -> int:
+    """Move only receipt-confirmed delivery IDs out of the pending spool."""
+
+    pending = ledger.setdefault("pending_job_deliveries", {})
+    acknowledged = ledger.setdefault("acknowledged_job_deliveries", {})
+    if not isinstance(pending, dict) or not isinstance(acknowledged, dict):
+        raise WatchdogError("delivery ledger has an unexpected schema")
+    reconciled = 0
+    for receipt in receipts:
+        delivery_id = receipt.get("delivery_id")
+        if not isinstance(delivery_id, str):
+            raise WatchdogError("delivery receipt identifier is invalid")
+        delivery = pending.get(delivery_id)
+        if delivery is not None:
+            validated = _validate_delivery_receipt(receipt, delivery)
+            acknowledged[delivery_id] = {"delivery": delivery, "receipt": validated}
+            del pending[delivery_id]
+            reconciled += 1
+            continue
+
+        previous = acknowledged.get(delivery_id)
+        if not isinstance(previous, Mapping) or not isinstance(previous.get("delivery"), Mapping):
+            raise WatchdogError("delivery receipt does not match a pending delivery")
+        _validate_delivery_receipt(receipt, previous["delivery"])
+    return reconciled
 
 
 def _ledger_path(state_root: Path) -> Path:
@@ -445,10 +586,30 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
             "incident_id": INCIDENT_ID,
             "audience_digests": {},
             "activated_reserves": [],
-            "delivered_jobs": {},
+            "pending_job_deliveries": {},
+            "acknowledged_job_deliveries": {},
         }
     document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("schema") != STATE_SCHEMA:
+    if not isinstance(document, dict):
+        raise WatchdogError("watchdog ledger has an unexpected schema")
+    if document.get("schema") == LEGACY_STATE_SCHEMA:
+        # v1 incorrectly treated writing an outbox record as a confirmed task
+        # delivery.  Do not carry that assertion forward: emitting a stable
+        # delivery ID again is safer than suppressing an unreceipted message.
+        return {
+            "schema": STATE_SCHEMA,
+            "incident_id": INCIDENT_ID,
+            "audience_digests": document.get("audience_digests", {}),
+            "activated_reserves": document.get("activated_reserves", []),
+            "pending_job_deliveries": {},
+            "acknowledged_job_deliveries": {},
+            "heartbeat_at": document.get("heartbeat_at"),
+        }
+    if document.get("schema") != STATE_SCHEMA:
+        raise WatchdogError("watchdog ledger has an unexpected schema")
+    pending = document.setdefault("pending_job_deliveries", {})
+    acknowledged = document.setdefault("acknowledged_job_deliveries", {})
+    if not isinstance(pending, dict) or not isinstance(acknowledged, dict):
         raise WatchdogError("watchdog ledger has an unexpected schema")
     return document
 
@@ -470,19 +631,30 @@ def run_once(
     *,
     state_root: Path,
     outbox: Path,
+    delivery_outbox: Path | None = None,
+    delivery_receipts: Path | None = None,
     min_disk_free_gib: float = 4.5,
     max_disk_used_pct: float = 90.0,
 ) -> dict[str, Any]:
-    """Evaluate one observation, emit only transitions, persist the ledger."""
+    """Evaluate one observation, emit transitions and reconcile receipts."""
 
     ledger = load_ledger(state_root)
+    receipt_path = delivery_receipts or _delivery_receipts_path(state_root)
+    reconciled_receipts = reconcile_delivery_receipts(
+        ledger,
+        _load_delivery_receipts(receipt_path),
+    )
     breaches = evaluate(
         observation,
         min_disk_free_gib=min_disk_free_gib,
         max_disk_used_pct=max_disk_used_pct,
     )
     alerts = decide(ledger.get("audience_digests", {}), breaches, observation)
-    deliveries = status_deliveries(observation, ledger.get("delivered_jobs", {}))
+    deliveries = status_deliveries(
+        observation,
+        ledger.get("acknowledged_job_deliveries", {}),
+        ledger.get("pending_job_deliveries", {}),
+    )
     reserve = plan_reserve(
         observation,
         already_activated=ledger.get("activated_reserves", []),
@@ -496,11 +668,6 @@ def run_once(
         emitted.append({"record": "job-status", **delivery})
     if reserve is not None:
         emitted.append({"record": "reserve-decision", **reserve.to_mapping()})
-    if emitted:
-        with outbox.open("a", encoding="utf-8") as handle:
-            for record in emitted:
-                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-
     ledger["audience_digests"] = {
         audience: (
             "healthy"
@@ -511,11 +678,22 @@ def run_once(
     }
     if reserve is not None:
         ledger.setdefault("activated_reserves", []).append(reserve.host_id)
-    ledger.setdefault("delivered_jobs", {}).update(
-        {key: value["status"] for key, value in deliveries.items()}
-    )
+    ledger.setdefault("pending_job_deliveries", {}).update(deliveries)
     ledger["heartbeat_at"] = observation.observed_at
+
+    # Persist the pending tuple before materialising it to the adapter-facing
+    # spool.  A crash before the spool write is retried next run; a task is
+    # never silently treated as notified.
     save_ledger(state_root, ledger)
+    _write_delivery_outbox(
+        delivery_outbox or _delivery_outbox_path(state_root),
+        ledger["pending_job_deliveries"],
+    )
+
+    if emitted:
+        with outbox.open("a", encoding="utf-8") as handle:
+            for record in emitted:
+                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
     return {
         "schema": SCHEMA,
@@ -525,6 +703,8 @@ def run_once(
         "emitted": len(emitted),
         "silent": not emitted,
         "reserve": reserve.to_mapping() if reserve else None,
+        "delivery_receipts_reconciled": reconciled_receipts,
+        "pending_job_deliveries": len(ledger["pending_job_deliveries"]),
     }
 
 
@@ -545,6 +725,8 @@ def main(argv: list[str] | None = None) -> int:
         "--state-root", type=Path, default=Path("/var/lib/qdev-runner/incident-watchdog")
     )
     parser.add_argument("--outbox", type=Path, default=None)
+    parser.add_argument("--delivery-outbox", type=Path, default=None)
+    parser.add_argument("--delivery-receipts", type=Path, default=None)
     parser.add_argument("--min-disk-free-gib", type=float, default=4.5)
     parser.add_argument("--max-disk-used-pct", type=float, default=90.0)
     args = parser.parse_args(argv)
@@ -556,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             observation,
             state_root=args.state_root,
             outbox=outbox,
+            delivery_outbox=args.delivery_outbox,
+            delivery_receipts=args.delivery_receipts,
             min_disk_free_gib=args.min_disk_free_gib,
             max_disk_used_pct=args.max_disk_used_pct,
         )
