@@ -4680,6 +4680,10 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="capacity override claim scope rejected"
             ) from error
+        if claim_scope is None:
+            raise HTTPException(
+                status_code=409, detail="capacity override requires a bound claim scope"
+            )
         if claim_scope.schema != SCHEMA_V2:
             raise HTTPException(status_code=409, detail="capacity override requires claim-scope-v2")
         if audit.get("configured_claim_scope_id") != claim_scope.scope_id:
