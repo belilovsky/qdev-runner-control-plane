@@ -14,9 +14,9 @@ recovery build №76 и проверки новых source-кандидатов.
 - `controller_release` и `controller_activation` совпадают по SHA, а
   public/internal immutable image digests совпадают с release tuple;
 - `controller_activation` active на generation `15`;
-- в очереди 36 заданий: 26 `qdev-ci`, 1 `qdev-ci-browser` и 9
+- в очереди 34 задания: 24 `qdev-ci`, 1 `qdev-ci-browser` и 9
   `qdev-ci-docker`;
-- oldest pending age составляет 5 343 секунды на момент последнего снимка;
+- oldest pending age составляет 5 269 секунд на момент последнего снимка;
 - безопасных допустимых слотов — 0 для обоих профилей.
 
 На момент актуализации `origin/main` уже продвинулся до
@@ -201,6 +201,11 @@ root-only ledger, и только строго совпадающий root-only 
 отправить связанной Codex deployment-задаче exact run/job и реальный status.
 До этого это незакрытый 9/10 gate: файл outbox не является доставленным
 уведомлением. Сообщение «восстановлено» запрещено, пока её job ещё queued.
+Исполнитель доставки также ведёт ограниченный retry (120 и 300 секунд) и
+помещает ambiguous/permanent result в root-only DLQ. Его агрегатный размер
+теперь является отдельным critical watchdog breach; наружу уходит только код
+инцидента, а job tuple остаётся локальным для reconciliation. Это исключает
+как дубликат после неопределённой отправки, так и молчаливую потерю сообщения.
 Heartbeat-монитор молчит при неизменном здоровом состоянии и просыпается
 только на SLO breach, изменение или recovery.
 
@@ -247,9 +252,9 @@ recovery details доступны исключительно на существ
   targeted tests; до host audit она не считается доступной ёмкостью.
 - Capacity admission, canaries и queue drain: ожидают reconciliation receipt
   для historical transactions и controller-managed host-agent receipts. На
-  момент обновления queue содержит 36 jobs (`26` ci, `1` browser, `9` docker),
-  oldest age — 5 343 секунды на последнем снимке, а eligible slots остаются
-  нулевыми. Один job покинул pending, но это не является восстановлением
+  момент обновления queue содержит 34 jobs (`24` ci, `1` browser, `9` docker),
+  oldest age — 5 269 секунд на последнем снимке, а eligible slots остаются
+  нулевыми. Два job покинули pending, но это не является восстановлением
   capacity и не даёт оснований для сообщения ожидающим deployment-задачам.
 - Notification delivery, reserve accounting и capacity planner: receipt-bound
   source-кандидаты локально готовы; reserve больше не может быть ложно отмечен
@@ -283,7 +288,10 @@ recovery details доступны исключительно на существ
   может выдать label/fallback audit за актуальный. Focused audit tests прошли
   локально; live provider scan остаётся после появления первого compatible
   slot, чтобы не расходовать provider quota при нулевой capacity.
-  Не materialized остаются только real task-delivery adapter с root-owned
+  Исполнитель task-delivery materialized в source-кандидате `b74ee33` и его
+  DLQ escalation — в `2129cfb`; последний целевой прогон watchdog, delivery и
+  release-script покрытий прошёл `83/83` вместе со static check. Не
+  materialized остаются только реальный task-delivery adapter с root-owned
   mapping и private registry binding к уже существующему host-agent. Поэтому
   ни одно сообщение и ни один VPS не выдаются за фактически активированные,
   а plan/collector не запускаются автоматически.
