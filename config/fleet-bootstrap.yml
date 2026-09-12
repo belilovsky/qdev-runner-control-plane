@@ -19,6 +19,7 @@ enrolment:
     - qdev-release-qmt
     - qdev-release-qazpolit
     - qdev-release-qazgeo
+    - qdev-release-rp
     - qdev-release-qazagents-static
 workers:
   - qdev-ci

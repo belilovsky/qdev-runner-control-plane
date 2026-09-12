@@ -46,8 +46,9 @@ the broker never mutates or silently requeues that row.
 
 ## Product lane enrollment
 
-`qdev-release-ortcom`, `qdev-release-cmnt`, `qdev-release-total`, and
-`qdev-release-qazposter` are policy-compiled mTLS lanes. The controller ships
+`qdev-release-ortcom`, `qdev-release-cmnt`, `qdev-release-total`,
+`qdev-release-qazposter`, and `qdev-release-rp` are policy-compiled mTLS lanes.
+The controller ships
 the narrow unit and its profile; QDev Fleet separately enrolls each host only
 when the named root-owned native release, rollback and receipt dispatchers are
 already present. The dispatcher interface accepts the exact source SHA,

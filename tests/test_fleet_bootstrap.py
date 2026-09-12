@@ -285,6 +285,17 @@ def test_bootstrap_policy_allows_qazagents_static_enrolment_without_a_host_targe
     assert lane.native_host_adapter == "qazagents-static-release-v1"
 
 
+def test_bootstrap_policy_allows_rp_private_host_enrolment() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    request = _request(action="enrol-host-agent", release_lane="qdev-release-rp")
+
+    policy.validate(request)
+    lane = policy.release_lane("qdev-release-rp")
+    assert lane.project_id == "rp"
+    assert lane.placement == "rp-private-runtime"
+    assert lane.host_agent_mtls_identity == "qdev-host-agent:rp-private-runtime"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

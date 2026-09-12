@@ -725,6 +725,7 @@ def test_dispatch_state_provisioning_is_private_and_idempotent(
     mapping = json.loads(PROVISION.KEY_MAP.read_text(encoding="utf-8"))
     assert set(mapping) == set(PROVISION.HOST_IDENTITIES)
     assert "qdev-host-agent:qazgeo-app-runtime" in mapping
+    assert "qdev-host-agent:rp-private-runtime" in mapping
     assert all(Path(value).parent == secret_root for value in mapping.values())
     assert json.loads(PROVISION.ENROLMENT_REGISTRY.read_text(encoding="utf-8"))["targets"] == {}
     assert (
