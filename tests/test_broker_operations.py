@@ -883,8 +883,7 @@ def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_le
     settings.release_host_dispatch_keys_file.chmod(0o600)
 
     next_path = (
-        "/internal/v1/release-hosts/vps-hostinger-186/jobs/next"
-        "?release_lane=qdev-release-qazpolit"
+        "/internal/v1/release-hosts/vps-hostinger-186/jobs/next?release_lane=qdev-release-qazpolit"
     )
     dispatched = client.get(next_path, headers=host_headers)
     assert dispatched.status_code == 200
