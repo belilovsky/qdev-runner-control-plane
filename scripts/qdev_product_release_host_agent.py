@@ -1899,7 +1899,8 @@ def _controller_status(
     status, body = request(
         config,
         "GET",
-        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}",
+        f"/internal/v1/release-hosts/{profile.placement}/jobs/{release_id}"
+        f"?release_lane={profile.lane}",
         headers=_controller_headers(lease_id, fence),
     )
     if status != 200:
