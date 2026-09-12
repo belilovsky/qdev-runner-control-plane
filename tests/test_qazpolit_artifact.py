@@ -141,6 +141,30 @@ def test_store_retains_validated_archive_idempotently(tmp_path) -> None:
     assert first.archive_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_store_copies_and_validates_a_downloaded_archive_file(tmp_path: Path) -> None:
+    downloaded_archive = tmp_path / "downloaded-release.zip"
+    payload = _archive()
+    downloaded_archive.write_bytes(payload)
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    stored = store.ingest_file(downloaded_archive, expected_source_sha=SOURCE_SHA)
+    downloaded_archive.unlink()
+
+    assert stored.archive_path.read_bytes() == payload
+    assert stored.archive_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_store_refuses_a_symlinked_downloaded_archive_file(tmp_path: Path) -> None:
+    downloaded_archive = tmp_path / "downloaded-release.zip"
+    downloaded_archive.write_bytes(_archive())
+    symlink = tmp_path / "downloaded-release-link.zip"
+    symlink.symlink_to(downloaded_archive)
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    with pytest.raises(QazPolitArtifactStorageError, match="must be a regular file"):
+        store.ingest_file(symlink, expected_source_sha=SOURCE_SHA)
+
+
 def test_store_refuses_to_replace_a_tampered_archive(tmp_path) -> None:
     payload = _archive()
     store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
