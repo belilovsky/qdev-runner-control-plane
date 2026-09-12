@@ -67,6 +67,24 @@ lanes:
     runtime_endpoints: [https://qmt.digital/api/health, https://qmt.digital/api/readiness, https://qmt.digital/release.json]
     rollback_reference: qdev-release-host-state-v1
     required_readiness: [native, public, identity]
+  qdev-release-qazpolit:
+    project_id: qazpolit
+    placement: srv138jump
+    # QazPolit shares the host with QMT, but not its release lane. Every
+    # dispatch endpoint is bound to this lane before a host agent receives it.
+    client_mtls_identity: qdev-release-client:qazpolit
+    host_agent_mtls_identity: qdev-host-agent:srv138jump
+    # The native adapter measures candidate, retained rollback and the fixed
+    # two-GiB reserve before it touches the application runtime.
+    minimum_free_gib: 1
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qazpolit
+    canonical_repository: belilovsky/qazpolit
+    artifact_ref_prefix: registry.ci.qdev.run/qazpolit
+    native_host_adapter: qazpolit-native-release-v1
+    runtime_endpoints: [https://qazpolit.com/api/runtime]
+    rollback_reference: qdev-release-host-state-v1
+    required_readiness: [native, public, identity]
   qdev-release-ortcom:
     project_id: ortcom
     placement: ortcom-production-controller
