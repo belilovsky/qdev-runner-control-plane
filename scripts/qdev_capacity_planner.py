@@ -151,9 +151,7 @@ def build_plan(document: Mapping[str, Any], *, observed_at: str | None = None) -
         )
 
     active_slots = (
-        ACTIVE_BASELINE_SLOTS
-        if not history_complete
-        else max(ACTIVE_BASELINE_SLOTS, formula_slots)
+        ACTIVE_BASELINE_SLOTS if not history_complete else max(ACTIVE_BASELINE_SLOTS, formula_slots)
     )
     registered_slots = active_slots + N_PLUS_ONE_HOST_SLOTS
     four_vps_limit = ACTIVE_BASELINE_SLOTS + N_PLUS_ONE_HOST_SLOTS

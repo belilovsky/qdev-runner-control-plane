@@ -71,9 +71,7 @@ def _private_regular(path: Path, *, owner_uid: int | None) -> None:
 def _parse_request(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != REQUEST_FIELDS:
         raise ExecutorError("reserve_request_shape_invalid")
-    expected_id = hashlib.sha256(
-        f"{INCIDENT_ID}:reserve:{HOST_ID}:{ACTION}".encode()
-    ).hexdigest()
+    expected_id = hashlib.sha256(f"{INCIDENT_ID}:reserve:{HOST_ID}:{ACTION}".encode()).hexdigest()
     if (
         value.get("request_id") != expected_id
         or value.get("host_id") != HOST_ID

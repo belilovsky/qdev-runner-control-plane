@@ -108,9 +108,7 @@ def _metadata(auditor: ModuleType, record: Mapping[str, Any]) -> tuple[str, str]
     if default_branch != record["default_branch"]:
         raise AuditError("inventory default branch drift")
 
-    reference = auditor.gh_api(
-        f"/repos/{full_name}/git/ref/heads/{quote(default_branch, safe='')}"
-    )
+    reference = auditor.gh_api(f"/repos/{full_name}/git/ref/heads/{quote(default_branch, safe='')}")
     if not isinstance(reference, Mapping):
         raise AuditError("github default ref is invalid")
     target = reference.get("object")
