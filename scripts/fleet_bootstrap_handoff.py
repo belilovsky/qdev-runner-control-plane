@@ -123,8 +123,12 @@ def handoff_payload(request: FleetBootstrapRequest, idempotency_key: str) -> dic
         "controller_internal_image_digest": request.controller_internal_image_digest,
         "activation_envelope_digest": request.activation_envelope_digest,
         "release_lane": request.release_lane,
-        "worker_name": request.worker_name,
     }
+    # The incumbent ingress predates worker restoration and rejects unknown
+    # fields.  Keep controller activation and enrolment wire-compatible during
+    # the bootstrap transition; only the restoration route needs this field.
+    if request.action == "restore-existing-worker":
+        fields["worker_name"] = request.worker_name
     return {"request": fields, "idempotency_key": idempotency_key}
 
 
