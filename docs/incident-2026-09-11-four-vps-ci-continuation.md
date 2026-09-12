@@ -20,14 +20,14 @@ recovery build №76 и проверки новых source-кандидатов.
 - безопасных допустимых слотов — 0 для обоих профилей.
 
 На момент актуализации `origin/main` уже продвинулся до
-`d161aa765583ad6246b3cda5a4eb2254e7839a16`. Hosted recovery build №76 для
+`f4f2a0cbeb7d9ecdca1c9b3404a3ed6cf91b3388`. Hosted recovery build №76 для
 исторического SHA `800e30cba32b032cb7a43182eaf3a2b5ee7201c5` завершился
 успешно; sealed artifact
 `controller-recovery-800e30cba32b032cb7a43182eaf3a2b5ee7201c5` имеет digest
 `sha256:ae583c51277a009cfecf11fa83a9c052f2e3a2f8e7167c8c5853f8c9f8de2a4d`.
 Это историческое build-доказательство, а не незавершённый rollout: текущий
 `7433e49` уже имеет совпадающий release/activation tuple и остаётся baseline
-на время восстановления ёмкости. Более новый `d161aa` не активируется
+на время восстановления ёмкости. Кандидат на основе нового `f4f2a0c` не активируется
 автоматически: для него сначала нужны собственные immutable artifact,
 signature/provenance и activation receipt. Непосредственная причина простоя очереди —
 отсутствие хотя бы одного прошедшего аудит, зарегистрированного и совместимого
@@ -292,15 +292,17 @@ recovery details доступны исключительно на существ
   slot, чтобы не расходовать provider quota при нулевой capacity.
   Исполнитель task-delivery materialized в source-кандидате `b74ee33` и его
   DLQ escalation — в `2129cfb`. Эти изменения перенесены без конфликтов на
-  текущий `origin/main` в чистый кандидат; его code head
-  `fec8692`; в текущем candidate также
+  текущий `origin/main` в чистый кандидат; CI implementation head этого
+  кандидата — `6eef6db`; в текущем candidate также
   находится этот актуальный runbook. Для code head formatter, linter, diff
   check и focused набор watchdog, delivery, reserve, planner, audit и
   release-script тестов прошли `101/101`. Дополнительный контрактный набор
   claim scope, FIFO admission, fleet dispatch и worker recovery прошёл
   `84/84`. Отдельно four-host bootstrap, 3×2 capacity, Docker limits и
-  worker resource policy прошли `77/77`; после runbook-only изменений
-  повторно пройден diff check. Кандидат намеренно не опубликован:
+  worker resource policy прошли `77/77`. После переноса на `f4f2a0c` общий
+  целевой набор этих проверок вместе с новым независимым QazPolit artifact
+  binding прошёл `288/288`; formatter, linter и diff check также чистые.
+  Кандидат намеренно не опубликован:
   при нулевых eligible slots push создал бы ещё одну заблокированную
   self-hosted задачу и не приблизил восстановление. Не
   materialized остаются только реальный task-delivery adapter с root-owned
