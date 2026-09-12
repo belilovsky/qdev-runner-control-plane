@@ -12,7 +12,7 @@ import ssl
 import stat
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .admin_platform import (
@@ -94,6 +94,7 @@ from .operations import (
     OperationStore,
 )
 from .policy import Policy, PolicyError
+from .qazpolit_artifact_store import QazPolitArtifactStorageError, QazPolitArtifactStore
 from .release_lane import (
     HostHeartbeatRequest,
     ReleaseAdmissionRequest,
@@ -102,6 +103,7 @@ from .release_lane import (
     ReleaseLanePolicy,
     ReleaseStore,
     admission_receipt,
+    candidate_artifact_delivery,
     qgeo_artifact_provenance_from_evidence,
     validate_candidate,
     validate_controller_claim,
@@ -1141,6 +1143,7 @@ def create_app(
         )
 
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
+    qazpolit_artifact_store = QazPolitArtifactStore(settings.artifact_root)
     artifact_token_key = settings.artifact_token_key
     if settings.surface == "test" and artifact_token_key is None:
         # Directly constructed legacy test settings remain source-compatible;
@@ -1860,6 +1863,7 @@ def create_app(
     app.state.github_actions_oidc_verifier = github_actions_oidc_verifier
     app.state.fleet_bootstrap_oidc_verifier_factory = build_fleet_bootstrap_oidc_verifier
     app.state.operations = operations
+    app.state.qazpolit_artifact_store = qazpolit_artifact_store
     worker_recovery = WorkerRecoveryController(
         settings=settings,
         store=store,
@@ -2742,6 +2746,106 @@ def create_app(
                 job.get("candidate_receipt", {}).get("evidence")
             )
         return response
+
+    @app.get(
+        "/internal/v1/release-hosts/{placement}/jobs/{release_id}/artifact",
+        response_model=None,
+    )
+    def release_host_qazpolit_artifact(
+        placement: str,
+        release_id: str,
+        release_lane: str | None = Query(default=None),
+        x_qdev_mtls_identity: str | None = Header(default=None),
+        x_qdev_release_lease: str | None = Header(default=None),
+        x_qdev_release_fence: str | None = Header(default=None),
+        x_qdev_client_certificate_sha256: str | None = Header(default=None),
+    ) -> StreamingResponse:
+        """Stream one controller-private QazPolit archive to its dispatched host.
+
+        The host never supplies an artifact path, URL, digest, or provider
+        identifier.  Those coordinates come solely from the immutable
+        candidate receipt already covered by its controller-signed dispatch
+        claim.  A stale host cannot download a later attempt's archive.
+        """
+
+        policy_value = release_policy()
+        try:
+            lane = policy_value.lane_for_host(placement, release_lane)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=404, detail="release placement is not allowlisted"
+            ) from error
+        require_release_mtls(
+            x_qdev_mtls_identity,
+            lane.host_agent_mtls_identity,
+            x_qdev_client_certificate_sha256,
+            lane.host_agent_certificate_sha256,
+        )
+        if lane.project_id != "qazpolit" or lane.canonical_repository is None:
+            raise HTTPException(status_code=404, detail="release artifact is not available")
+
+        job = release_state().job(lane, release_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="release job was not found")
+        if (
+            job.get("status") != "dispatched"
+            or not x_qdev_release_lease
+            or not x_qdev_release_fence
+            or x_qdev_release_lease != job.get("lease_id")
+            or x_qdev_release_fence != job.get("fence")
+        ):
+            raise HTTPException(status_code=409, detail="release lease is stale")
+
+        try:
+            delivery = candidate_artifact_delivery(job)
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503, detail="release artifact is unavailable"
+            ) from error
+        if (
+            not isinstance(delivery, dict)
+            or delivery.get("schema") != "qdev-controller-private-archive-delivery-v1"
+            or delivery.get("source_sha") != job.get("source_sha")
+            or not isinstance(delivery.get("archive_sha256"), str)
+            or not isinstance(delivery.get("payload_sha256"), str)
+            or not isinstance(delivery.get("archive_size_bytes"), int)
+            or isinstance(delivery.get("archive_size_bytes"), bool)
+        ):
+            raise HTTPException(status_code=503, detail="release artifact is unavailable")
+
+        archive_sha256 = cast(str, delivery["archive_sha256"])
+        payload_sha256 = cast(str, delivery["payload_sha256"])
+        archive_size = cast(int, delivery["archive_size_bytes"])
+        try:
+            descriptor, stored_size = app.state.qazpolit_artifact_store.open_verified_for_delivery(
+                source_sha=job["source_sha"], archive_sha256=archive_sha256
+            )
+        except QazPolitArtifactStorageError as error:
+            raise HTTPException(
+                status_code=503, detail="release artifact is unavailable"
+            ) from error
+        if stored_size != archive_size:
+            os.close(descriptor)
+            raise HTTPException(status_code=503, detail="release artifact is unavailable")
+
+        def stream_archive() -> Iterator[bytes]:
+            try:
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    yield chunk
+            finally:
+                os.close(descriptor)
+
+        return StreamingResponse(
+            stream_archive(),
+            media_type="application/zip",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Length": str(stored_size),
+                "ETag": f'"{archive_sha256}"',
+                "X-QDev-QazPolit-Source-SHA": job["source_sha"],
+                "X-QDev-QazPolit-Payload-SHA256": payload_sha256,
+            },
+        )
 
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/complete")
     @app.post("/internal/v1/release-hosts/{placement}/jobs/{release_id}/receipt")

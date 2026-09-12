@@ -24,6 +24,7 @@ from qdev_runner.qazpolit_artifact import (
 )
 
 _COPY_CHUNK_BYTES = 1024 * 1024
+_SHA256_HEX_LENGTH = 64
 
 
 class QazPolitArtifactStorageError(QazPolitArtifactError):
@@ -62,6 +63,21 @@ class QazPolitArtifactStore:
             raise QazPolitArtifactStorageError("QazPolit artifact store is unavailable") from error
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
             raise QazPolitArtifactStorageError("QazPolit artifact store must be private")
+
+    @staticmethod
+    def _verify_private_directory(path: Path) -> None:
+        if path.is_symlink():
+            raise QazPolitArtifactStorageError("QazPolit artifact store must not be a symlink")
+        try:
+            metadata = path.stat()
+        except OSError as error:
+            raise QazPolitArtifactStorageError("QazPolit artifact store is unavailable") from error
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise QazPolitArtifactStorageError("QazPolit artifact store must be private")
+
+    @staticmethod
+    def _is_lower_hex(value: str, *, length: int) -> bool:
+        return len(value) == length and all(character in "0123456789abcdef" for character in value)
 
     def ingest(
         self, archive_bytes: bytes, *, expected_source_sha: str
@@ -185,6 +201,55 @@ class QazPolitArtifactStore:
                 raise QazPolitArtifactStorageError(
                     "unable to remove temporary QazPolit archive"
                 ) from error
+
+    def open_verified_for_delivery(
+        self, *, source_sha: str, archive_sha256: str
+    ) -> tuple[int, int]:
+        """Open one immutable private archive for a controller-authorised host.
+
+        Callers provide only coordinates already bound into a controller-signed
+        dispatch claim.  Returning a descriptor, rather than a path, prevents
+        the HTTP layer from reopening a different file after verification.
+        The caller owns and must close the descriptor.
+        """
+
+        if not self._is_lower_hex(source_sha, length=40) or not self._is_lower_hex(
+            archive_sha256, length=_SHA256_HEX_LENGTH
+        ):
+            raise QazPolitArtifactStorageError("QazPolit delivery coordinates are invalid")
+        self._verify_private_directory(self.root)
+        source_root = self.root / source_sha
+        self._verify_private_directory(source_root)
+        archive_path = source_root / f"{archive_sha256}.zip"
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise QazPolitArtifactStorageError("platform does not support safe QazPolit delivery")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(archive_path, os.O_RDONLY | nofollow)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+                raise QazPolitArtifactStorageError(
+                    "stored QazPolit archive is not a private regular file"
+                )
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, _COPY_CHUNK_BYTES):
+                digest.update(chunk)
+            if digest.hexdigest() != archive_sha256:
+                raise QazPolitArtifactStorageError(
+                    "stored QazPolit archive digest does not match its path"
+                )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            result = (descriptor, metadata.st_size)
+            descriptor = None
+            return result
+        except OSError as error:
+            raise QazPolitArtifactStorageError(
+                "stored QazPolit archive cannot be opened"
+            ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _retain_private_temporary(
         self, temporary: Path, evidence: QazPolitArtifactEvidence

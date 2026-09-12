@@ -918,6 +918,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         "artifact_uri",
         "archive_sha256",
         "payload_sha256",
+        "archive_size_bytes",
         "ci_receipt_uri",
         "source_receipt_uri",
         "repository",
@@ -944,7 +945,7 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
     ):
         raise ReleaseLaneError("completed candidate receipt does not bind immutable release tuple")
     artifact_type = receipt.get("artifact_type", "oci")
-    if artifact_type not in {"oci", "http-archive"}:
+    if artifact_type not in {"oci", "http-archive", "controller-private-archive"}:
         raise ReleaseLaneError("candidate artifact type is invalid")
     artifact_uri = receipt.get("artifact_uri")
     if artifact_type == "http-archive":
@@ -957,6 +958,17 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         for field in ("archive_sha256", "payload_sha256"):
             if not isinstance(receipt.get(field), str) or not _HEX64.fullmatch(receipt[field]):
                 raise ReleaseLaneError("HTTP archive checksums are incomplete")
+    elif artifact_type == "controller-private-archive":
+        if lane.project_id != "qazpolit":
+            raise ReleaseLaneError("controller-private archive is not valid for this lane")
+        if artifact_uri is not None:
+            raise ReleaseLaneError("controller-private archive must not carry a URI")
+        for field in ("archive_sha256", "payload_sha256"):
+            if not isinstance(receipt.get(field), str) or not _HEX64.fullmatch(receipt[field]):
+                raise ReleaseLaneError("controller-private archive checksums are incomplete")
+        archive_size = receipt.get("archive_size_bytes")
+        if not isinstance(archive_size, int) or isinstance(archive_size, bool) or archive_size < 1:
+            raise ReleaseLaneError("controller-private archive size is invalid")
     else:
         if any(field in receipt for field in ("archive_sha256", "payload_sha256")):
             raise ReleaseLaneError("OCI candidate must not carry archive checksums")
@@ -1010,6 +1022,11 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
             release_lane=lane.name,
             placement=lane.placement,
         )
+    elif (
+        lane.project_id == "qazpolit"
+        and receipt.get("artifact_type") != "controller-private-archive"
+    ):
+        raise ReleaseLaneError("QazPolit candidate must use a controller-private archive")
     qmt_fields = {"release_version", "migration_receipt_digest", "contract_digest"}
     if lane.project_id == "kaztilshi":
         if not qmt_fields.issubset(receipt):
@@ -1058,8 +1075,8 @@ def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]
     return evidence
 
 
-def candidate_artifact_delivery(job: dict[str, Any]) -> dict[str, str] | None:
-    """Return the verified HTTP archive coordinates for a host dispatch claim.
+def candidate_artifact_delivery(job: dict[str, Any]) -> dict[str, str | int] | None:
+    """Return host delivery coordinates bound into a dispatch claim.
 
     The candidate receipt is admitted before a managed host can receive a job.
     An HTTP archive host still needs the immutable URL and both checksums in
@@ -1072,6 +1089,30 @@ def candidate_artifact_delivery(job: dict[str, Any]) -> dict[str, str] | None:
         raise ReleaseLaneError("release job has no candidate receipt")
     if receipt.get("artifact_type", "oci") == "oci":
         return None
+    if receipt.get("artifact_type") == "controller-private-archive":
+        source_sha = receipt.get("source_sha")
+        archive_sha256 = receipt.get("archive_sha256")
+        payload_sha256 = receipt.get("payload_sha256")
+        archive_size = receipt.get("archive_size_bytes")
+        if (
+            not isinstance(source_sha, str)
+            or not _is_sha(source_sha)
+            or not isinstance(archive_sha256, str)
+            or not _HEX64.fullmatch(archive_sha256)
+            or not isinstance(payload_sha256, str)
+            or not _HEX64.fullmatch(payload_sha256)
+            or not isinstance(archive_size, int)
+            or isinstance(archive_size, bool)
+            or archive_size < 1
+        ):
+            raise ReleaseLaneError("controller-private archive delivery coordinates are invalid")
+        return {
+            "schema": "qdev-controller-private-archive-delivery-v1",
+            "source_sha": source_sha,
+            "archive_sha256": archive_sha256,
+            "payload_sha256": payload_sha256,
+            "archive_size_bytes": archive_size,
+        }
     if receipt.get("artifact_type") != "http-archive":
         raise ReleaseLaneError("release job artifact type is invalid")
     artifact_uri = receipt.get("artifact_uri")
