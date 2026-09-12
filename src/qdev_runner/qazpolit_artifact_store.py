@@ -151,6 +151,7 @@ class QazPolitArtifactStore:
         download_to: Callable[[Path], None],
         *,
         expected_source_sha: str,
+        expected_archive_bytes: int | None = None,
     ) -> StoredQazPolitReleaseArtifact:
         """Accept one controller-directed streaming download into private storage.
 
@@ -164,6 +165,13 @@ class QazPolitArtifactStore:
         try:
             download_to(temporary)
             self._verify_private_temporary(temporary)
+            if expected_archive_bytes is not None:
+                if expected_archive_bytes < 1:
+                    raise QazPolitArtifactStorageError("expected QazPolit archive size is invalid")
+                if temporary.stat().st_size != expected_archive_bytes:
+                    raise QazPolitArtifactStorageError(
+                        "downloaded QazPolit archive size does not match its Actions metadata"
+                    )
             evidence = validate_qazpolit_release_archive_file(
                 temporary, expected_source_sha=expected_source_sha
             )

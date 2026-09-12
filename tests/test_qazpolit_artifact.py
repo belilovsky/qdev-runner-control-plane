@@ -4,6 +4,7 @@ import json
 import warnings
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,6 +16,11 @@ from qdev_runner.qazpolit_artifact import (
 from qdev_runner.qazpolit_artifact_store import (
     QazPolitArtifactStorageError,
     QazPolitArtifactStore,
+)
+from qdev_runner.qazpolit_github_artifact import (
+    QazPolitActionsArtifactRequest,
+    QazPolitGitHubArtifactError,
+    acquire_qazpolit_actions_artifact,
 )
 
 SOURCE_SHA = "a" * 40
@@ -210,3 +216,152 @@ def test_store_refuses_a_symlinked_root(tmp_path) -> None:
 
     with pytest.raises(QazPolitArtifactStorageError, match="must not be a symlink"):
         QazPolitArtifactStore(artifact_root)
+
+
+class _GitHubActionsArtifactClient:
+    def __init__(
+        self, archive: bytes, *, run: dict[str, Any], artifacts: list[dict[str, Any]]
+    ) -> None:
+        self.archive = archive
+        self.run = run
+        self.artifacts = artifacts
+        self.download_calls: list[tuple[int, str, int, int]] = []
+
+    def repository_installation_id(self, repository: str) -> int:
+        assert repository == "belilovsky/qazpolit"
+        return 17
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
+        assert (installation_id, repository, run_id) == (17, "belilovsky/qazpolit", 123)
+        return self.run
+
+    def workflow_run_artifacts(
+        self, installation_id: int, repository: str, run_id: int
+    ) -> list[dict[str, Any]]:
+        assert (installation_id, repository, run_id) == (17, "belilovsky/qazpolit", 123)
+        return self.artifacts
+
+    def download_actions_artifact_to_file(
+        self,
+        installation_id: int,
+        repository: str,
+        artifact_id: int,
+        destination: Path,
+        *,
+        maximum_bytes: int,
+    ) -> None:
+        self.download_calls.append((installation_id, repository, artifact_id, maximum_bytes))
+        destination.write_bytes(self.archive)
+        destination.chmod(0o600)
+
+
+def _actions_request(archive: bytes) -> QazPolitActionsArtifactRequest:
+    return QazPolitActionsArtifactRequest(
+        repository="belilovsky/qazpolit",
+        source_sha=SOURCE_SHA,
+        run_id=123,
+        run_attempt=1,
+        artifact_id=456,
+        artifact_size_bytes=len(archive),
+    )
+
+
+def _workflow_run() -> dict[str, Any]:
+    return {
+        "id": 123,
+        "head_sha": SOURCE_SHA,
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"full_name": "belilovsky/qazpolit"},
+    }
+
+
+def _workflow_artifact(archive: bytes) -> dict[str, Any]:
+    return {
+        "id": 456,
+        "name": f"qazpolit-production-{SOURCE_SHA}-123",
+        "size_in_bytes": len(archive),
+        "expired": False,
+        "workflow_run": {"id": 123, "head_sha": SOURCE_SHA},
+    }
+
+
+def test_acquire_qazpolit_actions_artifact_binds_exact_successful_run(tmp_path: Path) -> None:
+    archive = _archive()
+    client = _GitHubActionsArtifactClient(
+        archive, run=_workflow_run(), artifacts=[_workflow_artifact(archive)]
+    )
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    stored = acquire_qazpolit_actions_artifact(client, store, _actions_request(archive))
+
+    assert stored.archive_path.read_bytes() == archive
+    assert client.download_calls == [(17, "belilovsky/qazpolit", 456, len(archive))]
+
+
+@pytest.mark.parametrize(
+    ("target", "key", "value", "message"),
+    [
+        ("run", "head_sha", "f" * 40, "source SHA"),
+        ("run", "run_attempt", 2, "attempt"),
+        ("run", "conclusion", "failure", "did not succeed"),
+        ("artifact", "name", "other", "name"),
+        ("artifact", "expired", True, "expired"),
+        ("artifact", "size_in_bytes", 1, "size"),
+    ],
+)
+def test_acquire_qazpolit_actions_artifact_rejects_unbound_metadata(
+    tmp_path: Path, target: str, key: str, value: Any, message: str
+) -> None:
+    archive = _archive()
+    run = _workflow_run()
+    artifact = _workflow_artifact(archive)
+    (run if target == "run" else artifact)[key] = value
+    client = _GitHubActionsArtifactClient(archive, run=run, artifacts=[artifact])
+
+    with pytest.raises(QazPolitGitHubArtifactError, match=message):
+        acquire_qazpolit_actions_artifact(
+            client,
+            QazPolitArtifactStore(tmp_path / "controller-artifacts"),
+            _actions_request(archive),
+        )
+
+    assert client.download_calls == []
+
+
+def test_acquire_qazpolit_actions_artifact_rejects_ambiguous_id_and_size_mismatch(
+    tmp_path: Path,
+) -> None:
+    archive = _archive()
+    client = _GitHubActionsArtifactClient(
+        archive,
+        run=_workflow_run(),
+        artifacts=[_workflow_artifact(archive), _workflow_artifact(archive)],
+    )
+
+    with pytest.raises(QazPolitGitHubArtifactError, match="missing or ambiguous"):
+        acquire_qazpolit_actions_artifact(
+            client,
+            QazPolitArtifactStore(tmp_path / "controller-artifacts"),
+            _actions_request(archive),
+        )
+
+    assert client.download_calls == []
+
+
+def test_acquire_qazpolit_actions_artifact_refuses_provider_bytes_that_differ_from_metadata(
+    tmp_path: Path,
+) -> None:
+    archive = _archive()
+    provider_archive = archive + b"extra"
+    client = _GitHubActionsArtifactClient(
+        provider_archive, run=_workflow_run(), artifacts=[_workflow_artifact(archive)]
+    )
+
+    with pytest.raises(QazPolitArtifactStorageError, match="size does not match"):
+        acquire_qazpolit_actions_artifact(
+            client,
+            QazPolitArtifactStore(tmp_path / "controller-artifacts"),
+            _actions_request(archive),
+        )
