@@ -2784,6 +2784,7 @@ def create_app(
     def release_host_job_status(
         placement: str,
         release_id: str,
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
@@ -2792,7 +2793,7 @@ def create_app(
         """Return controller state to a host agent reconciling a lost response."""
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"
@@ -2841,6 +2842,7 @@ def create_app(
         placement: str,
         release_id: str,
         receipt: dict[str, Any],
+        release_lane: str | None = Query(default=None),
         x_qdev_mtls_identity: str | None = Header(default=None),
         x_qdev_release_lease: str | None = Header(default=None),
         x_qdev_release_fence: str | None = Header(default=None),
@@ -2848,7 +2850,7 @@ def create_app(
     ) -> dict[str, Any]:
         policy_value = release_policy()
         try:
-            lane = policy_value.lane_for_placement(placement)
+            lane = policy_value.lane_for_host(placement, release_lane)
         except ReleaseLaneError as error:
             raise HTTPException(
                 status_code=404, detail="release placement is not allowlisted"

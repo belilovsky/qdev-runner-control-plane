@@ -883,6 +883,45 @@ def test_certificate_bound_host_status_and_rollback_reject_stale_certificate(
     )
 
 
+def test_shared_host_status_and_rollback_require_explicit_release_lane(tmp_path: Path) -> None:
+    client = _app(tmp_path)
+    settings = client.app.state.settings
+    document = yaml.safe_load(settings.release_lanes_path.read_text(encoding="utf-8"))
+    document["lanes"]["qdev-release-qazpolit"] = {
+        "project_id": "qazpolit",
+        "placement": "srv138jump",
+        "client_mtls_identity": "qdev-release-client:qazpolit",
+        "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
+        "minimum_free_gib": 20,
+        "heartbeat_ttl_seconds": 90,
+        "artifact_repository": "qazpolit",
+    }
+    settings.release_lanes_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    headers = {"X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump"}
+    release_id = "release-shared-host"
+    base = f"/internal/v1/release-hosts/srv138jump/jobs/{release_id}"
+
+    ambiguous = client.get(base, headers=headers)
+    assert ambiguous.status_code == 404
+    assert ambiguous.json()["detail"] == "release placement is not allowlisted"
+
+    selected = client.get(f"{base}?release_lane=qdev-release-qazpolit", headers=headers)
+    assert selected.status_code == 404
+    assert selected.json()["detail"] == "release job was not found"
+
+    ambiguous_rollback = client.post(f"{base}/rollback", json={}, headers=headers)
+    assert ambiguous_rollback.status_code == 404
+    assert ambiguous_rollback.json()["detail"] == "release placement is not allowlisted"
+
+    selected_rollback = client.post(
+        f"{base}/rollback?release_lane=qdev-release-qazpolit",
+        json={},
+        headers=headers,
+    )
+    assert selected_rollback.status_code == 409
+    assert selected_rollback.json()["detail"] == "rollback receipt was rejected"
+
+
 class FakeGitHub:
     def __init__(
         self,
