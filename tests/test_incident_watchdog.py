@@ -309,19 +309,14 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
         registered_reserve_hosts=["mail-general-reserve"],
     )
     first = watchdog.run_once(busy, state_root=state_root, outbox=outbox)
-    assert first["reserve"] == {
-        "host_id": "mail-general-reserve",
-        "action": "activate-reserve",
-        "follow_up": ["host-audit", "capacity-calculation"],
-    }
+    decision = watchdog.plan_reserve(busy, already_requested=[])
+    assert decision is not None
+    expected_reserve = decision.to_mapping()
+    assert first["reserve"] == expected_reserve
     ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
     assert ledger["activated_reserves"] == []
     assert ledger["pending_reserve_requests"] == {
-        "mail-general-reserve": {
-            "host_id": "mail-general-reserve",
-            "action": "activate-reserve",
-            "follow_up": ["host-audit", "capacity-calculation"],
-        }
+        "mail-general-reserve": expected_reserve
     }
     records = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["record"] == "reserve-decision"
@@ -330,6 +325,105 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
     assert len(
         [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
     ) == len(records)
+
+
+def _reserve_receipt_for(watchdog, request, *, status="admitted"):
+    return {
+        "schema": watchdog.RESERVE_RECEIPT_SCHEMA,
+        "request_id": request["request_id"],
+        "host_id": request["host_id"],
+        "action": request["action"],
+        "status": status,
+        "slots": 2,
+        "profiles": ["qdev-ci", "qdev-ci-browser"],
+        "max_docker_jobs": 0,
+        "audited_at": "2026-09-11T00:01:00Z",
+        "audit_digest": "a" * 64,
+    }
+
+
+def test_reserve_requires_a_matching_admitted_capacity_receipt(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    busy = healthy_observation(
+        watchdog,
+        pending_jobs=3,
+        eligible_slots=0,
+        fifo_head_age_seconds=400,
+        active_jobs=1,
+        registered_reserve_hosts=["mail-general-reserve"],
+    )
+    watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    request = json.loads(
+        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
+    )["requests"][0]
+    assert request["host_id"] not in watchdog.load_ledger(state_root)["activated_reserves"]
+
+    receipt_path = state_root / "reserve-capacity-receipts.jsonl"
+    receipt_path.write_text(
+        json.dumps(_reserve_receipt_for(watchdog, request)) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(receipt_path, 0o600)
+    summary = watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    ledger = watchdog.load_ledger(state_root)
+    assert summary["reserve_receipts_reconciled"] == 1
+    assert ledger["pending_reserve_requests"] == {}
+    assert ledger["activated_reserves"] == ["mail-general-reserve"]
+    assert request["request_id"] in ledger["reserve_outcomes"]
+
+
+def test_reserve_receipt_mismatch_fails_closed_without_capacity_promotion(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    busy = healthy_observation(
+        watchdog,
+        pending_jobs=3,
+        eligible_slots=0,
+        fifo_head_age_seconds=400,
+        active_jobs=1,
+        registered_reserve_hosts=["mail-general-reserve"],
+    )
+    watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    request = json.loads(
+        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
+    )["requests"][0]
+    receipt = _reserve_receipt_for(watchdog, request)
+    receipt["profiles"] = ["qdev-ci", "qdev-ci-docker"]
+    receipt_path = state_root / "reserve-capacity-receipts.jsonl"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+
+    with pytest.raises(watchdog.WatchdogError):
+        watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    ledger = watchdog.load_ledger(state_root)
+    assert ledger["activated_reserves"] == []
+    assert "mail-general-reserve" in ledger["pending_reserve_requests"]
+
+
+def test_blocked_reserve_receipt_is_terminal_without_an_automatic_retry(watchdog, tmp_path: Path):
+    state_root = tmp_path / "state"
+    busy = healthy_observation(
+        watchdog,
+        pending_jobs=3,
+        eligible_slots=0,
+        fifo_head_age_seconds=400,
+        active_jobs=1,
+        registered_reserve_hosts=["mail-general-reserve"],
+    )
+    watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    request = json.loads(
+        (state_root / "reserve-capacity-outbox.json").read_text(encoding="utf-8")
+    )["requests"][0]
+    receipt_path = state_root / "reserve-capacity-receipts.jsonl"
+    receipt_path.write_text(
+        json.dumps(_reserve_receipt_for(watchdog, request, status="blocked")) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(receipt_path, 0o600)
+
+    reconciled = watchdog.run_once(busy, state_root=state_root, outbox=tmp_path / "alerts.jsonl")
+    assert reconciled["reserve"] is None
+    assert reconciled["pending_reserve_requests"] == 0
+    assert watchdog.load_ledger(state_root)["activated_reserves"] == []
 
 
 def test_waiting_jobs_are_only_reported_once_they_started(watchdog):

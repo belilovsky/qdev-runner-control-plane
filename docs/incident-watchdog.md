@@ -87,9 +87,18 @@ job, the watchdog emits at most one `reserve-decision` record for the sealed
 `mail-general-reserve` target. It refuses to select an arbitrary reserve name
 from an observation; an unexpected name is a critical topology-drift alert.
 The decision is stored as a pending adapter request, not as activated capacity:
-only a later signed host-agent receipt can establish activation. The request
-requires a `host-audit` and a `capacity-calculation` follow-up, and the target
-is never used while a compatible slot is available.
+only a later fixed-adapter capacity receipt can establish activation. The
+root-only request spool is
+`/var/lib/qdev-runner/incident-watchdog/reserve-capacity-outbox.json`; every
+request has a stable `request_id` and names only the sealed target. The fixed
+adapter may write a `qdev-ci-reserve-capacity-receipt-v1` JSONL record only
+after its host audit and capacity calculation. On the next pass the watchdog
+checks the exact request tuple, a timestamp and audit digest, and the sealed
+two-slot non-Docker topology before promoting the reserve. A `blocked` receipt
+is recorded but never promoted or retried automatically; a new request needs a
+new controller-owned incident decision. A mismatched, insecure, symlinked or
+unknown receipt fails closed. The target is never used while a compatible slot
+is available, and an outbox record by itself is not capacity.
 
 ## Internal observation document
 

@@ -28,9 +28,12 @@ from typing import Any
 
 SCHEMA = "qdev-ci-incident-watchdog-v1"
 LEGACY_STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v1"
-STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v2"
+PREVIOUS_STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v2"
+STATE_SCHEMA = "qdev-ci-incident-watchdog-state-v3"
 DELIVERY_OUTBOX_SCHEMA = "qdev-ci-incident-delivery-outbox-v1"
 DELIVERY_RECEIPT_SCHEMA = "qdev-ci-incident-delivery-receipt-v1"
+RESERVE_OUTBOX_SCHEMA = "qdev-ci-reserve-capacity-outbox-v1"
+RESERVE_RECEIPT_SCHEMA = "qdev-ci-reserve-capacity-receipt-v1"
 INCIDENT_ID = "qdev-ci-four-vps-20260911"
 
 # Published SLO thresholds.  Every one of them is an operational contract, not
@@ -369,8 +372,16 @@ class ReserveDecision:
     action: str
     follow_up: tuple[str, ...]
 
+    @property
+    def request_id(self) -> str:
+        """Stable idempotency key for the one sealed reserve transition."""
+
+        payload = ":".join((INCIDENT_ID, "reserve", self.host_id, self.action))
+        return hashlib.sha256(payload.encode()).hexdigest()
+
     def to_mapping(self) -> dict[str, Any]:
         return {
+            "request_id": self.request_id,
             "host_id": self.host_id,
             "action": self.action,
             "follow_up": list(self.follow_up),
@@ -472,6 +483,14 @@ def _delivery_receipts_path(state_root: Path) -> Path:
     return state_root / "delivery-receipts.jsonl"
 
 
+def _reserve_outbox_path(state_root: Path) -> Path:
+    return state_root / "reserve-capacity-outbox.json"
+
+
+def _reserve_receipts_path(state_root: Path) -> Path:
+    return state_root / "reserve-capacity-receipts.jsonl"
+
+
 def _write_delivery_outbox(path: Path, deliveries: Mapping[str, Any]) -> None:
     """Atomically materialize the root-only, at-least-once delivery spool."""
 
@@ -479,6 +498,24 @@ def _write_delivery_outbox(path: Path, deliveries: Mapping[str, Any]) -> None:
         "schema": DELIVERY_OUTBOX_SCHEMA,
         "incident_id": INCIDENT_ID,
         "deliveries": [deliveries[key] for key in sorted(deliveries)],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(document, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def _write_reserve_outbox(path: Path, requests: Mapping[str, Any]) -> None:
+    """Materialize only pending sealed reserve requests for the fixed adapter."""
+
+    document = {
+        "schema": RESERVE_OUTBOX_SCHEMA,
+        "incident_id": INCIDENT_ID,
+        "requests": [requests[key] for key in sorted(requests)],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -510,6 +547,30 @@ def _load_delivery_receipts(path: Path) -> tuple[dict[str, Any], ...]:
             raise WatchdogError(f"delivery receipt line {number} is invalid") from exc
         if not isinstance(receipt, dict):
             raise WatchdogError(f"delivery receipt line {number} is not an object")
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
+def _load_reserve_receipts(path: Path) -> tuple[dict[str, Any], ...]:
+    """Load fixed-adapter receipts without trusting them as capacity by default."""
+
+    if not path.exists():
+        return ()
+    if path.is_symlink():
+        raise WatchdogError("reserve receipt path must not be a symlink")
+    if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise WatchdogError("reserve receipt path must be owner-only")
+
+    receipts: list[dict[str, Any]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise WatchdogError(f"reserve receipt line {number} is invalid") from exc
+        if not isinstance(receipt, dict):
+            raise WatchdogError(f"reserve receipt line {number} is not an object")
         receipts.append(receipt)
     return tuple(receipts)
 
@@ -576,6 +637,95 @@ def reconcile_delivery_receipts(
     return reconciled
 
 
+def _validate_reserve_receipt(
+    receipt: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Accept capacity only from the exact controller-owned reserve request."""
+
+    expected_fields = {
+        "schema",
+        "request_id",
+        "host_id",
+        "action",
+        "status",
+        "slots",
+        "profiles",
+        "max_docker_jobs",
+        "audited_at",
+        "audit_digest",
+    }
+    if set(receipt) != expected_fields or receipt.get("schema") != RESERVE_RECEIPT_SCHEMA:
+        raise WatchdogError("reserve receipt has an unexpected schema")
+    for tuple_field in ("request_id", "host_id", "action"):
+        if receipt.get(tuple_field) != request.get(tuple_field):
+            raise WatchdogError("reserve receipt does not match its pending request")
+    if receipt.get("status") not in {"admitted", "blocked"}:
+        raise WatchdogError("reserve receipt status is invalid")
+    if (
+        receipt.get("slots") != 2
+        or receipt.get("profiles") != ["qdev-ci", "qdev-ci-browser"]
+        or receipt.get("max_docker_jobs") != 0
+    ):
+        raise WatchdogError("reserve receipt capacity is outside the sealed topology")
+    audited_at = receipt.get("audited_at")
+    if not isinstance(audited_at, str) or not audited_at:
+        raise WatchdogError("reserve receipt audit timestamp is invalid")
+    try:
+        parsed_timestamp = datetime.fromisoformat(audited_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise WatchdogError("reserve receipt audit timestamp is invalid") from exc
+    if parsed_timestamp.tzinfo is None:
+        raise WatchdogError("reserve receipt audit timestamp must include an offset")
+    audit_digest = receipt.get("audit_digest")
+    if (
+        not isinstance(audit_digest, str)
+        or len(audit_digest) != 64
+        or any(character not in "0123456789abcdef" for character in audit_digest)
+    ):
+        raise WatchdogError("reserve receipt audit digest is invalid")
+    return dict(receipt)
+
+
+def reconcile_reserve_receipts(
+    ledger: dict[str, Any],
+    receipts: Iterable[Mapping[str, Any]],
+) -> int:
+    """Promote only a matching admitted receipt; blocked requests stay closed."""
+
+    pending = ledger.setdefault("pending_reserve_requests", {})
+    outcomes = ledger.setdefault("reserve_outcomes", {})
+    activated = ledger.setdefault("activated_reserves", [])
+    if (
+        not isinstance(pending, dict)
+        or not isinstance(outcomes, dict)
+        or not isinstance(activated, list)
+    ):
+        raise WatchdogError("reserve ledger has an unexpected schema")
+
+    reconciled = 0
+    for receipt in receipts:
+        request_id = receipt.get("request_id")
+        if not isinstance(request_id, str):
+            raise WatchdogError("reserve receipt identifier is invalid")
+        host_id = receipt.get("host_id")
+        request = pending.get(host_id) if isinstance(host_id, str) else None
+        if request is not None:
+            validated = _validate_reserve_receipt(receipt, request)
+            outcomes[request_id] = {"request": request, "receipt": validated}
+            del pending[host_id]
+            if validated["status"] == "admitted" and host_id not in activated:
+                activated.append(host_id)
+            reconciled += 1
+            continue
+
+        previous = outcomes.get(request_id)
+        if not isinstance(previous, Mapping) or not isinstance(previous.get("request"), Mapping):
+            raise WatchdogError("reserve receipt does not match a pending request")
+        _validate_reserve_receipt(receipt, previous["request"])
+    return reconciled
+
+
 def _ledger_path(state_root: Path) -> Path:
     return state_root / "state.json"
 
@@ -589,6 +739,7 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
             "audience_digests": {},
             "activated_reserves": [],
             "pending_reserve_requests": {},
+            "reserve_outcomes": {},
             "pending_job_deliveries": {},
             "acknowledged_job_deliveries": {},
         }
@@ -605,8 +756,21 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
             "audience_digests": document.get("audience_digests", {}),
             "activated_reserves": document.get("activated_reserves", []),
             "pending_reserve_requests": {},
+            "reserve_outcomes": {},
             "pending_job_deliveries": {},
             "acknowledged_job_deliveries": {},
+            "heartbeat_at": document.get("heartbeat_at"),
+        }
+    if document.get("schema") == PREVIOUS_STATE_SCHEMA:
+        return {
+            "schema": STATE_SCHEMA,
+            "incident_id": INCIDENT_ID,
+            "audience_digests": document.get("audience_digests", {}),
+            "activated_reserves": document.get("activated_reserves", []),
+            "pending_reserve_requests": document.get("pending_reserve_requests", {}),
+            "reserve_outcomes": {},
+            "pending_job_deliveries": document.get("pending_job_deliveries", {}),
+            "acknowledged_job_deliveries": document.get("acknowledged_job_deliveries", {}),
             "heartbeat_at": document.get("heartbeat_at"),
         }
     if document.get("schema") != STATE_SCHEMA:
@@ -614,10 +778,12 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
     pending = document.setdefault("pending_job_deliveries", {})
     acknowledged = document.setdefault("acknowledged_job_deliveries", {})
     reserves = document.setdefault("pending_reserve_requests", {})
+    reserve_outcomes = document.setdefault("reserve_outcomes", {})
     if (
         not isinstance(pending, dict)
         or not isinstance(acknowledged, dict)
         or not isinstance(reserves, dict)
+        or not isinstance(reserve_outcomes, dict)
     ):
         raise WatchdogError("watchdog ledger has an unexpected schema")
     return document
@@ -642,6 +808,8 @@ def run_once(
     outbox: Path,
     delivery_outbox: Path | None = None,
     delivery_receipts: Path | None = None,
+    reserve_outbox: Path | None = None,
+    reserve_receipts: Path | None = None,
     min_disk_free_gib: float = 4.5,
     max_disk_used_pct: float = 90.0,
 ) -> dict[str, Any]:
@@ -652,6 +820,10 @@ def run_once(
     reconciled_receipts = reconcile_delivery_receipts(
         ledger,
         _load_delivery_receipts(receipt_path),
+    )
+    reconciled_reserve_receipts = reconcile_reserve_receipts(
+        ledger,
+        _load_reserve_receipts(reserve_receipts or _reserve_receipts_path(state_root)),
     )
     breaches = evaluate(
         observation,
@@ -664,11 +836,19 @@ def run_once(
         ledger.get("acknowledged_job_deliveries", {}),
         ledger.get("pending_job_deliveries", {}),
     )
+    settled_reserve_hosts = {
+        outcome["request"].get("host_id")
+        for outcome in ledger.get("reserve_outcomes", {}).values()
+        if isinstance(outcome, Mapping)
+        and isinstance(outcome.get("request"), Mapping)
+        and isinstance(outcome["request"].get("host_id"), str)
+    }
     reserve = plan_reserve(
         observation,
         already_requested=(
             set(ledger.get("activated_reserves", []))
             | set(ledger.get("pending_reserve_requests", {}))
+            | settled_reserve_hosts
         ),
     )
 
@@ -704,6 +884,10 @@ def run_once(
         delivery_outbox or _delivery_outbox_path(state_root),
         ledger["pending_job_deliveries"],
     )
+    _write_reserve_outbox(
+        reserve_outbox or _reserve_outbox_path(state_root),
+        ledger["pending_reserve_requests"],
+    )
 
     if emitted:
         with outbox.open("a", encoding="utf-8") as handle:
@@ -719,6 +903,7 @@ def run_once(
         "silent": not emitted,
         "reserve": reserve.to_mapping() if reserve else None,
         "pending_reserve_requests": len(ledger["pending_reserve_requests"]),
+        "reserve_receipts_reconciled": reconciled_reserve_receipts,
         "delivery_receipts_reconciled": reconciled_receipts,
         "pending_job_deliveries": len(ledger["pending_job_deliveries"]),
     }
@@ -743,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--outbox", type=Path, default=None)
     parser.add_argument("--delivery-outbox", type=Path, default=None)
     parser.add_argument("--delivery-receipts", type=Path, default=None)
+    parser.add_argument("--reserve-outbox", type=Path, default=None)
+    parser.add_argument("--reserve-receipts", type=Path, default=None)
     parser.add_argument("--min-disk-free-gib", type=float, default=4.5)
     parser.add_argument("--max-disk-used-pct", type=float, default=90.0)
     args = parser.parse_args(argv)
@@ -756,6 +943,8 @@ def main(argv: list[str] | None = None) -> int:
             outbox=outbox,
             delivery_outbox=args.delivery_outbox,
             delivery_receipts=args.delivery_receipts,
+            reserve_outbox=args.reserve_outbox,
+            reserve_receipts=args.reserve_receipts,
             min_disk_free_gib=args.min_disk_free_gib,
             max_disk_used_pct=args.max_disk_used_pct,
         )
