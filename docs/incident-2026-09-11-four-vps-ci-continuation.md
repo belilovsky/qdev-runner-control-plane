@@ -294,8 +294,10 @@ recovery details доступны исключительно на существ
   `4587717e9fbf3d23ee96fb64a4bb0e6030b09c9d`; в текущем candidate также
   находится этот актуальный runbook. Для code head formatter, linter, diff
   check и focused набор watchdog, delivery, reserve, planner, audit и
-  release-script тестов прошли `101/101`; после runbook-only изменений
-  повторно пройден diff check. Кандидат намеренно не опубликован:
+  release-script тестов прошли `101/101`. Дополнительный контрактный набор
+  claim scope, FIFO admission, fleet dispatch и worker recovery прошёл
+  `84/84`; после runbook-only изменений повторно пройден diff check.
+  Кандидат намеренно не опубликован:
   при нулевых eligible slots push создал бы ещё одну заблокированную
   self-hosted задачу и не приблизил восстановление. Не
   materialized остаются только реальный task-delivery adapter с root-owned
