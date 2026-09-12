@@ -3,10 +3,15 @@ import io
 import json
 import warnings
 import zipfile
+from pathlib import Path
 
 import pytest
 
-from qdev_runner.qazpolit_artifact import QazPolitArtifactError, validate_qazpolit_release_archive
+from qdev_runner.qazpolit_artifact import (
+    QazPolitArtifactError,
+    validate_qazpolit_release_archive,
+    validate_qazpolit_release_archive_file,
+)
 from qdev_runner.qazpolit_artifact_store import (
     QazPolitArtifactStorageError,
     QazPolitArtifactStore,
@@ -100,6 +105,26 @@ def test_rejects_requested_source_sha_that_does_not_match_provenance() -> None:
 def test_rejects_damaged_zip_bytes() -> None:
     with pytest.raises(QazPolitArtifactError, match="readable ZIP"):
         validate_qazpolit_release_archive(b"not a ZIP", expected_source_sha=SOURCE_SHA)
+
+
+def test_file_validation_matches_in_memory_validation(tmp_path: Path) -> None:
+    payload = _archive()
+    archive_path = tmp_path / "release.zip"
+    archive_path.write_bytes(payload)
+
+    assert validate_qazpolit_release_archive_file(
+        archive_path, expected_source_sha=SOURCE_SHA
+    ) == validate_qazpolit_release_archive(payload, expected_source_sha=SOURCE_SHA)
+
+
+def test_file_validation_refuses_a_symlink(tmp_path: Path) -> None:
+    archive_path = tmp_path / "release.zip"
+    archive_path.write_bytes(_archive())
+    symlink_path = tmp_path / "release-link.zip"
+    symlink_path.symlink_to(archive_path)
+
+    with pytest.raises(QazPolitArtifactError, match="regular file"):
+        validate_qazpolit_release_archive_file(symlink_path, expected_source_sha=SOURCE_SHA)
 
 
 def test_store_retains_validated_archive_idempotently(tmp_path) -> None:

@@ -15,6 +15,7 @@ import stat
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 
@@ -40,6 +41,8 @@ _REQUIRED_MEMBERS = frozenset(
 )
 _MAX_MEMBER_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_TOTAL_BYTES = 6 * 1024 * 1024 * 1024
+_MAX_METADATA_BYTES = 1024 * 1024
+_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -80,32 +83,82 @@ def validate_qazpolit_release_archive(
 
     if not archive_bytes:
         raise QazPolitArtifactError("release archive is empty")
+    return _validate_archive(
+        BytesIO(archive_bytes),
+        archive_sha256=hashlib.sha256(archive_bytes).hexdigest(),
+        expected_source_sha=expected_source_sha,
+    )
+
+
+def validate_qazpolit_release_archive_file(
+    archive_path: Path, *, expected_source_sha: str | None = None
+) -> QazPolitArtifactEvidence:
+    """Validate a private archive file without loading its payload into memory."""
+
+    try:
+        metadata = archive_path.lstat()
+    except OSError as error:
+        raise QazPolitArtifactError("release archive file is unavailable") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise QazPolitArtifactError("release archive file must be a regular file")
+    if metadata.st_size <= 0:
+        raise QazPolitArtifactError("release archive is empty")
+
+    digest = hashlib.sha256()
+    try:
+        with archive_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(_HASH_CHUNK_BYTES), b""):
+                digest.update(chunk)
+        with archive_path.open("rb") as stream:
+            return _validate_archive(
+                stream,
+                archive_sha256=digest.hexdigest(),
+                expected_source_sha=expected_source_sha,
+            )
+    except OSError as error:
+        raise QazPolitArtifactError("release archive file cannot be read") from error
+
+
+def _validate_archive(
+    archive_stream: Any, *, archive_sha256: str, expected_source_sha: str | None
+) -> QazPolitArtifactEvidence:
     if expected_source_sha is not None and _GIT_SHA.fullmatch(expected_source_sha) is None:
         raise QazPolitArtifactError("expected source SHA must be a lowercase 40-character commit")
 
     try:
-        with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+        with zipfile.ZipFile(archive_stream) as archive:
             infos = archive.infolist()
             names = _validate_members(infos)
-            contents = {info.filename: archive.read(info) for info in infos}
+            infos_by_name = {info.filename: info for info in infos}
+            checksums = _parse_checksums(_read_metadata(archive, infos_by_name["SHA256SUMS"]))
+            member_digests = {
+                name: _hash_member(archive, infos_by_name[name]) for name in names - {"SHA256SUMS"}
+            }
+            provenance = _parse_provenance(
+                _read_metadata(archive, infos_by_name["provenance.json"])
+            )
+            source_sha_payload = _read_metadata(archive, infos_by_name["source-sha.txt"])
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
         raise QazPolitArtifactError("release artifact is not a readable ZIP archive") from error
 
-    checksums = _parse_checksums(contents["SHA256SUMS"])
     expected_checksum_members = names - {"SHA256SUMS"}
     if set(checksums) != expected_checksum_members:
         raise QazPolitArtifactError("SHA256SUMS must cover every payload member and nothing else")
 
     members: list[tuple[str, str, int]] = []
     for name in sorted(expected_checksum_members):
-        payload = contents[name]
-        digest = hashlib.sha256(payload).hexdigest()
+        digest, size = member_digests[name]
         if checksums[name] != digest:
             raise QazPolitArtifactError(f"SHA256SUMS does not match {name}")
-        members.append((name, digest, len(payload)))
+        members.append((name, digest, size))
 
-    provenance = _parse_provenance(contents["provenance.json"])
-    source_sha = _validate_provenance(provenance, contents, expected_source_sha)
+    source_sha = _validate_provenance(
+        provenance,
+        names=names,
+        member_digests=member_digests,
+        source_sha_payload=source_sha_payload,
+        expected_source_sha=expected_source_sha,
+    )
     payload_descriptor = {
         "schema": "qazpolit-release-payload-v1",
         "source_sha": source_sha,
@@ -117,13 +170,31 @@ def validate_qazpolit_release_archive(
         json.dumps(payload_descriptor, separators=(",", ":"), sort_keys=True).encode("utf-8")
     ).hexdigest()
     return QazPolitArtifactEvidence(
-        archive_sha256=hashlib.sha256(archive_bytes).hexdigest(),
+        archive_sha256=archive_sha256,
         payload_sha256=payload_sha256,
         source_sha=source_sha,
         release_id=str(provenance["release_id"]),
         members=tuple(members),
         provenance=provenance,
     )
+
+
+def _read_metadata(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    if info.file_size > _MAX_METADATA_BYTES:
+        raise QazPolitArtifactError("release artifact metadata exceeds its safe size limit")
+    return archive.read(info)
+
+
+def _hash_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with archive.open(info) as stream:
+        for chunk in iter(lambda: stream.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    if size != info.file_size:
+        raise QazPolitArtifactError("release artifact member size changed while being read")
+    return digest.hexdigest(), size
 
 
 def _validate_members(infos: list[zipfile.ZipInfo]) -> set[str]:
@@ -190,7 +261,12 @@ def _parse_provenance(payload: bytes) -> dict[str, Any]:
 
 
 def _validate_provenance(
-    provenance: dict[str, Any], contents: dict[str, bytes], expected_source_sha: str | None
+    provenance: dict[str, Any],
+    *,
+    names: set[str],
+    member_digests: dict[str, tuple[str, int]],
+    source_sha_payload: bytes,
+    expected_source_sha: str | None,
 ) -> str:
     required = {
         "schema",
@@ -214,7 +290,7 @@ def _validate_provenance(
         raise QazPolitArtifactError("provenance source SHA is invalid")
     if expected_source_sha is not None and source_sha != expected_source_sha:
         raise QazPolitArtifactError("provenance source SHA does not match the requested release")
-    if contents["source-sha.txt"] != f"{source_sha}\n".encode("ascii"):
+    if source_sha_payload != f"{source_sha}\n".encode("ascii"):
         raise QazPolitArtifactError("source-sha.txt does not match provenance")
     if provenance["schema"] != "qazpolit.release-provenance.v1":
         raise QazPolitArtifactError("provenance schema is not supported")
@@ -256,7 +332,7 @@ def _validate_provenance(
         "wheel_sha256",
     }:
         raise QazPolitArtifactError("QazStack provenance is invalid")
-    wheel_names = [name for name in contents if _WHEEL.fullmatch(name)]
+    wheel_names = [name for name in names if _WHEEL.fullmatch(name)]
     if len(wheel_names) != 1:
         raise QazPolitArtifactError("QazStack wheel provenance is invalid")
     wheel_name = wheel_names[0]
@@ -267,7 +343,7 @@ def _validate_provenance(
         qazstack["version"] != wheel_match.group(1)
         or not isinstance(qazstack["source_revision"], str)
         or _GIT_SHA.fullmatch(qazstack["source_revision"]) is None
-        or qazstack["wheel_sha256"] != hashlib.sha256(contents[wheel_name]).hexdigest()
+        or qazstack["wheel_sha256"] != member_digests[wheel_name][0]
     ):
         raise QazPolitArtifactError("QazStack wheel provenance is invalid")
 
