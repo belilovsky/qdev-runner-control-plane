@@ -1,6 +1,6 @@
 # QDev CI: завершение инцидента на четырёх существующих VPS
 
-Актуализировано 2026-09-12 после повторного live health-снимка, sealed hosted
+Актуализировано 2026-09-12 после свежего live health-снимка, sealed hosted
 recovery build №76 и проверки новых source-кандидатов. Это
 исполнимый runbook для одного владельца очереди и одного контроллера. Он
 заменяет исторические шаги активации и не содержит адресов, секретных путей
@@ -14,9 +14,9 @@ recovery build №76 и проверки новых source-кандидатов.
 - `controller_release` и `controller_activation` совпадают по SHA, а
   public/internal immutable image digests совпадают с release tuple;
 - `controller_activation` active на generation `15`;
-- в очереди 34 задания: 24 `qdev-ci`, 1 `qdev-ci-browser` и 9
+- в очереди 35 заданий: 24 `qdev-ci`, 2 `qdev-ci-browser` и 9
   `qdev-ci-docker`;
-- oldest pending age составляет 5 269 секунд на момент последнего снимка;
+- oldest pending age составляет 4 944 секунды на момент последнего снимка;
 - безопасных допустимых слотов — 0 для обоих профилей.
 
 На момент актуализации `origin/main` уже продвинулся до
@@ -252,9 +252,9 @@ recovery details доступны исключительно на существ
   targeted tests; до host audit она не считается доступной ёмкостью.
 - Capacity admission, canaries и queue drain: ожидают reconciliation receipt
   для historical transactions и controller-managed host-agent receipts. На
-  момент обновления queue содержит 34 jobs (`24` ci, `1` browser, `9` docker),
-  oldest age — 5 269 секунд на последнем снимке, а eligible slots остаются
-  нулевыми. Два job покинули pending, но это не является восстановлением
+  момент обновления queue содержит 35 jobs (`24` ci, `2` browser, `9` docker),
+  oldest age — 4 944 секунды на последнем снимке, а eligible slots остаются
+  нулевыми. Изменение числа pending само по себе не является восстановлением
   capacity и не даёт оснований для сообщения ожидающим deployment-задачам.
 - Notification delivery, reserve accounting и capacity planner: receipt-bound
   source-кандидаты локально готовы; reserve больше не может быть ложно отмечен
