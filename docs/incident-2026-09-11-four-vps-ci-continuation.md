@@ -291,11 +291,11 @@ recovery details доступны исключительно на существ
   Исполнитель task-delivery materialized в source-кандидате `b74ee33` и его
   DLQ escalation — в `2129cfb`. Эти изменения перенесены без конфликтов на
   текущий `origin/main` в чистый кандидат; его code head
-  `4587717e9fbf3d23ee96fb64a4bb0e6030b09c9d`, а актуальный runbook head
-  `8c743c0f5ebf36943b3bf5e34e7a7680b46735ca`. Для code head formatter,
-  linter, diff check и focused набор watchdog, delivery, reserve, planner,
-  audit и release-script тестов прошли `101/101`; после runbook-only
-  изменений повторно пройден diff check. Кандидат намеренно не опубликован:
+  `4587717e9fbf3d23ee96fb64a4bb0e6030b09c9d`; в текущем candidate также
+  находится этот актуальный runbook. Для code head formatter, linter, diff
+  check и focused набор watchdog, delivery, reserve, planner, audit и
+  release-script тестов прошли `101/101`; после runbook-only изменений
+  повторно пройден diff check. Кандидат намеренно не опубликован:
   при нулевых eligible slots push создал бы ещё одну заблокированную
   self-hosted задачу и не приблизил восстановление. Не
   materialized остаются только реальный task-delivery adapter с root-owned
