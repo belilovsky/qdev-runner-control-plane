@@ -17,7 +17,9 @@ from qdev_runner.release_lane import (
     ReleaseLaneError,
     ReleaseLanePolicy,
     ReleaseStore,
+    candidate_artifact_delivery,
     controller_claim_payload,
+    host_dispatch_claim_payload,
     qazagents_artifact_provenance_from_evidence,
     qazagents_candidate_evidence_digest,
     qgeo_candidate_evidence_digest,
@@ -400,6 +402,53 @@ def test_qazagents_controller_claim_binds_full_static_evidence() -> None:
     request.candidate_receipt["evidence"]["static"]["skills_manifest_sha256"] = "sha256:" + "0" * 64
     with pytest.raises(ReleaseLaneError, match="does not bind release tuple"):
         validate_controller_claim(request, lane, signing_key=SIGNING_KEY, now=TEST_NOW)
+
+
+def test_http_archive_dispatch_claim_binds_verified_delivery_coordinates(tmp_path: Path) -> None:
+    lane = _qazagents_lane()
+    store = ReleaseStore(tmp_path / "release-state")
+    request = _qazagents_candidate_request()
+    _record_bootstrap_heartbeat(store, lane)
+    _sign_request(request, lane, nonce="qazagents-static-nonce-000000000003")
+    admitted, _ = store.admit(request, lane, now=TEST_NOW)
+    dispatched = store.next_job(
+        lane,
+        host_identity=lane.host_agent_mtls_identity,
+        dispatch_signing_key=SIGNING_KEY,
+        now=TEST_NOW + 1,
+    )
+    assert dispatched is not None
+    claim = dispatched["dispatch_claim"]
+    assert claim["artifact_delivery"] == {
+        "schema": "qdev-release-http-archive-delivery-v1",
+        "artifact_uri": "https://ci.qdev.run/artifacts/qazagents-static/release.tar.gz",
+        "archive_sha256": QAZAGENTS_ARCHIVE_SHA256,
+        "payload_sha256": QAZAGENTS_PAYLOAD_SHA256,
+    }
+    assert (
+        dispatched["dispatch_claim_signature"]
+        == hmac.new(
+            SIGNING_KEY.encode("utf-8"),
+            json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "utf-8"
+            ),
+            hashlib.sha256,
+        ).hexdigest()
+    )
+
+    corrupted = copy.deepcopy(dispatched)
+    corrupted["candidate_receipt"]["artifact_uri"] = "http://invalid.example/archive.tar.gz"
+    with pytest.raises(ReleaseLaneError, match="HTTP archive delivery coordinates"):
+        candidate_artifact_delivery(corrupted)
+    with pytest.raises(ReleaseLaneError, match="HTTP archive delivery coordinates"):
+        host_dispatch_claim_payload(
+            corrupted,
+            lane,
+            host_identity=lane.host_agent_mtls_identity,
+            issued_at=TEST_NOW + 1,
+            expires_at=TEST_NOW + 121,
+            nonce="qazagents-static-nonce-000000000004",
+        )
 
 
 def test_qazagents_runtime_receipts_require_the_static_host_adapter_and_bundle() -> None:

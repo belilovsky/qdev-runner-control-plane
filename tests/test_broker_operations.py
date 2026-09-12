@@ -656,6 +656,10 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
             "job_id": 456,
             "attempt": 1,
             "runner_profile": "qdev-ci-docker",
+            "artifact_type": "http-archive",
+            "artifact_uri": "https://ci.qdev.run/artifacts/qaz-tours/release.tar.gz",
+            "archive_sha256": "1" * 64,
+            "payload_sha256": "2" * 64,
         }
     )
     lane = ReleaseLanePolicy(settings.release_lanes_path).lane("qdev-release-qaz-tours")
@@ -723,6 +727,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
         "lease_expires_at",
         "rollback_anchor",
         "candidate_evidence",
+        "artifact_delivery",
         "issued_at",
         "expires_at",
         "nonce",
@@ -738,6 +743,12 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
     assert claim["candidate_evidence"] == job["candidate_evidence"]
     assert claim["candidate_evidence"]["schema"] == ("qdev-release-candidate-evidence-v1")
     assert len(claim["candidate_evidence"]["candidate_receipt_sha256"]) == 64
+    assert claim["artifact_delivery"] == {
+        "schema": "qdev-release-http-archive-delivery-v1",
+        "artifact_uri": "https://ci.qdev.run/artifacts/qaz-tours/release.tar.gz",
+        "archive_sha256": "1" * 64,
+        "payload_sha256": "2" * 64,
+    }
     assert claim["expires_at"] - claim["issued_at"] == 120
     canonical = json.dumps(claim, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"

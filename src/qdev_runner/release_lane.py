@@ -1058,6 +1058,43 @@ def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]
     return evidence
 
 
+def candidate_artifact_delivery(job: dict[str, Any]) -> dict[str, str] | None:
+    """Return the verified HTTP archive coordinates for a host dispatch claim.
+
+    The candidate receipt is admitted before a managed host can receive a job.
+    An HTTP archive host still needs the immutable URL and both checksums in
+    the controller-signed claim; a receipt digest alone cannot be downloaded
+    or verified by that host.  OCI lanes deliberately receive no delivery
+    object because their configured registry reference is the delivery path.
+    """
+    receipt = job.get("candidate_receipt")
+    if not isinstance(receipt, dict):
+        raise ReleaseLaneError("release job has no candidate receipt")
+    if receipt.get("artifact_type", "oci") == "oci":
+        return None
+    if receipt.get("artifact_type") != "http-archive":
+        raise ReleaseLaneError("release job artifact type is invalid")
+    artifact_uri = receipt.get("artifact_uri")
+    archive_sha256 = receipt.get("archive_sha256")
+    payload_sha256 = receipt.get("payload_sha256")
+    if (
+        not isinstance(artifact_uri, str)
+        or not artifact_uri.startswith("https://")
+        or "#" in artifact_uri
+        or not isinstance(archive_sha256, str)
+        or not _HEX64.fullmatch(archive_sha256)
+        or not isinstance(payload_sha256, str)
+        or not _HEX64.fullmatch(payload_sha256)
+    ):
+        raise ReleaseLaneError("HTTP archive delivery coordinates are invalid")
+    return {
+        "schema": "qdev-release-http-archive-delivery-v1",
+        "artifact_uri": artifact_uri,
+        "archive_sha256": archive_sha256,
+        "payload_sha256": payload_sha256,
+    }
+
+
 def controller_claim_payload(
     request: ReleaseAdmissionRequest,
     lane: ReleaseLane,
@@ -1240,6 +1277,7 @@ def host_dispatch_claim_payload(
     attempt = receipt.get("attempt")
     artifact_digest = job.get("artifact_digest")
     artifact_ref = job.get("artifact_ref")
+    artifact_delivery = candidate_artifact_delivery(job)
     claim: dict[str, Any] = {
         "schema": HOST_DISPATCH_CLAIM_SCHEMA,
         "repository": receipt.get("repository"),
@@ -1266,6 +1304,8 @@ def host_dispatch_claim_payload(
         "expires_at": expires_at,
         "nonce": nonce,
     }
+    if artifact_delivery is not None:
+        claim["artifact_delivery"] = artifact_delivery
     if (
         claim["repository"] != lane.canonical_repository
         or not _is_sha(claim["exact_sha"])
@@ -1297,6 +1337,8 @@ def host_dispatch_claim_payload(
             lane,
         )
         or not isinstance(claim["candidate_evidence"], dict)
+        or (artifact_delivery is None and "artifact_delivery" in claim)
+        or (artifact_delivery is not None and claim.get("artifact_delivery") != artifact_delivery)
     ):
         raise ReleaseLaneError("host dispatch claim cannot bind the managed job")
     return claim
