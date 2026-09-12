@@ -843,3 +843,111 @@ def test_release_admission_rejects_changed_evidence_for_same_tuple(tmp_path: Pat
     _sign_request(changed, lane, nonce="candidate-release-nonce-000000000002")
     with pytest.raises(ReleaseLaneError, match="different candidate evidence"):
         store.admit(changed, lane, now=TEST_NOW + 1)
+
+
+RP_SHA = "7" * 40
+RP_DIGEST = "sha256:" + "8" * 64
+RP_REF = f"registry.ci.qdev.run/belilovsky/ipos@{RP_DIGEST}"
+RP_ROLLBACK_SHA = "9" * 40
+RP_ROLLBACK_DIGEST = "sha256:" + "a" * 64
+RP_ROLLBACK_REF = f"registry.ci.qdev.run/belilovsky/ipos@{RP_ROLLBACK_DIGEST}"
+
+
+def _rp_lane():
+    return ReleaseLanePolicy(LANES_PATH).lane("qdev-release-rp")
+
+
+def _rp_provenance() -> dict[str, str]:
+    return {
+        "release_manifest_sha256": "1" * 64,
+        "dependency_lock_sha256": "2" * 64,
+        "artifact_tree_sha256": "3" * 64,
+        "method_bundle_digest": "sha256:" + "4" * 64,
+        "migration_revision": "0010_reports_dispatch_binding",
+    }
+
+
+def _rp_runtime_receipt(lane) -> dict:
+    return {
+        "schema": RUNTIME_RECEIPT_SCHEMA,
+        "status": "verified",
+        "project": lane.project_id,
+        "release_lane": lane.name,
+        "placement": lane.placement,
+        "source_sha": RP_SHA,
+        "artifact_digest": RP_DIGEST,
+        "artifact_ref": RP_REF,
+        "health": "ok",
+        "readiness": {"native": "ok", "public": "ok", "identity": "ok"},
+        "runtime_identity": {
+            "source_sha": RP_SHA,
+            "artifact_digest": RP_DIGEST,
+            "artifact_ref": RP_REF,
+            "measured": True,
+        },
+        "dependency_identity": {
+            "deployment_profile": "reports-private",
+            "qazstack_version": "1.53.0",
+            "qazstack_source_sha": "64e1ba4d65c3e2b5368636fafb0cdb4645c749b6",
+        },
+        "artifact_provenance": _rp_provenance(),
+        "rollback": {
+            "verified": True,
+            "source_sha": RP_ROLLBACK_SHA,
+            "artifact_digest": RP_ROLLBACK_DIGEST,
+            "artifact_ref": RP_ROLLBACK_REF,
+        },
+    }
+
+
+def test_rp_runtime_receipts_bind_the_reports_private_dependency_contract() -> None:
+    lane = _rp_lane()
+    receipt = _rp_runtime_receipt(lane)
+    validate_runtime_receipt(
+        receipt,
+        lane=lane,
+        source_sha=RP_SHA,
+        artifact_digest=RP_DIGEST,
+        artifact_ref=RP_REF,
+    )
+    native = {
+        "schema": "qdev-admin-platform-native-receipt-v1",
+        "project_id": lane.project_id,
+        "native_host_adapter": lane.native_host_adapter,
+        "source_sha": RP_SHA,
+        "artifact_digest": RP_DIGEST,
+        "artifact_ref": RP_REF,
+        "readiness": receipt["readiness"],
+        "runtime_identity": receipt["runtime_identity"],
+        "dependency_identity": receipt["dependency_identity"],
+        "artifact_provenance": receipt["artifact_provenance"],
+    }
+    validate_native_runtime_receipt(
+        native,
+        lane=lane,
+        source_sha=RP_SHA,
+        artifact_digest=RP_DIGEST,
+        artifact_ref=RP_REF,
+    )
+
+    forged_dependencies = copy.deepcopy(native)
+    forged_dependencies["dependency_identity"]["qazstack_version"] = "1.52.0"
+    with pytest.raises(ReleaseLaneError, match="dependency identity"):
+        validate_native_runtime_receipt(
+            forged_dependencies,
+            lane=lane,
+            source_sha=RP_SHA,
+            artifact_digest=RP_DIGEST,
+            artifact_ref=RP_REF,
+        )
+
+    forged_provenance = copy.deepcopy(receipt)
+    forged_provenance["artifact_provenance"]["migration_revision"] = "Invalid"
+    with pytest.raises(ReleaseLaneError, match="artifact provenance"):
+        validate_runtime_receipt(
+            forged_provenance,
+            lane=lane,
+            source_sha=RP_SHA,
+            artifact_digest=RP_DIGEST,
+            artifact_ref=RP_REF,
+        )
