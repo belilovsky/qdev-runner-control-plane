@@ -380,19 +380,21 @@ class ReserveDecision:
 def plan_reserve(
     observation: Observation,
     *,
-    already_activated: Iterable[str],
+    already_requested: Iterable[str],
 ) -> ReserveDecision | None:
-    """Activate at most one pre-registered reserve host, then re-audit.
+    """Request at most one pre-registered reserve host, then re-audit.
 
     A reserve is only ever used while the healthy workers are genuinely busy:
     the head of the queue has waited past the five minute warning, nothing is
-    eligible, and at least one active job is holding the fleet.
+    eligible, and at least one active job is holding the fleet.  A request is
+    not an activation: only the fixed host adapter's later signed receipt may
+    record an activated reserve.
     """
 
     observed = set(observation.registered_reserve_hosts)
     if observed.difference(SEALED_RESERVE_HOSTS):
         return None
-    used = set(already_activated)
+    used = set(already_requested)
     available = sorted(observed.intersection(SEALED_RESERVE_HOSTS).difference(used))
     if not available:
         return None
@@ -586,6 +588,7 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
             "incident_id": INCIDENT_ID,
             "audience_digests": {},
             "activated_reserves": [],
+            "pending_reserve_requests": {},
             "pending_job_deliveries": {},
             "acknowledged_job_deliveries": {},
         }
@@ -601,6 +604,7 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
             "incident_id": INCIDENT_ID,
             "audience_digests": document.get("audience_digests", {}),
             "activated_reserves": document.get("activated_reserves", []),
+            "pending_reserve_requests": {},
             "pending_job_deliveries": {},
             "acknowledged_job_deliveries": {},
             "heartbeat_at": document.get("heartbeat_at"),
@@ -609,7 +613,12 @@ def load_ledger(state_root: Path) -> dict[str, Any]:
         raise WatchdogError("watchdog ledger has an unexpected schema")
     pending = document.setdefault("pending_job_deliveries", {})
     acknowledged = document.setdefault("acknowledged_job_deliveries", {})
-    if not isinstance(pending, dict) or not isinstance(acknowledged, dict):
+    reserves = document.setdefault("pending_reserve_requests", {})
+    if (
+        not isinstance(pending, dict)
+        or not isinstance(acknowledged, dict)
+        or not isinstance(reserves, dict)
+    ):
         raise WatchdogError("watchdog ledger has an unexpected schema")
     return document
 
@@ -657,7 +666,10 @@ def run_once(
     )
     reserve = plan_reserve(
         observation,
-        already_activated=ledger.get("activated_reserves", []),
+        already_requested=(
+            set(ledger.get("activated_reserves", []))
+            | set(ledger.get("pending_reserve_requests", {}))
+        ),
     )
 
     emitted: list[dict[str, Any]] = []
@@ -677,7 +689,10 @@ def run_once(
         for audience in AUDIENCES
     }
     if reserve is not None:
-        ledger.setdefault("activated_reserves", []).append(reserve.host_id)
+        # A watchdog decision is only an adapter-facing request.  Keeping it
+        # separate from ``activated_reserves`` prevents a crashed or blocked
+        # host bootstrap from being misreported as usable capacity.
+        ledger.setdefault("pending_reserve_requests", {})[reserve.host_id] = reserve.to_mapping()
     ledger.setdefault("pending_job_deliveries", {}).update(deliveries)
     ledger["heartbeat_at"] = observation.observed_at
 
@@ -703,6 +718,7 @@ def run_once(
         "emitted": len(emitted),
         "silent": not emitted,
         "reserve": reserve.to_mapping() if reserve else None,
+        "pending_reserve_requests": len(ledger["pending_reserve_requests"]),
         "delivery_receipts_reconciled": reconciled_receipts,
         "pending_job_deliveries": len(ledger["pending_job_deliveries"]),
     }

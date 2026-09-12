@@ -249,12 +249,12 @@ def test_reserve_escalation_covers_only_the_sealed_reserve_host(watchdog):
         active_jobs=2,
         registered_reserve_hosts=["mail-general-reserve"],
     )
-    first = watchdog.plan_reserve(busy, already_activated=[])
+    first = watchdog.plan_reserve(busy, already_requested=[])
     assert first is not None
     assert first.host_id == "mail-general-reserve"
     assert first.action == "activate-reserve"
     assert first.follow_up == ("host-audit", "capacity-calculation")
-    assert watchdog.plan_reserve(busy, already_activated=["mail-general-reserve"]) is None
+    assert watchdog.plan_reserve(busy, already_requested=["mail-general-reserve"]) is None
 
 
 def test_unsealed_reserve_is_alerted_and_never_selected(watchdog):
@@ -267,7 +267,7 @@ def test_unsealed_reserve_is_alerted_and_never_selected(watchdog):
         registered_reserve_hosts=["mail-general-reserve", "unapproved-reserve"],
     )
     assert "unsealed_reserve_observed" in codes(watchdog.evaluate(busy))
-    assert watchdog.plan_reserve(busy, already_activated=[]) is None
+    assert watchdog.plan_reserve(busy, already_requested=[]) is None
 
 
 @pytest.mark.parametrize(
@@ -293,7 +293,7 @@ def test_reserve_escalation_is_denied_outside_its_contract(watchdog, overrides):
     }
     busy.update(overrides)
     assert (
-        watchdog.plan_reserve(healthy_observation(watchdog, **busy), already_activated=[]) is None
+        watchdog.plan_reserve(healthy_observation(watchdog, **busy), already_requested=[]) is None
     )
 
 
@@ -315,7 +315,14 @@ def test_reserve_decision_is_recorded_once(watchdog, tmp_path: Path):
         "follow_up": ["host-audit", "capacity-calculation"],
     }
     ledger = json.loads((state_root / "state.json").read_text(encoding="utf-8"))
-    assert ledger["activated_reserves"] == ["mail-general-reserve"]
+    assert ledger["activated_reserves"] == []
+    assert ledger["pending_reserve_requests"] == {
+        "mail-general-reserve": {
+            "host_id": "mail-general-reserve",
+            "action": "activate-reserve",
+            "follow_up": ["host-audit", "capacity-calculation"],
+        }
+    }
     records = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["record"] == "reserve-decision"
     second = watchdog.run_once(busy, state_root=state_root, outbox=outbox)

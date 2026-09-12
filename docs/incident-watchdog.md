@@ -86,8 +86,10 @@ heartbeat is healthy and at least one healthy worker is executing at least one
 job, the watchdog emits at most one `reserve-decision` record for the sealed
 `mail-general-reserve` target. It refuses to select an arbitrary reserve name
 from an observation; an unexpected name is a critical topology-drift alert.
-The decision requires a `host-audit` and a `capacity-calculation` follow-up,
-and the target is never used while a compatible slot is available.
+The decision is stored as a pending adapter request, not as activated capacity:
+only a later signed host-agent receipt can establish activation. The request
+requires a `host-audit` and a `capacity-calculation` follow-up, and the target
+is never used while a compatible slot is available.
 
 ## Internal observation document
 
