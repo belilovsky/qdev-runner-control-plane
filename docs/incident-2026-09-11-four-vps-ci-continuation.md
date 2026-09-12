@@ -296,8 +296,9 @@ recovery details доступны исключительно на существ
   check и focused набор watchdog, delivery, reserve, planner, audit и
   release-script тестов прошли `101/101`. Дополнительный контрактный набор
   claim scope, FIFO admission, fleet dispatch и worker recovery прошёл
-  `84/84`; после runbook-only изменений повторно пройден diff check.
-  Кандидат намеренно не опубликован:
+  `84/84`. Отдельно four-host bootstrap, 3×2 capacity, Docker limits и
+  worker resource policy прошли `77/77`; после runbook-only изменений
+  повторно пройден diff check. Кандидат намеренно не опубликован:
   при нулевых eligible slots push создал бы ещё одну заблокированную
   self-hosted задачу и не приблизил восстановление. Не
   materialized остаются только реальный task-delivery adapter с root-owned
