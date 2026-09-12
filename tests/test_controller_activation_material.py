@@ -259,3 +259,15 @@ def test_prepare_crash_after_publish_leaves_complete_recoverable_material(
     value = material._load(canonical)
     assert value["phase"] == "prepared"
     assert len(value["snapshots"]) == 2
+
+
+def test_preflight_phase_is_a_valid_durable_non_mutating_checkpoint(
+    material: ModuleType, tmp_path: Path
+) -> None:
+    directory, _ = _prepare(material, tmp_path)
+    args = argparse.Namespace(directory=directory, phase="preflight-hook")
+
+    value = material.set_phase(args)
+
+    assert value["phase"] == "preflight-hook"
+    assert material._load(directory)["phase"] == "preflight-hook"

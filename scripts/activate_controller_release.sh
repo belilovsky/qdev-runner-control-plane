@@ -478,8 +478,16 @@ if [[ -e "$transaction_dir" || -L "$transaction_dir" ]]; then
   fi
   material_phase="$(printf '%s' "$material" | json_value 'v["phase"]')"
 fi
+case "$material_phase" in
+  ""|prepared|preflight-cas|preflight-hook|preflight-status|preflight-validated)
+    material_is_pre_mutation=true
+    ;;
+  *)
+    material_is_pre_mutation=false
+    ;;
+esac
 if [[ "$reservation_state" == pending-before-mutation &&
-      -n "$material_phase" && "$material_phase" != prepared ]]; then
+      "$material_is_pre_mutation" != true ]]; then
   reservation_state=pending-mutating
   recovery_state=pending-mutating
 fi
