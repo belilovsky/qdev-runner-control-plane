@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -159,4 +160,29 @@ def test_handoff_rejects_a_non_durable_or_malformed_execution_acknowledgement() 
             policy,
             request,
             "handoff-submit-001",
+        )
+
+
+def test_handoff_reports_only_http_status_for_rejected_ingress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class RejectingOpener:
+        def open(self, _request: object, *, timeout: float) -> object:
+            raise urllib.error.HTTPError(
+                "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/activate-controller",
+                503,
+                "Service Unavailable",
+                None,
+                None,
+            )
+
+    monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_args: RejectingOpener())
+
+    with pytest.raises(module.BootstrapHandoffError, match="HTTP 503"):
+        module._post(
+            "https://ci.qdev.run/internal/v1/ingress/fleet-bootstrap/activate-controller",
+            {},
+            "test",
         )
