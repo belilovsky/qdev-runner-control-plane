@@ -26,3 +26,23 @@ The output is an input to the sealed controller admission and four-host audit
 process, not admission authority. Only the registered worker identity, signed
 host audit, immutable image check and `claim-scope-v2` controller path can
 make a slot eligible.
+
+## Aggregate history collector
+
+`scripts/qdev_capacity_history_collector.py` reads the controller SQLite store
+in read-only mode and emits exactly the planner's input schema. It never
+contacts GitHub or a worker, modifies the store, or emits repository, job,
+runner, host or claim data. Arrivals are bucketed across the preceding 168
+complete UTC hours; durations are measured only from an admitted claim to its
+terminal store timestamp. Incomplete or malformed executions never become a
+duration sample.
+
+```bash
+python3.12 scripts/qdev_capacity_history_collector.py \
+  --database /var/lib/qdev-runner/controller.db \
+  --output /var/lib/qdev-runner/capacity/seven-day-history.json
+```
+
+The collector rejects a symbolic-link or group/world-writable database. Run it
+as the controller's local root-owned release process; it is evidence for a
+review, not controller-admission authority.
