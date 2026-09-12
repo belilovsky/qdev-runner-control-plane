@@ -7,6 +7,10 @@ import zipfile
 import pytest
 
 from qdev_runner.qazpolit_artifact import QazPolitArtifactError, validate_qazpolit_release_archive
+from qdev_runner.qazpolit_artifact_store import (
+    QazPolitArtifactStorageError,
+    QazPolitArtifactStore,
+)
 
 SOURCE_SHA = "a" * 40
 
@@ -96,3 +100,39 @@ def test_rejects_requested_source_sha_that_does_not_match_provenance() -> None:
 def test_rejects_damaged_zip_bytes() -> None:
     with pytest.raises(QazPolitArtifactError, match="readable ZIP"):
         validate_qazpolit_release_archive(b"not a ZIP", expected_source_sha=SOURCE_SHA)
+
+
+def test_store_retains_validated_archive_idempotently(tmp_path) -> None:
+    payload = _archive()
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+
+    first = store.ingest(payload, expected_source_sha=SOURCE_SHA)
+    second = store.ingest(payload, expected_source_sha=SOURCE_SHA)
+
+    assert first.archive_path == second.archive_path
+    assert first.archive_path.read_bytes() == payload
+    assert first.archive_path.parent.name == SOURCE_SHA
+    assert first.archive_path.name == f"{first.evidence.archive_sha256}.zip"
+    assert first.archive_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_store_refuses_to_replace_a_tampered_archive(tmp_path) -> None:
+    payload = _archive()
+    store = QazPolitArtifactStore(tmp_path / "controller-artifacts")
+    stored = store.ingest(payload, expected_source_sha=SOURCE_SHA)
+    stored.archive_path.write_bytes(b"tampered")
+    stored.archive_path.chmod(0o600)
+
+    with pytest.raises(QazPolitArtifactStorageError, match="digest does not match"):
+        store.ingest(payload, expected_source_sha=SOURCE_SHA)
+
+
+def test_store_refuses_a_symlinked_root(tmp_path) -> None:
+    target = tmp_path / "outside"
+    target.mkdir(mode=0o700)
+    artifact_root = tmp_path / "controller-artifacts"
+    artifact_root.mkdir(mode=0o700)
+    (artifact_root / "qazpolit-release-archives").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(QazPolitArtifactStorageError, match="must not be a symlink"):
+        QazPolitArtifactStore(artifact_root)
