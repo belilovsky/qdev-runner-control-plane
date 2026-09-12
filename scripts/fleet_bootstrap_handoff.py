@@ -48,6 +48,7 @@ _ROUTES = {
         "/internal/v1/ingress/fleet-bootstrap/reconcile-controller-activation"
     ),
     "enrol-host-agent": "/internal/v1/ingress/fleet-bootstrap/enrol-host-agent",
+    "restore-existing-worker": "/internal/v1/ingress/fleet-bootstrap/restore-existing-worker",
 }
 # GitHub-hosted Actions cannot present the worker mTLS certificate.  The
 # narrowly typed public edge ingress is the only allowlisted bridge; it keeps
@@ -103,7 +104,7 @@ def ingress_endpoint(action: str) -> str:
 
 
 def handoff_payload(request: FleetBootstrapRequest, idempotency_key: str) -> dict[str, object]:
-    """Serialize only the typed activation/enrolment intent accepted by broker."""
+    """Serialize only the typed, policy-bound intent accepted by broker."""
 
     if request.action not in _ROUTES:
         raise BootstrapHandoffError("bootstrap ingress action is not allowed")
@@ -122,6 +123,7 @@ def handoff_payload(request: FleetBootstrapRequest, idempotency_key: str) -> dic
         "controller_internal_image_digest": request.controller_internal_image_digest,
         "activation_envelope_digest": request.activation_envelope_digest,
         "release_lane": request.release_lane,
+        "worker_name": request.worker_name,
     }
     return {"request": fields, "idempotency_key": idempotency_key}
 

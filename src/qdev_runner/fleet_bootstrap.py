@@ -36,6 +36,14 @@ ALLOWED_ACTIONS = frozenset(
     }
 )
 CONTROLLER_TUPLE_ACTIONS = frozenset({"activate-controller", "reconcile-controller-activation"})
+GITHUB_INGRESS_ACTIONS = CONTROLLER_TUPLE_ACTIONS | {
+    "enrol-host-agent",
+    "restore-existing-worker",
+}
+# GitHub-hosted automation may restore only the one controller-declared
+# primary worker.  Other registered worker targets remain unavailable through
+# the public OIDC bridge and require their native controller lifecycle.
+GITHUB_INGRESS_RECOVERY_WORKER = "srv1879763-primary"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -424,15 +432,14 @@ def validate_github_bootstrap_observation(
     does not carry the numeric GitHub job identifier.  The broker therefore
     observes the exact run and its attempt through the GitHub App before it
     lets the root-owned dispatcher see the request.  This deliberately accepts
-    only the two controller bootstrap actions: worker restoration remains a
-    separate controller-managed lifecycle operation.
+    only the controller bootstrap actions and the one fixed, controller-owned
+    primary-worker restoration action.
 
     The function is pure so that the HTTP ingress cannot mistake a partial or
     caller-supplied observation for provider evidence.
     """
 
-    if request.action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
-        raise FleetBootstrapError("bootstrap ingress action is not allowed")
+    validate_github_bootstrap_request(policy, request)
 
     expected_ref = f"refs/heads/{policy.identity.branch}"
 
@@ -510,9 +517,7 @@ def bootstrap_ingress_operation_key(
     record and is rejected by its request-fingerprint check.
     """
 
-    if request.action not in CONTROLLER_TUPLE_ACTIONS | {"enrol-host-agent"}:
-        raise FleetBootstrapError("bootstrap ingress action is not allowed")
-    policy.validate(request)
+    validate_github_bootstrap_request(policy, request)
     payload = {
         "schema": "qdev-fleet-bootstrap-ingress-operation-key-v1",
         "repository": policy.identity.repository,
@@ -528,6 +533,21 @@ def bootstrap_ingress_operation_key(
         payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return "github-" + hashlib.sha256(canonical).hexdigest()
+
+
+def validate_github_bootstrap_request(
+    policy: FleetBootstrapPolicy, request: FleetBootstrapRequest
+) -> None:
+    """Validate the small request subset that the public OIDC bridge admits."""
+
+    if request.action not in GITHUB_INGRESS_ACTIONS:
+        raise FleetBootstrapError("bootstrap ingress action is not allowed")
+    policy.validate(request)
+    if (
+        request.action == "restore-existing-worker"
+        and request.worker_name != GITHUB_INGRESS_RECOVERY_WORKER
+    ):
+        raise FleetBootstrapError("bootstrap ingress recovery worker is not allowed")
 
 
 def bootstrap_request_fingerprints(request: FleetBootstrapRequest) -> frozenset[str]:

@@ -1824,6 +1824,28 @@ def _bootstrap_ingress_body(*, key: str = "ingress-activation-001") -> dict[str,
     }
 
 
+def _bootstrap_ingress_recovery_body(
+    *, key: str = "ingress-recovery-001", worker_name: str = "srv1879763-primary"
+) -> dict[str, Any]:
+    return {
+        "request": {
+            "action": "restore-existing-worker",
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "job_id": 456,
+            "attempt": 1,
+            "claim_ttl_seconds": 300,
+            "controller_revision": None,
+            "controller_release_digest": None,
+            "controller_image_digest": None,
+            "activation_envelope_digest": None,
+            "release_lane": None,
+            "worker_name": worker_name,
+        },
+        "idempotency_key": key,
+    }
+
+
 def _bootstrap_ingress_operation_key(body: dict[str, Any]) -> str:
     request = FleetBootstrapRequest.model_validate({"schema": REQUEST_SCHEMA, **body["request"]})
     return bootstrap_ingress_operation_key(
@@ -1984,14 +2006,45 @@ def test_github_oidc_bootstrap_ingress_rejects_missing_auth_drift_and_caller_kno
     assert drift.status_code == 409
     assert drift.json()["detail"] == "fleet bootstrap GitHub identity is invalid"
     assert not list(incoming.iterdir())
-    assert (
-        client.post(
-            "/internal/v1/ingress/fleet-bootstrap/restore-existing-worker",
-            json=_bootstrap_ingress_body(key="ingress-no-recovery-001"),
-            headers={"X-QDev-GitHub-OIDC": "token"},
-        ).status_code
-        == 404
+
+
+def test_github_oidc_bootstrap_ingress_restores_only_the_fixed_worker_when_idle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _BootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
     )
+    path = "/internal/v1/ingress/fleet-bootstrap/restore-existing-worker"
+    body = _bootstrap_ingress_recovery_body()
+
+    response = client.post(path, json=body, headers={"X-QDev-GitHub-OIDC": "test-oidc-token"})
+
+    assert response.status_code == 200, response.text
+    execution = response.json()["execution"]
+    assert execution["action"] == "restore-existing-worker"
+    assert execution["status"] == "queued"
+    record = json.loads(
+        (incoming / f"{_bootstrap_ingress_operation_key(body)}.json").read_text(encoding="utf-8")
+    )
+    assert record["request"]["worker_name"] == "srv1879763-primary"
+    assert record["active_jobs"] == 0
+
+    rejected = client.post(
+        path,
+        json=_bootstrap_ingress_recovery_body(
+            key="ingress-recovery-other-001", worker_name="qdev-platform-ci-187"
+        ),
+        headers={"X-QDev-GitHub-OIDC": "test-oidc-token"},
+    )
+    assert rejected.status_code == 422
+    assert [entry.name for entry in incoming.iterdir()] == [
+        f"{_bootstrap_ingress_operation_key(body)}.json"
+    ]
 
 
 @pytest.mark.parametrize(
