@@ -1,7 +1,8 @@
 # QDev CI: завершение инцидента на четырёх существующих VPS
 
 Актуализировано 2026-09-12 после свежего live health-снимка, sealed hosted
-recovery build №76 и проверки новых source-кандидатов. Это
+recovery build №76 и переноса проверенного source-кандидата на текущий
+`origin/main`. Это
 исполнимый runbook для одного владельца очереди и одного контроллера. Он
 заменяет исторические шаги активации и не содержит адресов, секретных путей
 или ручных команд на хостах.
@@ -14,20 +15,25 @@ recovery build №76 и проверки новых source-кандидатов.
 - `controller_release` и `controller_activation` совпадают по SHA, а
   public/internal immutable image digests совпадают с release tuple;
 - `controller_activation` active на generation `15`;
-- в очереди 31 задание: 20 `qdev-ci`, 2 `qdev-ci-browser` и 9
-  `qdev-ci-docker`;
-- oldest pending age составляет 5 053 секунды на момент последнего снимка;
-- безопасных допустимых слотов — 0 для обоих профилей.
+- `pending=29`, oldest pending age — `6 183` секунды;
+- `eligible_slots.primary=0`, `eligible_slots.reserve=0` и total `0`; primary
+  отсутствует в live view, reserve виден, но не предоставляет слот;
+- public health намеренно не раскрывает profile split. Историческое
+  распределение 20/2/9 нельзя использовать как текущий факт без нового
+  signed internal receipt.
 
 На момент актуализации `origin/main` уже продвинулся до
-`f4f2a0cbeb7d9ecdca1c9b3404a3ed6cf91b3388`. Hosted recovery build №76 для
+`2ba23702fd76036a0de7d59c4d91a6db50988970`. Чистый recovery-кандидат
+`1808eceb480a7ff311b458f037e1b5a641bd798d` перенесён на этот commit без
+конфликтов; затронутый набор controller, capacity, delivery и audit-проверок
+прошёл `290 passed`, formatter/linter/diff check чистые. Hosted recovery build №76 для
 исторического SHA `800e30cba32b032cb7a43182eaf3a2b5ee7201c5` завершился
 успешно; sealed artifact
 `controller-recovery-800e30cba32b032cb7a43182eaf3a2b5ee7201c5` имеет digest
 `sha256:ae583c51277a009cfecf11fa83a9c052f2e3a2f8e7167c8c5853f8c9f8de2a4d`.
 Это историческое build-доказательство, а не незавершённый rollout: текущий
 `7433e49` уже имеет совпадающий release/activation tuple и остаётся baseline
-на время восстановления ёмкости. Кандидат на основе нового `f4f2a0c` не активируется
+на время восстановления ёмкости. Кандидат на основе текущего `2ba2370` не активируется
 автоматически: для него сначала нужны собственные immutable artifact,
 signature/provenance и activation receipt. Непосредственная причина простоя очереди —
 отсутствие хотя бы одного прошедшего аудит, зарегистрированного и совместимого
@@ -252,10 +258,11 @@ recovery details доступны исключительно на существ
   targeted tests; до host audit она не считается доступной ёмкостью.
 - Capacity admission, canaries и queue drain: ожидают reconciliation receipt
   для historical transactions и controller-managed host-agent receipts. На
-  момент обновления queue содержит 31 job (`20` ci, `2` browser, `9` docker),
-  oldest age — 4 804 секунды на последнем снимке, а eligible slots остаются
-  нулевыми. Изменение числа pending само по себе не является восстановлением
-  capacity и не даёт оснований для сообщения ожидающим deployment-задачам.
+  последнем public health-снимке `pending=29`, oldest age — `6 183` секунды,
+  а eligible slots остаются нулевыми для primary и reserve. Profile split
+  недоступен на этой public surface. Изменение числа pending само по себе не
+  является восстановлением capacity и не даёт оснований для сообщения
+  ожидающим deployment-задачам.
 - Notification delivery, reserve accounting и capacity planner: receipt-bound
   source-кандидаты локально готовы; reserve больше не может быть ложно отмечен
   активным при одной лишь записи watchdog. Watchdog уже materializes stable
@@ -292,16 +299,13 @@ recovery details доступны исключительно на существ
   slot, чтобы не расходовать provider quota при нулевой capacity.
   Исполнитель task-delivery materialized в source-кандидате `b74ee33` и его
   DLQ escalation — в `2129cfb`. Эти изменения перенесены без конфликтов на
-  текущий `origin/main` в чистый кандидат; CI implementation head этого
-  кандидата — `6eef6db`; в текущем candidate также
-  находится этот актуальный runbook. Для code head formatter, linter, diff
-  check и focused набор watchdog, delivery, reserve, planner, audit и
-  release-script тестов прошли `101/101`. Дополнительный контрактный набор
-  claim scope, FIFO admission, fleet dispatch и worker recovery прошёл
-  `84/84`. Отдельно four-host bootstrap, 3×2 capacity, Docker limits и
-  worker resource policy прошли `77/77`. После переноса на `f4f2a0c` общий
-  целевой набор этих проверок вместе с новым независимым QazPolit artifact
-  binding прошёл `288/288`; formatter, linter и diff check также чистые.
+  текущий `origin/main`; implementation head чистого кандидата —
+  `1808eceb480a7ff311b458f037e1b5a641bd798d`, и в нём находится этот
+  актуальный runbook. Общий целевой набор controller, capacity, delivery,
+  watchdog, planner, default-branch audit, claim scope, FIFO admission, fleet
+  dispatch, worker recovery, four-host bootstrap и независимого QazPolit
+  artifact binding прошёл `290 passed`; formatter, linter и diff check также
+  чистые.
   Кандидат намеренно не опубликован:
   при нулевых eligible slots push создал бы ещё одну заблокированную
   self-hosted задачу и не приблизил восстановление. Не
