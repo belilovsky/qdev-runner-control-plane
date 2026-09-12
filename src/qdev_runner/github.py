@@ -469,8 +469,7 @@ class GitHubAppClient:
                 ) as streamed:
                     if streamed.status_code != 200:
                         raise GitHubError(
-                            "Actions artifact content request failed: "
-                            f"{streamed.status_code}"
+                            f"Actions artifact content request failed: {streamed.status_code}"
                         )
                     content_length = streamed.headers.get("content-length")
                     if content_length is not None:
