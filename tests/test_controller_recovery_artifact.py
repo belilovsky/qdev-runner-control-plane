@@ -276,9 +276,7 @@ def _config_root(tmp_path: Path) -> Path:
 
 def test_broker_env_receipt_key_stays_in_root_owned_environment(tmp_path: Path) -> None:
     environment = tmp_path / "broker.env"
-    environment.write_text(
-        "QDEV_OPERATOR_RECEIPT_KEY=" + ("a" * 32) + "\n", encoding="utf-8"
-    )
+    environment.write_text("QDEV_OPERATOR_RECEIPT_KEY=" + ("a" * 32) + "\n", encoding="utf-8")
     environment.chmod(0o600)
 
     assert CLI._broker_env_receipt_key(environment, expected_uid=os.geteuid()) == "a" * 32
