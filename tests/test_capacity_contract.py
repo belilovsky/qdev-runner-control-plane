@@ -32,35 +32,45 @@ def _load_gate():
 
 
 def _run_gate(
-    *, max_disk_used_pct: int, min_free_gib: float, disk_used_pct: float = 50
+    *,
+    max_disk_used_pct: int,
+    min_free_gib: float,
+    disk_used_pct: float = 50,
+    min_memory_gib: int = 4,
+    max_load_per_cpu: int = 2,
+    no_build: str = "true",
+    capacity_exception: str = "",
 ) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(GATE),
+        "--capacity-config",
+        str(CAPACITY_CONFIG),
+        "--disk-used-pct",
+        str(disk_used_pct),
+        "--disk-free-kib",
+        str(64 * 1024 * 1024),
+        "--memory-kib",
+        str(16 * 1024 * 1024),
+        "--cpu-count",
+        "4",
+        "--load-15",
+        "1",
+        "--max-disk-used-pct",
+        str(max_disk_used_pct),
+        "--min-free-gib",
+        str(min_free_gib),
+        "--min-memory-gib",
+        str(min_memory_gib),
+        "--max-load-per-cpu",
+        str(max_load_per_cpu),
+        "--no-build",
+        no_build,
+    ]
+    if capacity_exception:
+        command.extend(("--capacity-exception", capacity_exception))
     return subprocess.run(  # noqa: S603
-        [
-            sys.executable,
-            str(GATE),
-            "--capacity-config",
-            str(CAPACITY_CONFIG),
-            "--disk-used-pct",
-            str(disk_used_pct),
-            "--disk-free-kib",
-            str(64 * 1024 * 1024),
-            "--memory-kib",
-            str(16 * 1024 * 1024),
-            "--cpu-count",
-            "4",
-            "--load-15",
-            "1",
-            "--max-disk-used-pct",
-            str(max_disk_used_pct),
-            "--min-free-gib",
-            str(min_free_gib),
-            "--min-memory-gib",
-            "4",
-            "--max-load-per-cpu",
-            "2",
-            "--no-build",
-            "true",
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -118,6 +128,40 @@ def test_activation_gate_clamps_only_the_legacy_incumbent_ceiling() -> None:
         assert "must not exceed 90" in rejected.stderr
 
 
+def test_activation_gate_admits_only_the_revision_pinned_bootstrap_contract() -> None:
+    gate = _load_gate()
+
+    admitted = _run_gate(
+        max_disk_used_pct=91,
+        min_free_gib=18,
+        min_memory_gib=8,
+        max_load_per_cpu=2,
+        no_build="true",
+        capacity_exception=gate.QAZPOLIT_BOOTSTRAP_CAPACITY_EXCEPTION,
+    )
+    assert admitted.returncode == 0
+
+    for kwargs in (
+        {"min_free_gib": 17},
+        {"min_memory_gib": 4},
+        {"max_load_per_cpu": 1},
+        {"no_build": "false"},
+        {"capacity_exception": "not-an-exception"},
+    ):
+        rejected = _run_gate(
+            **{
+                "max_disk_used_pct": 91,
+                "min_free_gib": 18,
+                "min_memory_gib": 8,
+                "max_load_per_cpu": 2,
+                "no_build": "true",
+                "capacity_exception": gate.QAZPOLIT_BOOTSTRAP_CAPACITY_EXCEPTION,
+                **kwargs,
+            }
+        )
+        assert rejected.returncode != 0
+
+
 def test_published_legacy_incumbent_ceiling_constant() -> None:
     gate = _load_gate()
 
@@ -132,6 +176,8 @@ def test_shell_activation_and_provisioning_share_the_same_ceiling() -> None:
     provision = (ROOT / "scripts/provision_worker.sh").read_text(encoding="utf-8")
 
     assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90" in payload
+    assert "QDEV_CONTROLLER_CAPACITY_EXCEPTION_REVISION" in payload
+    assert "qazpolit-controller-bootstrap-20260913" in payload
     assert "max_disk_used_pct > 90" in payload
     assert "min_free_gib < 5" in payload
     assert 'provision_max_disk_used_pct="$tier_max_disk_used_pct"' in provision
@@ -190,5 +236,7 @@ def test_repository_documentation_states_the_same_bounds() -> None:
     assert "4.5 GiB free and 90% maximum use" in recovery
     assert "within 900 seconds" in recovery
     assert "clamps it to the published 90% ceiling" in recovery
+    assert "Revision-pinned QazPolit bootstrap exception" in recovery
+    assert "91% maximum use" in recovery
     assert "30 GiB free and 85% used" in operating
     assert "10 GiB/90%" in operating
