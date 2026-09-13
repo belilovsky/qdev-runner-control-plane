@@ -70,6 +70,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "QDEV_CONTROLLER_MIN_FREE_GIB:-8" in script
     assert "QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90" in script
     assert "max_disk_used_pct > 90" in script
+    assert "QDEV_CONTROLLER_CAPACITY_EXCEPTION_REVISION" in script
+    assert "qazpolit-controller-bootstrap-20260913" in script
     assert "min_free_gib < 5" in script
     assert "QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE" in script
     assert (

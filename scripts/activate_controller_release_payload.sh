@@ -503,13 +503,16 @@ cpu_count="$(nproc)"
 load_15="$(awk '{print $3}' /proc/loadavg)"
 no_build="${QDEV_CONTROLLER_NO_BUILD:-false}"
 allow_build_capacity_override="${QDEV_CONTROLLER_ALLOW_BUILD_CAPACITY_OVERRIDE:-false}"
-# 90% is the absolute published ceiling for the exact TTL-bounded claim and is
-# never overridable; 4.5 GiB is the matching free-space floor (rounded up to a
-# whole GiB here because this gate is integer-only).
+# 90% is the ordinary published ceiling for the exact TTL-bounded claim.  The
+# only exception is the revision-pinned QazPolit bootstrap below; 4.5 GiB is
+# the matching free-space floor (rounded up to a whole GiB here because this
+# gate is integer-only).
 max_disk_used_pct="${QDEV_CONTROLLER_MAX_DISK_USED_PCT:-90}"
 min_free_gib="${QDEV_CONTROLLER_MIN_FREE_GIB:-8}"
 min_memory_gib="${QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB:-4}"
 max_load_per_cpu="${QDEV_CONTROLLER_MAX_LOAD_PER_CPU:-2}"
+capacity_exception="${QDEV_CONTROLLER_CAPACITY_EXCEPTION:-}"
+capacity_exception_revision="${QDEV_CONTROLLER_CAPACITY_EXCEPTION_REVISION:-}"
 health_check_attempts="${QDEV_CONTROLLER_HEALTH_CHECK_ATTEMPTS:-90}"
 if [[ "$no_build" != true && "$no_build" != false ]]; then
   printf 'QDEV_CONTROLLER_NO_BUILD must be true or false\n' >&2
@@ -525,7 +528,20 @@ for value in "$max_disk_used_pct" "$min_free_gib" "$min_memory_gib" "$max_load_p
     exit 64
   }
 done
-if (( max_disk_used_pct > 90 )); then
+if [[ -n "$capacity_exception" && "$capacity_exception" != qazpolit-controller-bootstrap-20260913 ]]; then
+  printf 'QDEV_CONTROLLER_CAPACITY_EXCEPTION is not recognized\n' >&2
+  exit 64
+fi
+if [[ "$capacity_exception" == qazpolit-controller-bootstrap-20260913 ]]; then
+  detected_capacity_exception_revision="$(git -C "$release" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [[ "$no_build" != true || "$max_disk_used_pct" != 91 || "$min_free_gib" != 18 ||
+        "$min_memory_gib" != 8 || "$max_load_per_cpu" != 2 ||
+        ! "$capacity_exception_revision" =~ ^[0-9a-f]{40}$ ||
+        "$capacity_exception_revision" != "$detected_capacity_exception_revision" ]]; then
+    printf 'QazPolit controller bootstrap exception requires its exact no-build capacity contract and release revision\n' >&2
+    exit 64
+  fi
+elif (( max_disk_used_pct > 90 )); then
   printf 'QDEV_CONTROLLER_MAX_DISK_USED_PCT must not exceed 90 (91/95/97 are rejected)\n' >&2
   exit 64
 fi
@@ -559,7 +575,8 @@ python3 "$release/scripts/controller_capacity_gate.py" \
   --min-free-gib "$min_free_gib" \
   --min-memory-gib "$min_memory_gib" \
   --max-load-per-cpu "$max_load_per_cpu" \
-  --no-build "$no_build" || {
+  --no-build "$no_build" \
+  --capacity-exception "$capacity_exception" || {
     printf 'capacity gate rejected controller activation used=%s free_kib=%s memory_kib=%s load15=%s\n' \
       "$disk_used" "$disk_free_kib" "$memory_kib" "$load_15" >&2
     exit 75

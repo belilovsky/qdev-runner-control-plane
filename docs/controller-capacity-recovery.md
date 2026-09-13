@@ -207,6 +207,20 @@ Every other above-ceiling value, including the
 measurement or mutation, and the operator override surface separately refuses
 any value above `90%`. A release must never publish `96` as a real ceiling.
 
+### Revision-pinned QazPolit bootstrap exception
+
+When an already verified QazPolit release cannot be admitted because the
+controller itself is at 91% use, the root dispatcher may receive the single
+`qazpolit-controller-bootstrap-20260913` exception. It is valid only for a
+`no-build` controller activation at **exactly** 91% maximum use, with at least
+18 GiB free, 8 GiB available memory, a load limit of two per CPU, and the
+exact immutable controller revision recorded in
+`QDEV_CONTROLLER_CAPACITY_EXCEPTION_REVISION`. Any mismatch fails before the
+capacity check. The root-owned service drop-in that supplies these values must
+be removed after the terminal activation receipt; it cannot be reused for a
+different controller revision, ordinary release, worker operation, or
+QazPolit data import.
+
 Set operator values only in the root-owned `/etc/qdev-runner/broker.env` and
 the worker directive key in `/etc/qdev-runner/worker.env`; secrets never enter
 receipts or repository files:

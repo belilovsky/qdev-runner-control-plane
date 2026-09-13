@@ -375,6 +375,17 @@ def build_parser() -> argparse.ArgumentParser:
     register_ci.add_argument("--attempt", type=int, default=1)
     register_ci.add_argument("--job-id", type=int, required=True)
 
+    qazpolit_release = commands.add_parser(
+        "qazpolit-github-actions-release",
+        help="Admit one exact QazPolit GitHub Actions release archive",
+    )
+    qazpolit_release.add_argument("--source-sha", required=True)
+    qazpolit_release.add_argument("--run-id", type=int, required=True)
+    qazpolit_release.add_argument("--run-attempt", type=int, default=1)
+    qazpolit_release.add_argument("--job-id", type=int, required=True)
+    qazpolit_release.add_argument("--artifact-id", type=int, required=True)
+    qazpolit_release.add_argument("--artifact-size-bytes", type=int, required=True)
+
     reconcile_ci = commands.add_parser(
         "reconcile-ci", help="Reconcile all allowlisted QGeo CI jobs"
     )
@@ -575,6 +586,29 @@ def run(argv: Sequence[str] | None = None) -> dict[str, Any]:
                 "run_id": arguments.run_id,
                 "attempt": arguments.attempt,
                 "job_id": arguments.job_id,
+            },
+        )
+    if arguments.command == "qazpolit-github-actions-release":
+        source_sha = _git_revision(arguments.source_sha)
+        if (
+            arguments.run_id <= 0
+            or arguments.run_attempt < 1
+            or arguments.job_id <= 0
+            or arguments.artifact_id <= 0
+            or arguments.artifact_size_bytes <= 0
+        ):
+            raise ValueError("invalid QazPolit GitHub Actions release tuple")
+        return controller_request(
+            settings,
+            method="POST",
+            path="/internal/v1/operator/releases/qazpolit/github-actions",
+            body={
+                "source_sha": source_sha,
+                "run_id": arguments.run_id,
+                "run_attempt": arguments.run_attempt,
+                "job_id": arguments.job_id,
+                "artifact_id": arguments.artifact_id,
+                "artifact_size_bytes": arguments.artifact_size_bytes,
             },
         )
     if arguments.command == "reconcile-ci":

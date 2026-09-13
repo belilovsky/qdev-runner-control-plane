@@ -395,6 +395,45 @@ def test_qgeo_ci_commands_use_managed_endpoints(
     assert captured["body"] == expected_body
 
 
+def test_qazpolit_release_command_uses_exact_artifact_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(operator.OperatorSettings, "from_env", classmethod(lambda cls: _settings()))
+
+    def fake_request(settings: operator.OperatorSettings, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"schema": "qdev-controller-receipt-v2"}
+
+    monkeypatch.setattr(operator, "controller_request", fake_request)
+
+    assert operator.run(
+        [
+            "qazpolit-github-actions-release",
+            "--source-sha",
+            "a" * 40,
+            "--run-id",
+            "34697982841",
+            "--job-id",
+            "103564673011",
+            "--artifact-id",
+            "10298989353",
+            "--artifact-size-bytes",
+            "155683510",
+        ]
+    ) == {"schema": "qdev-controller-receipt-v2"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/internal/v1/operator/releases/qazpolit/github-actions"
+    assert captured["body"] == {
+        "source_sha": "a" * 40,
+        "run_id": 34697982841,
+        "run_attempt": 1,
+        "job_id": 103564673011,
+        "artifact_id": 10298989353,
+        "artifact_size_bytes": 155683510,
+    }
+
+
 @pytest.mark.parametrize("command", ["register-ci", "reconcile-ci"])
 def test_qgeo_ci_commands_reject_non_lowercase_sha(
     monkeypatch: pytest.MonkeyPatch, command: str

@@ -89,6 +89,15 @@ def sign_payload(payload: Mapping[str, Any], key: str) -> str:
 
 
 _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
+    "qazpolit-github-actions-release-admission": {
+        "kind",
+        "observed_at",
+        "release_id",
+        "release_lane",
+        "source_sha",
+        "archive_sha256",
+        "payload_sha256",
+    },
     "controller-release-audit": {
         "kind",
         "observed_at",
