@@ -3188,6 +3188,147 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def active_offline_runner_hold(self, job_id: int) -> dict[str, Any] | None:
+        """Return one active provider-identity hold with its immutable job tuple."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT jobs.*, offline_runner_holds.provider_runner_id,
+                       offline_runner_holds.runner_name,
+                       offline_runner_holds.labels_json AS hold_labels_json,
+                       offline_runner_holds.tuple_digest,
+                       offline_runner_holds.state AS hold_state,
+                       offline_runner_holds.created_at AS held_at,
+                       offline_runner_holds.updated_at AS hold_updated_at
+                FROM offline_runner_holds JOIN jobs ON jobs.job_id=offline_runner_holds.job_id
+                WHERE jobs.job_id=? AND offline_runner_holds.state='active'
+                """,
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def release_offline_runner_hold_for_jit_reissue(
+        self,
+        job_id: int,
+        *,
+        provider_runner_id: int,
+        runner_name: str,
+        labels: tuple[str, ...],
+        reason: str,
+    ) -> bool:
+        """Release one verified offline hold for exactly one normal JIT retry.
+
+        This is deliberately narrower than a generic requeue: the original
+        GitHub job is untouched, its queue timestamp is retained, and the
+        terminal hold permanently records that this stale provider identity
+        may not block the next claim again.  The caller must have reconciled
+        the provider tuple before entering this transaction.
+        """
+
+        if (
+            isinstance(provider_runner_id, bool)
+            or not isinstance(provider_runner_id, int)
+            or provider_runner_id <= 0
+            or not isinstance(runner_name, str)
+            or not runner_name
+            or not labels
+            or any(
+                not isinstance(label, str) or not _RUNNER_LABEL.fullmatch(label)
+                for label in labels
+            )
+            or len(labels) != len(set(labels))
+        ):
+            raise ValueError("offline runner identity is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """
+                    SELECT jobs.labels_json, jobs.status, jobs.worker_name,
+                           jobs.claim_scope_id, offline_runner_holds.provider_runner_id,
+                           offline_runner_holds.runner_name,
+                           offline_runner_holds.labels_json AS hold_labels_json,
+                           offline_runner_holds.state
+                    FROM offline_runner_holds JOIN jobs ON jobs.job_id=offline_runner_holds.job_id
+                    WHERE jobs.job_id=?
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if row is None or str(row["state"]) != "active":
+                    connection.execute("COMMIT")
+                    return False
+                if (
+                    str(row["status"]) != "claimed"
+                    or row["worker_name"] is not None
+                    or row["claim_scope_id"] is not None
+                    or int(row["provider_runner_id"]) != provider_runner_id
+                    or str(row["runner_name"]) != runner_name
+                ):
+                    raise ValueError("offline runner hold is no longer recoverable")
+                try:
+                    queued_labels = tuple(json.loads(str(row["labels_json"])))
+                    held_labels = tuple(json.loads(str(row["hold_labels_json"])))
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("offline runner hold labels are invalid") from error
+                if queued_labels != labels or held_labels != labels:
+                    raise ValueError("offline runner labels differ from held tuple")
+                changed = connection.execute(
+                    """
+                    UPDATE offline_runner_holds SET state='terminal', updated_at=?
+                    WHERE job_id=? AND state='active'
+                    """,
+                    (now, job_id),
+                )
+                if changed.rowcount != 1:  # pragma: no cover - transaction guard
+                    raise ValueError("offline runner hold changed during recovery")
+                released = connection.execute(
+                    """
+                    UPDATE jobs SET status='pending', worker_name=NULL, claim_scope_id=NULL,
+                        profile=NULL, claimed_at=NULL, updated_at=?, result=?
+                    WHERE job_id=? AND status='claimed'
+                    """,
+                    (now, f"offline runner JIT recovery: {reason}"[:4000], job_id),
+                )
+                if released.rowcount != 1:  # pragma: no cover - transaction guard
+                    raise ValueError("offline runner hold lost its claimed job")
+                connection.execute("COMMIT")
+                return True
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+
+    def terminal_offline_runner_hold_matches(
+        self,
+        job_id: int,
+        *,
+        provider_runner_id: int,
+        runner_name: str,
+        labels: tuple[str, ...],
+    ) -> bool:
+        """Allow a normal JIT claim only after its exact prior hold was released."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT provider_runner_id, runner_name, labels_json, state
+                FROM offline_runner_holds WHERE job_id=?
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None or str(row["state"]) != "terminal":
+            return False
+        try:
+            held_labels = tuple(json.loads(str(row["labels_json"])))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return (
+            int(row["provider_runner_id"]) == provider_runner_id
+            and str(row["runner_name"]) == runner_name
+            and held_labels == labels
+        )
+
     def heartbeat(
         self,
         name: str,

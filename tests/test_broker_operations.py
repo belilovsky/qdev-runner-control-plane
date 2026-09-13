@@ -1825,6 +1825,81 @@ def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path:
     assert store.active_offline_runner_holds() == []
 
 
+def test_exact_offline_runner_recovery_reissues_only_the_next_jit_attempt(tmp_path: Path) -> None:
+    run_id = 84000000042
+    labels = (
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci-docker",
+        f"qdev-job-{run_id}-1-contract",
+    )
+    github = FakeGitHub(job_run_id=run_id)
+    github.runners = [
+        {
+            "id": 2377,
+            "name": "qdev-platform-portal-102459781441",
+            "status": "offline",
+            "busy": False,
+            "labels": [{"name": label} for label in labels],
+        }
+    ]
+    client = _app(tmp_path, github=github)
+    _heartbeat(client, admitted=True, disk_free_gib=50.0)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="exact-offline-recovery-42",
+            job_id=42,
+            run_id=run_id,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=labels,
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+    claim = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "profiles": ["qdev-ci-docker"],
+        "disk_free_gib": 50.0,
+        "min_disk_free_gib": 30.0,
+    }
+    headers = {"X-QDev-Worker-Token": WORKER_TOKEN}
+    assert client.post("/internal/v1/jobs/claim", headers=headers, json=claim).status_code == 204
+
+    recovery = client.post(
+        "/internal/v1/operations/jobs/42/recover-offline-runner",
+        headers=OPERATOR_HEADERS,
+        json={"owner": "ci-incident", "reason": "registered JIT config was lost before start"},
+    )
+    assert recovery.status_code == 200, recovery.text
+    payload = verify_controller_receipt(recovery.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["action"] == "released-for-normal-jit-reissue"
+    assert payload["fifo_preserved"] is True
+    assert store.job_status(42) == "pending"
+    assert store.active_offline_runner_holds() == []
+
+    # The release is one-way: it cannot issue another JIT config or mutate the
+    # original GitHub job after the durable hold has become terminal.
+    assert (
+        client.post(
+            "/internal/v1/operations/jobs/42/recover-offline-runner",
+            headers=OPERATOR_HEADERS,
+            json={"owner": "ci-incident", "reason": "duplicate request"},
+        ).status_code
+        == 409
+    )
+    next_claim = client.post("/internal/v1/jobs/claim", headers=headers, json=claim)
+    assert next_claim.status_code == 200, next_claim.text
+    assert next_claim.json()["job_id"] == 42
+    assert github.jit_runner_names == ["qdev-example-42-a2"]
+    assert store.job_status(42) == "running"
+
+
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
     status_path = tmp_path / "controller-release.json"
     status = {

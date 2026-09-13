@@ -111,6 +111,16 @@ _RECEIPT_PAYLOAD_FIELDS: dict[str, set[str]] = {
         "unclassified",
     },
     "offline-runner-reconciliation-audit": {"kind", "observed_at", "holds"},
+    "offline-runner-jit-recovery": {
+        "kind",
+        "observed_at",
+        "owner",
+        "reason",
+        "immutable_job",
+        "provider",
+        "action",
+        "fifo_preserved",
+    },
     "fifo-claim-scope-issued": {
         "kind",
         "operator_session",
@@ -467,6 +477,15 @@ def validate_controller_receipt_payload(payload: Mapping[str, Any]) -> dict[str,
     if kind == "offline-runner-reconciliation-audit":
         for item in value["holds"]:
             _validate_offline_runner_hold(item)
+    if kind == "offline-runner-jit-recovery" and (
+        not isinstance(value["immutable_job"], dict)
+        or not isinstance(value["provider"], dict)
+        or not isinstance(value["owner"], str)
+        or not isinstance(value["reason"], str)
+        or value["action"] != "released-for-normal-jit-reissue"
+        or value["fifo_preserved"] is not True
+    ):
+        raise ValueError("offline runner JIT recovery payload is invalid")
     if kind == "fifo-claim-scope-issued" and (
         value["operator_session"] != "verified"
         or not isinstance(value["mtls_identity"], str)

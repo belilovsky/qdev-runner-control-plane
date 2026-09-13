@@ -386,6 +386,13 @@ class FailedJobRecoveryRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class OfflineRunnerRecoveryRequest(BaseModel):
+    """Operator attestation for one controller-reconciled provider identity."""
+
+    owner: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class FleetBootstrapOperationRequest(BaseModel):
     """Controller-observed activation or host-agent enrolment request."""
 
@@ -4966,6 +4973,106 @@ def create_app(
             }
         )
 
+    @app.post("/internal/v1/operations/jobs/{job_id}/recover-offline-runner")
+    def recover_offline_runner(
+        job_id: int,
+        request: OfflineRunnerRecoveryRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Reissue normal JIT admission after exact provider reconciliation.
+
+        The endpoint never accepts runner labels, a host, or a provider token.
+        It only releases an already-frozen identity after the provider still
+        proves the same queued workflow tuple and offline registration.
+        """
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        row = store.active_offline_runner_hold(job_id)
+        if row is None:
+            raise HTTPException(status_code=409, detail="job has no active offline runner hold")
+        immutable_job = _stale_job_tuple(row)
+        labels = _json_strings(row["hold_labels_json"])
+        try:
+            github_client = require_github()
+            remote_job = github_client.workflow_job(
+                int(row["installation_id"]), str(row["repository"]), job_id
+            )
+            remote_run = github_client.workflow_run(
+                int(row["installation_id"]), str(row["repository"]), int(row["run_id"])
+            )
+            provider_tuple = {
+                "run_id": int(remote_run.get("id") or 0),
+                "job_run_id": int(remote_job.get("run_id") or 0),
+                "job_id": int(remote_job.get("id") or 0),
+                "attempt": int(remote_run.get("run_attempt") or 0),
+                "exact_sha": str(remote_run.get("head_sha") or "").lower(),
+            }
+            expected_tuple = {
+                "run_id": immutable_job["run_id"],
+                "job_run_id": immutable_job["run_id"],
+                "job_id": immutable_job["job_id"],
+                "attempt": immutable_job["attempt"],
+                "exact_sha": immutable_job["exact_sha"],
+            }
+            if provider_tuple != expected_tuple:
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider immutable tuple does not match the held job",
+                )
+            provider_status = str(remote_job.get("status") or "unknown")
+            provider_conclusion = remote_job.get("conclusion")
+            if provider_status != "queued":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"provider job state is not recoverable: {provider_status}",
+                )
+            observed_runner = exact_offline_runner_identity(github_client, row, labels)
+            if (
+                observed_runner is None
+                or int(observed_runner["id"]) != int(row["provider_runner_id"])
+                or str(observed_runner["name"]) != str(row["runner_name"])
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="provider offline runner identity no longer matches the hold",
+                )
+            if not store.release_offline_runner_hold_for_jit_reissue(
+                job_id,
+                provider_runner_id=int(row["provider_runner_id"]),
+                runner_name=str(row["runner_name"]),
+                labels=labels,
+                reason=f"operator recovery: {request.reason}",
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="offline runner hold changed during recovery",
+                )
+        except GitHubError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="provider reconciliation failed",
+            ) from error
+        return operation_store.receipt(
+            {
+                "kind": "offline-runner-jit-recovery",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "owner": request.owner,
+                "reason": request.reason,
+                "immutable_job": immutable_job,
+                "provider": {
+                    **provider_tuple,
+                    "status": provider_status,
+                    "conclusion": provider_conclusion,
+                    "runner_identity_verified": True,
+                },
+                "action": "released-for-normal-jit-reissue",
+                "fifo_preserved": True,
+            }
+        )
+
     @app.get("/internal/v1/operations/jobs/pending")
     def audit_pending_jobs(
         x_qdev_operator_token: str | None = Header(default=None),
@@ -5523,6 +5630,17 @@ def create_app(
                 )
                 return Response(status_code=204)
             offline_identity = exact_offline_runner_identity(github_client, claimed, labels)
+            if offline_identity is not None and store.terminal_offline_runner_hold_matches(
+                job_id,
+                provider_runner_id=int(offline_identity["id"]),
+                runner_name=str(offline_identity["name"]),
+                labels=labels,
+            ):
+                # A controller reconciliation receipt has permanently
+                # recorded this exact stale identity.  It stays registered
+                # but cannot re-block the same immutable GitHub job; the
+                # normal path below creates the bounded next JIT attempt.
+                offline_identity = None
             if offline_identity is not None:
                 try:
                     store.hold_exact_offline_runner(
