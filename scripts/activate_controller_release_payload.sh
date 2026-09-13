@@ -665,11 +665,13 @@ activation_mutated=false
 activation_finished=false
 rollback_started=false
 activation_failure_stage="unknown"
+activation_failure_emitted=false
 emit_activation_failure_stage() {
   # This is intentionally a closed-vocabulary marker.  The root adapter
   # records only its derived code and a diagnostic digest, never this
   # payload's free-form stderr.
   printf 'qdev_activation_failure_stage=%s\n' "$activation_failure_stage" >&2
+  activation_failure_emitted=true
 }
 material_phase="$(printf '%s' "$material" | material_json_value 'v["phase"]')"
 external_guard_reconciliation_started=false
@@ -692,6 +694,10 @@ cleanup_qazcoop_guard_temporary() {
 cleanup_activation_payload() {
   local status=$?
   trap - EXIT
+  if [[ "$status" -ne 0 && "$activation_mutated" == true &&
+        "$activation_finished" != true && "$activation_failure_emitted" != true ]]; then
+    emit_activation_failure_stage
+  fi
   if [[ "$activation_mutated" == true && "$activation_finished" != true &&
         "$rollback_started" != true &&
         "$external_guard_reconciliation_started" != true ]]; then
@@ -1791,12 +1797,14 @@ set_transaction_phase preflight-validated || exit 1
 
 # From this point every non-zero exit is transactionally rolled back while the
 # exact configuration and image backups are still retained by this process.
+activation_failure_stage="mutating"
 activation_mutated=true
 set_transaction_phase mutating || {
   printf 'controller durable mutating phase could not be recorded\n' >&2
   rollback
   exit 1
 }
+activation_failure_stage="rollback_anchor"
 if ! write_rollback_anchor; then
   printf 'controller rollback anchor could not be persisted\n' >&2
   exit 66
@@ -1805,6 +1813,7 @@ if ! prepare_saved_rollback_images; then
   printf 'controller rollback anchor images are unavailable\n' >&2
   exit 66
 fi
+activation_failure_stage="configuration"
 atomic_install "$release/inventory/repos.json" /etc/qdev-runner/repos.json 0644
 atomic_install "$release/config/profiles.yml" /etc/qdev-runner/profiles.yml 0644
 atomic_install "$release/config/admin-platform-package-bindings.json" \
@@ -1825,8 +1834,10 @@ if [[ "$rollback_mode" != true ]]; then
   atomic_install "$release/scripts/qdev_controller_admission_host.sh" \
     "$admission_host_tool_path" 0755
 fi
+activation_failure_stage="activate_link"
 activate_link "$release"
 
+activation_failure_stage="broker_state"
 set +e
 (set -e; prepare_broker_state)
 prepare_state_status=$?
@@ -1841,6 +1852,7 @@ if [[ "$rollback_mode" != true ]]; then
   # A rollback target can predate the managed dispatcher. Keep the already
   # installed, controller-owned recovery path intact instead of sourcing
   # modern host binaries from an immutable historical release.
+  activation_failure_stage="host_dispatch"
   set +e
   (set -e; install_fleet_host_dispatch)
   install_dispatch_status=$?
@@ -1852,17 +1864,20 @@ if [[ "$rollback_mode" != true ]]; then
   fi
 fi
 
+activation_failure_stage="config_installed"
 set_transaction_phase config-installed || {
   printf 'controller durable transaction phase could not be recorded\n' >&2
   rollback
   exit 1
 }
 
+activation_failure_stage="compose"
 if ! "${compose[@]}" "${compose_action[@]}"; then
   rollback
   exit 1
 fi
 
+activation_failure_stage="public_health"
 healthy=false
 for _ in $(seq 1 "$health_check_attempts"); do
   if curl --fail --silent --show-error https://ci.qdev.run/health >/dev/null; then

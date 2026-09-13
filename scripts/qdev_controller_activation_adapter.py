@@ -197,6 +197,15 @@ _RECONCILE_CODES = frozenset(
         "activation_outcome_unknown",
         "activation_identity_mismatch",
         "rollback_anchor_mismatch",
+        "activation_mutating_failed",
+        "activation_rollback_anchor_failed",
+        "activation_configuration_failed",
+        "activation_activate_link_failed",
+        "activation_broker_state_failed",
+        "activation_host_dispatch_failed",
+        "activation_config_installed_failed",
+        "activation_compose_failed",
+        "activation_public_health_failed",
         "activation_operator_identity_failed",
         "activation_runtime_identity_failed",
         "activation_release_status_failed",
@@ -208,7 +217,9 @@ _RECONCILE_CODES = frozenset(
 _FAILURE_CONTEXT: dict[str, Any] = {}
 _PAYLOAD_FAILURE_STAGE = re.compile(
     r"(?m)^qdev_activation_failure_stage=("
-    r"operator_identity|runtime_identity|release_status|runtime_health|"
+    r"mutating|rollback_anchor|configuration|activate_link|broker_state|"
+    r"host_dispatch|config_installed|compose|public_health|operator_identity|"
+    r"runtime_identity|release_status|runtime_health|"
     r"candidate_active|commit_candidate"
     r")$"
 )

@@ -85,6 +85,12 @@ def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
         )
         == "activation_runtime_health_failed"
     )
+    assert (
+        ACTIVATION._payload_failure_code(
+            "qdev_activation_failure_stage=broker_state\n"
+        )
+        == "activation_broker_state_failed"
+    )
     assert ACTIVATION._payload_failure_code("qdev_activation_failure_stage=unknown\n") is None
     assert (
         ACTIVATION._payload_failure_code(
