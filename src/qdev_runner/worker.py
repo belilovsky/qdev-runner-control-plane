@@ -35,6 +35,7 @@ class AdmissionState:
     min_disk_free_gib: float
     max_disk_used_pct: float
     directive_id: str | None = None
+    directive_claim_scope_id: str | None = None
     directive_repository: str | None = None
     directive_head_sha: str | None = None
     directive_expires_at: datetime | None = None
@@ -117,6 +118,7 @@ class Worker:
                 signing_key=self.settings.capacity_directive_key,
                 worker_name=self.settings.worker_name,
                 registered_profiles=self.settings.profiles,
+                claim_scope_id=self.settings.claim_scope_id,
             )
         except ValueError as error:
             LOGGER.warning("capacity override ignored: %s", error)
@@ -137,6 +139,7 @@ class Worker:
             min_disk_free_gib=directive.min_disk_free_gib,
             max_disk_used_pct=directive.max_disk_used_pct,
             directive_id=directive.operation_id,
+            directive_claim_scope_id=directive.claim_scope_id,
             directive_repository=directive.repository,
             directive_head_sha=directive.head_sha,
             directive_expires_at=parse_utc(directive.expires_at),
@@ -159,6 +162,7 @@ class Worker:
                 "effective_profiles": list(state.profiles),
                 "configured_claim_scope_id": self.settings.claim_scope_id,
                 "capacity_directive_id": state.directive_id,
+                "capacity_directive_claim_scope_id": state.directive_claim_scope_id,
                 "capacity_directive_repository": state.directive_repository,
                 "capacity_directive_head_sha": state.directive_head_sha,
                 "capacity_override_active": state.directive_id is not None,

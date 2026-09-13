@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from qdev_runner.capacity import Capacity
-from qdev_runner.operations import OperationStore
+from qdev_runner.operations import OperationStore, sign_payload
 from qdev_runner.settings import WorkerSettings
 from qdev_runner.worker import Worker
 
@@ -139,6 +139,46 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.directive_repository == "belilovsky/qazshield"
         assert state.directive_head_sha == "a" * 40
         assert state.directive_expires_at is not None
+    finally:
+        await worker.close()
+
+
+async def test_worker_requires_the_signed_claim_scope_when_present(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    worker.settings = replace(worker.settings, claim_scope_id="scope-123")
+    store = OperationStore(
+        tmp_path / "operations",
+        worker_signing_key="worker-signing-key",
+        receipt_signing_key="receipt-signing-key",
+    )
+    legacy = store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        repository="belilovsky/qazlake",
+        head_sha="b" * 40,
+        profiles=("qdev-ci",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95,
+        owner="qdev-fleet-operations",
+        reason="bounded FIFO recovery",
+        duration_seconds=900,
+    )
+    unsigned = legacy.unsigned() | {"claim_scope_id": "scope-123"}
+    scoped = unsigned | {"signature": sign_payload(unsigned, "worker-signing-key")}
+    try:
+        accepted = worker.admission_state(
+            raw=_disk_blocked_raw(), directive_payload=scoped
+        )
+        assert accepted.directive_id == legacy.operation_id
+        assert accepted.directive_claim_scope_id == "scope-123"
+
+        wrong_scope = unsigned | {"claim_scope_id": "scope-456"}
+        rejected = worker.admission_state(
+            raw=_disk_blocked_raw(),
+            directive_payload=wrong_scope
+            | {"signature": sign_payload(wrong_scope, "worker-signing-key")},
+        )
+        assert rejected.directive_id is None
+        assert not rejected.effective.allowed
     finally:
         await worker.close()
 

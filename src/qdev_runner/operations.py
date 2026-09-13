@@ -523,6 +523,9 @@ class CapacityOverrideDirective(BaseModel):
 
     schema_name: Literal["qdev-capacity-override-v2"] = Field(alias="schema")
     operation_id: str = Field(min_length=1, max_length=128)
+    # Scope is signed by the controller and bound to the worker process.
+    # It prevents a short-lived capacity exception being replayed by another worker.
+    claim_scope_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
     worker_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     repository: str = Field(min_length=1, max_length=256)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -551,6 +554,7 @@ def verify_capacity_override(
     signing_key: str,
     worker_name: str,
     registered_profiles: tuple[str, ...],
+    claim_scope_id: str | None = None,
     now: datetime | None = None,
 ) -> CapacityOverrideDirective:
     if not signing_key:
@@ -568,6 +572,8 @@ def verify_capacity_override(
         raise ValueError("capacity override is not active")
     if directive.worker_name != worker_name:
         raise ValueError("capacity override worker mismatch")
+    if directive.claim_scope_id is not None and directive.claim_scope_id != claim_scope_id:
+        raise ValueError("capacity override claim scope mismatch")
     if not directive.profiles or not set(directive.profiles).issubset(registered_profiles):
         raise ValueError("capacity override profile mismatch")
     if directive.min_disk_free_gib < HARD_MIN_FREE_GIB:
