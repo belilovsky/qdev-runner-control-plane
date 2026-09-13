@@ -65,8 +65,9 @@ sudo "$tool" issue-unsigned \
 
 That command prints the unsigned envelope path, the frozen status path and
 the frozen configuration root.  Sign exactly those frozen inputs, using the
-existing root-only activation signing key and controller receipt key.  Neither
-key is printed or copied by these commands.
+existing root-only activation signing key.  The signer reads the controller
+receipt key directly from the root-only broker environment; neither key is
+printed, exported or copied by these commands.
 
 ```sh
 sudo env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release/src" /usr/bin/python3 \
@@ -77,7 +78,7 @@ sudo env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release/src" /usr/bin/python3 \
   --current-status "$assets/snapshots/$transaction_id/status.json" \
   --current-config-root "$assets/snapshots/$transaction_id/current-config" \
   --private-key <root-only-activation-private-key-path> \
-  --controller-receipt-key <root-only-controller-receipt-key-path> \
+  --broker-env /etc/qdev-runner/broker.env \
   --output "$assets/signed/$transaction_id.json"
 
 sudo "$tool" stage \
