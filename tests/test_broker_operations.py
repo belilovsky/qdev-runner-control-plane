@@ -1753,7 +1753,7 @@ def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path:
     github.runners = [
         {
             "id": 2377,
-            "name": "qdev-platform-portal-102459781441",
+            "name": "qdev-platform-portal-42",
             "status": "offline",
             "busy": False,
             "labels": [{"name": label} for label in labels],
@@ -1791,12 +1791,12 @@ def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path:
     held = store.active_offline_runner_holds()
     assert len(held) == 1
     assert held[0]["provider_runner_id"] == 2377
-    assert held[0]["runner_name"] == "qdev-platform-portal-102459781441"
+    assert held[0]["runner_name"] == "qdev-platform-portal-42"
     assert store.job(42)["status"] == "claimed"  # type: ignore[index]
     assert store.job(42)["worker_name"] is None  # type: ignore[index]
     public_health = client.get("/health").json()
     assert public_health["offline_runner_reconciliation_holds"] == 1
-    assert "qdev-platform-portal-102459781441" not in json.dumps(public_health)
+    assert "qdev-platform-portal-42" not in json.dumps(public_health)
     audit = client.get(
         "/internal/v1/operations/jobs/offline-runner-holds", headers=OPERATOR_HEADERS
     )
@@ -1818,6 +1818,63 @@ def test_exact_offline_runner_is_held_without_jit_reissue_or_fifo_skip(tmp_path:
     assert next_claim.status_code == 200
     assert next_claim.json()["job_id"] == 43
     assert len(github.jit_runner_names) == 1
+    assert store.active_offline_runner_holds() == []
+
+
+def test_offline_runner_for_sibling_matrix_job_is_not_held(tmp_path: Path) -> None:
+    """A run-level dynamic label cannot bind an offline runner to another matrix job."""
+
+    run_id = 84000000042
+    labels = (
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci-docker",
+        f"qdev-job-{run_id}-1-tests",
+    )
+    github = FakeGitHub(job_run_id=run_id)
+    github.runners = [
+        {
+            "id": 2378,
+            "name": "qdev-example-43-a1",
+            "status": "offline",
+            "busy": False,
+            "labels": [{"name": label} for label in labels],
+        }
+    ]
+    client = _app(tmp_path, github=github)
+    _heartbeat(client, admitted=True, disk_free_gib=50.0)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="sibling-offline-42",
+            job_id=42,
+            run_id=run_id,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=labels,
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+
+    response = client.post(
+        "/internal/v1/jobs/claim",
+        headers={"X-QDev-Worker-Token": WORKER_TOKEN},
+        json={
+            "worker_name": WORKER_NAME,
+            "tier": "primary",
+            "profiles": ["qdev-ci-docker"],
+            "disk_free_gib": 50.0,
+            "min_disk_free_gib": 30.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["runner_name"] == "qdev-example-42-a1"
+    assert github.jit_runner_names == ["qdev-example-42-a1"]
     assert store.active_offline_runner_holds() == []
 
 

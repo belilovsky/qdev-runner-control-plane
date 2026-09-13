@@ -634,9 +634,11 @@ def exact_offline_runner_identity(
 ) -> dict[str, Any] | None:
     """Find one provider-owned offline JIT identity for this immutable job.
 
-    A dynamic label is the provider-visible binding for a one-shot runner.  We
-    only hold a job when exactly one existing registration has the complete
-    queued label set and is offline/idle.  Missing, duplicate, malformed, or
+    A dynamic label binds a provider run, not a matrix job within that run.
+    Therefore a one-shot identity must also carry this immutable job ID and
+    controller claim attempt in its registered name.  The only static exception
+    is the pre-registered Platform recovery identity, whose name is itself
+    bound to the exact GitHub job ID.  Missing, duplicate, malformed, or
     mismatched registrations fall through to the normal JIT path; ambiguity is
     never resolved by choosing a runner name or a host.
     """
@@ -655,6 +657,10 @@ def exact_offline_runner_identity(
         or int(match["attempt"]) != attempt
     ):
         raise PolicyError("dynamic runner label differs from queued immutable tuple")
+    job_id = int(claimed["job_id"])
+    claim_attempt = int(claimed["attempts"])
+    expected_ephemeral_suffix = f"-{job_id}-a{claim_attempt}"
+    expected_platform_name = f"qdev-platform-portal-{job_id}"
     expected_labels = frozenset(labels)
     matches: list[dict[str, Any]] = []
     for runner in github.repository_runners(
@@ -676,6 +682,14 @@ def exact_offline_runner_identity(
             )
         ):
             raise GitHubError("repository runner response is malformed")
+        if not (
+            runner_name.startswith("qdev-")
+            and (
+                runner_name.endswith(expected_ephemeral_suffix)
+                or runner_name == expected_platform_name
+            )
+        ):
+            continue
         observed_labels = frozenset(str(item["name"]) for item in runner_labels)
         if observed_labels != expected_labels:
             continue
