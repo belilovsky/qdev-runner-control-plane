@@ -1900,6 +1900,71 @@ def test_exact_offline_runner_recovery_reissues_only_the_next_jit_attempt(tmp_pa
     assert store.job_status(42) == "running"
 
 
+def test_exact_offline_runner_recovery_backfills_only_provider_verified_legacy_attempt(
+    tmp_path: Path,
+) -> None:
+    run_id = 84000000043
+    labels = (
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci-docker",
+        f"qdev-job-{run_id}-1-contract",
+    )
+    github = FakeGitHub(job_run_id=run_id, run_attempt=1)
+    github.runners = [
+        {
+            "id": 2378,
+            "name": "qdev-platform-portal-102459781442",
+            "status": "offline",
+            "busy": False,
+            "labels": [{"name": label} for label in labels],
+        }
+    ]
+    client = _app(tmp_path, github=github)
+    _heartbeat(client, admitted=True, disk_free_gib=50.0)
+    store: Store = client.app.state.store
+    assert store.enqueue(
+        QueuedJob(
+            delivery_id="legacy-offline-recovery-43",
+            job_id=43,
+            run_id=run_id,
+            repository="belilovsky/example",
+            repository_id=1,
+            installation_id=2,
+            labels=labels,
+            head_sha="a" * 40,
+            head_branch="main",
+            payload={"workflow_job": {"run_attempt": 1}},
+        )
+    )
+    headers = {"X-QDev-Worker-Token": WORKER_TOKEN}
+    claim = {
+        "worker_name": WORKER_NAME,
+        "tier": "primary",
+        "profiles": ["qdev-ci-docker"],
+        "disk_free_gib": 50.0,
+        "min_disk_free_gib": 30.0,
+    }
+    assert client.post("/internal/v1/jobs/claim", headers=headers, json=claim).status_code == 204
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET payload_json=? WHERE job_id=?",
+            (json.dumps({"workflow_job": {}}), 43),
+        )
+
+    recovery = client.post(
+        "/internal/v1/operations/jobs/43/recover-offline-runner",
+        headers=OPERATOR_HEADERS,
+        json={"owner": "ci-incident", "reason": "recover verified legacy provider attempt"},
+    )
+    assert recovery.status_code == 200, recovery.text
+    payload = verify_controller_receipt(recovery.json(), receipt_key=RECEIPT_KEY)["payload"]
+    assert payload["immutable_job"]["attempt"] == 1
+    assert store.job_status(43) == "pending"
+    assert store.active_offline_runner_holds() == []
+
+
 def test_controller_release_audit_is_signed_and_public_health_is_non_secret(tmp_path: Path) -> None:
     status_path = tmp_path / "controller-release.json"
     status = {

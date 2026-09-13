@@ -606,13 +606,11 @@ def _json_strings(value: object) -> tuple[str, ...]:
 
 
 def _stale_job_tuple(row: dict[str, Any]) -> dict[str, Any]:
-    payload = _json_object(row.get("payload_json"))
-    workflow_job = _json_object(payload.get("workflow_job"))
     return {
         "project": str(row.get("repository") or ""),
         "run_id": int(row.get("run_id") or 0),
         "job_id": int(row.get("job_id") or 0),
-        "attempt": int(workflow_job.get("run_attempt") or 1),
+        "attempt": _job_attempt(row),
         "exact_sha": str(row.get("head_sha") or ""),
         "profile": str(row.get("profile") or ""),
         "worker": str(row.get("worker_name") or ""),
@@ -5010,6 +5008,45 @@ def create_app(
                 "attempt": int(remote_run.get("run_attempt") or 0),
                 "exact_sha": str(remote_run.get("head_sha") or "").lower(),
             }
+            if immutable_job["attempt"] is None:
+                # Holds from the pre-v2 persistence path can be missing the
+                # attempt even though GitHub's immutable job identity remains
+                # queued.  Bind that one missing value only after the provider
+                # proves the exact run, job and SHA; job IDs are attempt-bound
+                # at GitHub, so this cannot be used to revive a later retry.
+                if (
+                    provider_tuple["run_id"] != immutable_job["run_id"]
+                    or provider_tuple["job_run_id"] != immutable_job["run_id"]
+                    or provider_tuple["job_id"] != immutable_job["job_id"]
+                    or provider_tuple["exact_sha"] != immutable_job["exact_sha"]
+                    or provider_tuple["attempt"] <= 0
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="provider immutable tuple cannot repair the legacy hold",
+                    )
+                if not store.backfill_offline_runner_hold_attempt(
+                    job_id,
+                    attempt=provider_tuple["attempt"],
+                    repository=immutable_job["project"],
+                    run_id=immutable_job["run_id"],
+                    head_sha=immutable_job["exact_sha"],
+                    profile=immutable_job["profile"],
+                    provider_runner_id=int(row["provider_runner_id"]),
+                    runner_name=str(row["runner_name"]),
+                    labels=labels,
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="offline runner hold changed during reconciliation",
+                    )
+                row = store.active_offline_runner_hold(job_id)
+                if row is None:  # pragma: no cover - transaction guard
+                    raise HTTPException(
+                        status_code=409,
+                        detail="offline runner hold disappeared during reconciliation",
+                    )
+                immutable_job = _stale_job_tuple(row)
             expected_tuple = {
                 "run_id": immutable_job["run_id"],
                 "job_run_id": immutable_job["run_id"],

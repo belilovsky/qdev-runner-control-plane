@@ -3085,6 +3085,9 @@ class Store:
                 job = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
                 if job is None or str(job["status"]) != "claimed":
                     raise ValueError("offline runner hold requires an active claim")
+                attempt = _workflow_job_attempt(str(job["payload_json"]))
+                if attempt is None:
+                    raise ValueError("offline runner hold requires a provider run attempt")
                 try:
                     expected_labels = tuple(json.loads(str(job["labels_json"])))
                 except (TypeError, json.JSONDecodeError) as error:
@@ -3096,7 +3099,7 @@ class Store:
                     "run_id": int(job["run_id"]),
                     "repository": str(job["repository"]),
                     "head_sha": str(job["head_sha"]).lower(),
-                    "attempt": _workflow_job_attempt(str(job["payload_json"])),
+                    "attempt": attempt,
                     "profile": str(job["profile"] or "").lower(),
                     "provider_runner_id": provider_runner_id,
                     "runner_name": runner_name,
@@ -3207,6 +3210,123 @@ class Store:
                 (job_id,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def backfill_offline_runner_hold_attempt(
+        self,
+        job_id: int,
+        *,
+        attempt: int,
+        repository: str,
+        run_id: int,
+        head_sha: str,
+        profile: str,
+        provider_runner_id: int,
+        runner_name: str,
+        labels: tuple[str, ...],
+    ) -> bool:
+        """Bind one legacy hold to the attempt proven by its exact provider job.
+
+        Historic holds created before attempt persistence are unusable under the
+        v2 contract.  This narrowly upgrades only an active hold whose stored
+        job, runner identity and labels still match the provider-verified tuple;
+        it never accepts a caller-selected job or runner.
+        """
+
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt <= 0:
+            raise ValueError("offline runner attempt is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """
+                    SELECT jobs.*, offline_runner_holds.provider_runner_id,
+                           offline_runner_holds.runner_name,
+                           offline_runner_holds.labels_json AS hold_labels_json,
+                           offline_runner_holds.state AS hold_state
+                    FROM offline_runner_holds JOIN jobs ON jobs.job_id=offline_runner_holds.job_id
+                    WHERE jobs.job_id=?
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if row is None or str(row["hold_state"]) != "active":
+                    connection.execute("COMMIT")
+                    return False
+                if (
+                    str(row["status"]) != "claimed"
+                    or row["worker_name"] is not None
+                    or row["claim_scope_id"] is not None
+                    or str(row["repository"]) != repository
+                    or int(row["run_id"]) != run_id
+                    or str(row["head_sha"]).lower() != head_sha.lower()
+                    or str(row["profile"] or "").lower() != profile.lower()
+                    or int(row["provider_runner_id"]) != provider_runner_id
+                    or str(row["runner_name"]) != runner_name
+                ):
+                    raise ValueError("offline runner hold no longer matches the verified tuple")
+                try:
+                    queued_labels = tuple(json.loads(str(row["labels_json"])))
+                    held_labels = tuple(json.loads(str(row["hold_labels_json"])))
+                    payload = json.loads(str(row["payload_json"]))
+                    workflow_job = payload.get("workflow_job")
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("offline runner hold payload is invalid") from error
+                if (
+                    queued_labels != labels
+                    or held_labels != labels
+                    or not isinstance(payload, dict)
+                    or not isinstance(workflow_job, dict)
+                ):
+                    raise ValueError(
+                        "offline runner hold labels or payload differ from verified tuple"
+                    )
+                existing_attempt = _workflow_job_attempt(str(row["payload_json"]))
+                if existing_attempt is not None and existing_attempt != attempt:
+                    raise ValueError(
+                        "offline runner hold attempt conflicts with the provider tuple"
+                    )
+                if existing_attempt is None:
+                    workflow_job["run_attempt"] = attempt
+                    payload["workflow_job"] = workflow_job
+                    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                    tuple_payload = {
+                        "job_id": int(row["job_id"]),
+                        "run_id": int(row["run_id"]),
+                        "repository": str(row["repository"]),
+                        "head_sha": str(row["head_sha"]).lower(),
+                        "attempt": attempt,
+                        "profile": str(row["profile"] or "").lower(),
+                        "provider_runner_id": provider_runner_id,
+                        "runner_name": runner_name,
+                        "labels": list(labels),
+                    }
+                    canonical = json.dumps(
+                        tuple_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                    )
+                    tuple_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                    changed = connection.execute(
+                        "UPDATE jobs SET payload_json=?, updated_at=? "
+                        "WHERE job_id=? AND status='claimed'",
+                        (payload_json, now, job_id),
+                    )
+                    if changed.rowcount != 1:
+                        raise ValueError(
+                            "offline runner hold changed during attempt reconciliation"
+                        )
+                    changed = connection.execute(
+                        "UPDATE offline_runner_holds SET tuple_digest=?, updated_at=? "
+                        "WHERE job_id=? AND state='active'",
+                        (tuple_digest, now, job_id),
+                    )
+                    if changed.rowcount != 1:
+                        raise ValueError(
+                            "offline runner hold changed during attempt reconciliation"
+                        )
+                connection.execute("COMMIT")
+                return True
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
 
     def release_offline_runner_hold_for_jit_reissue(
         self,
