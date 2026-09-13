@@ -89,18 +89,23 @@ def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
         ACTIVATION._payload_failure_code("qdev_activation_failure_stage=broker_state\n")
         == "activation_broker_state_failed"
     )
+    assert (
+        ACTIVATION._payload_failure_code(
+            "qdev_activation_failure_stage=payload_preflight\n"
+            "qdev_activation_failure_stage=runtime_health\n"
+        )
+        == "activation_runtime_health_failed"
+    )
+    assert (
+        ACTIVATION._payload_failure_code("qdev_activation_failure_stage=entrypoint_envelope\n")
+        == "activation_entrypoint_envelope_failed"
+    )
     assert ACTIVATION._payload_failure_code("qdev_activation_failure_stage=unknown\n") is None
     assert (
         ACTIVATION._payload_failure_code("qdev_activation_failure_stage=external_guard\n")
         == "activation_external_guard_failed"
     )
-    assert (
-        ACTIVATION._payload_failure_code(
-            "qdev_activation_failure_stage=runtime_health\n"
-            "qdev_activation_failure_stage=release_status\n"
-        )
-        is None
-    )
+    assert ACTIVATION._payload_failure_code("untrusted detail\n") is None
 
 
 def _request(action: str) -> dict[str, Any]:

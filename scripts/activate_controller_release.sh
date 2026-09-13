@@ -11,6 +11,27 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+# Wrapper failures used to reach the root adapter as one opaque result before
+# the transactional payload began. Emit only a closed, non-secret stage; the
+# adapter retains a digest, never this process stderr.
+activation_failure_stage="entrypoint_setup"
+activation_failure_emitted=false
+payload_started=false
+emit_activation_failure_stage() {
+  printf 'qdev_activation_failure_stage=%s\n' "$activation_failure_stage" >&2
+  activation_failure_emitted=true
+}
+cleanup_activation_wrapper() {
+  local status=$?
+  trap - EXIT
+  if ((status != 0)) && [[ "$payload_started" != true &&
+      "$activation_failure_emitted" != true ]]; then
+    emit_activation_failure_stage
+  fi
+  exit "$status"
+}
+trap cleanup_activation_wrapper EXIT
+
 entrypoint="$(realpath -e -- "$0")"
 if [[ -L "$0" || "$(stat -c %u -- "$entrypoint")" != 0 ||
       $((8#$(stat -c %a -- "$entrypoint") & 8#022)) -ne 0 ]]; then
@@ -270,6 +291,7 @@ if [[ "$allow_legacy_import" == true && "$allow_measured_bootstrap" == true ]]; 
   exit 64
 fi
 
+activation_failure_stage="entrypoint_attestation"
 verified_artifact="$("${activation_cli[@]}" verify-artifact --artifact-manifest "$artifact_manifest")"
 artifact_digest="$(printf '%s' "$verified_artifact" | json_value 'v["manifest_digest"]')"
 candidate_source="$(printf '%s' "$verified_artifact" | json_value 'v["source_sha"]')"
@@ -285,6 +307,7 @@ observed_entrypoint="$("${activation_cli[@]}" fingerprint-release --release-root
   exit 78
 }
 
+activation_failure_stage="entrypoint_config"
 candidate_config="$({
   printf '%s\n' \
     "repos.json=$release/inventory/repos.json" \
@@ -387,6 +410,7 @@ mapfile -t observed_images < <(running_images) || {
 observed_public_image="${observed_images[0]}"
 observed_internal_image="${observed_images[1]}"
 
+activation_failure_stage="entrypoint_envelope"
 recovery_state=""
 transaction_state_path="${activation_status}.transaction"
 if verified_envelope="$("${activation_cli[@]}" verify-envelope "${identity[@]}" 2>/dev/null)"; then
@@ -435,6 +459,7 @@ if [[ -z "$recovery_state" && ! -e "$activation_status" &&
     --observed-current-internal-image "$observed_internal_image" \
     --observed-current-config "$current_config" >/dev/null
 fi
+activation_failure_stage="entrypoint_reservation"
 reservation=""
 if [[ -z "$recovery_state" ]]; then
   reservation="$("${activation_cli[@]}" reserve --status "$activation_status" \
@@ -573,6 +598,7 @@ if [[ "$reservation_state" == pending-before-mutation ]]; then
   exit 0
 fi
 
+activation_failure_stage="entrypoint_image"
 candidate_ref="qdev-runner-broker:controller-$candidate_source"
 if [[ "$rollback_mode" != true && -z "$recovery_state" ]]; then
   docker load --input "$candidate_archive" >/dev/null
@@ -585,12 +611,14 @@ if [[ "$rollback_mode" != true && -z "$recovery_state" ]]; then
 fi
 
 if [[ -z "$recovery_state" ]]; then
+  activation_failure_stage="entrypoint_cas"
   "${activation_cli[@]}" assert-current --status "$activation_status" "${identity[@]}" \
     --observed-current-public-image "$observed_public_image" \
     --observed-current-internal-image "$observed_internal_image" \
     --observed-current-config "$current_config"
 fi
 
+activation_failure_stage="payload_preflight"
 payload_result=0
 payload_environment=(
   "QDEV_CONTROLLER_RELEASE_LOCK=/run/lock/qdev-controller-release-payload.lock"
@@ -610,9 +638,11 @@ payload_environment=(
   "QDEV_CONTROLLER_ENVELOPE_EXPIRED=$envelope_expired"
 )
 if [[ "$rollback_mode" == true ]]; then
+  payload_started=true
   env -u QDEV_CONTROLLER_IMAGE_REF "${payload_environment[@]}" \
     QDEV_CONTROLLER_ROLLBACK=true "$payload" "$release" || payload_result=$?
 else
+  payload_started=true
   env "${payload_environment[@]}" QDEV_CONTROLLER_ROLLBACK=false \
     "QDEV_CONTROLLER_IMAGE_REF=$candidate_ref" \
     "$payload" "$release" || payload_result=$?
@@ -622,6 +652,8 @@ if ((payload_result != 0)); then
   exit "$payload_result"
 fi
 
+payload_started=false
+activation_failure_stage="entrypoint_finalize"
 mapfile -t active_images < <(running_images)
 [[ "${#active_images[@]}" -eq 2 ]] || exit 74
 active_public_image="${active_images[0]}"

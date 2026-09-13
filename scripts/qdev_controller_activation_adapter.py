@@ -214,6 +214,15 @@ _RECONCILE_CODES = frozenset(
         "activation_commit_candidate_failed",
         "activation_external_guard_failed",
         "activation_finalization_failed",
+        "activation_entrypoint_setup_failed",
+        "activation_entrypoint_attestation_failed",
+        "activation_entrypoint_config_failed",
+        "activation_entrypoint_envelope_failed",
+        "activation_entrypoint_reservation_failed",
+        "activation_entrypoint_image_failed",
+        "activation_entrypoint_cas_failed",
+        "activation_payload_preflight_failed",
+        "activation_entrypoint_finalize_failed",
     }
 )
 _FAILURE_CONTEXT: dict[str, Any] = {}
@@ -222,7 +231,10 @@ _PAYLOAD_FAILURE_STAGE = re.compile(
     r"mutating|rollback_anchor|configuration|activate_link|broker_state|"
     r"host_dispatch|config_installed|compose|public_health|operator_identity|"
     r"runtime_identity|release_status|runtime_health|"
-    r"candidate_active|commit_candidate|external_guard|finalization"
+    r"candidate_active|commit_candidate|external_guard|finalization|"
+    r"entrypoint_setup|entrypoint_attestation|entrypoint_config|"
+    r"entrypoint_envelope|entrypoint_reservation|entrypoint_image|"
+    r"entrypoint_cas|payload_preflight|entrypoint_finalize"
     r")$"
 )
 
@@ -231,9 +243,12 @@ def _payload_failure_code(stderr: str) -> str | None:
     """Return one closed payload failure code, never its raw stderr."""
 
     stages = _PAYLOAD_FAILURE_STAGE.findall(stderr)
-    if len(stages) != 1:
+    if not stages:
         return None
-    return f"activation_{stages[0]}_failed"
+    # The trusted wrapper can emit a broad pre-payload boundary before the
+    # payload supplies a more specific closed-vocabulary stage. The final
+    # marker wins; raw stderr never becomes durable diagnostic state.
+    return f"activation_{stages[-1]}_failed"
 
 
 def _read_json_stdin() -> dict[str, Any]:

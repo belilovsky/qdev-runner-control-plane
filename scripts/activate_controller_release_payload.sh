@@ -694,8 +694,8 @@ cleanup_qazcoop_guard_temporary() {
 cleanup_activation_payload() {
   local status=$?
   trap - EXIT
-  if [[ "$status" -ne 0 && "$activation_mutated" == true &&
-        "$activation_finished" != true && "$activation_failure_emitted" != true ]]; then
+  if [[ "$status" -ne 0 && "$activation_finished" != true &&
+        "$activation_failure_emitted" != true ]]; then
     emit_activation_failure_stage
   fi
   if [[ "$activation_mutated" == true && "$activation_finished" != true &&
