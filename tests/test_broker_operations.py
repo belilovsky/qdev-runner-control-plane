@@ -1065,11 +1065,10 @@ def test_qazpolit_operator_bridge_admits_only_verified_hosted_continuity_artifac
     assert captured["request"].repository == "belilovsky/qazpolit"
     assert captured["request"].source_sha == "a" * 40
     receipt = response.json()
-    assert receipt["release_lane"] == "qdev-release-qazpolit"
-    assert receipt["source_sha"] == "a" * 40
-    assert receipt["operator_audit"]["payload"]["kind"] == (
-        "qazpolit-github-actions-release-admission"
-    )
+    assert receipt["schema"] == "qdev-controller-receipt-v2"
+    assert receipt["payload"]["release_lane"] == "qdev-release-qazpolit"
+    assert receipt["payload"]["source_sha"] == "a" * 40
+    assert receipt["payload"]["kind"] == "qazpolit-github-actions-release-admission"
 
 
 def test_qazpolit_operator_bridge_rejects_unapproved_hosted_runner(

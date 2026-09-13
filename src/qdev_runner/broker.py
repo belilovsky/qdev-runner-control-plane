@@ -2821,20 +2821,20 @@ def create_app(
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="qazpolit release lane is busy") from error
         admission = admission_receipt(release_job)
-        return {
-            **admission,
-            "operator_audit": operation_store.receipt(
-                {
-                    "kind": "qazpolit-github-actions-release-admission",
-                    "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                    "release_id": admission["release_id"],
-                    "release_lane": lane.name,
-                    "source_sha": request.source_sha,
-                    "archive_sha256": stored.evidence.archive_sha256,
-                    "payload_sha256": stored.evidence.payload_sha256,
-                }
-            ),
-        }
+        # Operator-facing mutations must return one strict, signed controller
+        # receipt.  Do not append an unsigned admission object: the standard
+        # operator client rejects additional fields by design.
+        return operation_store.receipt(
+            {
+                "kind": "qazpolit-github-actions-release-admission",
+                "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "release_id": admission["release_id"],
+                "release_lane": lane.name,
+                "source_sha": request.source_sha,
+                "archive_sha256": stored.evidence.archive_sha256,
+                "payload_sha256": stored.evidence.payload_sha256,
+            }
+        )
 
     @app.get("/internal/v1/release-hosts/{placement}/jobs/next", response_model=None)
     def next_release_host_job(
