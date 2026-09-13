@@ -2226,7 +2226,8 @@ def test_github_oidc_bootstrap_ingress_retries_only_transient_observation(
         ("run", 71, "belilovsky/qdev-runner-control-plane", 123),
         ("jobs", 71, "belilovsky/qdev-runner-control-plane", 123, 1),
     ]
-    assert (incoming / f"{_bootstrap_ingress_operation_key(_bootstrap_ingress_body())}.json").is_file()
+    operation_key = _bootstrap_ingress_operation_key(_bootstrap_ingress_body())
+    assert (incoming / f"{operation_key}.json").is_file()
 
 
 def test_github_oidc_bootstrap_ingress_replays_only_an_identical_request(
