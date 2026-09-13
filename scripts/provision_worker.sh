@@ -76,6 +76,20 @@ provision_min_free_gib="$tier_min_free_gib"
 provision_max_disk_used_pct="$tier_max_disk_used_pct"
 provision_min_free_kib=$((provision_min_free_gib * 1024 * 1024))
 
+# A worker that never advertises qdev-ci-docker must not be blocked on a
+# BuildKit payload it cannot execute.  Keep the historical full-profile set as
+# the default, and only skip the materialization for an explicitly narrower
+# provisioned profile set.
+provision_profiles="${QDEV_WORKER_PROFILES:-qdev-ci,qdev-ci-browser,qdev-ci-docker}"
+provision_docker_profile=false
+IFS=',' read -r -a provision_profile_parts <<< "$provision_profiles"
+for provision_profile in "${provision_profile_parts[@]}"; do
+  if [[ "${provision_profile//[[:space:]]/}" == "qdev-ci-docker" ]]; then
+    provision_docker_profile=true
+    break
+  fi
+done
+
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" -v min_free="$provision_min_free_kib" \
   -v max_used="$provision_max_disk_used_pct" 'BEGIN {
@@ -193,12 +207,13 @@ materialize_buildkit_from_image() {
   chmod 0444 "$incoming/source-revision" "$incoming/source-sha256"
 }
 
-if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
-  validate_buildkit_materialization "$buildkit_root" || {
-    printf 'existing BuildKit materialization is not source-bound; refusing to replace it\n' >&2
-    exit 1
-  }
-else
+if [[ "$provision_docker_profile" == true ]]; then
+  if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
+    validate_buildkit_materialization "$buildkit_root" || {
+      printf 'existing BuildKit materialization is not source-bound; refusing to replace it\n' >&2
+      exit 1
+    }
+  else
   [[ "$buildkit_artifact_root" = /* ]] || {
     printf 'QDEV_BUILDKIT_ARTIFACT_ROOT must be an absolute path\n' >&2
     exit 1
@@ -243,10 +258,11 @@ else
   fi
   mv -- "$buildkit_release_stage" "$buildkit_root"
   buildkit_release_stage=""
-  validate_buildkit_materialization "$buildkit_root" || {
-    printf 'new BuildKit materialization failed post-install validation\n' >&2
-    exit 1
-  }
+    validate_buildkit_materialization "$buildkit_root" || {
+      printf 'new BuildKit materialization failed post-install validation\n' >&2
+      exit 1
+    }
+  fi
 fi
 
 install -d -o root -g root -m 0755 "$install_root"
