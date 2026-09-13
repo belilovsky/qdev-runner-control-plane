@@ -91,9 +91,7 @@ def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
     )
     assert ACTIVATION._payload_failure_code("qdev_activation_failure_stage=unknown\n") is None
     assert (
-        ACTIVATION._payload_failure_code(
-            "qdev_activation_failure_stage=external_guard\n"
-        )
+        ACTIVATION._payload_failure_code("qdev_activation_failure_stage=external_guard\n")
         == "activation_external_guard_failed"
     )
     assert (
