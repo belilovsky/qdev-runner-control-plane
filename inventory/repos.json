@@ -1,6 +1,6 @@
 {
   "schema_version": "qdev-runner-inventory-v1",
-  "generated_at": "2026-09-09T16:16:42.356737+00:00",
+  "generated_at": "2026-09-13T09:55:38.723691+00:00",
   "owner": "belilovsky",
   "active_repository_count": 103,
   "runner_repository_count": 98,
@@ -2771,13 +2771,22 @@
       "archived": false,
       "default_branch": "main",
       "profiles": [
-        "qdev-ci"
+        "qdev-ci",
+        "qdev-ci-docker"
       ],
-      "workflow_count": 6,
+      "workflow_count": 4,
       "workflow_files": [
         {
           "path": ".github/workflows/python-tests.yml",
-          "sha": "796593f9c665b2d626580b03c1c3bee63bc9aa7e",
+          "sha": "eaf8a9f6bd5e21877d6741c6dd093e4e53245d03",
+          "hosted_selectors": 0,
+          "cache_refs": 0,
+          "artifact_refs": 0,
+          "ghcr_refs": 0
+        },
+        {
+          "path": ".github/workflows/qazlake-data-record.yml",
+          "sha": "4f504e7f52adc47d0117b35e8e66253be4f9c197",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,
@@ -2785,7 +2794,7 @@
         },
         {
           "path": ".github/workflows/qdev-runner-contract.yml",
-          "sha": "b97728b344734f2c25bdacaa5b4e5f8a980cee4d",
+          "sha": "3bb778776f376a562ef8735e92a7e4fe81b6f32b",
           "hosted_selectors": 0,
           "cache_refs": 0,
           "artifact_refs": 0,

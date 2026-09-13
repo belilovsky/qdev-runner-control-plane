@@ -35,6 +35,29 @@ def test_controller_recovery_build_admission_is_repository_scoped() -> None:
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
 
 
+def test_qazlake_api_data_record_admission_uses_exact_repository_key() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert (
+        policy.repository_profile_disk_mb[("belilovsky/qazlake-api", "qdev-ci-docker")]
+        == 12 * 1024
+    )
+    assert ("belilovsky/qazlake", "qdev-ci-docker") not in policy.repository_profile_disk_mb
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
+
+
+def test_crisis_monitor_postgis_checks_use_bounded_repository_scope() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    assert (
+        policy.repository_profile_disk_mb[("belilovsky/crisis-monitor", "qdev-ci-docker")]
+        == 12 * 1024
+    )
+    assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
+
+
 def test_platform_portal_contract_admission_uses_bounded_qdev_ci_profile() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")

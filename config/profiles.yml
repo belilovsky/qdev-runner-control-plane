@@ -12,10 +12,17 @@ repository_admission_disk_mb:
     qdev-ci-docker: 4096
   belilovsky/qazshield:
     qdev-ci-docker: 15360
-  # QazLake declares a 12 GiB bounded compose-validation workload in its
-  # canonical runner manifest. Reserve that measured scope only; the worker's
-  # independent free-space floor is still enforced before the job is claimed.
-  belilovsky/qazlake:
+  # The canonical QazLake API data-record workflow runs an ephemeral Postgres
+  # service and focused Python checks; it neither builds nor retains an OCI
+  # image. Reserve its documented 12 GiB scope only. The worker's independent
+  # free-space floor remains enforced before the job is claimed.
+  belilovsky/qazlake-api:
+    qdev-ci-docker: 12288
+  # Crisis Monitor's exact-SHA test and E2E lanes use one disposable PostGIS
+  # service and dependency checks, with no image build or persistent volume.
+  # Keep the bounded 12 GiB reservation repository-specific; the 20 GiB
+  # default stays mandatory for every other Docker workload.
+  belilovsky/crisis-monitor:
     qdev-ci-docker: 12288
   # QazCompute's pinned Docker release produced 824 MiB of compressed layers,
   # while its workflow independently requires 20 GiB of free host space before

@@ -62,10 +62,16 @@ def declared_profiles(full_name: str, ref: str | None = None) -> set[str]:
         return set()
 
     try:
-        contract = yaml.safe_load(
-            base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
-        )
+        content = base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
     except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"{full_name}: invalid .github/qdev-runner.yml: {exc}") from exc
+    return parse_declared_profiles(full_name, content)
+
+
+def parse_declared_profiles(full_name: str, content: str) -> set[str]:
+    try:
+        contract = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
         raise RuntimeError(f"{full_name}: invalid .github/qdev-runner.yml: {exc}") from exc
 
     if not isinstance(contract, dict):
@@ -86,12 +92,36 @@ def declared_profiles(full_name: str, ref: str | None = None) -> set[str]:
     return profiles
 
 
+def profile_markers(text: str) -> set[str]:
+    """Infer bounded runner profiles from one exact workflow file."""
+
+    profiles: set[str] = set()
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("playwright", "chromium", "browser")):
+        profiles.add("qdev-ci-browser")
+    if any(
+        marker in lowered
+        for marker in (
+            "docker build",
+            "docker compose",
+            "docker/build-push-action",
+            "services:",
+            "ghcr.io",
+        )
+    ):
+        profiles.add("qdev-ci-docker")
+    return profiles
+
+
 def inspect_repo(repo: dict[str, Any], ref: str | None = None) -> dict[str, Any] | None:
     full_name = repo["nameWithOwner"]
     metadata = api(f"/repos/{full_name}")
     workflows_endpoint = f"/repos/{full_name}/actions/workflows?per_page=100"
-    if ref:
-        workflows_endpoint += f"&ref={ref}"
+    # GitHub's Actions workflows-list endpoint is repository-scoped and does
+    # not accept a commit ref. Exact-ref inspection is performed below through
+    # the Contents API, which does support ``?ref=<full SHA>``. Keeping the
+    # two operations separate lets a targeted refresh describe the queued
+    # revision without making the inventory generator fail before inspection.
     workflows = api(workflows_endpoint)["workflows"]
     if not workflows:
         return None
@@ -111,20 +141,7 @@ def inspect_repo(repo: dict[str, Any], ref: str | None = None) -> dict[str, Any]
             content_endpoint += f"?ref={ref}"
         content_data = api(content_endpoint)
         text = base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
-        lowered = text.lower()
-        if any(marker in lowered for marker in ("playwright", "chromium", "browser")):
-            profiles.add("qdev-ci-browser")
-        if any(
-            marker in lowered
-            for marker in (
-                "docker build",
-                "docker compose",
-                "docker/build-push-action",
-                "services:",
-                "ghcr.io",
-            )
-        ):
-            profiles.add("qdev-ci-docker")
+        profiles.update(profile_markers(text))
         workflow_files.append(
             {
                 "path": entry["path"],
@@ -144,6 +161,84 @@ def inspect_repo(repo: dict[str, Any], ref: str | None = None) -> dict[str, Any]
         "profiles": sorted(profiles),
         "workflow_count": len(workflows),
         "workflow_files": sorted(workflow_files, key=lambda item: item["path"]),
+    }
+
+
+def inspect_local_repo(
+    repo: dict[str, Any], ref: str, source_directory: Path
+) -> dict[str, Any] | None:
+    """Refresh one existing record from a locally available canonical Git object.
+
+    This narrow recovery path is limited to an existing inventory identity and
+    exact commit. It is for temporary GitHub API outages, never for adding a
+    record or widening the inventory.
+    """
+
+    full_name = str(repo["nameWithOwner"])
+    if EXACT_SHA.fullmatch(ref) is None:
+        raise RuntimeError(f"{full_name}: --ref must be a full lowercase commit SHA")
+    source_directory = source_directory.resolve()
+    expected_origins = {
+        f"https://github.com/{full_name}.git",
+        f"git@github.com:{full_name}.git",
+        f"ssh://git@github.com/{full_name}.git",
+    }
+    origin = command("git", "-C", str(source_directory), "remote", "get-url", "origin").strip()
+    if origin not in expected_origins:
+        raise RuntimeError(f"{full_name}: local source origin does not match canonical repository")
+    resolved = command("git", "-C", str(source_directory), "rev-parse", f"{ref}^{{commit}}").strip()
+    if resolved != ref:
+        raise RuntimeError(f"{full_name}: local source does not contain the exact commit SHA")
+    try:
+        contract = command(
+            "git", "-C", str(source_directory), "show", f"{ref}:.github/qdev-runner.yml"
+        )
+        declared = parse_declared_profiles(full_name, contract)
+    except subprocess.CalledProcessError:
+        declared = set()
+    paths = [
+        path
+        for path in command(
+            "git",
+            "-C",
+            str(source_directory),
+            "ls-tree",
+            "-r",
+            "--name-only",
+            ref,
+            "--",
+            ".github/workflows",
+        ).splitlines()
+        if path.endswith((".yml", ".yaml"))
+    ]
+    if not paths:
+        return None
+    profiles = {"qdev-ci", *declared}
+    workflow_files: list[dict[str, Any]] = []
+    for path in sorted(paths):
+        text = command("git", "-C", str(source_directory), "show", f"{ref}:{path}")
+        profiles.update(profile_markers(text))
+        workflow_files.append(
+            {
+                "path": path,
+                "sha": command(
+                    "git", "-C", str(source_directory), "rev-parse", f"{ref}:{path}"
+                ).strip(),
+                "hosted_selectors": text.count("ubuntu-latest") + text.count("ubuntu-24.04"),
+                "cache_refs": text.count("actions/cache@"),
+                "artifact_refs": text.count("actions/upload-artifact@"),
+                "ghcr_refs": text.count("ghcr.io"),
+            }
+        )
+    return {
+        "id": repo["id"],
+        "full_name": full_name,
+        "private": repo["isPrivate"],
+        "archived": repo["isArchived"],
+        "default_branch": (repo.get("defaultBranchRef") or {}).get("name") or "main",
+        "profiles": sorted(profiles),
+        "workflow_count": len(workflow_files),
+        "workflow_files": workflow_files,
     }
 
 
@@ -320,6 +415,14 @@ def main() -> None:
         help="inspect workflow files at this exact Git ref (use with --repository)",
     )
     parser.add_argument(
+        "--source-directory",
+        type=Path,
+        help=(
+            "canonical local Git checkout for one exact-ref targeted refresh when "
+            "the GitHub API is temporarily unavailable"
+        ),
+    )
+    parser.add_argument(
         "--add-repository",
         help="add exactly one missing private repository without refreshing other records",
     )
@@ -416,6 +519,8 @@ def main() -> None:
         return
 
     if args.repository:
+        if args.source_directory and (len(args.repository) != 1 or not args.ref):
+            parser.error("--source-directory requires exactly one --repository and --ref")
         existing = json.loads((ROOT / "inventory/repos.json").read_text(encoding="utf-8"))
         selected_names = {normalise_repository_name(name, args.owner) for name in args.repository}
         existing_repositories = existing.get("repositories")
@@ -446,7 +551,11 @@ def main() -> None:
         for repo in repo_metadata:
             if repo["isArchived"]:
                 parser.error(f"repository is archived: {repo['nameWithOwner']}")
-            item = inspect_repo(repo, ref=args.ref)
+            item = (
+                inspect_local_repo(repo, args.ref, args.source_directory)
+                if args.source_directory
+                else inspect_repo(repo, ref=args.ref)
+            )
             if item is None:
                 parser.error(f"repository has no workflows: {repo['nameWithOwner']}")
             try:
