@@ -197,9 +197,30 @@ _RECONCILE_CODES = frozenset(
         "activation_outcome_unknown",
         "activation_identity_mismatch",
         "rollback_anchor_mismatch",
+        "activation_operator_identity_failed",
+        "activation_runtime_identity_failed",
+        "activation_release_status_failed",
+        "activation_runtime_health_failed",
+        "activation_candidate_active_failed",
+        "activation_commit_candidate_failed",
     }
 )
 _FAILURE_CONTEXT: dict[str, Any] = {}
+_PAYLOAD_FAILURE_STAGE = re.compile(
+    r"(?m)^qdev_activation_failure_stage=("
+    r"operator_identity|runtime_identity|release_status|runtime_health|"
+    r"candidate_active|commit_candidate"
+    r")$"
+)
+
+
+def _payload_failure_code(stderr: str) -> str | None:
+    """Return one closed payload failure code, never its raw stderr."""
+
+    stages = _PAYLOAD_FAILURE_STAGE.findall(stderr)
+    if len(stages) != 1:
+        return None
+    return f"activation_{stages[0]}_failed"
 
 
 def _read_json_stdin() -> dict[str, Any]:
@@ -1415,6 +1436,10 @@ def main() -> int:
             "sha256:" + hashlib.sha256(completed.stderr.encode("utf-8")).hexdigest()
         )
     if completed.returncode != 0:
+        failure_code = _payload_failure_code(completed.stderr)
+        if failure_code is not None:
+            _FAILURE_CONTEXT["stage"] = "payload"
+            raise AdapterError(failure_code)
         raise AdapterError("activation_failed")
     runtime_revision, runtime_digest, runtime_image, runtime_internal_image = _read_status()
     if (

@@ -78,6 +78,23 @@ def test_activation_failure_receipt_is_closed_vocabulary_and_non_secret() -> Non
     assert retry["permitted_action"] == "retry-fleet-bootstrap"
 
 
+def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
+    assert (
+        ACTIVATION._payload_failure_code(
+            "untrusted detail\nqdev_activation_failure_stage=runtime_health\n"
+        )
+        == "activation_runtime_health_failed"
+    )
+    assert ACTIVATION._payload_failure_code("qdev_activation_failure_stage=unknown\n") is None
+    assert (
+        ACTIVATION._payload_failure_code(
+            "qdev_activation_failure_stage=runtime_health\n"
+            "qdev_activation_failure_stage=release_status\n"
+        )
+        is None
+    )
+
+
 def _request(action: str) -> dict[str, Any]:
     return {
         "schema": "qdev-fleet-bootstrap-request-v2",

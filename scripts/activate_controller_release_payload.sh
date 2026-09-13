@@ -662,6 +662,13 @@ set_transaction_phase() {
 activation_mutated=false
 activation_finished=false
 rollback_started=false
+activation_failure_stage="unknown"
+emit_activation_failure_stage() {
+  # This is intentionally a closed-vocabulary marker.  The root adapter
+  # records only its derived code and a diagnostic digest, never this
+  # payload's free-form stderr.
+  printf 'qdev_activation_failure_stage=%s\n' "$activation_failure_stage" >&2
+}
 material_phase="$(printf '%s' "$material" | material_json_value 'v["phase"]')"
 external_guard_reconciliation_started=false
 if [[ "$material_phase" == external-guard-reconciling ||
@@ -1868,37 +1875,49 @@ if [[ "$healthy" != true ]]; then
   exit 1
 fi
 
+activation_failure_stage="operator_identity"
 if ! "$release/scripts/provision_operator_identity.sh"; then
+  emit_activation_failure_stage
   printf '%s\n' 'Controller is healthy, but its operator mTLS identity is not usable; restoring the prior release.' >&2
   rollback
   exit 1
 fi
 
+activation_failure_stage="runtime_identity"
 if ! measure_runtime_identity; then
+  emit_activation_failure_stage
   printf '%s\n' 'Controller is healthy, but measured runtime identity is invalid; restoring the prior release.' >&2
   rollback
   exit 1
 fi
 
+activation_failure_stage="release_status"
 if ! write_release_status; then
+  emit_activation_failure_stage
   printf '%s\n' 'Controller is healthy, but the activation receipt could not be persisted; restoring the prior release.' >&2
   rollback
   exit 1
 fi
 
+activation_failure_stage="runtime_health"
 if ! verify_controller_runtime_health; then
+  emit_activation_failure_stage
   printf '%s\n' \
     'Controller receipt is not observable from the activated runtime; restoring the prior release.' >&2
   rollback
   exit 1
 fi
 
+activation_failure_stage="candidate_active"
 set_transaction_phase candidate-active || {
+  emit_activation_failure_stage
   printf 'controller candidate-active phase could not be recorded\n' >&2
   rollback
   exit 1
 }
+activation_failure_stage="commit_candidate"
 if ! "$transaction_hook" __transaction_hook__ commit-candidate >/dev/null; then
+  emit_activation_failure_stage
   printf '%s\n' \
     'Controller activation could not be committed; restoring the prior release.' >&2
   rollback
