@@ -30,7 +30,10 @@ MAX_OVERRIDE_SECONDS = 900
 DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 
 _WORKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_REPOSITORY = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
+# GitHub repository names are case-insensitive but provider webhooks preserve
+# display casing.  Receipts audit the provider tuple, so accept its canonical
+# display form here; authorization remains bound to repository IDs elsewhere.
+_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SOURCE_SHA = re.compile(r"^[0-9a-f]{40}$")
 _PROGRAM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CLAIM_SCOPE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")

@@ -274,6 +274,35 @@ def test_controller_receipt_v1_is_legacy_unverified_and_v2_rejects_unknown_paylo
     )
 
 
+def test_offline_runner_audit_accepts_provider_repository_display_casing() -> None:
+    payload = {
+        "kind": "offline-runner-reconciliation-audit",
+        "observed_at": "2026-09-13T15:00:00Z",
+        "holds": [
+            {
+                "immutable_tuple": {
+                    "repository": "belilovsky/Crisis-Monitor",
+                    "run_id": 34_741_307_211,
+                    "job_id": 103_697_707_025,
+                    "attempt": 1,
+                    "exact_sha": "a" * 40,
+                    "profile": "qdev-ci-docker",
+                },
+                "runner_identity": {
+                    "provider_runner_id": 2377,
+                    "runner_name": "qdev-ci-docker-2377",
+                    "labels": ["self-hosted", "qdev-ci-docker"],
+                },
+                "tuple_digest": "sha256:" + "b" * 64,
+                "held_at": 1_777_777_777.0,
+                "state": "active",
+            }
+        ],
+    }
+
+    assert validate_controller_receipt_payload(payload) == payload
+
+
 def test_capacity_override_receipt_requires_full_immutable_fifo_tuple() -> None:
     payload = {
         "kind": "capacity-override-created",
