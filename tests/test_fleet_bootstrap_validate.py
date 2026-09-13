@@ -238,9 +238,7 @@ def test_worker_restore_has_no_activation_tuple(
 
 
 def test_workflow_exposes_only_registered_recovery_worker_choices() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "fleet-bootstrap.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "fleet-bootstrap.yml").read_text(encoding="utf-8")
 
     assert "worker_name:" in workflow
     for worker_name in (
