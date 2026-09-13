@@ -127,6 +127,12 @@ from .worker_recovery import (
 )
 
 LOGGER = logging.getLogger("qdev-runner-broker")
+# GitHub can briefly reject an App observation for a workflow while the job
+# that presents its OIDC proof is still being registered. Retrying only that
+# read-only observation retains the same OIDC, run, job, attempt and SHA
+# binding; it never retries an operation submission.
+FLEET_BOOTSTRAP_GITHUB_OBSERVATION_ATTEMPTS = 3
+FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS = 1
 _CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V2
 _CONTROLLER_REPOSITORY = "belilovsky/qdev-runner-control-plane"
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -3515,27 +3521,31 @@ def create_app(
                 detail="fleet bootstrap OIDC authentication failed",
             ) from error
 
-        try:
-            github_client = require_github()
-            installation_id = github_client.repository_installation_id(
-                policy_value.identity.repository
-            )
-            run = github_client.workflow_run(
-                installation_id,
-                policy_value.identity.repository,
-                bootstrap_request.run_id,
-            )
-            jobs = github_client.workflow_run_jobs(
-                installation_id,
-                policy_value.identity.repository,
-                bootstrap_request.run_id,
-                bootstrap_request.attempt,
-            )
-        except GitHubError as error:
-            raise HTTPException(
-                status_code=503,
-                detail="fleet bootstrap GitHub observation is unavailable",
-            ) from error
+        for observation_attempt in range(FLEET_BOOTSTRAP_GITHUB_OBSERVATION_ATTEMPTS):
+            try:
+                github_client = require_github()
+                installation_id = github_client.repository_installation_id(
+                    policy_value.identity.repository
+                )
+                run = github_client.workflow_run(
+                    installation_id,
+                    policy_value.identity.repository,
+                    bootstrap_request.run_id,
+                )
+                jobs = github_client.workflow_run_jobs(
+                    installation_id,
+                    policy_value.identity.repository,
+                    bootstrap_request.run_id,
+                    bootstrap_request.attempt,
+                )
+                break
+            except GitHubError as error:
+                if observation_attempt + 1 == FLEET_BOOTSTRAP_GITHUB_OBSERVATION_ATTEMPTS:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="fleet bootstrap GitHub observation is unavailable",
+                    ) from error
+                time.sleep(FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS)
         try:
             validate_github_bootstrap_observation(
                 policy_value,

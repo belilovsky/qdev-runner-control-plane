@@ -23,6 +23,7 @@ from qdev_runner.fleet_bootstrap import (
     bootstrap_ingress_operation_key,
 )
 from qdev_runner.fleet_host_dispatch import FleetHostDispatchSpool
+from qdev_runner.github import GitHubError
 from qdev_runner.managed_release_ledger import (
     QGEO_REQUIRED_JOB_PROFILES,
     qgeo_dynamic_job_label,
@@ -2035,6 +2036,20 @@ class _BootstrapIngressGitHub:
         ]
 
 
+class _TransientBootstrapIngressGitHub(_BootstrapIngressGitHub):
+    """Simulate GitHub's short workflow-observation propagation delay."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.remaining_failures = 1
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
+        if self.remaining_failures:
+            self.remaining_failures -= 1
+            raise GitHubError("transient provider observation failure")
+        return super().workflow_run(installation_id, repository, run_id)
+
+
 class _BootstrapIngressOIDC:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str, int]] = []
@@ -2181,6 +2196,37 @@ def test_github_oidc_bootstrap_ingress_observes_exact_attempt_before_spooling(
         ("jobs", 71, "belilovsky/qdev-runner-control-plane", 123, 1),
     ]
     assert (incoming / f"{operation_key}.json").is_file()
+
+
+def test_github_oidc_bootstrap_ingress_retries_only_transient_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _TransientBootstrapIngressGitHub()
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    waits: list[int] = []
+    monkeypatch.setattr("qdev_runner.broker.time.sleep", waits.append)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        json=_bootstrap_ingress_body(),
+        headers={"X-QDev-GitHub-OIDC": "test-oidc-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert waits == [1]
+    assert github.calls == [
+        ("installation", "belilovsky/qdev-runner-control-plane"),
+        ("installation", "belilovsky/qdev-runner-control-plane"),
+        ("run", 71, "belilovsky/qdev-runner-control-plane", 123),
+        ("jobs", 71, "belilovsky/qdev-runner-control-plane", 123, 1),
+    ]
+    assert (incoming / f"{_bootstrap_ingress_operation_key(_bootstrap_ingress_body())}.json").is_file()
 
 
 def test_github_oidc_bootstrap_ingress_replays_only_an_identical_request(
