@@ -28,17 +28,17 @@ def test_controller_payload_reports_a_closed_stage_before_durable_mutation() -> 
     """A pre-transaction failure must remain diagnosable by the root adapter."""
 
     payload = _activation_payload()
-    transactional_cleanup = payload.index('activation_mutated=false')
+    transactional_cleanup = payload.index("activation_mutated=false")
     preflight = payload[:transactional_cleanup]
 
-    assert 'trap cleanup_activation_preflight EXIT' in preflight
+    assert "trap cleanup_activation_preflight EXIT" in preflight
     assert 'activation_preflight_failure_stage="preflight_status"' in preflight
     assert 'activation_preflight_failure_stage="configuration"' in preflight
-    assert 'qdev_activation_failure_stage=%s' in preflight
-    assert preflight.index('trap cleanup_activation_preflight EXIT') < preflight.index(
+    assert "qdev_activation_failure_stage=%s" in preflight
+    assert preflight.index("trap cleanup_activation_preflight EXIT") < preflight.index(
         'python3 -I "$durable_state_helper"'
     )
-    assert payload.index('trap - EXIT') < transactional_cleanup
+    assert payload.index("trap - EXIT") < transactional_cleanup
 
 
 def _load_recovery_binding_provisioner():
