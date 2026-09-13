@@ -1,6 +1,13 @@
 from pathlib import Path
 
 
+def test_provision_anchors_relative_inputs_to_its_source_archive() -> None:
+    script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
+
+    assert 'script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"' in script
+    assert 'cd "$script_dir/.."' in script
+
+
 def test_provision_refuses_to_replace_an_active_worker() -> None:
     script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
 

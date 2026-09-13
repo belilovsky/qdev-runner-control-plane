@@ -6,6 +6,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+# The controller dispatches a source archive by absolute path. Anchor relative
+# installation inputs to that archive instead of the invoking administrator's
+# current directory.
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir/.."
+
 if systemctl is-active --quiet qdev-runner-worker.service; then
   printf 'refusing to provision while qdev-runner-worker.service is active\n' >&2
   exit 75
