@@ -24,6 +24,10 @@ repository_admission_disk_mb:
   # default stays mandatory for every other Docker workload.
   belilovsky/crisis-monitor:
     qdev-ci-docker: 12288
+  # QazLake API owns the MEM original-media data-record job. Its canonical
+  # runner contract declares the measured 12 GiB Docker validation scope.
+  belilovsky/qazlake-api:
+    qdev-ci-docker: 12288
   # QazCompute's pinned Docker release produced 824 MiB of compressed layers,
   # while its workflow independently requires 20 GiB of free host space before
   # building.  Reserve 18 GiB for admission on this repository only; the
