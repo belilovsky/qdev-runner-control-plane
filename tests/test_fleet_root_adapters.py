@@ -101,9 +101,9 @@ def test_activation_failure_receipt_is_persisted_without_raw_entrypoint_output(
     )
     assert persisted == receipt
     assert "stderr" not in json.dumps(persisted)
-    assert stat.S_IMODE(
-        (tmp_path / "controller-eb9eea64-34515000659-r1.json").stat().st_mode
-    ) == 0o600
+    assert (
+        stat.S_IMODE((tmp_path / "controller-eb9eea64-34515000659-r1.json").stat().st_mode) == 0o600
+    )
 
 
 def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
