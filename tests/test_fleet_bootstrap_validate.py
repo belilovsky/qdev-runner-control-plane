@@ -249,6 +249,8 @@ def test_workflow_exposes_only_registered_recovery_worker_choices() -> None:
         "qdev-platform-ci-187",
     ):
         assert f"- {worker_name}" in workflow
-    assert workflow.count(
-        "BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && inputs.worker_name || '' }}"
-    ) == 2
+    expected_worker_name_binding = (
+        "BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' "
+        "&& inputs.worker_name || '' }}"
+    )
+    assert workflow.count(expected_worker_name_binding) == 2
