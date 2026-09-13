@@ -154,7 +154,7 @@ def test_github_observation_rejects_wrong_or_incomplete_identity(
         validate_github_bootstrap_observation(policy, _request(), run, jobs)
 
 
-def test_github_observation_admits_only_the_fixed_primary_worker_restoration() -> None:
+def test_github_observation_admits_only_allowlisted_worker_restoration() -> None:
     policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
     request = _request(
         action="restore-existing-worker",
@@ -167,10 +167,15 @@ def test_github_observation_admits_only_the_fixed_primary_worker_restoration() -
     )
     validate_github_bootstrap_observation(policy, request, _github_run(), _github_jobs())
 
-    other_worker = request.model_copy(update={"worker_name": "qdev-platform-ci-187"})
-    with pytest.raises(FleetBootstrapError, match="recovery worker"):
-        validate_github_bootstrap_observation(policy, other_worker, _github_run(), _github_jobs())
-        validate_github_bootstrap_observation(policy, request, _github_run(), _github_jobs())
+    for worker_name in ("qdev-platform-ci-187", "qdev-qazstack-01"):
+        registered_worker = request.model_copy(update={"worker_name": worker_name})
+        validate_github_bootstrap_observation(
+            policy, registered_worker, _github_run(), _github_jobs()
+        )
+
+    unknown_worker = request.model_copy(update={"worker_name": "unregistered-worker"})
+    with pytest.raises(FleetBootstrapError, match="worker is not allowlisted"):
+        validate_github_bootstrap_observation(policy, unknown_worker, _github_run(), _github_jobs())
 
 
 def test_bootstrap_policy_maps_only_existing_runner_identities() -> None:
