@@ -228,7 +228,8 @@ _RECONCILE_CODES = frozenset(
 _FAILURE_CONTEXT: dict[str, Any] = {}
 _PAYLOAD_FAILURE_STAGE = re.compile(
     r"(?m)^qdev_activation_failure_stage=("
-    r"mutating|rollback_anchor|configuration|activate_link|broker_state|"
+    r"preflight_cas|preflight_hook|preflight_status|mutating|rollback_anchor|"
+    r"configuration|activate_link|broker_state|"
     r"host_dispatch|config_installed|compose|public_health|operator_identity|"
     r"runtime_identity|release_status|runtime_health|"
     r"candidate_active|commit_candidate|external_guard|finalization|"

@@ -100,6 +100,10 @@ def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
         ACTIVATION._payload_failure_code("qdev_activation_failure_stage=entrypoint_envelope\n")
         == "activation_entrypoint_envelope_failed"
     )
+    assert (
+        ACTIVATION._payload_failure_code("qdev_activation_failure_stage=preflight_hook\n")
+        == "activation_preflight_hook_failed"
+    )
     assert ACTIVATION._payload_failure_code("qdev_activation_failure_stage=unknown\n") is None
     assert (
         ACTIVATION._payload_failure_code("qdev_activation_failure_stage=external_guard\n")

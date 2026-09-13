@@ -695,7 +695,8 @@ cleanup_activation_payload() {
   local status=$?
   trap - EXIT
   if [[ "$status" -ne 0 && "$activation_finished" != true &&
-        "$activation_failure_emitted" != true ]]; then
+        "$activation_failure_emitted" != true &&
+        "$activation_failure_stage" != unknown ]]; then
     emit_activation_failure_stage
   fi
   if [[ "$activation_mutated" == true && "$activation_finished" != true &&
@@ -1784,10 +1785,13 @@ fi
 
 # Recheck at the last non-mutating boundary. The process lock prevents another
 # conforming activation from racing any configuration or runtime mutation.
+activation_failure_stage="preflight_cas"
 set_transaction_phase preflight-cas || exit 1
 assert_expected_current_revision
+activation_failure_stage="preflight_hook"
 set_transaction_phase preflight-hook || exit 1
 "$transaction_hook" __transaction_hook__ pre-flip >/dev/null
+activation_failure_stage="preflight_status"
 set_transaction_phase preflight-status || exit 1
 if ! validate_previous_release_status "$previous_public_image" "$previous_internal_image"; then
   printf 'existing controller status is not bound to a recoverable runtime\n' >&2
