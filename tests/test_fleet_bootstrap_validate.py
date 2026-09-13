@@ -235,3 +235,20 @@ def test_worker_restore_has_no_activation_tuple(
     assert request.controller_release_digest is None
     assert request.source_sha == "b" * 40
     assert request.attempt == 3
+
+
+def test_workflow_exposes_only_registered_recovery_worker_choices() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "fleet-bootstrap.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "worker_name:" in workflow
+    for worker_name in (
+        "srv1879763-primary",
+        "qdev-qazstack-01",
+        "qdev-platform-ci-187",
+    ):
+        assert f"- {worker_name}" in workflow
+    assert workflow.count(
+        "BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && inputs.worker_name || '' }}"
+    ) == 2
