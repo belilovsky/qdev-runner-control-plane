@@ -29,7 +29,7 @@ def test_inspect_repo_honours_declared_docker_profile(monkeypatch: pytest.Monkey
     module = load_refresh_inventory()
     responses = {
         "/repos/belilovsky/qazpolit": {"id": 1},
-        "/repos/belilovsky/qazpolit/actions/workflows?per_page=100&ref=main": {
+        "/repos/belilovsky/qazpolit/actions/workflows?per_page=100": {
             "workflows": [{"id": 10}]
         },
         "/repos/belilovsky/qazpolit/contents/.github/qdev-runner.yml?ref=main": encoded(
@@ -68,6 +68,13 @@ def test_declared_profiles_reject_unknown_profile(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(RuntimeError, match="unsupported profiles"):
         module.declared_profiles("belilovsky/example", ref="main")
+
+
+def test_parse_declared_profiles_accepts_exact_local_contract() -> None:
+    module = load_refresh_inventory()
+    assert module.parse_declared_profiles(
+        "belilovsky/qazlake-api", "profiles:\n  - qdev-ci\n  - qdev-ci-docker\n"
+    ) == {"qdev-ci", "qdev-ci-docker"}
 
 
 def test_declared_profiles_treat_missing_contract_as_legacy(
