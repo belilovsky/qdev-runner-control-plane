@@ -389,7 +389,18 @@ class WorkerSettings:
     @classmethod
     def from_env(cls) -> WorkerSettings:
         worker_name, tier = _worker_identity()
-        claim_scope_id = os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip() or None
+        configured_claim_scope_id = os.environ.get("QDEV_CLAIM_SCOPE_ID", "").strip()
+        legacy_claim_scope_id = os.environ.get("QDEV_WORKER_CLAIM_SCOPE_ID", "").strip()
+        if (
+            configured_claim_scope_id
+            and legacy_claim_scope_id
+            and configured_claim_scope_id != legacy_claim_scope_id
+        ):
+            raise RuntimeError("worker claim scope environment values disagree")
+        # Reserve workers provisioned before claim-scope-v2 used the longer
+        # variable name.  Keep that installed configuration usable while the
+        # controller issues an exact, short-lived replacement scope.
+        claim_scope_id: str | None = configured_claim_scope_id or legacy_claim_scope_id or None
         worker_token = os.environ.get("QDEV_WORKER_TOKEN", "").strip() or None
         if not worker_token and not claim_scope_id:
             raise RuntimeError("QDEV_WORKER_TOKEN is required for an unscoped worker")
