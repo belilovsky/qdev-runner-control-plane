@@ -206,6 +206,11 @@ else
   buildkit_stage="$(mktemp -d /tmp/qdev-buildkit-stage.XXXXXX)"
   buildkit_incoming="$buildkit_stage/incoming"
   if [[ -n "$buildkit_image_ref" ]]; then
+    # docker cp runs as the rootless worker.  mktemp creates the parent as
+    # root-only, so grant traversal without making the staged payload readable
+    # or writable by other users; the incoming directory remains 0700 for the
+    # worker and is converted to a root-owned immutable release afterwards.
+    chmod 0711 "$buildkit_stage"
     materialize_buildkit_from_image "$buildkit_image_ref" "$buildkit_incoming"
   else
     [[ -d "$buildkit_artifact_root" && ! -L "$buildkit_artifact_root" ]] || {

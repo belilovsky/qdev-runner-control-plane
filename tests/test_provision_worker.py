@@ -60,5 +60,6 @@ def test_provision_requires_source_bound_buildkit_materialization() -> None:
     assert "QDEV_BUILDKIT_IMAGE_REF" in script
     assert "source-bound BuildKit artifact is required" in script
     assert "source-bound BuildKit artifact failed validation" in script
+    assert 'chmod 0711 "$buildkit_stage"' in script
     assert 'mv -- "$buildkit_release_stage" "$buildkit_root"' in script
     assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in script
