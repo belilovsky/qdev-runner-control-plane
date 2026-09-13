@@ -136,6 +136,47 @@ def test_scoped_worker_can_omit_static_token_but_unscoped_worker_cannot(
         WorkerSettings.from_env()
 
 
+def test_worker_accepts_legacy_claim_scope_environment_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "QDEV_WORKER_NAME": "mail-qdev-reserve",
+        "QDEV_WORKER_TIER": "reserve",
+        "QDEV_BROKER_URL": "https://worker.ci.qdev.run",
+        "QDEV_WORKER_CLAIM_SCOPE_ID": "legacy-scope-20260913",
+        "QDEV_MTLS_CA": "/var/lib/qdev-test/ca.pem",
+        "QDEV_MTLS_CERT": "/var/lib/qdev-test/cert.pem",
+        "QDEV_MTLS_KEY": "/var/lib/qdev-test/key.pem",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("QDEV_CLAIM_SCOPE_ID", raising=False)
+    monkeypatch.delenv("QDEV_WORKER_TOKEN", raising=False)
+    set_required_runner_images(monkeypatch)
+
+    assert WorkerSettings.from_env().claim_scope_id == "legacy-scope-20260913"
+
+
+def test_worker_rejects_disagreeing_claim_scope_environment_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "QDEV_WORKER_NAME": "mail-qdev-reserve",
+        "QDEV_WORKER_TIER": "reserve",
+        "QDEV_BROKER_URL": "https://worker.ci.qdev.run",
+        "QDEV_CLAIM_SCOPE_ID": "current-scope-20260913",
+        "QDEV_WORKER_CLAIM_SCOPE_ID": "legacy-scope-20260913",
+        "QDEV_MTLS_CA": "/var/lib/qdev-test/ca.pem",
+        "QDEV_MTLS_CERT": "/var/lib/qdev-test/cert.pem",
+        "QDEV_MTLS_KEY": "/var/lib/qdev-test/key.pem",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("QDEV_WORKER_TOKEN", raising=False)
+    set_required_runner_images(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="environment values disagree"):
+        WorkerSettings.from_env()
+
+
 def test_worker_rejects_retired_runtime_capacity_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
