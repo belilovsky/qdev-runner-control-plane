@@ -48,6 +48,22 @@ _CI_SCOPE_VALUE = re.compile(r"^[\w][\w .:/\-\u2013]{0,191}$")
 _RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
 _CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
+_RP_QAZSTACK_SOURCE_SHA = "64e1ba4d65c3e2b5368636fafb0cdb4645c749b6"
+_RP_DEPENDENCY_IDENTITY = {
+    "deployment_profile": "reports-private",
+    "qazstack_version": "1.53.0",
+    "qazstack_source_sha": _RP_QAZSTACK_SOURCE_SHA,
+}
+_RP_RUNTIME_PROVENANCE_FIELDS = frozenset(
+    {
+        "release_manifest_sha256",
+        "dependency_lock_sha256",
+        "artifact_tree_sha256",
+        "method_bundle_digest",
+        "migration_revision",
+    }
+)
+_RP_MIGRATION_REVISION = re.compile(r"^[a-z0-9_]{4,128}$")
 _QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
 _QGEO_RECOVERY_DIGEST = "sha256:96d4399d5f5345f956abbffbd185552da4406a7a26017164f2ca6313688ef5cb"
 _QGEO_ARTIFACT_PROVENANCE_FIELDS = frozenset(
@@ -1486,6 +1502,25 @@ def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None
         if not _HEX64.fullmatch(str(provenance.get("contract_digest", ""))):
             raise ReleaseLaneError("QMT contract binding is invalid")
         return
+    if lane.project_id == "rp":
+        if set(provenance) != _RP_RUNTIME_PROVENANCE_FIELDS:
+            raise ReleaseLaneError("runtime RP artifact provenance fields are invalid")
+        if (
+            any(
+                not isinstance(provenance.get(field), str)
+                or _HEX64.fullmatch(provenance[field]) is None
+                for field in (
+                    "release_manifest_sha256",
+                    "dependency_lock_sha256",
+                    "artifact_tree_sha256",
+                )
+            )
+            or not _is_digest(provenance.get("method_bundle_digest"))
+            or not isinstance(provenance.get("migration_revision"), str)
+            or _RP_MIGRATION_REVISION.fullmatch(provenance["migration_revision"]) is None
+        ):
+            raise ReleaseLaneError("runtime RP artifact provenance is invalid")
+        return
     expected = {"qak_wheel_sha256", "avds_artifact_sha256", "avds_source_sha"}
     if set(provenance) != expected:
         raise ReleaseLaneError("runtime artifact provenance is invalid")
@@ -1581,6 +1616,9 @@ def validate_runtime_receipt(
             )
         elif lane.project_id == "qazagents":
             _validate_qazagents_dependency_identity(dependency_identity, lane)
+        elif lane.project_id == "rp":
+            if dependency_identity != _RP_DEPENDENCY_IDENTITY:
+                raise ReleaseLaneError("runtime RP dependency identity is invalid")
         elif (
             not isinstance(dependency_identity, dict)
             or not dependency_identity
@@ -1707,6 +1745,9 @@ def validate_native_runtime_receipt(
             )
         elif lane.project_id == "qazagents":
             _validate_qazagents_dependency_identity(dependencies, lane)
+        elif lane.project_id == "rp":
+            if dependencies != _RP_DEPENDENCY_IDENTITY:
+                raise ReleaseLaneError("native RP dependency identity is invalid")
         elif (
             not isinstance(dependencies, dict)
             or not dependencies

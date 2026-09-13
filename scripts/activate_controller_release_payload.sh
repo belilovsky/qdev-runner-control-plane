@@ -324,6 +324,7 @@ required=(
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qazpolit.service \
   deploy/qdev-release-qmt.compose.yml \
+  deploy/qdev-release-rp.service \
   deploy/Dockerfile.broker
 )
 if [[ "$rollback_mode" != true ]]; then
@@ -345,6 +346,7 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_admin_platform_release_host_agent.py
     scripts/qmt_native_release_adapter.py
     scripts/qazpolit_native_release_adapter.py
+    scripts/rp_native_immutable_release_adapter.py
     scripts/qdev_controller_activation_adapter.py
     scripts/provision_controller_activation_trust.py
     scripts/qdev_release_host_agent_enrol_adapter.py

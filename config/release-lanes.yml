@@ -183,3 +183,19 @@ lanes:
       - https://qazagents.qdev.run/skills/index.json
     rollback_reference: controller-verified immutable QazAgents static rollback receipt
     required_readiness: [native, public, identity]
+  qdev-release-rp:
+    project_id: rp
+    # The root-owned enrolment mapping must bind this logical private runtime
+    # to the fixed RP adapter before admission; no caller-selected host exists.
+    placement: rp-private-runtime
+    client_mtls_identity: qdev-release-client:rp
+    host_agent_mtls_identity: qdev-host-agent:rp-private-runtime
+    minimum_free_gib: 1
+    heartbeat_ttl_seconds: 90
+    artifact_repository: belilovsky/ipos
+    canonical_repository: belilovsky/ipos
+    artifact_ref_prefix: registry.ci.qdev.run/belilovsky/ipos
+    native_host_adapter: rp-native-immutable-release-v1
+    runtime_endpoints: [https://rp.qdev.run/health, https://rp.qdev.run/ready]
+    rollback_reference: controller-verified immutable RP rollback receipt
+    required_readiness: [native, public, identity]

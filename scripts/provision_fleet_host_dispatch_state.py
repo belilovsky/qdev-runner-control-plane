@@ -56,6 +56,7 @@ HOST_IDENTITIES = (
     "qdev-host-agent:total-qdev-origin",
     "qdev-host-agent:qazposter-production-controller",
     "qdev-host-agent:qazgeo-app-runtime",
+    "qdev-host-agent:rp-private-runtime",
 )
 
 

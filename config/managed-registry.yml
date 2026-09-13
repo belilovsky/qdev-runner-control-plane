@@ -91,3 +91,16 @@ entries:
     host_identity: qdev-release-agent:qazagents-static-runtime
     owner: QazAgents
     admission_ledger: managed-production
+  rp:
+    project_id: rp
+    kind: service
+    repository: belilovsky/ipos
+    canonical_ref: main
+    artifact_repository: belilovsky/ipos
+    allowed_profiles: [qdev-ci, qdev-ci-docker]
+    native_release_profile: rp-native-immutable-release-v1
+    runtime_endpoints: [https://rp.qdev.run/health, https://rp.qdev.run/ready]
+    rollback_reference: controller-verified immutable RP rollback receipt
+    host_identity: qdev-release-agent:rp-private-runtime
+    owner: RP
+    admission_ledger: managed-production
