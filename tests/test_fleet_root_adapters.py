@@ -106,6 +106,29 @@ def test_activation_failure_receipt_is_persisted_without_raw_entrypoint_output(
     )
 
 
+def test_activation_environment_relays_only_allowlisted_capacity_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UNTRUSTED_PARENT_VALUE", "must-not-cross")
+    for position, name in enumerate(ACTIVATION.CAPACITY_ENVIRONMENT_ALLOWLIST):
+        monkeypatch.setenv(name, str(position))
+
+    environment = ACTIVATION._activation_environment(
+        activation_envelope=tmp_path / "envelope.json",
+        public_key=tmp_path / "activation.pub",
+        artifact_manifest=tmp_path / "artifact.json",
+    )
+
+    assert environment["QDEV_CONTROLLER_ACTIVATION_ENVELOPE"] == str(tmp_path / "envelope.json")
+    assert environment["QDEV_CONTROLLER_ACTIVATION_PUBLIC_KEY"] == str(tmp_path / "activation.pub")
+    assert environment["QDEV_CONTROLLER_ARTIFACT_MANIFEST"] == str(tmp_path / "artifact.json")
+    assert "UNTRUSTED_PARENT_VALUE" not in environment
+    assert {name: environment[name] for name in ACTIVATION.CAPACITY_ENVIRONMENT_ALLOWLIST} == {
+        name: str(position)
+        for position, name in enumerate(ACTIVATION.CAPACITY_ENVIRONMENT_ALLOWLIST)
+    }
+
+
 def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
     assert (
         ACTIVATION._payload_failure_code(
@@ -1221,7 +1244,14 @@ def test_root_adapters_do_not_accept_environment_selected_targets() -> None:
         "qdev_recovery_host_apply.py",
     ):
         source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
-        assert "os.environ" not in source
+        if script_name == "qdev_controller_activation_adapter.py":
+            # The activation adapter has one deliberately narrow exception:
+            # a fixed capacity contract is inherited by name, never a target
+            # path, action, revision, or arbitrary parent-environment value.
+            assert source.count("os.environ") == 1
+            assert "for name in CAPACITY_ENVIRONMENT_ALLOWLIST" in source
+        else:
+            assert "os.environ" not in source
         assert "shell=True" not in source
 
 
