@@ -95,6 +95,11 @@ from .operations import (
 )
 from .policy import Policy, PolicyError
 from .qazpolit_artifact_store import QazPolitArtifactStorageError, QazPolitArtifactStore
+from .qazpolit_github_artifact import (
+    QazPolitActionsArtifactRequest,
+    QazPolitGitHubArtifactError,
+    acquire_qazpolit_actions_artifact,
+)
 from .release_lane import (
     HostHeartbeatRequest,
     ReleaseAdmissionRequest,
@@ -104,7 +109,9 @@ from .release_lane import (
     ReleaseStore,
     admission_receipt,
     candidate_artifact_delivery,
+    controller_claim_payload,
     qgeo_artifact_provenance_from_evidence,
+    sign_controller_claim,
     validate_candidate,
     validate_controller_claim,
     validate_host_heartbeat,
@@ -483,6 +490,19 @@ class QGeoCIReconcileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_sha: str = Field(min_length=40, max_length=40)
+
+
+class QazPolitGitHubReleaseRequest(BaseModel):
+    """Closed operator intent for one already-completed QazPolit CI archive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    run_id: int = Field(gt=0)
+    run_attempt: int = Field(ge=1)
+    job_id: int = Field(gt=0)
+    artifact_id: int = Field(gt=0)
+    artifact_size_bytes: int = Field(gt=0)
 
 
 def verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
@@ -2652,6 +2672,169 @@ def create_app(
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="release lane is busy") from error
         return admission_receipt(job)
+
+    @app.post("/internal/v1/operator/releases/qazpolit/github-actions", status_code=202)
+    def admit_qazpolit_github_actions_release(
+        request: QazPolitGitHubReleaseRequest,
+        x_qdev_operator_token: str | None = Header(default=None),
+        x_qdev_operator_mtls_identity: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Admit one controller-fetched, fully verified QazPolit Actions archive.
+
+        The endpoint intentionally accepts identities, never an archive URL,
+        path, digest, or image reference.  It obtains provider metadata through
+        the broker's GitHub App, stores only a validated archive in controller
+        private storage, and mints the short-lived controller claim itself.
+        """
+
+        operation_store = require_operator_session(
+            x_qdev_operator_token, x_qdev_operator_mtls_identity
+        )
+        try:
+            lane = release_policy().lane("qdev-release-qazpolit")
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=503, detail="qazpolit release lane is unavailable"
+            ) from error
+        if lane.project_id != "qazpolit" or lane.canonical_repository != "belilovsky/qazpolit":
+            raise HTTPException(status_code=503, detail="qazpolit release lane is misconfigured")
+
+        # Fail before downloading a large archive when the release host cannot
+        # currently accept work.  A second check below narrows the race with
+        # the admission write.
+        ready_host_agent(lane)
+        github_client = require_github()
+        artifact_request = QazPolitActionsArtifactRequest(
+            repository=lane.canonical_repository,
+            source_sha=request.source_sha,
+            run_id=request.run_id,
+            run_attempt=request.run_attempt,
+            artifact_id=request.artifact_id,
+            artifact_size_bytes=request.artifact_size_bytes,
+        )
+        try:
+            installation_id = github_client.repository_installation_id(lane.canonical_repository)
+            run = github_client.workflow_run(
+                installation_id, lane.canonical_repository, request.run_id
+            )
+            jobs = github_client.workflow_run_jobs(
+                installation_id,
+                lane.canonical_repository,
+                request.run_id,
+                request.run_attempt,
+            )
+            matched_jobs = [
+                job for job in jobs if isinstance(job, dict) and job.get("id") == request.job_id
+            ]
+            if len(matched_jobs) != 1:
+                raise QazPolitGitHubArtifactError("QazPolit CI job is missing or ambiguous")
+            job_metadata = matched_jobs[0]
+            if (
+                run.get("name") != "CI"
+                or job_metadata.get("name") != "release-gate-manual"
+                or job_metadata.get("status") != "completed"
+                or job_metadata.get("conclusion") != "success"
+                or job_metadata.get("run_id") != request.run_id
+                or job_metadata.get("run_attempt") != request.run_attempt
+                or set(job_metadata.get("labels", [])) != {"ubuntu-24.04"}
+            ):
+                raise QazPolitGitHubArtifactError(
+                    "QazPolit CI job is outside the continuity policy"
+                )
+            artifact_store = app.state.qazpolit_artifact_store
+            if artifact_store is None:
+                artifact_store = QazPolitArtifactStore(settings.artifact_root)
+                app.state.qazpolit_artifact_store = artifact_store
+            stored = acquire_qazpolit_actions_artifact(
+                github_client, artifact_store, artifact_request
+            )
+        except (GitHubError, QazPolitGitHubArtifactError, QazPolitArtifactStorageError) as error:
+            LOGGER.warning("QazPolit Actions artifact was rejected: %s", error)
+            raise HTTPException(
+                status_code=422, detail="qazpolit GitHub Actions artifact was rejected"
+            ) from error
+
+        digest = stored.evidence.provenance.get("image_digest")
+        if not isinstance(digest, str):
+            raise HTTPException(
+                status_code=422, detail="qazpolit artifact image identity is invalid"
+            )
+        artifact_ref = f"{lane.artifact_ref_prefix}@{digest}"
+        candidate = ReleaseAdmissionRequest.model_validate(
+            {
+                "schema": "qdev-controller-release-request-v1",
+                "release_lane": lane.name,
+                "project_id": lane.project_id,
+                "placement": lane.placement,
+                "source_sha": request.source_sha,
+                "artifact_digest": digest,
+                "artifact_ref": artifact_ref,
+                "candidate_receipt": {
+                    "schema": "qdev-release-candidate-receipt-v1",
+                    "status": "passed",
+                    "source_sha": request.source_sha,
+                    "artifact_digest": digest,
+                    "artifact_ref": artifact_ref,
+                    "artifact_type": "controller-private-archive",
+                    "archive_sha256": stored.evidence.archive_sha256,
+                    "payload_sha256": stored.evidence.payload_sha256,
+                    "archive_size_bytes": request.artifact_size_bytes,
+                    "repository": lane.canonical_repository,
+                    "workflow": "CI",
+                    "job": "release-gate-manual",
+                    "run_id": request.run_id,
+                    "job_id": request.job_id,
+                    "attempt": request.run_attempt,
+                    "runner_profile": "github-hosted-continuity",
+                },
+            }
+        )
+        admission_now = int(datetime.now(tz=UTC).timestamp())
+        try:
+            claim = controller_claim_payload(
+                candidate, lane, issued_at=admission_now, expires_at=admission_now + 120
+            )
+            candidate = candidate.model_copy(
+                update={
+                    "controller_claim": claim,
+                    "controller_claim_signature": sign_controller_claim(
+                        claim, signing_key=settings.controller_claim_key
+                    ),
+                }
+            )
+            validate_candidate(candidate, lane)
+            validate_controller_claim(
+                candidate, lane, signing_key=settings.controller_claim_key, now=admission_now
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(
+                status_code=422, detail="qazpolit release candidate was rejected"
+            ) from error
+        ready_host_agent(lane)
+        try:
+            release_job, _idempotent = release_state().admit(
+                candidate,
+                lane,
+                now=admission_now,
+                lease_ttl_seconds=settings.release_job_lease_ttl_seconds,
+            )
+        except ReleaseLaneError as error:
+            raise HTTPException(status_code=409, detail="qazpolit release lane is busy") from error
+        admission = admission_receipt(release_job)
+        return {
+            **admission,
+            "operator_audit": operation_store.receipt(
+                {
+                    "kind": "qazpolit-github-actions-release-admission",
+                    "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "release_id": admission["release_id"],
+                    "release_lane": lane.name,
+                    "source_sha": request.source_sha,
+                    "archive_sha256": stored.evidence.archive_sha256,
+                    "payload_sha256": stored.evidence.payload_sha256,
+                }
+            ),
+        }
 
     @app.get("/internal/v1/release-hosts/{placement}/jobs/next", response_model=None)
     def next_release_host_job(

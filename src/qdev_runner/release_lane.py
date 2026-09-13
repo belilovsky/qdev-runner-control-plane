@@ -45,7 +45,14 @@ _NATIVE_ADAPTER = re.compile(r"^[a-z0-9][a-z0-9-]{2,127}-v[1-9][0-9]*$")
 # en-dash (``CI – QazGeo``).  Keep the value bounded and control-character
 # free while allowing the Unicode punctuation that GitHub exposes verbatim.
 _CI_SCOPE_VALUE = re.compile(r"^[\w][\w .:/\-\u2013]{0,191}$")
-_RUNNER_PROFILES = frozenset({"qdev-ci", "qdev-ci-docker", "qdev-ci-browser"})
+# ``github-hosted-continuity`` is deliberately limited to the QazPolit
+# controller-owned artifact bridge below.  It records the exceptional hosted
+# runner that produced a verified GitHub Actions artifact without pretending
+# that it was one of the fleet's self-hosted runner profiles.
+_RUNNER_PROFILES = frozenset(
+    {"qdev-ci", "qdev-ci-docker", "qdev-ci-browser", "github-hosted-continuity"}
+)
+_GITHUB_HOSTED_CONTINUITY_PROFILE = "github-hosted-continuity"
 _CERTIFICATE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 QMT_CANDIDATE_EVIDENCE_SCHEMA = "qdev-qmt-candidate-evidence-v1"
 _QGEO_RECOVERY_SHA = "d65cd62a4c96786d9d5c35ebea8af872dcc3cb69"
@@ -1000,6 +1007,11 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
                 raise ReleaseLaneError("candidate CI scope value is invalid")
         if receipt.get("runner_profile") not in _RUNNER_PROFILES:
             raise ReleaseLaneError("candidate runner profile is not allowlisted")
+        if (
+            receipt.get("runner_profile") == _GITHUB_HOSTED_CONTINUITY_PROFILE
+            and lane.project_id != "qazpolit"
+        ):
+            raise ReleaseLaneError("hosted continuity profile is not valid for this lane")
     if lane.project_id == "qazgeo":
         _validate_qgeo_candidate_evidence(
             receipt.get("evidence"),
@@ -1262,6 +1274,10 @@ def validate_controller_claim(
             for field in ("run_id", "job_id", "attempt")
         )
         or scope.get("runner_profile") not in _RUNNER_PROFILES
+        or (
+            scope.get("runner_profile") == _GITHUB_HOSTED_CONTINUITY_PROFILE
+            and lane.project_id != "qazpolit"
+        )
         or any(
             not isinstance(scope.get(field), str) or not _CI_SCOPE_VALUE.fullmatch(scope[field])
             for field in ("workflow", "job")
@@ -1387,6 +1403,12 @@ def host_dispatch_claim_payload(
 
 def sign_host_dispatch_claim(claim: dict[str, Any], *, signing_key: str | bytes | None) -> str:
     """Sign a dispatch claim with a key supplied only by fixed controller config."""
+    return hmac.new(_dispatch_key(signing_key), _canonical_bytes(claim), hashlib.sha256).hexdigest()
+
+
+def sign_controller_claim(claim: dict[str, Any], *, signing_key: str | bytes | None) -> str:
+    """Sign a controller admission claim with controller-only key material."""
+
     return hmac.new(_dispatch_key(signing_key), _canonical_bytes(claim), hashlib.sha256).hexdigest()
 
 

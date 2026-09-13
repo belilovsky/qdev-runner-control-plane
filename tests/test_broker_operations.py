@@ -7,6 +7,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -107,6 +108,7 @@ def _app(
     managed_release_ledger_path: Path | None = None,
     include_qgeo: bool = False,
     fleet_bootstrap_oidc_verifier_factory: Any | None = None,
+    controller_claim_key: str | None = None,
 ) -> TestClient:
     inventory = tmp_path / "repos.json"
     repositories = [
@@ -320,6 +322,7 @@ def _app(
         release_jobs_root=tmp_path / "release-jobs",
         release_host_dispatch_keys_file=tmp_path / "release-host-dispatch-keys.json",
         release_host_dispatch_claim_ttl_seconds=120,
+        controller_claim_key=controller_claim_key,
     )
     app = create_app(
         settings,
@@ -703,7 +706,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
     settings.release_host_dispatch_keys_file.chmod(0o600)
 
     response = client.get(next_path, headers=host_headers)
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     job = response.json()
     claim = job["dispatch_claim"]
     assert set(claim) == {
@@ -922,7 +925,7 @@ def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_le
         "X-QDev-Release-Fence": job["fence"],
     }
     response = client.get(artifact_path, headers=lease_headers)
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.content == private_store.payload
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-qdev-qazpolit-source-sha"] == source_sha
@@ -934,6 +937,170 @@ def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_le
         headers={**lease_headers, "X-QDev-Release-Fence": "999"},
     )
     assert stale.status_code == 409
+
+
+class _QazPolitContinuityGitHub:
+    """Provider observation for the closed QazPolit continuity bridge."""
+
+    def __init__(self, *, labels: list[str] | None = None) -> None:
+        self.labels = labels or ["ubuntu-24.04"]
+
+    def repository_installation_id(self, repository: str) -> int:
+        assert repository == "belilovsky/qazpolit"
+        return 17
+
+    def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
+        assert (installation_id, repository, run_id) == (17, "belilovsky/qazpolit", 123)
+        return {"name": "CI"}
+
+    def workflow_run_jobs(
+        self, installation_id: int, repository: str, run_id: int, attempt: int
+    ) -> list[dict[str, Any]]:
+        assert (installation_id, repository, run_id, attempt) == (
+            17,
+            "belilovsky/qazpolit",
+            123,
+            1,
+        )
+        return [
+            {
+                "id": 456,
+                "name": "release-gate-manual",
+                "status": "completed",
+                "conclusion": "success",
+                "run_id": 123,
+                "run_attempt": 1,
+                "labels": self.labels,
+            }
+        ]
+
+
+def _configure_qazpolit_release_lane(client: TestClient) -> None:
+    settings: BrokerSettings = client.app.state.settings
+    settings.release_lanes_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "qdev-release-lanes-v2",
+                "lanes": {
+                    "qdev-release-qazpolit": {
+                        "project_id": "qazpolit",
+                        "placement": "srv138jump",
+                        "client_mtls_identity": "qdev-release-client:qazpolit",
+                        "host_agent_mtls_identity": "qdev-host-agent:srv138jump",
+                        "minimum_free_gib": 1,
+                        "heartbeat_ttl_seconds": 90,
+                        "artifact_repository": "qazpolit",
+                        "canonical_repository": "belilovsky/qazpolit",
+                        "artifact_ref_prefix": "registry.ci.qdev.run/qazpolit",
+                        "native_host_adapter": "qazpolit-native-release-v1",
+                        "runtime_endpoints": ["https://qazpolit.com/api/runtime"],
+                        "rollback_reference": "qdev-release-host-state-v1",
+                        "required_readiness": ["qazgeo"],
+                    }
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    heartbeat = _release_heartbeat()
+    heartbeat.update(
+        {
+            "release_lane": "qdev-release-qazpolit",
+            "project_id": "qazpolit",
+            "placement": "srv138jump",
+            "bootstrap": True,
+        }
+    )
+    heartbeat["active_release"] = {
+        "source_sha": "c" * 40,
+        "artifact_digest": "sha256:" + "c" * 64,
+        "artifact_ref": "registry.ci.qdev.run/qazpolit@sha256:" + "c" * 64,
+    }
+    heartbeat["rollback"] = {"verified": True, **heartbeat["active_release"]}
+    response = client.post(
+        "/internal/v1/release-hosts/srv138jump/heartbeat",
+        json=heartbeat,
+        headers={"X-QDev-mTLS-Identity": "qdev-host-agent:srv138jump"},
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_qazpolit_operator_bridge_admits_only_verified_hosted_continuity_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _app(
+        tmp_path,
+        github=_QazPolitContinuityGitHub(),
+        controller_claim_key="managed-controller-claim-key-for-test",
+    )
+    _configure_qazpolit_release_lane(client)
+    captured: dict[str, Any] = {}
+
+    def acquire(_github: Any, _store: Any, request: Any) -> Any:
+        captured["request"] = request
+        return SimpleNamespace(
+            evidence=SimpleNamespace(
+                archive_sha256="1" * 64,
+                payload_sha256="2" * 64,
+                provenance={"image_digest": "sha256:" + "b" * 64},
+            )
+        )
+
+    monkeypatch.setattr("qdev_runner.broker.acquire_qazpolit_actions_artifact", acquire)
+    response = client.post(
+        "/internal/v1/operator/releases/qazpolit/github-actions",
+        json={
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "run_attempt": 1,
+            "job_id": 456,
+            "artifact_id": 789,
+            "artifact_size_bytes": 1024,
+        },
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 202
+    assert captured["request"].repository == "belilovsky/qazpolit"
+    assert captured["request"].source_sha == "a" * 40
+    receipt = response.json()
+    assert receipt["release_lane"] == "qdev-release-qazpolit"
+    assert receipt["source_sha"] == "a" * 40
+    assert receipt["operator_audit"]["payload"]["kind"] == (
+        "qazpolit-github-actions-release-admission"
+    )
+
+
+def test_qazpolit_operator_bridge_rejects_unapproved_hosted_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _app(
+        tmp_path,
+        github=_QazPolitContinuityGitHub(labels=["self-hosted"]),
+        controller_claim_key="managed-controller-claim-key-for-test",
+    )
+    _configure_qazpolit_release_lane(client)
+    monkeypatch.setattr(
+        "qdev_runner.broker.acquire_qazpolit_actions_artifact",
+        lambda *_args: pytest.fail("unapproved runner must be rejected before artifact download"),
+    )
+
+    response = client.post(
+        "/internal/v1/operator/releases/qazpolit/github-actions",
+        json={
+            "source_sha": "a" * 40,
+            "run_id": 123,
+            "run_attempt": 1,
+            "job_id": 456,
+            "artifact_id": 789,
+            "artifact_size_bytes": 1024,
+        },
+        headers=OPERATOR_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "qazpolit GitHub Actions artifact was rejected"
 
 
 def test_generic_release_endpoint_keeps_the_same_lane_allowlist(tmp_path: Path) -> None:
