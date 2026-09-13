@@ -1,6 +1,13 @@
 from pathlib import Path
 
 
+def test_provision_anchors_relative_inputs_to_its_source_archive() -> None:
+    script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
+
+    assert 'script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"' in script
+    assert 'cd "$script_dir/.."' in script
+
+
 def test_provision_refuses_to_replace_an_active_worker() -> None:
     script = Path("scripts/provision_worker.sh").read_text(encoding="utf-8")
 
@@ -58,7 +65,10 @@ def test_provision_requires_source_bound_buildkit_materialization() -> None:
     assert "buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173" in script
     assert "QDEV_BUILDKIT_ARTIFACT_ROOT" in script
     assert "QDEV_BUILDKIT_IMAGE_REF" in script
+    assert 'provision_profiles="${QDEV_WORKER_PROFILES:-qdev-ci,qdev-ci-browser,qdev-ci-docker}"' in script
+    assert 'if [[ "$provision_docker_profile" == true ]]; then' in script
     assert "source-bound BuildKit artifact is required" in script
     assert "source-bound BuildKit artifact failed validation" in script
+    assert 'chmod 0711 "$buildkit_stage"' in script
     assert 'mv -- "$buildkit_release_stage" "$buildkit_root"' in script
     assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in script

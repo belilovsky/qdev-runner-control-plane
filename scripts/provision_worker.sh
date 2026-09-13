@@ -6,6 +6,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+# The controller dispatches a source archive by absolute path. Anchor relative
+# installation inputs to that archive instead of the invoking administrator's
+# current directory.
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir/.."
+
 if systemctl is-active --quiet qdev-runner-worker.service; then
   printf 'refusing to provision while qdev-runner-worker.service is active\n' >&2
   exit 75
@@ -75,6 +81,20 @@ done
 provision_min_free_gib="$tier_min_free_gib"
 provision_max_disk_used_pct="$tier_max_disk_used_pct"
 provision_min_free_kib=$((provision_min_free_gib * 1024 * 1024))
+
+# A worker that never advertises qdev-ci-docker must not be blocked on a
+# BuildKit payload it cannot execute.  Keep the historical full-profile set as
+# the default, and only skip the materialization for an explicitly narrower
+# provisioned profile set.
+provision_profiles="${QDEV_WORKER_PROFILES:-qdev-ci,qdev-ci-browser,qdev-ci-docker}"
+provision_docker_profile=false
+IFS=',' read -r -a provision_profile_parts <<< "$provision_profiles"
+for provision_profile in "${provision_profile_parts[@]}"; do
+  if [[ "${provision_profile//[[:space:]]/}" == "qdev-ci-docker" ]]; then
+    provision_docker_profile=true
+    break
+  fi
+done
 
 awk -v used="$disk_used" -v free="$disk_free_kib" -v mem="$memory_kib" \
   -v cpus="$cpu_count" -v load15="$load_15" -v min_free="$provision_min_free_kib" \
@@ -193,12 +213,13 @@ materialize_buildkit_from_image() {
   chmod 0444 "$incoming/source-revision" "$incoming/source-sha256"
 }
 
-if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
-  validate_buildkit_materialization "$buildkit_root" || {
-    printf 'existing BuildKit materialization is not source-bound; refusing to replace it\n' >&2
-    exit 1
-  }
-else
+if [[ "$provision_docker_profile" == true ]]; then
+  if [[ -e "$buildkit_root" || -L "$buildkit_root" ]]; then
+    validate_buildkit_materialization "$buildkit_root" || {
+      printf 'existing BuildKit materialization is not source-bound; refusing to replace it\n' >&2
+      exit 1
+    }
+  else
   [[ "$buildkit_artifact_root" = /* ]] || {
     printf 'QDEV_BUILDKIT_ARTIFACT_ROOT must be an absolute path\n' >&2
     exit 1
@@ -206,6 +227,11 @@ else
   buildkit_stage="$(mktemp -d /tmp/qdev-buildkit-stage.XXXXXX)"
   buildkit_incoming="$buildkit_stage/incoming"
   if [[ -n "$buildkit_image_ref" ]]; then
+    # docker cp runs as the rootless worker.  mktemp creates the parent as
+    # root-only, so grant traversal without making the staged payload readable
+    # or writable by other users; the incoming directory remains 0700 for the
+    # worker and is converted to a root-owned immutable release afterwards.
+    chmod 0711 "$buildkit_stage"
     materialize_buildkit_from_image "$buildkit_image_ref" "$buildkit_incoming"
   else
     [[ -d "$buildkit_artifact_root" && ! -L "$buildkit_artifact_root" ]] || {
@@ -238,10 +264,11 @@ else
   fi
   mv -- "$buildkit_release_stage" "$buildkit_root"
   buildkit_release_stage=""
-  validate_buildkit_materialization "$buildkit_root" || {
-    printf 'new BuildKit materialization failed post-install validation\n' >&2
-    exit 1
-  }
+    validate_buildkit_materialization "$buildkit_root" || {
+      printf 'new BuildKit materialization failed post-install validation\n' >&2
+      exit 1
+    }
+  fi
 fi
 
 install -d -o root -g root -m 0755 "$install_root"

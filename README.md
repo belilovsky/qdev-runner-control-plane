@@ -378,11 +378,12 @@ claimed profile's disk reservation, so a 10 GiB baseline admits a 20 GiB Docker
 profile only while at least 30 GiB is actually free.
 
 When a scoped worker must run one exact candidate below that durable baseline,
-its owner may make a separate runtime override. It requires all of
-`QDEV_CLAIM_SCOPE_ID`, `QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE=true`, a
-free-space floor from 4.5 through 30 GiB, and a disk-use ceiling no higher than
-90%. Memory and load gates cannot be relaxed. The active override is reported
-in the worker heartbeat.
+the controller may issue a separate signed `claim-scope-v2` capacity directive.
+The worker configuration must contain its matching `QDEV_CLAIM_SCOPE_ID`; the
+directive alone selects a free-space floor from 4.5 through 30 GiB and a
+disk-use ceiling no higher than 90%. `QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE`
+is retired and is rejected at startup. Memory and load gates cannot be relaxed.
+The active directive is reported in the worker heartbeat.
 
 Worker provisioning archives the exact obsolete
 `qdev-runner-worker.rollout-permit` and its existence-only drop-in. Do not
