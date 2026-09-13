@@ -1958,6 +1958,7 @@ if ! docker inspect qdev-runner-broker-public qdev-runner-broker-internal \
   rollback
   exit 1
 fi
+activation_failure_stage="external_guard"
 if ! install_qazcoop_release_guard; then
   printf '%s\n' \
     'Controller is healthy, but the QazCoop release guard is not yet reconciled.' >&2
@@ -1967,6 +1968,7 @@ if ! install_qazcoop_release_guard; then
   rollback
   exit 1
 fi
+activation_failure_stage="finalization"
 if ! "$transaction_hook" __transaction_hook__ finalize-candidate >/dev/null; then
   printf '%s\n' \
     'Controller activation could not be publicly finalized; recovery must reconcile the committed generation.' >&2

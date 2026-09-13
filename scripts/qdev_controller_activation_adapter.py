@@ -212,6 +212,8 @@ _RECONCILE_CODES = frozenset(
         "activation_runtime_health_failed",
         "activation_candidate_active_failed",
         "activation_commit_candidate_failed",
+        "activation_external_guard_failed",
+        "activation_finalization_failed",
     }
 )
 _FAILURE_CONTEXT: dict[str, Any] = {}
@@ -220,7 +222,7 @@ _PAYLOAD_FAILURE_STAGE = re.compile(
     r"mutating|rollback_anchor|configuration|activate_link|broker_state|"
     r"host_dispatch|config_installed|compose|public_health|operator_identity|"
     r"runtime_identity|release_status|runtime_health|"
-    r"candidate_active|commit_candidate"
+    r"candidate_active|commit_candidate|external_guard|finalization"
     r")$"
 )
 
