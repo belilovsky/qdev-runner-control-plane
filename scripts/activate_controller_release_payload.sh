@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The root adapter stores only a closed diagnostic code.  Install a minimal
+# trap before the full transactional cleanup exists so a failure while
+# validating the host, migrating durable state, or preparing rollback material
+# cannot collapse into an opaque ``activation_failed`` result.
+activation_preflight_failure_stage="payload_preflight"
+activation_preflight_failure_emitted=false
+emit_preflight_failure_stage() {
+  printf 'qdev_activation_failure_stage=%s\n' "$activation_preflight_failure_stage" >&2
+  activation_preflight_failure_emitted=true
+}
+cleanup_activation_preflight() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 && "$activation_preflight_failure_emitted" != true ]]; then
+    emit_preflight_failure_stage
+  fi
+  exit "$status"
+}
+trap cleanup_activation_preflight EXIT
+
 if [[ "${EUID}" -ne 0 ]]; then
   printf 'run as root\n' >&2
   exit 1
@@ -237,6 +257,7 @@ if [[ "$admin_platform_ledger_path" == "$default_admin_platform_ledger_path" ]];
   durable_state_names+=(ledger)
 fi
 if [[ -z "$recovery_state" ]] && (( ${#durable_state_names[@]} > 0 )); then
+  activation_preflight_failure_stage="preflight_status"
   # The old installation owned this parent as the broker UID.  Harden it
   # before creating root-controlled children so that runtime code cannot
   # rename or replace the status and ledger directories from the host mount.
@@ -548,6 +569,8 @@ fi
 current="$release_root/current"
 admission_host_tool_path=/usr/local/sbin/qdev-controller-admission
 qazcoop_guard_temporary=""
+
+activation_preflight_failure_stage="configuration"
 operator_identity_dir=/etc/qdev-runner/mtls/operator
 
 material_json_value() {
@@ -666,6 +689,7 @@ activation_finished=false
 rollback_started=false
 activation_failure_stage="unknown"
 activation_failure_emitted=false
+trap - EXIT
 emit_activation_failure_stage() {
   # This is intentionally a closed-vocabulary marker.  The root adapter
   # records only its derived code and a diagnostic digest, never this
