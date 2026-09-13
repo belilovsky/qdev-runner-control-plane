@@ -33,6 +33,7 @@ CURRENT_RELEASE = Path("/opt/qdev-runner-control-plane/current")
 STATUS_PATH = Path("/var/lib/qdev-runner/controller-status/controller-release.json")
 ACTIVATION_STATUS_PATH = Path("/var/lib/qdev-runner/controller-activation/activation-status.json")
 ACTIVATION_ASSETS_ROOT = Path("/var/lib/qdev-runner/controller-activation")
+ACTIVATION_DIAGNOSTICS_ROOT = ACTIVATION_ASSETS_ROOT / "adapter-diagnostics"
 ACTIVATION_PROJECTION_PATH = Path(
     "/var/lib/qdev-runner/controller-status/controller-activation.json"
 )
@@ -1346,6 +1347,57 @@ def activation_failure_receipt(error: BaseException) -> dict[str, Any]:
     }
 
 
+def _activation_diagnostics_directory() -> Path:
+    """Return the root-only ledger for adapter failure receipts.
+
+    The old root dispatcher only understands a binary adapter exit status.  A
+    restricted on-host receipt lets the already-authorised operator recover the
+    closed failure code without making stderr, paths, or other process output
+    durable or externally visible.
+    """
+
+    root = _validate_root_directory(ACTIVATION_ASSETS_ROOT)
+    try:
+        ACTIVATION_DIAGNOSTICS_ROOT.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(ACTIVATION_DIAGNOSTICS_ROOT, 0o700)
+    except OSError as exc:
+        raise AdapterError("activation_diagnostics_unavailable") from exc
+    directory = _validate_root_directory(ACTIVATION_DIAGNOSTICS_ROOT)
+    if directory.parent != root:
+        raise AdapterError("activation_diagnostics_path_invalid")
+    return directory
+
+
+def persist_activation_failure_receipt(error: BaseException) -> dict[str, Any]:
+    """Persist a closed failure receipt when a signed transaction is known.
+
+    This is deliberately best-effort: inability to publish diagnostics must
+    not alter the adapter's fail-closed activation decision.  The record is
+    private to root and contains the same closed vocabulary as stdout, plus no
+    raw entrypoint output.
+    """
+
+    receipt = activation_failure_receipt(error)
+    transaction_id = receipt["transaction_id"]
+    if not isinstance(transaction_id, str) or not TRANSACTION_ID.fullmatch(transaction_id):
+        return receipt
+    document = {
+        "schema": FAILURE_SCHEMA,
+        "failure_code": receipt["failure_code"],
+        "diagnostic_digest": receipt["diagnostic_digest"],
+        "transaction_id": transaction_id,
+        "permitted_action": receipt["permitted_action"],
+    }
+    try:
+        directory = _activation_diagnostics_directory()
+        _atomic_write_json(directory / f"{transaction_id}.json", document, mode=0o600)
+    except (AdapterError, OSError):
+        # Diagnostics are auxiliary; preserve the original safe receipt and
+        # never turn a failed activation into a different outcome.
+        pass
+    return receipt
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise AdapterError("root_identity_required")
@@ -1505,7 +1557,7 @@ if __name__ == "__main__":
         # the short stderr line carries no payload diagnostics.
         print(
             json.dumps(
-                activation_failure_receipt(error),
+                persist_activation_failure_receipt(error),
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -1515,7 +1567,7 @@ if __name__ == "__main__":
     except Exception as error:  # noqa: BLE001
         # A root adapter must fail closed with a parseable receipt instead of
         # ever letting a traceback or raw diagnostic escape to the dispatcher.
-        receipt = activation_failure_receipt(error)
+        receipt = persist_activation_failure_receipt(error)
         print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
         print(receipt["failure_code"], file=sys.stderr)
         raise SystemExit(1) from error

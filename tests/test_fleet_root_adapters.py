@@ -78,6 +78,34 @@ def test_activation_failure_receipt_is_closed_vocabulary_and_non_secret() -> Non
     assert retry["permitted_action"] == "retry-fleet-bootstrap"
 
 
+def test_activation_failure_receipt_is_persisted_without_raw_entrypoint_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ACTIVATION._FAILURE_CONTEXT.clear()
+    ACTIVATION._FAILURE_CONTEXT.update(
+        {
+            "stage": "entrypoint",
+            "transaction_id": "controller-eb9eea64-34515000659-r1",
+            "controller_revision": SHA,
+            "activation_envelope_digest": ENVELOPE_DIGEST,
+            "entrypoint_returncode": 7,
+            "entrypoint_stderr_digest": "sha256:" + "e" * 64,
+        }
+    )
+    monkeypatch.setattr(ACTIVATION, "_activation_diagnostics_directory", lambda: tmp_path)
+    receipt = ACTIVATION.persist_activation_failure_receipt(
+        ACTIVATION.AdapterError("activation_failed")
+    )
+    persisted = json.loads(
+        (tmp_path / "controller-eb9eea64-34515000659-r1.json").read_text(encoding="utf-8")
+    )
+    assert persisted == receipt
+    assert "stderr" not in json.dumps(persisted)
+    assert stat.S_IMODE(
+        (tmp_path / "controller-eb9eea64-34515000659-r1.json").stat().st_mode
+    ) == 0o600
+
+
 def test_activation_payload_failure_stage_is_closed_vocabulary() -> None:
     assert (
         ACTIVATION._payload_failure_code(
