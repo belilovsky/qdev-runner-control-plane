@@ -40,8 +40,7 @@ def test_qazlake_api_data_record_admission_uses_exact_repository_key() -> None:
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
 
     assert (
-        policy.repository_profile_disk_mb[("belilovsky/qazlake-api", "qdev-ci-docker")]
-        == 12 * 1024
+        policy.repository_profile_disk_mb[("belilovsky/qazlake-api", "qdev-ci-docker")] == 12 * 1024
     )
     assert ("belilovsky/qazlake", "qdev-ci-docker") not in policy.repository_profile_disk_mb
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024

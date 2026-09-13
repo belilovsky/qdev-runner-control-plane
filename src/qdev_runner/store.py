@@ -3234,8 +3234,7 @@ class Store:
             or not runner_name
             or not labels
             or any(
-                not isinstance(label, str) or not _RUNNER_LABEL.fullmatch(label)
-                for label in labels
+                not isinstance(label, str) or not _RUNNER_LABEL.fullmatch(label) for label in labels
             )
             or len(labels) != len(set(labels))
         ):

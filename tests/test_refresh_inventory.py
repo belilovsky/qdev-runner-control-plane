@@ -29,9 +29,7 @@ def test_inspect_repo_honours_declared_docker_profile(monkeypatch: pytest.Monkey
     module = load_refresh_inventory()
     responses = {
         "/repos/belilovsky/qazpolit": {"id": 1},
-        "/repos/belilovsky/qazpolit/actions/workflows?per_page=100": {
-            "workflows": [{"id": 10}]
-        },
+        "/repos/belilovsky/qazpolit/actions/workflows?per_page=100": {"workflows": [{"id": 10}]},
         "/repos/belilovsky/qazpolit/contents/.github/qdev-runner.yml?ref=main": encoded(
             "profiles:\n  - qdev-ci\n  - qdev-ci-docker\n"
         ),
