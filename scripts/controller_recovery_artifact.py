@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -89,6 +91,42 @@ def _receipt_key(path: Path) -> str:
     if not key:
         raise ControllerRecoveryArtifactError("controller receipt key is unavailable")
     return key
+
+
+def _broker_env_receipt_key(path: Path, *, expected_uid: int | None = None) -> str:
+    """Read the controller receipt key in place from the root-only broker environment."""
+    if expected_uid is None and os.geteuid() != 0:
+        raise ControllerRecoveryArtifactError("root identity is required for broker environment")
+    required_uid = 0 if expected_uid is None else expected_uid
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ControllerRecoveryArtifactError("broker environment is unavailable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != required_uid
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise ControllerRecoveryArtifactError("broker environment ownership is unsafe")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            raw = stream.read()
+        descriptor = -1
+    except (OSError, UnicodeDecodeError) as error:
+        raise ControllerRecoveryArtifactError("broker environment is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    values = [
+        line.partition("=")[2]
+        for line in raw.splitlines()
+        if line.partition("=")[0] == "QDEV_OPERATOR_RECEIPT_KEY" and "=" in line
+    ]
+    if len(values) != 1 or re.fullmatch(r"[A-Za-z0-9_-]{32,256}", values[0]) is None:
+        raise ControllerRecoveryArtifactError("controller receipt key is unavailable")
+    return values[0]
 
 
 def build(args: argparse.Namespace) -> dict[str, object]:
@@ -282,6 +320,11 @@ def reconcile(args: argparse.Namespace) -> dict[str, object]:
 
 
 def sign(args: argparse.Namespace) -> dict[str, object]:
+    controller_receipt_key = (
+        _receipt_key(args.controller_receipt_key.resolve(strict=True))
+        if args.controller_receipt_key is not None
+        else _broker_env_receipt_key(args.broker_env.resolve(strict=True))
+    )
     envelope = sign_activation_envelope(
         args.unsigned.resolve(strict=True),
         args.artifact_manifest.resolve(strict=True),
@@ -289,7 +332,7 @@ def sign(args: argparse.Namespace) -> dict[str, object]:
         args.current_status.resolve(strict=True),
         args.current_config_root.resolve(strict=True),
         args.private_key.resolve(strict=True),
-        _receipt_key(args.controller_receipt_key.resolve(strict=True)),
+        controller_receipt_key,
         args.output.resolve(),
     )
     return {
@@ -332,7 +375,9 @@ def parser() -> argparse.ArgumentParser:
     sign_parser.add_argument("--current-status", type=Path, required=True)
     sign_parser.add_argument("--current-config-root", type=Path, required=True)
     sign_parser.add_argument("--private-key", type=Path, required=True)
-    sign_parser.add_argument("--controller-receipt-key", type=Path, required=True)
+    receipt_key_source = sign_parser.add_mutually_exclusive_group(required=True)
+    receipt_key_source.add_argument("--controller-receipt-key", type=Path)
+    receipt_key_source.add_argument("--broker-env", type=Path)
     sign_parser.add_argument("--output", type=Path, required=True)
     sign_parser.set_defaults(handler=sign)
     return result

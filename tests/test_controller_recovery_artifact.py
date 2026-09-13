@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
+import os
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +22,13 @@ from qdev_runner.controller_recovery_artifact import (
     verify_recovery_claim_receipt,
 )
 from qdev_runner.operations import payload_digest, sign_payload
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "controller_recovery_artifact.py"
+SPEC = importlib.util.spec_from_file_location("controller_recovery_artifact_cli", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+CLI = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CLI)
 
 SOURCE_SHA = "1" * 40
 IMAGE_DIGEST = "2" * 64
@@ -263,6 +272,31 @@ def _config_root(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{relative}\n", encoding="utf-8")
     return root
+
+
+def test_broker_env_receipt_key_stays_in_root_owned_environment(tmp_path: Path) -> None:
+    environment = tmp_path / "broker.env"
+    environment.write_text("QDEV_OPERATOR_RECEIPT_KEY=" + ("a" * 32) + "\n", encoding="utf-8")
+    environment.chmod(0o600)
+
+    assert CLI._broker_env_receipt_key(environment, expected_uid=os.geteuid()) == "a" * 32
+
+    environment.chmod(0o640)
+    with pytest.raises(ControllerRecoveryArtifactError, match="ownership is unsafe"):
+        CLI._broker_env_receipt_key(environment, expected_uid=os.geteuid())
+
+
+def test_broker_env_receipt_key_rejects_ambiguous_value(tmp_path: Path) -> None:
+    environment = tmp_path / "broker.env"
+    environment.write_text(
+        "QDEV_OPERATOR_RECEIPT_KEY=" + ("a" * 32) + "\n"
+        "QDEV_OPERATOR_RECEIPT_KEY=" + ("b" * 32) + "\n",
+        encoding="utf-8",
+    )
+    environment.chmod(0o600)
+
+    with pytest.raises(ControllerRecoveryArtifactError, match="key is unavailable"):
+        CLI._broker_env_receipt_key(environment, expected_uid=os.geteuid())
 
 
 def test_candidate_config_digest_includes_admin_platform_bindings(
