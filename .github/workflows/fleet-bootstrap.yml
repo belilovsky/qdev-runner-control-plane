@@ -12,6 +12,15 @@ on:
           - reconcile-controller-activation
           - enrol-host-agent
           - restore-existing-worker
+      worker_name:
+        description: "Registered worker for restore-existing-worker only"
+        required: false
+        default: "srv1879763-primary"
+        type: choice
+        options:
+          - srv1879763-primary
+          - qdev-qazstack-01
+          - qdev-platform-ci-187
       controller_revision:
         description: "Exact pushed controller source SHA; activation/enrolment only"
         required: false
@@ -78,7 +87,7 @@ jobs:
           BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST: ${{ inputs.controller_internal_image_digest }}
           BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST: ${{ inputs.activation_envelope_digest }}
           BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
-          BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && 'srv1879763-primary' || '' }}
+          BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && inputs.worker_name || '' }}
           BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           BOOTSTRAP_CLAIM_TTL_SECONDS: ${{ inputs.claim_ttl_seconds }}
           BOOTSTRAP_JOB_NAME: fleet-bootstrap-submit
@@ -97,7 +106,7 @@ jobs:
           BOOTSTRAP_CONTROLLER_INTERNAL_IMAGE_DIGEST: ${{ inputs.controller_internal_image_digest }}
           BOOTSTRAP_ACTIVATION_ENVELOPE_DIGEST: ${{ inputs.activation_envelope_digest }}
           BOOTSTRAP_RELEASE_LANE: ${{ inputs.release_lane }}
-          BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && 'srv1879763-primary' || '' }}
+          BOOTSTRAP_WORKER_NAME: ${{ inputs.action == 'restore-existing-worker' && inputs.worker_name || '' }}
           BOOTSTRAP_IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           BOOTSTRAP_CLAIM_TTL_SECONDS: ${{ inputs.claim_ttl_seconds }}
           BOOTSTRAP_JOB_NAME: fleet-bootstrap-submit
