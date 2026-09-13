@@ -87,10 +87,20 @@ class Worker:
         directive_payload: object = None,
     ) -> AdmissionState:
         measured = raw or measure_raw()
+        # A locally configured relaxed disk ceiling only lets this static
+        # worker receive a controller-signed, tuple-bound directive.  Until
+        # that directive has been verified, report and enforce the normal
+        # fleet baseline so the worker cannot claim an unrelated FIFO job.
+        baseline_min_disk_free_gib = (
+            30.0 if self.settings.capacity_override_active else self.settings.min_disk_free_gib
+        )
+        baseline_max_disk_used_pct = (
+            85.0 if self.settings.capacity_override_active else self.settings.max_disk_used_pct
+        )
         baseline = evaluate(
             measured,
-            min_disk_free_gib=self.settings.min_disk_free_gib,
-            max_disk_used_pct=self.settings.max_disk_used_pct,
+            min_disk_free_gib=baseline_min_disk_free_gib,
+            max_disk_used_pct=baseline_max_disk_used_pct,
             min_memory_available_gib=self.settings.min_memory_available_gib,
             max_load_per_cpu=self.settings.max_load_per_cpu,
             max_cpu_psi_avg10=self.settings.max_cpu_psi_avg10,
@@ -100,8 +110,8 @@ class Worker:
             baseline=baseline,
             effective=baseline,
             profiles=self.settings.profiles,
-            min_disk_free_gib=self.settings.min_disk_free_gib,
-            max_disk_used_pct=self.settings.max_disk_used_pct,
+            min_disk_free_gib=baseline_min_disk_free_gib,
+            max_disk_used_pct=baseline_max_disk_used_pct,
         )
         if not isinstance(directive_payload, dict):
             return state

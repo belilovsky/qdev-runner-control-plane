@@ -8,6 +8,12 @@ from typing import Literal, cast
 
 _IMMUTABLE_IMAGE_REFERENCE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
+# A scoped runtime override may match the documented controller activation
+# ceiling, but must still retain the independent free-space floor.  Keeping
+# this below the broker's absolute 96% guard leaves the broker as the final
+# authority if a malformed directive reaches the worker.
+_MAX_SCOPED_RUNTIME_DISK_USED_PCT = 95.0
+
 
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
@@ -390,11 +396,24 @@ class WorkerSettings:
         if min_memory_available_gib < 4 or max_load_per_cpu > 2:
             raise RuntimeError("worker memory and load gates cannot be relaxed")
         if capacity_override_active:
-            if not claim_scope_id or allow_capacity_override != "true":
+            # A controller-issued capacity directive is already bound to one
+            # immutable FIFO tuple.  Requiring a claim scope here created a
+            # bootstrap cycle: scope issuance requires a fresh capacity
+            # heartbeat, while the worker could not start to send one.  A
+            # statically authenticated worker may therefore receive the
+            # directive before its optional per-job scope is issued.  A
+            # scope-only worker remains required to present that scope.
+            if (
+                allow_capacity_override != "true"
+                or (not claim_scope_id and not worker_token)
+            ):
                 raise RuntimeError(
-                    "a lower worker capacity gate requires a scoped explicit override"
+                    "a lower worker capacity gate requires explicit authorization"
                 )
-            if min_disk_free_gib < 4 or max_disk_used_pct > 90:
+            if (
+                min_disk_free_gib < 4
+                or max_disk_used_pct > _MAX_SCOPED_RUNTIME_DISK_USED_PCT
+            ):
                 raise RuntimeError("worker capacity override is outside the bounded range")
         elif allow_capacity_override == "true":
             raise RuntimeError("worker capacity override is not active")

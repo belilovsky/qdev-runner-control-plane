@@ -143,6 +143,27 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         await worker.close()
 
 
+async def test_relaxed_local_limits_keep_the_normal_baseline_until_directive(
+    tmp_path: Path,
+) -> None:
+    worker = _worker(tmp_path)
+    worker.settings = replace(
+        worker.settings,
+        min_disk_free_gib=10,
+        max_disk_used_pct=94,
+        capacity_override_active=True,
+    )
+    try:
+        state = worker.admission_state(raw=_disk_blocked_raw())
+        assert not state.baseline.allowed
+        assert set(state.baseline.blockers) == {"disk_free_gib", "disk_used_pct"}
+        assert not state.effective.allowed
+        assert state.min_disk_free_gib == 30
+        assert state.max_disk_used_pct == 85
+    finally:
+        await worker.close()
+
+
 async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Path) -> None:
     worker = _worker(tmp_path)
     store = OperationStore(

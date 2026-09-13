@@ -136,7 +136,7 @@ def test_scoped_worker_can_omit_static_token_but_unscoped_worker_cannot(
         WorkerSettings.from_env()
 
 
-def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
+def test_lower_runtime_capacity_gate_is_explicit_and_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name, value in {
@@ -154,7 +154,7 @@ def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
     set_required_runner_images(monkeypatch)
     monkeypatch.delenv("QDEV_WORKER_TOKEN", raising=False)
 
-    with pytest.raises(RuntimeError, match="scoped explicit override"):
+    with pytest.raises(RuntimeError, match="explicit authorization"):
         WorkerSettings.from_env()
 
     monkeypatch.setenv("QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE", "true")
@@ -163,7 +163,24 @@ def test_lower_runtime_capacity_gate_is_scoped_explicit_and_bounded(
     assert settings.min_disk_free_gib == 4
     assert settings.max_disk_used_pct == 90
 
+    # A static worker credential can receive the controller-signed directive
+    # before the optional per-job claim scope is issued.  Scope-only workers
+    # keep the earlier requirement above.
+    monkeypatch.delenv("QDEV_CLAIM_SCOPE_ID")
+    monkeypatch.setenv("QDEV_WORKER_TOKEN", "worker-token")
+    assert WorkerSettings.from_env().capacity_override_active is True
+
+    # The worker must accept the documented controller recovery ceiling while
+    # preserving the independently enforced free-space floor.
+    monkeypatch.setenv("QDEV_WORKER_MAX_DISK_USED_PCT", "94")
+    assert WorkerSettings.from_env().max_disk_used_pct == 94
+
     monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "3")
+    with pytest.raises(RuntimeError, match="bounded range"):
+        WorkerSettings.from_env()
+
+    monkeypatch.setenv("QDEV_WORKER_MIN_FREE_GIB", "4")
+    monkeypatch.setenv("QDEV_WORKER_MAX_DISK_USED_PCT", "95.1")
     with pytest.raises(RuntimeError, match="bounded range"):
         WorkerSettings.from_env()
 
