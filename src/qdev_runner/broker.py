@@ -131,8 +131,11 @@ LOGGER = logging.getLogger("qdev-runner-broker")
 # that presents its OIDC proof is still being registered. Retrying only that
 # read-only observation retains the same OIDC, run, job, attempt and SHA
 # binding; it never retries an operation submission.
-FLEET_BOOTSTRAP_GITHUB_OBSERVATION_ATTEMPTS = 3
-FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS = 1
+# The provider can need close to a minute to expose the just-started workflow
+# back to an App installation.  Keep this bounded and read-only: the request
+# is submitted only after a single successful exact-tuple observation.
+FLEET_BOOTSTRAP_GITHUB_OBSERVATION_ATTEMPTS = 8
+FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS = 5
 _CONTROLLER_RELEASE_SCHEMA = CONTROLLER_RELEASE_SCHEMA_V2
 _CONTROLLER_REPOSITORY = "belilovsky/qdev-runner-control-plane"
 _GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")

@@ -15,7 +15,10 @@ from fastapi.testclient import TestClient
 
 from qdev_runner.admin_platform import AdminPlatformCandidate
 from qdev_runner.admin_platform_state import AdminPlatformStateStore
-from qdev_runner.broker import create_app
+from qdev_runner.broker import (
+    FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS,
+    create_app,
+)
 from qdev_runner.fleet_bootstrap import (
     REQUEST_SCHEMA,
     FleetBootstrapPolicy,
@@ -2039,9 +2042,9 @@ class _BootstrapIngressGitHub:
 class _TransientBootstrapIngressGitHub(_BootstrapIngressGitHub):
     """Simulate GitHub's short workflow-observation propagation delay."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, remaining_failures: int = 1) -> None:
         super().__init__()
-        self.remaining_failures = 1
+        self.remaining_failures = remaining_failures
 
     def workflow_run(self, installation_id: int, repository: str, run_id: int) -> dict[str, Any]:
         if self.remaining_failures:
@@ -2219,13 +2222,39 @@ def test_github_oidc_bootstrap_ingress_retries_only_transient_observation(
     )
 
     assert response.status_code == 200, response.text
-    assert waits == [1]
+    assert waits == [FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS]
     assert github.calls == [
         ("installation", "belilovsky/qdev-runner-control-plane"),
         ("installation", "belilovsky/qdev-runner-control-plane"),
         ("run", 71, "belilovsky/qdev-runner-control-plane", 123),
         ("jobs", 71, "belilovsky/qdev-runner-control-plane", 123, 1),
     ]
+    operation_key = _bootstrap_ingress_operation_key(_bootstrap_ingress_body())
+    assert (incoming / f"{operation_key}.json").is_file()
+
+
+def test_github_oidc_bootstrap_ingress_waits_through_provider_registration_delay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = _TransientBootstrapIngressGitHub(remaining_failures=4)
+    verifier = _BootstrapIngressOIDC()
+    incoming, _ = _bootstrap_ingress_spool(tmp_path, monkeypatch)
+    waits: list[int] = []
+    monkeypatch.setattr("qdev_runner.broker.time.sleep", waits.append)
+    client = _app(
+        tmp_path,
+        github,
+        fleet_bootstrap_oidc_verifier_factory=lambda _audience: verifier,
+    )
+
+    response = client.post(
+        "/internal/v1/ingress/fleet-bootstrap/activate-controller",
+        json=_bootstrap_ingress_body(),
+        headers={"X-QDev-GitHub-OIDC": "test-oidc-token"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert waits == [FLEET_BOOTSTRAP_GITHUB_OBSERVATION_RETRY_SECONDS] * 4
     operation_key = _bootstrap_ingress_operation_key(_bootstrap_ingress_body())
     assert (incoming / f"{operation_key}.json").is_file()
 
