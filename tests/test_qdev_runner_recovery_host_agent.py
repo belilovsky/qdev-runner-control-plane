@@ -393,7 +393,7 @@ def test_qazstack_registration_attempt_failure_preserves_ambiguous_state(
     runner_root.parent.mkdir()
     profile = replace(AGENT.PROFILES["qazstack"], runner_root=runner_root)
     command = {"registration_token": "short-lived-token"}
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], Path | None]] = []
 
     monkeypatch.setattr(AGENT, "_qazstack_identity", lambda _profile: False)
     monkeypatch.setattr(
@@ -409,8 +409,8 @@ def test_qazstack_registration_attempt_failure_preserves_ambiguous_state(
     monkeypatch.setattr(AGENT, "_sha256_file", lambda _path: AGENT._RUNNER_ARCHIVE_SHA256)
     monkeypatch.setattr(AGENT, "_safe_archive", lambda _path: None)
 
-    def fake_run(arguments: list[str], **_kwargs: Any) -> bytes:
-        calls.append(arguments)
+    def fake_run(arguments: list[str], **kwargs: Any) -> bytes:
+        calls.append((arguments, kwargs.get("cwd")))
         if arguments[0] == "curl":
             Path(arguments[arguments.index("--output") + 1]).write_bytes(b"archive")
         if arguments[0] == "runuser":
@@ -426,8 +426,11 @@ def test_qazstack_registration_attempt_failure_preserves_ambiguous_state(
     assert failure.value.proof["mutation"] == "provider_registration_attempted"
     assert failure.value.proof["rollback"] == "unavailable_after_provider_registration"
     assert runner_root.is_dir()
-    runuser = next(arguments for arguments in calls if arguments[0] == "runuser")
+    runuser, working_directory = next(
+        (arguments, cwd) for arguments, cwd in calls if arguments[0] == "runuser"
+    )
     assert runuser[4:7] == ["env", f"HOME={runner_root}", "RUNNER_ALLOW_RUNASROOT=0"]
+    assert working_directory == runner_root
 
 
 def test_native_receipt_excludes_registration_token(tmp_path: Path) -> None:

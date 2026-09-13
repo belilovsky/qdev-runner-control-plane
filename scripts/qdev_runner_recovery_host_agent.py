@@ -268,12 +268,14 @@ def _run(
     command: list[str],
     *,
     input_bytes: bytes | None = None,
+    cwd: Path | None = None,
 ) -> bytes:
     result = subprocess.run(
         command,
         input=input_bytes,
         capture_output=True,
         check=False,
+        cwd=cwd,
     )
     if result.returncode:
         raise AgentError(f"fixed native command failed: {command[0]}")
@@ -835,7 +837,11 @@ def _recover_qazstack(profile: Profile, command: dict[str, Any]) -> dict[str, An
                 "qdev-ci",
                 "--work",
                 "_work",
-            ]
+            ],
+            # config.sh discovers its bundled runtime relative to the working
+            # directory, not its argv[0].  The recovery service otherwise runs
+            # from / and fails before a provider registration exists.
+            cwd=profile.runner_root,
         )
         _run([str(profile.runner_root / "svc.sh"), "install", profile.runner_user])
         installed = True
