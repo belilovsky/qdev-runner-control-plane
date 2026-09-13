@@ -5001,11 +5001,12 @@ def create_app(
             remote_run = github_client.workflow_run(
                 int(row["installation_id"]), str(row["repository"]), int(row["run_id"])
             )
+            provider_attempt = int(remote_run.get("run_attempt") or 0)
             provider_tuple = {
                 "run_id": int(remote_run.get("id") or 0),
                 "job_run_id": int(remote_job.get("run_id") or 0),
                 "job_id": int(remote_job.get("id") or 0),
-                "attempt": int(remote_run.get("run_attempt") or 0),
+                "attempt": provider_attempt,
                 "exact_sha": str(remote_run.get("head_sha") or "").lower(),
             }
             if immutable_job["attempt"] is None:
@@ -5019,7 +5020,7 @@ def create_app(
                     or provider_tuple["job_run_id"] != immutable_job["run_id"]
                     or provider_tuple["job_id"] != immutable_job["job_id"]
                     or provider_tuple["exact_sha"] != immutable_job["exact_sha"]
-                    or provider_tuple["attempt"] <= 0
+                    or provider_attempt <= 0
                 ):
                     raise HTTPException(
                         status_code=409,
@@ -5027,7 +5028,7 @@ def create_app(
                     )
                 if not store.backfill_offline_runner_hold_attempt(
                     job_id,
-                    attempt=provider_tuple["attempt"],
+                    attempt=provider_attempt,
                     repository=immutable_job["project"],
                     run_id=immutable_job["run_id"],
                     head_sha=immutable_job["exact_sha"],
