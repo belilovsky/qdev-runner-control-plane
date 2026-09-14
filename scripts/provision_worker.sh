@@ -139,34 +139,7 @@ runuser -u "$worker_user" -- env \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${worker_uid}/bus" \
   systemctl --user enable --now docker.service
 
-validate_buildkit_materialization() {
-  local root="$1"
-  local marker value mode owner
-  [[ -d "$root" && ! -L "$root" ]] || return 1
-  mode="$(stat -c '%a' "$root")"
-  owner="$(stat -c '%u:%g' "$root")"
-  [[ "$mode" == "755" && "$owner" == "0:0" ]] || return 1
-  [[ -d "$root/bin" && ! -L "$root/bin" ]] || return 1
-  mode="$(stat -c '%a' "$root/bin")"
-  owner="$(stat -c '%u:%g' "$root/bin")"
-  [[ "$mode" == "755" && "$owner" == "0:0" ]] || return 1
-  for binary in buildkitd buildctl; do
-    [[ -f "$root/bin/$binary" && ! -L "$root/bin/$binary" && -x "$root/bin/$binary" ]] || return 1
-    mode="$(stat -c '%a' "$root/bin/$binary")"
-    owner="$(stat -c '%u:%g' "$root/bin/$binary")"
-    [[ "$mode" == "555" && "$owner" == "0:0" ]] || return 1
-  done
-  for marker in source-revision source-sha256; do
-    [[ -f "$root/$marker" && ! -L "$root/$marker" ]] || return 1
-    mode="$(stat -c '%a' "$root/$marker")"
-    owner="$(stat -c '%u:%g' "$root/$marker")"
-    [[ "$mode" == "444" && "$owner" == "0:0" ]] || return 1
-  done
-  value="$(tr -d '\r\n' < "$root/source-revision")"
-  [[ "$value" == "$buildkit_source_revision" ]] || return 1
-  value="$(tr -d '\r\n' < "$root/source-sha256")"
-  [[ "$value" == "$buildkit_source_sha256" ]] || return 1
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib/buildkit_materialization.sh"
 
 materialize_buildkit_from_image() {
   local image_ref="$1"

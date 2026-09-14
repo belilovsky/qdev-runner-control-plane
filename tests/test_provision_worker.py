@@ -1,4 +1,74 @@
+import os
+import shlex
+import subprocess
 from pathlib import Path
+
+BUILDKIT_REVISION = "dddd5621af04ea57823085c93a063383f71d3173"
+BUILDKIT_SHA256 = "c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306"
+
+
+def _write_gnu_stat_shim(directory: Path) -> None:
+    shim = directory / "stat"
+    shim.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+[[ \"$1\" == \"-c\" ]] || exit 64
+format=\"$2\"
+target=\"$3\"
+case \"$format\" in
+  '%u:%g') printf '%s\\n' \"${QDEV_TEST_STAT_OWNER:-0:0}\" ;;
+  '%a')
+    case \"$target\" in
+      */bin/buildkitd) printf '%s\\n' \"${QDEV_TEST_BUILDKITD_MODE:-555}\" ;;
+      */bin/buildctl) printf '%s\\n' \"${QDEV_TEST_BUILDKITCTL_MODE:-555}\" ;;
+      */source-revision|*/source-sha256) printf '%s\\n' \"${QDEV_TEST_MARKER_MODE:-444}\" ;;
+      *) printf '%s\\n' \"${QDEV_TEST_DIRECTORY_MODE:-755}\" ;;
+    esac
+    ;;
+  *) exit 64 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+
+
+def _buildkit_root(tmp_path: Path) -> Path:
+    root = tmp_path / "buildkit"
+    binaries = root / "bin"
+    binaries.mkdir(parents=True)
+    for name in ("buildkitd", "buildctl"):
+        binary = binaries / name
+        binary.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o555)
+    (root / "source-revision").write_text(f"{BUILDKIT_REVISION}\n", encoding="utf-8")
+    (root / "source-sha256").write_text(f"{BUILDKIT_SHA256}\n", encoding="utf-8")
+    (root / "source-revision").chmod(0o444)
+    (root / "source-sha256").chmod(0o444)
+    return root
+
+
+def _validate_buildkit(
+    root: Path, stat_directory: Path, **overrides: str
+) -> subprocess.CompletedProcess[str]:
+    library = Path("scripts/lib/buildkit_materialization.sh").resolve()
+    command = "\n".join(
+        (
+            "set -euo pipefail",
+            f"buildkit_source_revision={shlex.quote(BUILDKIT_REVISION)}",
+            f"buildkit_source_sha256={shlex.quote(BUILDKIT_SHA256)}",
+            f"source {shlex.quote(str(library))}",
+            f"validate_buildkit_materialization {shlex.quote(str(root))}",
+        )
+    )
+    environment = os.environ | {"PATH": f"{stat_directory}:{os.environ['PATH']}"} | overrides
+    return subprocess.run(  # noqa: S603
+        ["/bin/bash", "-c", command],
+        check=False,
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_provision_anchors_relative_inputs_to_its_source_archive() -> None:
@@ -72,3 +142,59 @@ def test_provision_requires_source_bound_buildkit_materialization() -> None:
     assert 'chmod 0711 "$buildkit_stage"' in script
     assert 'mv -- "$buildkit_release_stage" "$buildkit_root"' in script
     assert "buildkit-v${buildkit_version}.linux-amd64.tar.gz" not in script
+    assert 'source "$(dirname "${BASH_SOURCE[0]}")/lib/buildkit_materialization.sh"' in script
+
+
+def test_buildkit_materialization_accepts_only_the_pinned_layout(tmp_path: Path) -> None:
+    stat_directory = tmp_path / "bin"
+    stat_directory.mkdir()
+    _write_gnu_stat_shim(stat_directory)
+
+    result = _validate_buildkit(_buildkit_root(tmp_path), stat_directory)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_buildkit_materialization_rejects_wrong_source_binding(tmp_path: Path) -> None:
+    stat_directory = tmp_path / "bin"
+    stat_directory.mkdir()
+    _write_gnu_stat_shim(stat_directory)
+    root = _buildkit_root(tmp_path)
+    revision = root / "source-revision"
+    revision.chmod(0o644)
+    revision.write_text("different\n", encoding="utf-8")
+    revision.chmod(0o444)
+
+    result = _validate_buildkit(root, stat_directory)
+
+    assert result.returncode != 0
+
+
+def test_buildkit_materialization_rejects_unsafe_permissions(tmp_path: Path) -> None:
+    stat_directory = tmp_path / "bin"
+    stat_directory.mkdir()
+    _write_gnu_stat_shim(stat_directory)
+
+    result = _validate_buildkit(
+        _buildkit_root(tmp_path),
+        stat_directory,
+        QDEV_TEST_BUILDKITD_MODE="700",
+    )
+
+    assert result.returncode != 0
+
+
+def test_buildkit_materialization_rejects_symlinked_marker(tmp_path: Path) -> None:
+    stat_directory = tmp_path / "bin"
+    stat_directory.mkdir()
+    _write_gnu_stat_shim(stat_directory)
+    root = _buildkit_root(tmp_path)
+    marker = root / "source-sha256"
+    replacement = root / "replacement"
+    replacement.write_text(f"{BUILDKIT_SHA256}\n", encoding="utf-8")
+    marker.unlink()
+    marker.symlink_to(replacement)
+
+    result = _validate_buildkit(root, stat_directory)
+
+    assert result.returncode != 0

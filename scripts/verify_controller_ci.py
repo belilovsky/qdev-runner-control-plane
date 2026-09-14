@@ -68,14 +68,13 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
         ):
             raise ValueError("pull request merge context mismatch")
         event_merge_sha = pr.get("merge_commit_sha")
+        # ``pull_request.merge_commit_sha`` is provider-computed: GitHub may
+        # leave it null or retain a previous candidate while a current PR run
+        # has a distinct ``GITHUB_SHA``.  It is format-checked only; the
+        # authoritative merge identity is ``GITHUB_SHA`` and the checkout is
+        # bound to ``head.sha``.
         if event_merge_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", str(event_merge_sha)):
             raise ValueError("pull request event merge SHA is invalid")
-        # GitHub can regenerate refs/pull/<number>/merge after the webhook
-        # payload was created but before the job starts.  Both values are
-        # provider evidence, but only GITHUB_SHA identifies this execution's
-        # merge context; the exact checked-out head is bound separately below.
-        if provider_sha == sha:
-            raise ValueError("pull request provider merge must differ from checkout")
         for side, ref_variable in (("base", "GITHUB_BASE_REF"), ("head", "GITHUB_HEAD_REF")):
             revision = pr.get(side)
             if not isinstance(revision, dict):
@@ -91,7 +90,7 @@ def provider_binding(environment: dict[str, str], sha: str) -> dict[str, str | i
                 or not re.fullmatch(r"[0-9a-f]{40}", str(revision.get("sha", "")))
             ):
                 raise ValueError("pull request source identity mismatch")
-        if pr["head"]["sha"] != sha:
+        if pr["head"]["sha"] != sha or provider_sha == pr["head"]["sha"]:
             raise ValueError("pull request head does not match checkout")
         binding.update({"pull_request": number, "provider_merge_sha": provider_sha})
     elif name in {"push", "workflow_dispatch"}:
@@ -173,7 +172,7 @@ def validate_context(
     if environment.get("GITHUB_ACTIONS") != "true":
         if lane != "local":
             raise ValueError("provider CI evidence requires a real Actions execution")
-        return
+        return None
     if lane == "local":
         raise ValueError("Actions must identify its real execution lane")
     binding = provider_binding(environment, sha)
