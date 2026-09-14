@@ -53,6 +53,15 @@ TARGETS: dict[str, dict[str, object]] = {
         "labels": ["self-hosted", "Linux", "X64", "qdev-ci", "qdev-ci-browser", "qdev-ci-docker"],
         "host": "186.240.148.129",
         "profile": "ci-worker-configuration",
+        "configuration_profile": "primary",
+    },
+    "qdev-ci.mail-general-reserve": {
+        "worker_name": "mail-qdev-reserve",
+        "service_unit": "qdev-runner-worker.service",
+        "labels": ["self-hosted", "Linux", "X64", "qdev-ci", "qdev-ci-browser", "qdev-ci-docker"],
+        "host": "187.55.228.239",
+        "profile": "ci-worker-configuration",
+        "configuration_profile": "reserve",
     },
 }
 
@@ -331,6 +340,8 @@ def _ci_worker_configuration_recovery(
                 REMOTE_PAYLOAD,
                 "--expected-sha256",
                 digest,
+                "--worker-profile",
+                str(expected["configuration_profile"]),
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,

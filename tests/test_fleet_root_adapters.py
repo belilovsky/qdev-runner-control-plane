@@ -1023,6 +1023,37 @@ def test_ci_configuration_target_is_bound_to_the_registered_worker() -> None:
         FIXED_RECOVERY.sys.stdin = original_stdin
 
 
+def test_reserve_ci_configuration_target_is_bound_to_its_fixed_host() -> None:
+    request = _request("restore-existing-worker")
+    request["worker_name"] = "mail-qdev-reserve"
+    target_id = "qdev-ci.mail-general-reserve"
+    target = FIXED_RECOVERY.TARGETS[target_id]
+    envelope = {
+        "schema": "qdev-fleet-worker-recovery-request-v1",
+        "request": request,
+        "target": {
+            "worker_name": request["worker_name"],
+            "target_id": target_id,
+            "service_unit": target["service_unit"],
+            "host_binding": "controller-registry",
+            "labels": target["labels"],
+        },
+        "active_jobs": 0,
+    }
+
+    original_stdin = FIXED_RECOVERY.sys.stdin
+    try:
+        FIXED_RECOVERY.sys.stdin = SimpleNamespace(
+            buffer=SimpleNamespace(read=lambda _: json.dumps(envelope).encode())
+        )
+        _, parsed = FIXED_RECOVERY._parse()
+        assert parsed["host"] == "187.55.228.239"
+        assert parsed["profile"] == "ci-worker-configuration"
+        assert parsed["configuration_profile"] == "reserve"
+    finally:
+        FIXED_RECOVERY.sys.stdin = original_stdin
+
+
 def test_ci_configuration_recovery_removes_only_reconciled_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1034,7 +1065,7 @@ def test_ci_configuration_recovery_removes_only_reconciled_files(
     snapshot.mkdir()
 
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda: None)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda _profile: None)
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_safe_stale_files", lambda *_args: [dropin])
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_position_envs", lambda: [position_env])
     monkeypatch.setattr(
@@ -1045,7 +1076,7 @@ def test_ci_configuration_recovery_removes_only_reconciled_files(
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_restart_and_verify", lambda: True)
 
     result = CI_CONFIGURATION_RECOVERY.repair(
-        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__))
+        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__)), "primary"
     )
 
     assert result["status"] == "completed"
@@ -1065,7 +1096,7 @@ def test_ci_configuration_recovery_rolls_back_when_worker_does_not_restart(
     restored: list[Path] = []
 
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda: None)
+    monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_base_environment", lambda _profile: None)
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_safe_stale_files", lambda *_args: [dropin])
     monkeypatch.setattr(CI_CONFIGURATION_RECOVERY, "_position_envs", lambda: [])
     monkeypatch.setattr(
@@ -1081,7 +1112,7 @@ def test_ci_configuration_recovery_rolls_back_when_worker_does_not_restart(
     )
 
     result = CI_CONFIGURATION_RECOVERY.repair(
-        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__))
+        CI_CONFIGURATION_RECOVERY._sha256(Path(CI_CONFIGURATION_RECOVERY.__file__)), "primary"
     )
 
     assert result["status"] == "failed"

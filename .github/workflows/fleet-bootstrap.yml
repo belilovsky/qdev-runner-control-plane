@@ -19,6 +19,7 @@ on:
         type: choice
         options:
           - srv1879763-primary
+          - mail-qdev-reserve
           - qdev-qazstack-01
           - qdev-platform-ci-187
       controller_revision:

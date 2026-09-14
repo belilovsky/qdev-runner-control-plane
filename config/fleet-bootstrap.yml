@@ -47,6 +47,14 @@ worker_targets:
     service_unit: qdev-runner-worker.service
     host_binding: controller-registry
     labels: [self-hosted, Linux, X64, qdev-ci, qdev-ci-browser, qdev-ci-docker]
+  # This is the existing reserve worker observed by the controller.  It is a
+  # fixed recovery target only: the private registry supplies its host, and
+  # neither a workflow nor an operator can replace its identity or labels.
+  - worker_name: mail-qdev-reserve
+    target_id: qdev-ci.mail-general-reserve
+    service_unit: qdev-runner-worker.service
+    host_binding: controller-registry
+    labels: [self-hosted, Linux, X64, qdev-ci, qdev-ci-browser, qdev-ci-docker]
 capacity_topology:
   schema: qdev-ci-four-vps-capacity-v1
   minimum_safe_slots: 6
@@ -79,8 +87,10 @@ capacity_topology:
       max_docker_jobs: 0
     - host_id: mail-general-reserve
       role: reserve
-      worker_name: null
+      worker_name: mail-qdev-reserve
       worker_tier: reserve
-      slots: 2
+      # The registered worker has one verified concurrent slot.  Do not count
+      # its unused Docker capability until a separate capacity audit promotes it.
+      slots: 1
       profiles: [qdev-ci, qdev-ci-browser]
       max_docker_jobs: 0

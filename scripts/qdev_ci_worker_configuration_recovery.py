@@ -34,13 +34,23 @@ SYSTEMCTL = Path("/usr/bin/systemctl")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 STALE_DROPIN = re.compile(r"^~*position-[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.conf$")
 STALE_ENV = re.compile(r"^worker\.position-[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.env$")
-REQUIRED_ENV = {
-    "QDEV_WORKER_NAME": "srv1879763-primary",
-    "QDEV_WORKER_TIER": "primary",
-    "QDEV_WORKER_PROFILES": "qdev-ci,qdev-ci-browser,qdev-ci-docker",
-    "QDEV_WORKER_CONCURRENCY": "1",
-    "QDEV_WORKER_MIN_FREE_GIB": "30",
-    "QDEV_WORKER_MAX_DISK_USED_PCT": "85",
+REQUIRED_ENVS = {
+    "primary": {
+        "QDEV_WORKER_NAME": "srv1879763-primary",
+        "QDEV_WORKER_TIER": "primary",
+        "QDEV_WORKER_PROFILES": "qdev-ci,qdev-ci-browser,qdev-ci-docker",
+        "QDEV_WORKER_CONCURRENCY": "1",
+        "QDEV_WORKER_MIN_FREE_GIB": "30",
+        "QDEV_WORKER_MAX_DISK_USED_PCT": "85",
+    },
+    "reserve": {
+        "QDEV_WORKER_NAME": "mail-qdev-reserve",
+        "QDEV_WORKER_TIER": "reserve",
+        "QDEV_WORKER_PROFILES": "qdev-ci,qdev-ci-browser,qdev-ci-docker",
+        "QDEV_WORKER_CONCURRENCY": "1",
+        "QDEV_WORKER_MIN_FREE_GIB": "22",
+        "QDEV_WORKER_MAX_DISK_USED_PCT": "90",
+    },
 }
 
 
@@ -91,7 +101,7 @@ def _root_regular(path: Path, *, private: bool) -> Any:
     return metadata
 
 
-def _base_environment() -> None:
+def _base_environment(worker_profile: str) -> None:
     _root_regular(BASE_ENV, private=True)
     values: dict[str, str] = {}
     for raw_line in BASE_ENV.read_text(encoding="utf-8").splitlines():
@@ -101,7 +111,8 @@ def _base_environment() -> None:
         if not separator or not key or not value or key in values:
             raise RecoveryError("worker_base_environment_invalid")
         values[key] = value
-    if any(values.get(key) != expected for key, expected in REQUIRED_ENV.items()):
+    required = REQUIRED_ENVS.get(worker_profile)
+    if required is None or any(values.get(key) != expected for key, expected in required.items()):
         raise RecoveryError("worker_base_environment_identity_invalid")
 
 
@@ -291,12 +302,12 @@ def _result(
     return value
 
 
-def repair(expected_sha256: str) -> dict[str, Any]:
+def repair(expected_sha256: str, worker_profile: str) -> dict[str, Any]:
     if SHA256.fullmatch(expected_sha256) is None or _sha256(Path(__file__)) != expected_sha256:
         raise RecoveryError("payload_digest_mismatch")
     if os.geteuid() != 0:
         raise RecoveryError("root_identity_required")
-    _base_environment()
+    _base_environment(worker_profile)
     dropins = _safe_stale_files(DROPIN_ROOT, STALE_DROPIN)
     position_envs = _position_envs()
     if not dropins and not position_envs:
@@ -341,9 +352,10 @@ def repair(expected_sha256: str) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Repair the fixed QDev CI worker configuration.")
     parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument("--worker-profile", required=True, choices=sorted(REQUIRED_ENVS))
     arguments = parser.parse_args(argv)
     try:
-        result = repair(arguments.expected_sha256)
+        result = repair(arguments.expected_sha256, arguments.worker_profile)
     except (RecoveryError, OSError, UnicodeDecodeError, subprocess.TimeoutExpired) as error:
         result = _result(
             status="failed",

@@ -209,7 +209,7 @@ def test_bootstrap_policy_seals_the_four_vps_capacity_baseline() -> None:
         "srv138jump-general",
         "mail-general-reserve",
     }
-    assert sum(host.slots for host in policy.capacity_topology.hosts) == 8
+    assert sum(host.slots for host in policy.capacity_topology.hosts) == 7
     assert sum(host.max_docker_jobs for host in policy.capacity_topology.hosts) == 2
     assert "qdev-platform-ci-187" not in {
         host.worker_name for host in policy.capacity_topology.hosts
@@ -221,7 +221,7 @@ def test_bootstrap_policy_seals_the_four_vps_capacity_baseline() -> None:
         "srv1879763-primary": ("srv1879763-primary", "primary"),
         "srv1626458-build": (None, "primary"),
         "srv138jump-general": (None, "primary"),
-        "mail-general-reserve": (None, "reserve"),
+        "mail-general-reserve": ("mail-qdev-reserve", "reserve"),
     }
 
 
@@ -256,7 +256,7 @@ def test_bootstrap_policy_rejects_capacity_topology_drift(tmp_path: Path, mutate
         FleetBootstrapPolicy(policy_path, RELEASE_LANES)
 
 
-def test_bootstrap_policy_rejects_shared_service_unit(
+def test_bootstrap_policy_allows_shared_service_unit_for_distinct_fixed_hosts(
     tmp_path: Path,
 ) -> None:
     document = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
@@ -273,8 +273,8 @@ def test_bootstrap_policy_rejects_shared_service_unit(
     policy_path = tmp_path / "fleet-bootstrap.yml"
     policy_path.write_text(yaml.safe_dump(document), encoding="utf-8")
 
-    with pytest.raises(FleetBootstrapError, match="service unit"):
-        FleetBootstrapPolicy(policy_path, RELEASE_LANES)
+    policy = FleetBootstrapPolicy(policy_path, RELEASE_LANES)
+    assert policy.worker_target("qdev-platform-ci-187") is not None
 
 
 def test_bootstrap_policy_allows_qazagents_static_enrolment_without_a_host_target() -> None:
