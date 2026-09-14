@@ -49,6 +49,21 @@ RECOVERY_TARGETS: dict[str, dict[str, object]] = {
         ],
         "adapter_path": RECOVERY_ADAPTER,
     },
+    "qdev-ci.mail-general-reserve": {
+        "worker_name": "mail-qdev-reserve",
+        "target_id": "qdev-ci.mail-general-reserve",
+        "service_unit": "qdev-runner-worker.service",
+        "host_binding": "controller-registry",
+        "labels": [
+            "self-hosted",
+            "Linux",
+            "X64",
+            "qdev-ci",
+            "qdev-ci-browser",
+            "qdev-ci-docker",
+        ],
+        "adapter_path": RECOVERY_ADAPTER,
+    },
 }
 HOST_IDENTITIES = (
     "qdev-host-agent:ortcom-production-controller",

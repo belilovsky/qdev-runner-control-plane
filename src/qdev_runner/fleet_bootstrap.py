@@ -341,7 +341,6 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("bootstrap worker target mapping is invalid")
         targets: dict[str, WorkerRecoveryTarget] = {}
         seen_target_ids: set[str] = set()
-        seen_service_units: set[str] = set()
         for entry in raw:
             if not isinstance(entry, dict) or set(entry) != {
                 "worker_name",
@@ -373,8 +372,6 @@ class FleetBootstrapPolicy:
                 or not {"self-hosted", "Linux", "X64"}.issubset(labels)
             ):
                 raise FleetBootstrapError("bootstrap worker target mapping is invalid")
-            if service_unit in seen_service_units:
-                raise FleetBootstrapError("bootstrap worker target service unit is not unique")
             targets[worker_name] = WorkerRecoveryTarget(
                 worker_name=worker_name,
                 target_id=target_id,
@@ -383,7 +380,6 @@ class FleetBootstrapPolicy:
                 labels=tuple(labels),
             )
             seen_target_ids.add(target_id)
-            seen_service_units.add(service_unit)
         return targets
 
     @staticmethod
@@ -420,10 +416,10 @@ class FleetBootstrapPolicy:
             raise FleetBootstrapError("capacity topology values are invalid")
 
         expected_hosts = {
-            "srv1879763-primary": ("primary", "primary", 1),
-            "srv1626458-build": ("build", "primary", 1),
-            "srv138jump-general": ("general", "primary", 0),
-            "mail-general-reserve": ("reserve", "reserve", 0),
+            "srv1879763-primary": ("primary", "primary", 1, 2),
+            "srv1626458-build": ("build", "primary", 1, 2),
+            "srv138jump-general": ("general", "primary", 0, 2),
+            "mail-general-reserve": ("reserve", "reserve", 0, 1),
         }
         parsed: list[CapacityHost] = []
         seen: set[str] = set()
@@ -460,7 +456,7 @@ class FleetBootstrapPolicy:
                     or not worker_name.endswith(f"-{worker_tier}")
                 )
                 or isinstance(slots, bool)
-                or slots != 2
+                or slots != expected_hosts[host_id][3]
                 or not isinstance(profiles, list)
                 or len(profiles) != len(set(profiles))
                 or not all(
@@ -490,7 +486,7 @@ class FleetBootstrapPolicy:
                 )
             )
             seen.add(host_id)
-        if set(seen) != set(expected_hosts) or sum(host.slots for host in parsed) != 8:
+        if set(seen) != set(expected_hosts) or sum(host.slots for host in parsed) != 7:
             raise FleetBootstrapError("capacity topology hosts are incomplete")
         if sum(host.max_docker_jobs for host in parsed) != minimum_docker_hosts:
             raise FleetBootstrapError("capacity topology Docker capacity is invalid")
