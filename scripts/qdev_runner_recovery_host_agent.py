@@ -35,12 +35,12 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _CONTROLLER_HOST = "worker.ci.qdev.run"
-_RUNNER_VERSION = "2.336.0"
+_RUNNER_VERSION = "2.337.0"
 _RUNNER_ARCHIVE = f"actions-runner-linux-x64-{_RUNNER_VERSION}.tar.gz"
 _RUNNER_URL = (
     f"https://github.com/actions/runner/releases/download/v{_RUNNER_VERSION}/{_RUNNER_ARCHIVE}"
 )
-_RUNNER_ARCHIVE_SHA256 = "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
+_RUNNER_ARCHIVE_SHA256 = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
 STATE_SCHEMA = "qdev-runner-recovery-host-state-v1"
 RECEIPT_SCHEMA = "qdev-runner-recovery-host-receipt-v1"
 

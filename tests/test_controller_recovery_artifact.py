@@ -447,7 +447,13 @@ def test_hosted_recovery_requires_no_self_hosted_claim() -> None:
 
 def test_self_hosted_recovery_build_requires_no_self_hosted_claim() -> None:
     run, job = _hosted_workflow()
-    job["labels"] = ["self-hosted", "Linux", "X64", "qdev-ci-docker"]
+    job["labels"] = [
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci-docker",
+        "qdev-job-101-1-recovery-build",
+    ]
     identity = reconcile_workflow_identity(
         run,
         job,

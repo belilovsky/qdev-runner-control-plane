@@ -240,8 +240,7 @@ def workflow_violations(
     allow_ghcr = allow_hosted and path.name in release_registry_workflows
     is_recovery_workflow = allow_hosted and path.name in recovery_workflows
     is_github_artifact_recovery_workflow = (
-        allow_hosted
-        and path.name in github_artifact_recovery_workflows
+        path.name in github_artifact_recovery_workflows
         and is_manual_only_workflow(lines)
     )
     is_primary_self_hosted_workflow = (
@@ -422,8 +421,6 @@ def check_repository(root: Path) -> list[str]:
             errors.append(".github/qdev-runner.yml:1: recovery-workflows-requires-v2")
         if release_registry_workflows and not allow_hosted:
             errors.append(".github/qdev-runner.yml:1: release-registry-requires-v2")
-        if github_artifact_recovery_workflows and not allow_hosted:
-            errors.append(".github/qdev-runner.yml:1: github-artifact-recovery-requires-v2")
         for workflow_name in sorted(release_registry_workflows):
             if not re.fullmatch(r"[A-Za-z0-9_.-]+\.ya?ml", workflow_name):
                 errors.append(

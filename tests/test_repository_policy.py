@@ -476,13 +476,18 @@ jobs:
 
 
 def test_declared_manual_recovery_allows_only_sealed_docker_worker(tmp_path: Path) -> None:
-    root = hosted_repository(tmp_path, "jobs: {}\n")
+    root = controller_managed_repository(tmp_path, "jobs: {}\n")
     (root / ".github/workflows/controller-recovery-build.yml").write_text(
         """on:
   workflow_dispatch:
 jobs:
   recovery:
-    runs-on: [self-hosted, Linux, X64, qdev-ci-docker]
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci-docker
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery-build
     steps:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 """,

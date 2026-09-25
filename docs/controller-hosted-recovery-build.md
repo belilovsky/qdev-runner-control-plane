@@ -1,27 +1,28 @@
-# Controller artifact recovery when worker admission is unavailable
+# Controller artifact recovery on the QDev worker pool
 
 The owner may manually dispatch `controller-recovery-build.yml` on `main`, with
-`expected_sha` equal to the exact current commit. This uses the existing
-GitHub-hosted controller CI capacity; it does not admit product jobs or alter
-self-hosted worker admission.
+`expected_sha` equal to the exact current commit. This uses the enrolled
+`qdev-ci-docker` pool with a unique run and attempt label. It does not admit
+product jobs or alter worker admission, and has no GitHub-hosted fallback.
 
 The job builds the clean checkout, generates an SBOM, scans source and image,
 retains the sealed recovery directory temporarily as a GitHub Actions artifact.
-Scanner versions are pinned and their release checksums verified. Hosted jobs
-never upload directly to controller artifact storage and their GitHub OIDC token
-is not accepted by that storage. The retained artifact exists only to break a
-controller-store bootstrap failure after the build and scans have passed; it is
+Scanner versions are pinned and their release checksums verified. The job also
+submits the verified output to controller artifact storage. The retained
+artifact exists only to break a controller-store bootstrap failure after the
+build and scans have passed; it is
 not an activation identity or a substitute for reconciliation. Failed builds or
 scans never produce usable recovery material.
 
 Reconcile the downloaded artifact using `controller_recovery_artifact.py reconcile`
 with the exact successful run, job, attempt and source SHA. The reconciler checks
 GitHub provider metadata for the owner, repository, workflow, main branch, source,
-job name and hosted runner labels. Authentication uses the supplied GitHub token
+job name and exact self-hosted Docker profile and lease labels. Authentication uses the supplied GitHub token
 or the existing GitHub App identity in memory. Never print credentials.
 
-This hosted lane does not take a self-hosted claim receipt because it is only a
-bootstrap build. It cannot restore worker admission or stand in for the separate
+This build does not take a separate self-hosted claim receipt because the
+controller recovery workflow identity is already bound to the exact provider
+job. It cannot restore worker admission or stand in for the separate
 signed `runner-smoke.yml` claim tuple. After signed controller activation and
 health verification, obtain that exact self-hosted tuple before restoring normal
 worker admission. Reconciliation creates a 900-second identity; the normal

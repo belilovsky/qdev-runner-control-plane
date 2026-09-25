@@ -12,9 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep current hosted recovery serialized without allowing a legacy
-  # self-hosted recovery run to hold this bootstrap lane forever.
-  group: controller-recovery-build-hosted-v2
+  # Keep recovery builds serialized on the enrolled Docker-capable pool.
+  group: controller-recovery-build-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -22,9 +21,14 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       github.ref == 'refs/heads/main' && inputs.expected_sha == github.sha
-    # This is the one owner-dispatched bootstrap lane. It must remain
-    # independent of the self-hosted fleet it is intended to recover.
-    runs-on: ubuntu-latest
+    # Owner-dispatched controller recovery uses the existing Docker-capable
+    # QDev worker and never falls back to a paid GitHub-hosted runner.
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci-docker
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery-build
     permissions:
       contents: read
       id-token: write

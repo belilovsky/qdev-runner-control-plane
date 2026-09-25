@@ -2485,16 +2485,23 @@ def verify_controller_artifact_manifest(
                 "github-hosted-recovery-build",
                 "hosted-recovery",
             ),
-            (
-                ("self-hosted", "Linux", "X64", "qdev-ci-docker"),
-                "self-hosted-recovery-build",
-                "self-hosted-recovery",
-            ),
         }
         identity_tuple = (
             tuple(workflow_identity.get("labels", [])),
             workflow_identity.get("execution_lane"),
             str(workflow_identity.get("idempotency_key", "")).split(":", 1)[0],
+        )
+        self_hosted_recovery_labels = [
+            "self-hosted",
+            "Linux",
+            "X64",
+            "qdev-ci-docker",
+            f"qdev-job-{run_id}-{workflow_identity['attempt']}-recovery-build",
+        ]
+        self_hosted_recovery_identity = (
+            tuple(self_hosted_recovery_labels),
+            "self-hosted-recovery-build",
+            "self-hosted-recovery",
         )
         if (
             claim_receipt_raw is not None
@@ -2507,7 +2514,7 @@ def verify_controller_artifact_manifest(
             or workflow_identity.get("job_name") != "controller-recovery-build"
             or workflow_identity.get("conclusion") != "success"
             or workflow_identity.get("owner_recovery") is not True
-            or identity_tuple not in recovery_build_identities
+            or identity_tuple not in recovery_build_identities | {self_hosted_recovery_identity}
             or workflow_identity["subject"] != f"repo:{CONTROLLER_REPOSITORY}:ref:refs/heads/main"
             or workflow_identity["workflow_ref"]
             != (

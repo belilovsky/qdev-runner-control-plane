@@ -474,7 +474,10 @@ def reconcile_workflow_identity(
         if labels == _HOSTED_RECOVERY_BUILD_LABELS:
             execution_lane = "github-hosted-recovery-build"
             idempotency_prefix = "hosted-recovery"
-        elif labels == _SELF_HOSTED_RECOVERY_BUILD_LABELS:
+        elif labels == [
+            *_SELF_HOSTED_RECOVERY_BUILD_LABELS,
+            f"qdev-job-{exact_run}-{exact_attempt}-recovery-build",
+        ]:
             execution_lane = "self-hosted-recovery-build"
             idempotency_prefix = "self-hosted-recovery"
         else:

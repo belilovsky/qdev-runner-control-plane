@@ -267,6 +267,17 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
         violations.append(violation(contract_path, 1, "missing-recovery-workflows"))
     if recovery_workflows and not allow_hosted:
         violations.append(violation(contract_path, 1, "recovery-workflows-requires-v2"))
+    github_artifact_recovery_workflows: set[str] = set()
+    artifact_recovery_value = contract.get("github_artifact_recovery_workflows")
+    if artifact_recovery_value is not None:
+        if isinstance(artifact_recovery_value, list) and all(
+            isinstance(value, str) for value in artifact_recovery_value
+        ):
+            github_artifact_recovery_workflows = set(artifact_recovery_value)
+        else:
+            violations.append(
+                violation(contract_path, 1, "invalid-github-artifact-recovery-workflows")
+            )
     primary_self_hosted_workflows: set[str] = set()
     primary_value = contract.get("primary_self_hosted_workflows")
     if primary_value is not None:
@@ -349,6 +360,15 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 workflow_name,
             )
         )
+    for workflow_name in sorted(github_artifact_recovery_workflows - available_workflows):
+        violations.append(
+            violation(
+                contract_path,
+                1,
+                "github-artifact-recovery-workflow-missing",
+                workflow_name,
+            )
+        )
     if smoke_path not in paths:
         violations.append(violation(smoke_path, 1, "missing-runner-smoke"))
     for path in paths:
@@ -363,6 +383,11 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
             and "pull_request" in triggers
         )
         allow_ghcr = allow_hosted and Path(path).name in release_registry_workflows
+        allow_artifact_recovery = Path(
+            path
+        ).name in github_artifact_recovery_workflows and is_manual_only_workflow(triggers)
+        if Path(path).name in github_artifact_recovery_workflows and not allow_artifact_recovery:
+            violations.append(violation(path, 1, "github-artifact-recovery-not-manual-only"))
         is_recovery_workflow = allow_hosted and Path(path).name in recovery_workflows
         is_primary_self_hosted_workflow = (
             allow_hosted and Path(path).name in primary_self_hosted_workflows
@@ -380,6 +405,8 @@ def audit_repository(repo: dict[str, Any], requested_ref: str | None) -> dict[st
                 violations.append(violation(path, line_number, "hosted-runner"))
             for marker, kind in FORBIDDEN.items():
                 if kind == "ghcr" and allow_ghcr:
+                    continue
+                if marker == "actions/upload-artifact@" and allow_artifact_recovery:
                     continue
                 if marker in line:
                     violations.append(violation(path, line_number, kind))
