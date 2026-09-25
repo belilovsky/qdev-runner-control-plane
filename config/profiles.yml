@@ -10,6 +10,14 @@ repository_admission_disk_mb:
   # worker's independent 4.5 GiB free-space floor remains mandatory.
   belilovsky/qdev-runner-control-plane:
     qdev-ci-docker: 4096
+  # The grant-radar-public "Production image, vulnerability scan, and SBOM"
+  # lane builds one slim Python runtime image with the repository's own
+  # Dockerfile.prod, then runs Trivy and a CycloneDX SBOM step against it. It
+  # creates no nested services and no persistent Docker volumes, so reserve the
+  # bounded 6 GiB build scope for this repository/profile only. The worker's
+  # independent live free-space floor stays enforced for the whole execution.
+  belilovsky/grant-radar-public:
+    qdev-ci-docker: 6144
   belilovsky/qazshield:
     qdev-ci-docker: 15360
   # The canonical QazLake API data-record workflow runs an ephemeral Postgres
