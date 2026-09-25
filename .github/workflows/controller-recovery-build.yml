@@ -84,13 +84,6 @@ jobs:
           python scripts/controller_recovery_artifact.py build \
             --release-root . --output "$RUNNER_TEMP/controller-recovery-build" \
             --confirm-non-production-build-host
-      - name: Retain sealed recovery material in GitHub
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: controller-recovery-${{ github.sha }}
-          path: ${{ runner.temp }}/controller-recovery-build
-          if-no-files-found: error
-          retention-days: 7
       # The controller-owned artifact store is the canonical reconciliation
       # source for the operator. Submit the sealed directory there first so an
       # unavailable GitHub artifact quota can never block the handoff.
