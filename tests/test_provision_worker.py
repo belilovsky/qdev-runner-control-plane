@@ -65,7 +65,10 @@ def test_provision_requires_source_bound_buildkit_materialization() -> None:
     assert "buildkit_source_revision=dddd5621af04ea57823085c93a063383f71d3173" in script
     assert "QDEV_BUILDKIT_ARTIFACT_ROOT" in script
     assert "QDEV_BUILDKIT_IMAGE_REF" in script
-    assert 'provision_profiles="${QDEV_WORKER_PROFILES:-qdev-ci,qdev-ci-browser,qdev-ci-docker}"' in script
+    assert (
+        'provision_profiles="${QDEV_WORKER_PROFILES:-qdev-ci,qdev-ci-browser,qdev-ci-docker}"'
+        in script
+    )
     assert 'if [[ "$provision_docker_profile" == true ]]; then' in script
     assert "source-bound BuildKit artifact is required" in script
     assert "source-bound BuildKit artifact failed validation" in script

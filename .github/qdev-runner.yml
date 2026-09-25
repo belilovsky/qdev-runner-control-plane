@@ -1,12 +1,9 @@
-schema_version: qdev-runner-v2
-execution_mode: github-hosted-primary
-self_hosted_recovery: true
-# Self-hosted capacity is reserved for explicit owner-dispatched recovery
-# workflows.  They are not a fallback for ordinary CI.
-recovery_workflows:
-  - runner-smoke.yml
-# This manual bootstrap lane may retain a sealed recovery artifact only after
-# its source and image scans pass; the normal QDev artifact store remains primary.
+schema_version: qdev-runner-v3
+execution_mode: controller-managed-self-hosted
+github_hosted_fallback: false
+# All repository jobs, including the manually dispatched bootstrap lanes, use
+# the enrolled QDev pool. Recovery artifact upload is allowed only on its exact
+# owner-dispatched workflow and remains bounded by the seven-day retention.
 github_artifact_recovery_workflows:
   - controller-recovery-build.yml
 profiles:

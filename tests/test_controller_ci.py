@@ -147,11 +147,11 @@ def test_recovery_accepts_owner_dispatch_but_does_not_claim_hosted(tmp_path: Pat
         CI.validate_context("local", environment, SHA)
 
 
-def test_hosted_recovery_build_requires_owner_dispatch_on_main(tmp_path: Path) -> None:
+def test_self_hosted_recovery_build_requires_owner_dispatch_on_main(tmp_path: Path) -> None:
     environment = context(tmp_path)
     environment.update(
         {
-            "RUNNER_ENVIRONMENT": "github-hosted",
+            "RUNNER_ENVIRONMENT": "self-hosted",
             "GITHUB_WORKFLOW_REF": (
                 "belilovsky/qdev-runner-control-plane/.github/workflows/"
                 "controller-recovery-build.yml@refs/heads/main"
@@ -443,11 +443,13 @@ def test_every_lane_uses_full_shared_suite() -> None:
         for step in normal["jobs"]["verify"]["steps"]
         if "scripts/verify_controller_ci.py" in step.get("run", "")
     )
-    assert normal_step["run"].endswith("--lane github-hosted")
+    assert normal_step["run"].endswith("--lane managed")
     assert normal_step["env"] == {
-        "QDEV_EXPECTED_SHA": "${{ github.event.pull_request.head.sha || github.sha }}"
+        "QDEV_EXPECTED_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+        "QDEV_MANAGED_CI": "true",
     }
-    assert normal["jobs"]["verify"]["runs-on"] == "ubuntu-latest"
+    assert "qdev-ci" in normal["jobs"]["verify"]["runs-on"]
+    assert "github.run_id" in " ".join(normal["jobs"]["verify"]["runs-on"])
     assert (
         "github.event.pull_request.head.repo.full_name == github.repository"
         in normal["jobs"]["verify"]["if"]
@@ -483,12 +485,13 @@ def test_runner_smoke_declares_exact_recovery_inputs_and_full_verification() -> 
     }
 
 
-def test_recovery_build_uses_hosted_lane_and_full_verification() -> None:
+def test_recovery_build_uses_self_hosted_lane_and_full_verification() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/controller-recovery-build.yml").read_text()
     )
     job = workflow["jobs"]["controller-recovery-build"]
-    assert job["runs-on"] == "ubuntu-latest"
+    assert "qdev-ci-docker" in job["runs-on"]
+    assert "github.run_id" in " ".join(job["runs-on"])
     verify = next(
         step for step in job["steps"] if "scripts/verify_controller_ci.py" in step.get("run", "")
     )
@@ -502,8 +505,8 @@ def test_recovery_build_uses_hosted_lane_and_full_verification() -> None:
 def test_runner_contract_push_is_limited_to_default_branch() -> None:
     workflow = (ROOT / ".github/workflows/qdev-runner-contract.yml").read_text()
     assert "push:\n    branches:\n      - main" in workflow
-    assert "runs-on: ubuntu-latest" in workflow
-    assert "self-hosted" not in workflow
+    assert "qdev-ci" in workflow
+    assert "ubuntu-latest" not in workflow
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
 
 

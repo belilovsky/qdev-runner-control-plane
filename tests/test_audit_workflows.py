@@ -28,6 +28,7 @@ def audit(
         ".github/workflows/deploy.yml",
         ".github/workflows/qdev-runner-contract.yml",
         ".github/workflows/runner-smoke.yml",
+        ".github/workflows/controller-recovery-build.yml",
     ]
     contents = {
         ".github/qdev-runner.yml": contract_text
@@ -48,6 +49,7 @@ def audit(
         ".github/workflows/deploy.yml": deploy_workflow,
         ".github/workflows/qdev-runner-contract.yml": "jobs: {}\n",
         ".github/workflows/runner-smoke.yml": "on:\n  workflow_dispatch:\njobs: {}\n",
+        ".github/workflows/controller-recovery-build.yml": "jobs: {}\n",
     }
 
     def content_text(_full_name: str, path: str, _ref: str) -> str:
@@ -139,6 +141,33 @@ jobs:
             "execution_mode: controller-managed-self-hosted\n"
             "github_hosted_fallback: false\n"
             "profiles:\n  - qdev-ci\n"
+        ),
+    )
+    assert result["violations"] == []
+
+
+def test_fleet_audit_allows_manual_v3_recovery_artifact_upload() -> None:
+    result = audit(
+        """on:
+  workflow_dispatch:
+jobs:
+  recovery:
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - qdev-ci-docker
+      - qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-recovery-build
+    steps:
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+""",
+        contract_text=(
+            "schema_version: qdev-runner-v3\n"
+            "execution_mode: controller-managed-self-hosted\n"
+            "github_hosted_fallback: false\n"
+            "profiles:\n  - qdev-ci\n  - qdev-ci-docker\n"
+            "github_artifact_recovery_workflows:\n"
+            "  - deploy.yml\n"
         ),
     )
     assert result["violations"] == []
