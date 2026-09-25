@@ -52,6 +52,13 @@ def _config(tmp_path: Path) -> Any:
     )
 
 
+def test_recovery_agent_runner_release_matches_current_pinned_image() -> None:
+    assert AGENT._RUNNER_VERSION == "2.337.0"
+    assert AGENT._RUNNER_ARCHIVE_SHA256 == (
+        "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
+    )
+
+
 def _command(profile: Any, config: Any, *, provider_runner_id: int | None = None) -> dict[str, Any]:
     command: dict[str, Any] = {
         "schema": "qdev-runner-recovery-agent-command-v1",
