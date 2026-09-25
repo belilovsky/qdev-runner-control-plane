@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only the ephemeral Linux hosted builder installs these versioned tools.
+# Only the ephemeral Linux builder installs these versioned tools.
 [[ "${GITHUB_ACTIONS:-}" == true && "$(uname -sm)" == 'Linux x86_64' ]] || exit 64
 directory="$(mktemp -d "${RUNNER_TEMP:?}/controller-scanners.XXXXXX")"
+# The controller recovery build may run either on an ephemeral GitHub-hosted
+# builder (where the job user needs sudo) or inside the rootless QDev
+# self-hosted worker container (where sudo does not exist and the job already
+# runs as root).  Install into a job-scoped directory that always works and
+# publish it on PATH for the following steps instead of writing to
+# /usr/local/bin.
+bin_directory="${RUNNER_TEMP:?}/controller-scanners-bin"
+mkdir -p "$bin_directory"
 trap 'rm -rf -- "$directory"' EXIT
 cd "$directory"
 trivy_version=0.74.0
@@ -27,5 +35,6 @@ for tool in trivy syft; do
   test "$(wc -l < selected.sha256)" -eq 1
   sha256sum --check selected.sha256
   tar -xzf "$archive" "$tool"
-  sudo install -m 0755 "$tool" /usr/local/bin/"$tool"
+  install -m 0755 "$tool" "$bin_directory/$tool"
 done
+printf '%s\n' "$bin_directory" >> "${GITHUB_PATH:?}"

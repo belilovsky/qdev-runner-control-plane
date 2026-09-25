@@ -205,6 +205,18 @@ def test_hosted_artifact_is_retained_for_controller_reconciliation(tmp_path: Pat
         "GITHUB_SHA": "a" * 40,
         "QDEV_ARTIFACT_URL": "https://ci.example.test/artifacts",
     }
+    # This case models the GitHub-hosted reconciliation environment, where the
+    # uploader sees only the hosted OIDC identity. A QDev self-hosted job
+    # injects its own broker artifact identity into every step, so drop it
+    # explicitly instead of letting the ambient runner environment decide which
+    # branch the unchanged uploader takes.
+    for ambient_carrier_identity in (
+        "QDEV_ARTIFACT_TOKEN",
+        "QDEV_REPOSITORY",
+        "QDEV_HEAD_SHA",
+        "QDEV_JOB_ID",
+    ):
+        environment.pop(ambient_carrier_identity, None)
     result = subprocess.run(  # noqa: S603
         ["/usr/bin/env", "bash", str(uploader), "receipt", str(artifact)],
         check=False,
