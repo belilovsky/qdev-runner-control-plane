@@ -91,8 +91,22 @@ jobs:
           path: ${{ runner.temp }}/controller-recovery-build
           if-no-files-found: error
           retention-days: 7
+      # The controller-owned artifact store is the canonical reconciliation
+      # source for the operator. Submit the sealed directory there first so an
+      # unavailable GitHub artifact quota can never block the handoff.
       - name: Record controller reconciliation handoff
         run: |
           cd "$RUNNER_TEMP"
           bash "$GITHUB_WORKSPACE/templates/qdev-upload-artifact.sh" \
             controller-recovery-build controller-recovery-build
+      # GitHub artifact retention is the documented convenience copy for a
+      # controller-store bootstrap failure only. It must not fail the lane when
+      # the account's artifact storage quota is exhausted.
+      - name: Retain sealed recovery material in GitHub
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: controller-recovery-${{ github.sha }}
+          path: ${{ runner.temp }}/controller-recovery-build
+          if-no-files-found: error
+          retention-days: 7
