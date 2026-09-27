@@ -160,7 +160,7 @@ are reported and left unchanged.
 - `https://worker.ci.qdev.run/internal/v1/releases/qaz-tours` — the separate,
   product-specific Qaz.Tours release admission. It accepts only an exact SHA,
   immutable artifact digest and completed candidate receipt from the enrolled
-  product client. The mTLS host agent at `vps-hostinger-186` consumes the job,
+  product client. The mTLS host agent at `vps-apps-148` consumes the job,
   proves 60 GiB capacity plus a distinct verified rollback, and returns the
   runtime receipt. It is deliberately outside the shared GitHub runner queue.
 - `https://worker.ci.qdev.run/internal/v1/releases/qdev-release-qaz-fund`,
@@ -182,7 +182,7 @@ native host adapter and rollback reference. The Total lane contains only
 ### Qaz.Tours immutable host agent
 
 `qdev-release-qaz-tours` is a controller-owned release lane for the existing
-`vps-hostinger-186` host. The controller admits only an exact source SHA plus
+`vps-apps-148` host. The controller admits only an exact source SHA plus
 `registry.ci.qdev.run/qaz-tours@sha256:…` after completed candidate CI and a
 fresh mTLS heartbeat from that host. The root-owned, one-shot host agent is
 defined by `deploy/qdev-release-qaz-tours.service`; it is not a timer and must
