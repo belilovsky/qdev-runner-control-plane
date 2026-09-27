@@ -89,9 +89,10 @@ def test_qazcompute_ci_reports_and_owner_recovery_are_registered() -> None:
 
     assert registration is not None
     assert registration.required
-    assert ".github/workflows/owner-recovery-image.yml" in policy.repository(
-        "belilovsky/qazcompute"
-    ).workflows
+    assert (
+        ".github/workflows/owner-recovery-image.yml"
+        in policy.repository("belilovsky/qazcompute").workflows
+    )
 
 
 def test_mcp_servers_docker_admission_is_repository_scoped() -> None:
