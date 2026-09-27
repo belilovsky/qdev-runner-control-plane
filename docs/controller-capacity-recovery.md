@@ -192,20 +192,24 @@ original invariants. Preserve repository, run id, job id, attempt, exact SHA,
 profile and FIFO. Do not create a provider retry or duplicate, change
 `runs-on`, mutate broker rows, leases, webhooks, priorities or job timestamps,
 restart an active worker, remove active images/releases/rollback material, or
-perform a global Docker prune. Disk-only overrides keep the controller's hard
-floor of 4.5 GiB free and 90% maximum use, and expire within 900 seconds.
+perform a global Docker prune. A signed, exact-job disk-only runtime override
+keeps a 4.5 GiB hard free-space floor, preserves the measured repository/profile
+reservation, may raise the live job ceiling to at most 95%, and expires within
+900 seconds. The separate controller activation gate stays at 90%.
 
 ### Legacy incumbent activation ceiling
 
 A candidate release can only be activated by the wrapper that is already
 active, and the immutable `eb9eea64...` payload transmits its unset
 `QDEV_CONTROLLER_MAX_DISK_USED_PCT` default as `96`. The activation capacity
-gate therefore accepts exactly that legacy default and clamps it to the published 90% ceiling,
-and records the clamp on stderr so the activation receipt keeps the observation.
-Every other above-ceiling value, including the
-`91`, `95` and `97` percent host overrides, is still rejected before any
-measurement or mutation, and the operator override surface separately refuses
-any value above `90%`. A release must never publish `96` as a real ceiling.
+gate therefore accepts exactly that legacy default and clamps it to the
+published 90% activation ceiling, and records the clamp on stderr so the
+activation receipt keeps the observation. Every other above-ceiling value,
+including the `91`, `95` and `97` percent controller activation overrides, is
+still rejected before any measurement or mutation. The separate job-capacity
+override can reach 95% only with its exact signed repository, profile, source
+SHA and claim scope. A release must never publish `96` as a real activation
+ceiling.
 
 ### Revision-pinned QazPolit bootstrap exception
 

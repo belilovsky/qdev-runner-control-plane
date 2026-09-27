@@ -156,7 +156,9 @@ are reported and left unchanged.
   host. It must never be copied to a worker or committed.
 - `https://worker.ci.qdev.run/internal/v1/operations/*` — mTLS operator API
   for signed audits and one expiring, disk-only capacity override bound to one
-  repository, runner profile and exact source SHA.
+  repository, runner profile and exact source SHA. Normal worker admission
+  stays at or below 90%; this one-job override may set a 95% ceiling while the
+  4.5 GiB free-space floor and measured profile reservation remain enforced.
 - `https://worker.ci.qdev.run/internal/v1/releases/qaz-tours` — the separate,
   product-specific Qaz.Tours release admission. It accepts only an exact SHA,
   immutable artifact digest and completed candidate receipt from the enrolled
@@ -381,8 +383,11 @@ When a scoped worker must run one exact candidate below that durable baseline,
 the controller may issue a separate signed `claim-scope-v2` capacity directive.
 The worker configuration must contain its matching `QDEV_CLAIM_SCOPE_ID`; the
 directive alone selects a free-space floor from 4.5 through 30 GiB and a
-disk-use ceiling no higher than 90%. `QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE`
-is retired and is rejected at startup. Memory and load gates cannot be relaxed.
+disk-use ceiling no higher than 95%. This ceiling applies only to that exact
+job for at most 900 seconds; its measured repository/profile reservation is
+added to the 4.5 GiB minimum. The durable baseline and controller activation
+gate remain capped at 90%. `QDEV_WORKER_ALLOW_RUNTIME_CAPACITY_OVERRIDE` is
+retired and is rejected at startup. Memory and load gates cannot be relaxed.
 The active directive is reported in the worker heartbeat.
 
 Worker provisioning archives the exact obsolete

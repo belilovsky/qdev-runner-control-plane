@@ -21,11 +21,13 @@ from .fleet_bootstrap import CONTROLLER_TUPLE_ACTIONS
 from .fleet_bootstrap_executor import BOOTSTRAP_EXECUTION_RECEIPT_SCHEMA
 
 HARD_MIN_FREE_GIB = 4.5
-# Runtime overrides remain repository-, SHA-, profile- and time-bound.  The
-# absolute free-space floor plus the repository reservation is the primary
-# safety invariant. Ninety percent is an absolute outer guard; a release may
-# not weaken it for a large volume or through a temporary override.
+# Normal worker admission and controller activation retain the 90% ceiling.
+# A signed, repository/SHA/profile-scoped runtime override can rise to 95% for
+# one short job; the 4.5 GiB free-space floor and measured profile reservation
+# remain mandatory. Keep these limits separate so a per-job exception cannot
+# widen normal worker or controller activation policy.
 HARD_MAX_DISK_USED_PCT = 90.0
+MAX_OVERRIDE_DISK_USED_PCT = 95.0
 MAX_OVERRIDE_SECONDS = 900
 DISK_ONLY_BLOCKERS = frozenset({"disk_free_gib", "disk_used_pct"})
 
@@ -845,7 +847,7 @@ class CapacityOverrideDirective(BaseModel):
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     profiles: tuple[str, ...] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
-    max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
+    max_disk_used_pct: float = Field(ge=0, le=MAX_OVERRIDE_DISK_USED_PCT)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=1000)
     issued_at: str = Field(min_length=1, max_length=64)
@@ -892,7 +894,7 @@ def verify_capacity_override(
         raise ValueError("capacity override profile mismatch")
     if directive.min_disk_free_gib < HARD_MIN_FREE_GIB:
         raise ValueError("capacity override violates hard free-space floor")
-    if directive.max_disk_used_pct > HARD_MAX_DISK_USED_PCT:
+    if directive.max_disk_used_pct > MAX_OVERRIDE_DISK_USED_PCT:
         raise ValueError("capacity override violates hard disk-use ceiling")
     issued_at = parse_utc(directive.issued_at)
     expires_at = parse_utc(directive.expires_at)
@@ -999,7 +1001,7 @@ class OperationStore:
             raise ValueError("at least one profile is required")
         if min_disk_free_gib < HARD_MIN_FREE_GIB:
             raise ValueError("minimum free space is below the hard floor")
-        if max_disk_used_pct > HARD_MAX_DISK_USED_PCT:
+        if max_disk_used_pct > MAX_OVERRIDE_DISK_USED_PCT:
             raise ValueError("maximum disk use is above the hard ceiling")
         if max_disk_used_pct < 0:
             raise ValueError("maximum disk use cannot be negative")

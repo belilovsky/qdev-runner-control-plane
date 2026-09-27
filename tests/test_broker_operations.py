@@ -3166,7 +3166,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
             "head_sha": "a" * 40,
             "profiles": ["qdev-ci-docker"],
             "min_disk_free_gib": 4.5,
-            "max_disk_used_pct": 90.0,
+            "max_disk_used_pct": 95.0,
             "duration_seconds": 300,
             "owner": "portfolio-ci",
             "reason": "bounded disk-only recovery",
@@ -3179,6 +3179,7 @@ def test_operator_audit_and_override_are_signed_and_reach_heartbeat(tmp_path: Pa
     assert operation["repository"] == "belilovsky/qazshield"
     assert operation["head_sha"] == "a" * 40
     assert operation["min_disk_free_gib"] == 4.5
+    assert operation["max_disk_used_pct"] == 95.0
 
     directive_response = _heartbeat(client, scope_id=scope_id)
     directive = directive_response["capacity_override"]
@@ -4361,8 +4362,8 @@ def test_override_refuses_worker_with_active_task(tmp_path: Path) -> None:
     assert response.json()["detail"] == "worker has an active task"
 
 
-@pytest.mark.parametrize("disk_used_pct", (91.0, 95.0, 97.0))
-def test_override_rejects_every_disk_threshold_above_ninety(
+@pytest.mark.parametrize("disk_used_pct", (95.1, 96.0, 97.0))
+def test_override_rejects_every_disk_threshold_above_ninety_five(
     tmp_path: Path, disk_used_pct: float
 ) -> None:
     client = _app(tmp_path)
