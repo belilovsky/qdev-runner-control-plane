@@ -1055,6 +1055,32 @@ def validate_candidate(request: ReleaseAdmissionRequest, lane: ReleaseLane) -> N
         and receipt.get("artifact_type") != "controller-private-archive"
     ):
         raise ReleaseLaneError("QazPolit candidate must use a controller-private archive")
+    elif lane.project_id == "qantar":
+        evidence = receipt.get("evidence")
+        evidence_limits = {
+            "expanded_release_bytes": 8 * 1024**3,
+            "bundle_payload_bytes": 12 * 1024**3,
+            "bundle_image_size_bytes": 64 * 1024**3,
+            "application_image_size_bytes": 64 * 1024**3,
+        }
+        if (
+            receipt.get("artifact_type") != "oci"
+            or receipt.get("workflow") != "CI"
+            or receipt.get("job") != "release"
+            or receipt.get("runner_profile") != "qdev-ci"
+            or not isinstance(evidence, dict)
+            or set(evidence) != {"schema", *evidence_limits}
+            or evidence.get("schema") != "qantar-qdev-release-capacity-evidence-v1"
+            or any(
+                isinstance(evidence.get(field), bool)
+                or not isinstance(evidence.get(field), int)
+                or not 1 <= evidence[field] <= maximum
+                for field, maximum in evidence_limits.items()
+            )
+        ):
+            raise ReleaseLaneError(
+                "Qantar candidate must use its scoped CI job and capacity evidence"
+            )
     qmt_fields = {"release_version", "migration_receipt_digest", "contract_digest"}
     if lane.project_id == "kaztilshi":
         if not qmt_fields.issubset(receipt):
@@ -1099,6 +1125,23 @@ def candidate_evidence(job: dict[str, Any], lane: ReleaseLane) -> dict[str, Any]
             "release_version": receipt.get("release_version"),
             "migration_receipt_digest": receipt.get("migration_receipt_digest"),
             "contract_digest": receipt.get("contract_digest"),
+        }
+    elif lane.project_id == "qantar":
+        source_evidence = receipt.get("evidence")
+        if not isinstance(source_evidence, dict):
+            raise ReleaseLaneError("Qantar candidate capacity evidence is invalid")
+        evidence = {
+            "schema": "qdev-qantar-ci-candidate-evidence-v1",
+            "candidate_receipt_sha256": evidence["candidate_receipt_sha256"],
+            **{
+                field: source_evidence[field]
+                for field in (
+                    "expanded_release_bytes",
+                    "bundle_payload_bytes",
+                    "bundle_image_size_bytes",
+                    "application_image_size_bytes",
+                )
+            },
         }
     return evidence
 
@@ -1508,6 +1551,31 @@ def _validate_artifact_provenance(provenance: object, lane: ReleaseLane) -> None
             or not _is_digest(provenance.get("release_manifest_sha256"))
         ):
             raise ReleaseLaneError("runtime QazAgents artifact provenance is invalid")
+        return
+    if lane.project_id == "qantar":
+        expected = {
+            "candidate_receipt_sha256",
+            "bundle_manifest_sha256",
+            "source_archive_sha256",
+            "image_receipt_sha256",
+            "image_sbom_sha256",
+            "application_image_id",
+        }
+        bootstrap_fields = {"legacy_runtime_receipt_sha256"}
+        if set(provenance) == bootstrap_fields:
+            if not isinstance(
+                provenance.get("legacy_runtime_receipt_sha256"), str
+            ) or not _HEX64.fullmatch(provenance["legacy_runtime_receipt_sha256"]):
+                raise ReleaseLaneError("runtime Qantar bootstrap provenance is invalid")
+            return
+        if set(provenance) != expected:
+            raise ReleaseLaneError("runtime Qantar artifact provenance fields are invalid")
+        if any(
+            not isinstance(provenance.get(field), str)
+            or _HEX64.fullmatch(provenance[field]) is None
+            for field in expected - {"application_image_id"}
+        ) or not _is_digest(provenance.get("application_image_id")):
+            raise ReleaseLaneError("runtime Qantar artifact provenance is invalid")
         return
     if lane.project_id == "kaztilshi":
         expected = {
@@ -2244,6 +2312,11 @@ class ReleaseStore:
         with self._lock(lane.name):
             return self._active_job_unlocked(lane)
 
+    def current_job(self, lane: ReleaseLane) -> dict[str, Any] | None:
+        """Return the latest journal-reconciled release snapshot for a lane."""
+        with self._lock(lane.name):
+            return self._job_unlocked(lane)
+
     def admit(
         self,
         request: ReleaseAdmissionRequest,
@@ -2525,6 +2598,18 @@ class ReleaseStore:
                     raise ReleaseLaneError(
                         "runtime QazAgents artifact provenance does not match candidate evidence"
                     )
+            elif lane.project_id == "qantar":
+                candidate_receipt = job.get("candidate_receipt", {})
+                actual_provenance = receipt.get("artifact_provenance", {})
+                if (
+                    not isinstance(candidate_receipt, dict)
+                    or not isinstance(actual_provenance, dict)
+                    or actual_provenance.get("candidate_receipt_sha256")
+                    != hashlib.sha256(_canonical_bytes(candidate_receipt)).hexdigest()
+                ):
+                    raise ReleaseLaneError(
+                        "runtime Qantar provenance does not match candidate evidence"
+                    )
             job["status"] = "verified"
             job["verified_at"] = time.time() if now is None else now
             job["runtime_receipt"] = receipt
@@ -2642,10 +2727,15 @@ class ReleaseStore:
 
     def job(self, lane: ReleaseLane, release_id: str) -> dict[str, Any] | None:
         with self._lock(lane.name):
-            job = self._job_unlocked(lane)
-            if job is None or job.get("release_id") != release_id:
-                return None
-            return job
+            current = self._job_unlocked(lane)
+            events = self._operation_events_unlocked(lane)
+            for event in reversed(events):
+                snapshot = event.get("job_snapshot")
+                if isinstance(snapshot, dict) and snapshot.get("release_id") == release_id:
+                    return snapshot
+            return (
+                current if current is not None and current.get("release_id") == release_id else None
+            )
 
 
 def admission_receipt(job: dict[str, Any]) -> dict[str, Any]:

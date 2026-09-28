@@ -521,6 +521,22 @@ class QazPolitGitHubReleaseRequest(BaseModel):
     artifact_size_bytes: int = Field(gt=0)
 
 
+class QantarCIReleaseRequest(BaseModel):
+    """Candidate OCI tuple submitted by Qantar's controller-assigned release job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: Literal["qdev-qantar-ci-release-v1"] = Field(alias="schema")
+    job_id: int = Field(gt=0)
+    source_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    artifact_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    artifact_ref: str = Field(min_length=1, max_length=256)
+    expanded_release_bytes: int = Field(gt=0, le=8 * 1024**3)
+    bundle_payload_bytes: int = Field(gt=0, le=12 * 1024**3)
+    bundle_image_size_bytes: int = Field(gt=0, le=64 * 1024**3)
+    application_image_size_bytes: int = Field(gt=0, le=64 * 1024**3)
+
+
 def verify_signature(secret: str, body: bytes, signature: str | None) -> bool:
     if not signature or not signature.startswith("sha256="):
         return False
@@ -543,6 +559,59 @@ def artifact_job_is_active(
         and str(job["head_sha"]) == sha
         and str(job["status"]) in {"claimed", "running"}
     )
+
+
+def qantar_ci_release_scope(
+    job: dict[str, Any] | None, source_sha: str, provider_job_id: int
+) -> dict[str, int] | None:
+    """Resolve the exact workflow_job identity allowed to request Qantar release."""
+    if (
+        job is None
+        or str(job.get("repository")) != "belilovsky/qantar"
+        or str(job.get("head_sha", "")).lower() != source_sha
+        or str(job.get("head_branch")) != "main"
+        or str(job.get("profile") or "") != "qdev-ci"
+    ):
+        return None
+    try:
+        payload = json.loads(str(job["payload_json"]))
+        workflow_job = payload.get("workflow_job") if isinstance(payload, dict) else None
+        labels = json.loads(str(job["labels_json"]))
+        if not isinstance(workflow_job, dict) or not isinstance(labels, list):
+            return None
+        attempt = int(workflow_job["run_attempt"])
+        run_id = int(workflow_job["run_id"])
+        actual_job_id = int(workflow_job["id"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    expected_labels = {
+        "self-hosted",
+        "Linux",
+        "X64",
+        "qdev-ci",
+        f"qdev-job-{run_id}-{attempt}-release",
+    }
+    if (
+        len(labels) != len(expected_labels)
+        or any(not isinstance(label, str) for label in labels)
+        or set(labels) != expected_labels
+        or str(job.get("status")) not in {"claimed", "running", "completed"}
+        or int(job.get("job_id") or 0) != provider_job_id
+        or actual_job_id != provider_job_id
+        or run_id < 1
+        or attempt < 1
+        or run_id != int(job.get("run_id") or 0)
+        or workflow_job.get("name") != "release"
+        or str(workflow_job.get("path") or "")
+        .replace("\\", "/")
+        .removeprefix("./")
+        .split("@", 1)[0]
+        not in {".github/workflows/ci.yml", "ci.yml"}
+        or str(workflow_job.get("head_sha") or "").lower() != source_sha
+        or str(workflow_job.get("head_branch") or "") != "main"
+    ):
+        return None
+    return {"run_id": run_id, "job_id": actual_job_id, "attempt": attempt}
 
 
 def _release_host_dispatch_signing_key(path: Path, identity: str) -> str:
@@ -1873,12 +1942,241 @@ def create_app(
             ),
         }
 
+    def process_qantar_release_intents(limit: int = 20) -> int:
+        """Admit exact Qantar intents only from the private controller process."""
+        if settings.surface != "internal":
+            return 0
+        intents = store.pending_qantar_release_intents(limit=limit)
+        if not intents:
+            return 0
+        try:
+            lane = release_policy().lane("qdev-release-qantar")
+            registry_entry = managed_registry().entry_for_id("qantar")
+            if (
+                registry_entry is None
+                or registry_entry.project_id != "qantar"
+                or registry_entry.repository != "belilovsky/qantar"
+                or registry_entry.artifact_repository != "registry.ci.qdev.run/qantar"
+                or registry_entry.native_release_profile != "qantar-transactional-release-v1"
+                or registry_entry.host_identity != lane.host_agent_mtls_identity
+                or "qdev-ci" not in registry_entry.allowed_profiles
+                or lane.canonical_repository != registry_entry.repository
+            ):
+                raise ManagedRegistryError("Qantar release registry binding is invalid")
+        except (HTTPException, ReleaseLaneError, ManagedRegistryError) as error:
+            LOGGER.warning("Qantar release admission policy is unavailable: %s", error)
+            return 0
+
+        admitted = 0
+        release_store = release_state()
+        for intent in intents:
+            job_id = int(intent["job_id"])
+            source_sha = str(intent["source_sha"])
+            job = store.job(job_id)
+            scope = qantar_ci_release_scope(job, source_sha, job_id)
+            if scope is None or job is None:
+                store.finish_qantar_release_intent(
+                    job_id, state="rejected", result_code="ci_job_identity_mismatch"
+                )
+                continue
+            try:
+                capacity_evidence = json.loads(str(intent.get("capacity_evidence_json") or "{}"))
+            except json.JSONDecodeError:
+                capacity_evidence = None
+            evidence_limits = {
+                "expanded_release_bytes": 8 * 1024**3,
+                "bundle_payload_bytes": 12 * 1024**3,
+                "bundle_image_size_bytes": 64 * 1024**3,
+                "application_image_size_bytes": 64 * 1024**3,
+            }
+            if (
+                not isinstance(capacity_evidence, dict)
+                or set(capacity_evidence) != set(evidence_limits)
+                or any(
+                    isinstance(capacity_evidence.get(field), bool)
+                    or not isinstance(capacity_evidence.get(field), int)
+                    or not 1 <= capacity_evidence[field] <= maximum
+                    for field, maximum in evidence_limits.items()
+                )
+            ):
+                store.finish_qantar_release_intent(
+                    job_id,
+                    state="rejected",
+                    result_code="release_capacity_evidence_invalid",
+                )
+                continue
+            artifact_digest = str(intent["artifact_digest"])
+            artifact_ref = str(intent["artifact_ref"])
+            candidate_receipt = {
+                "schema": "qdev-release-candidate-receipt-v1",
+                "status": "passed",
+                "source_sha": source_sha,
+                "artifact_digest": artifact_digest,
+                "artifact_ref": artifact_ref,
+                "artifact_type": "oci",
+                "repository": "belilovsky/qantar",
+                "workflow": "CI",
+                "job": "release",
+                "run_id": scope["run_id"],
+                "job_id": scope["job_id"],
+                "attempt": scope["attempt"],
+                "runner_profile": "qdev-ci",
+                "evidence": {
+                    "schema": "qantar-qdev-release-capacity-evidence-v1",
+                    **capacity_evidence,
+                },
+            }
+            candidate = ReleaseAdmissionRequest.model_validate(
+                {
+                    "schema": "qdev-controller-release-request-v1",
+                    "release_lane": lane.name,
+                    "project_id": lane.project_id,
+                    "placement": lane.placement,
+                    "source_sha": source_sha,
+                    "artifact_digest": artifact_digest,
+                    "artifact_ref": artifact_ref,
+                    "candidate_receipt": candidate_receipt,
+                }
+            )
+            current = release_store.current_job(lane)
+            tuple_matches = bool(
+                current
+                and current.get("source_sha") == source_sha
+                and current.get("artifact_digest") == artifact_digest
+                and current.get("artifact_ref") == artifact_ref
+            )
+            if current is not None and tuple_matches:
+                if current.get("candidate_receipt") != candidate_receipt:
+                    store.finish_qantar_release_intent(
+                        job_id, state="rejected", result_code="release_candidate_conflict"
+                    )
+                    continue
+                store.finish_qantar_release_intent(
+                    job_id, state="admitted", release_id=str(current["release_id"])
+                )
+                admitted += 1
+                continue
+            if str(job.get("status")) != "running":
+                store.finish_qantar_release_intent(
+                    job_id, state="rejected", result_code="ci_job_not_running"
+                )
+                continue
+            if release_store.active_job(lane) is not None:
+                continue
+            admission_now = int(datetime.now(tz=UTC).timestamp())
+            try:
+                validate_candidate(candidate, lane)
+                claim = controller_claim_payload(
+                    candidate,
+                    lane,
+                    issued_at=admission_now,
+                    expires_at=admission_now + 120,
+                )
+                candidate = candidate.model_copy(
+                    update={
+                        "controller_claim": claim,
+                        "controller_claim_signature": sign_controller_claim(
+                            claim, signing_key=settings.controller_claim_key
+                        ),
+                    }
+                )
+                validate_controller_claim(
+                    candidate,
+                    lane,
+                    signing_key=settings.controller_claim_key,
+                    now=admission_now,
+                )
+                ready_host_agent(lane)
+            except ReleaseLaneError as error:
+                message = str(error)
+                if message in {
+                    "managed release host-agent heartbeat is stale",
+                    "managed release host-agent capacity is insufficient",
+                }:
+                    continue
+                store.finish_qantar_release_intent(
+                    job_id, state="rejected", result_code="candidate_rejected"
+                )
+                LOGGER.warning("Qantar release candidate rejected: %s", message)
+                continue
+            except HTTPException as error:
+                if error.status_code in {409, 503}:
+                    continue
+                store.finish_qantar_release_intent(
+                    job_id, state="rejected", result_code="host_preflight_rejected"
+                )
+                continue
+            try:
+                release_job, _idempotent = release_store.admit(
+                    candidate,
+                    lane,
+                    now=admission_now,
+                    lease_ttl_seconds=settings.release_job_lease_ttl_seconds,
+                )
+            except ReleaseLaneError as error:
+                message = str(error)
+                if message in {
+                    "managed release host-agent heartbeat is stale",
+                    "managed release host-agent capacity is insufficient",
+                    "release lane already has an active immutable tuple",
+                }:
+                    continue
+                code = (
+                    "candidate_matches_active_release"
+                    if message == "managed candidate must differ from rollback anchor"
+                    else "release_admission_rejected"
+                )
+                store.finish_qantar_release_intent(job_id, state="rejected", result_code=code)
+                LOGGER.warning("Qantar release admission rejected: %s", message)
+                continue
+            store.finish_qantar_release_intent(
+                job_id, state="admitted", release_id=str(release_job["release_id"])
+            )
+            admitted += 1
+        return admitted
+
+    def reconcile_qantar_release_intents(limit: int = 20) -> int:
+        """Publish only terminal controller release outcomes to the CI outbox."""
+        if settings.surface != "internal":
+            return 0
+        try:
+            lane = release_policy().lane("qdev-release-qantar")
+            release_store = release_state()
+        except (HTTPException, ReleaseLaneError):
+            return 0
+        reconciled = 0
+        for intent in store.admitted_qantar_release_intents(limit=limit):
+            release_id = intent.get("release_id")
+            if not isinstance(release_id, str) or not release_id:
+                continue
+            job = release_store.job(lane, release_id)
+            if job is None:
+                continue
+            status = str(job.get("status") or "")
+            if status == "verified":
+                store.finish_qantar_release_intent(
+                    int(intent["job_id"]), state="verified", release_id=release_id
+                )
+                reconciled += 1
+            elif status == "rolled_back":
+                store.finish_qantar_release_intent(
+                    int(intent["job_id"]),
+                    state="rejected",
+                    release_id=release_id,
+                    result_code="release_rolled_back",
+                )
+                reconciled += 1
+        return reconciled
+
     async def scheduler_loop() -> None:
         while True:
             try:
                 await asyncio.to_thread(reconcile_dispatch_intents, now=None, limit=20)
                 await asyncio.to_thread(reconcile_retry_attempts, now=None, limit=20)
                 await asyncio.to_thread(dispatch_due_schedules, now=None, limit=20)
+                if settings.surface == "internal":
+                    await asyncio.to_thread(reconcile_qantar_release_intents, limit=20)
+                    await asyncio.to_thread(process_qantar_release_intents, limit=20)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -3269,6 +3567,92 @@ def create_app(
         except ReleaseLaneError as error:
             raise HTTPException(status_code=409, detail="release lane is busy") from error
         return admission_receipt(job)
+
+    @app.post("/artifacts/releases/qantar", status_code=202)
+    def admit_qantar_ci_release(
+        request: QantarCIReleaseRequest,
+        x_qdev_artifact_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Queue one Qantar candidate for private internal-broker admission."""
+
+        repository = "belilovsky/qantar"
+        if not x_qdev_artifact_token:
+            raise HTTPException(status_code=401, detail="QDev CI artifact identity required")
+        job = store.job(request.job_id)
+        if (
+            job is None
+            or str(job.get("status")) != "running"
+            or not artifact_job_is_active(job, repository, request.source_sha, request.job_id)
+        ):
+            raise HTTPException(status_code=401, detail="QDev CI job identity is not active")
+        expected_token = artifact_token(
+            artifact_token_key, repository, request.source_sha, request.job_id
+        )
+        if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+            raise HTTPException(status_code=401, detail="QDev CI artifact identity rejected")
+        if qantar_ci_release_scope(job, request.source_sha, request.job_id) is None:
+            raise HTTPException(status_code=403, detail="Qantar CI release job is outside policy")
+        if request.artifact_ref != f"registry.ci.qdev.run/qantar@{request.artifact_digest}":
+            raise HTTPException(
+                status_code=422, detail="Qantar release artifact identity is invalid"
+            )
+        try:
+            intent, _idempotent = store.enqueue_qantar_release_intent(
+                job_id=request.job_id,
+                source_sha=request.source_sha,
+                artifact_digest=request.artifact_digest,
+                artifact_ref=request.artifact_ref,
+                capacity_evidence={
+                    "expanded_release_bytes": request.expanded_release_bytes,
+                    "bundle_payload_bytes": request.bundle_payload_bytes,
+                    "bundle_image_size_bytes": request.bundle_image_size_bytes,
+                    "application_image_size_bytes": request.application_image_size_bytes,
+                },
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409, detail="Qantar CI job already submitted another artifact"
+            ) from error
+        result: dict[str, Any] = {
+            "schema": "qdev-qantar-ci-release-intent-v1",
+            "status": intent["state"],
+            "job_id": request.job_id,
+        }
+        if intent.get("release_id"):
+            result["release_id"] = intent["release_id"]
+        if intent.get("result_code"):
+            result["result_code"] = intent["result_code"]
+        return result
+
+    @app.get("/artifacts/releases/qantar/{job_id}")
+    def qantar_ci_release_status(
+        job_id: int,
+        x_qdev_artifact_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        repository = "belilovsky/qantar"
+        intent = store.qantar_release_intent(job_id)
+        if intent is None:
+            raise HTTPException(status_code=404, detail="Qantar release intent was not found")
+        job = store.job(job_id)
+        if not artifact_job_is_active(job, repository, str(intent["source_sha"]), job_id):
+            raise HTTPException(status_code=401, detail="QDev CI job identity is not active")
+        if not x_qdev_artifact_token:
+            raise HTTPException(status_code=401, detail="QDev CI artifact identity required")
+        expected_token = artifact_token(
+            artifact_token_key, repository, str(intent["source_sha"]), job_id
+        )
+        if not secrets.compare_digest(x_qdev_artifact_token, expected_token):
+            raise HTTPException(status_code=401, detail="QDev CI artifact identity rejected")
+        result: dict[str, Any] = {
+            "schema": "qdev-qantar-ci-release-intent-v1",
+            "status": intent["state"],
+            "job_id": job_id,
+        }
+        if intent.get("release_id"):
+            result["release_id"] = intent["release_id"]
+        if intent.get("result_code"):
+            result["result_code"] = intent["result_code"]
+        return result
 
     @app.get("/internal/v1/releases/{lane_name}/{release_id}")
     def release_status(

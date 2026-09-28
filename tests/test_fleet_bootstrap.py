@@ -301,6 +301,17 @@ def test_bootstrap_policy_allows_rp_private_host_enrolment() -> None:
     assert lane.host_agent_mtls_identity == "qdev-host-agent:rp-private-runtime"
 
 
+def test_bootstrap_policy_allows_qantar_host_enrolment() -> None:
+    policy = FleetBootstrapPolicy(POLICY, RELEASE_LANES)
+    request = _request(action="enrol-host-agent", release_lane="qdev-release-qantar")
+
+    policy.validate(request)
+    lane = policy.release_lane("qdev-release-qantar")
+    assert lane.project_id == "qantar"
+    assert lane.placement == "qantar-production-controller"
+    assert lane.host_agent_mtls_identity == "qdev-host-agent:qantar-production-controller"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

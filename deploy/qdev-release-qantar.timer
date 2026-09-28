@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Qantar's controller-managed release host agent
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=2s
+Unit=qdev-release-qantar.service
+
+[Install]
+WantedBy=timers.target

@@ -110,6 +110,11 @@ def test_installer_is_idempotent_and_preserves_existing_agents(tmp_path: Path) -
     assert first.count("<!-- qdev-runner-policy:start -->") == 1
     assert installer.install(root) == []
     assert run_guard(root).returncode == 0
+    contract_workflow = (root / ".github/workflows/qdev-runner-contract.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in contract_workflow
+    assert 'python-version: "3.12"' in contract_workflow
 
 
 def test_installer_installs_test_report_uploader(tmp_path: Path) -> None:
@@ -355,6 +360,7 @@ def test_v3_installs_controller_managed_contract_and_accepts_exact_labels(
     )
     assert "ubuntu-latest" not in contract_workflow
     assert "qdev-job-${{ github.run_id }}-${{ github.run_attempt }}-contract" in (contract_workflow)
+    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in contract_workflow
     assert "controller-managed" in (root / ".github/QDEV_RUNNERS.md").read_text(encoding="utf-8")
 
 

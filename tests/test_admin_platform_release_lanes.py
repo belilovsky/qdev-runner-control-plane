@@ -69,6 +69,16 @@ def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
             "payload_sha256": "8" * 64,
             "archive_size_bytes": 155_683_510,
         }
+    elif profile.name == "qantar":
+        dependencies = {"application_image_id": "sha256:" + "9" * 64}
+        provenance = {
+            "candidate_receipt_sha256": "4" * 64,
+            "bundle_manifest_sha256": "5" * 64,
+            "source_archive_sha256": "6" * 64,
+            "image_receipt_sha256": "7" * 64,
+            "image_sbom_sha256": "8" * 64,
+            "application_image_id": "sha256:" + "9" * 64,
+        }
     elif profile.name == "rp":
         dependencies = {
             "deployment_profile": "reports-private",
@@ -101,7 +111,7 @@ def _native_receipt(profile: object, release: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _candidate_evidence(profile: object) -> dict[str, str]:
+def _candidate_evidence(profile: object) -> dict[str, Any]:
     if profile.name == "qmt":
         return {
             "schema": "qdev-qmt-candidate-evidence-v1",
@@ -109,6 +119,15 @@ def _candidate_evidence(profile: object) -> dict[str, str]:
             "release_version": "4.4.2",
             "migration_receipt_digest": "sha256:" + "5" * 64,
             "contract_digest": "6" * 64,
+        }
+    if profile.name == "qantar":
+        return {
+            "schema": "qdev-qantar-ci-candidate-evidence-v1",
+            "candidate_receipt_sha256": "4" * 64,
+            "expanded_release_bytes": 2_000_000,
+            "bundle_payload_bytes": 3_000_000,
+            "bundle_image_size_bytes": 4_000_000,
+            "application_image_size_bytes": 5_000_000,
         }
     return {
         "schema": "qdev-release-candidate-evidence-v1",
@@ -288,12 +307,25 @@ def _managed_request(
         "status": "passed",
         **candidate,
         "repository": lane.canonical_repository,
-        "workflow": workflow,
+        "workflow": "CI" if lane.project_id == "qantar" else workflow,
         "job": job_name,
         "run_id": 101,
         "job_id": 202,
         "attempt": 1,
-        "runner_profile": "qdev-ci-docker",
+        "runner_profile": "qdev-ci" if lane.project_id == "qantar" else "qdev-ci-docker",
+        **(
+            {
+                "evidence": {
+                    "schema": "qantar-qdev-release-capacity-evidence-v1",
+                    "expanded_release_bytes": 2_000_000,
+                    "bundle_payload_bytes": 3_000_000,
+                    "bundle_image_size_bytes": 4_000_000,
+                    "application_image_size_bytes": 5_000_000,
+                }
+            }
+            if lane.project_id == "qantar"
+            else {}
+        ),
     }
     request = ReleaseAdmissionRequest.model_validate(
         {
@@ -411,6 +443,7 @@ def test_admin_platform_lanes_are_exact_and_total_has_no_total_kz_endpoint() -> 
         "qdev-release-cmnt": ("belilovsky/cmnt-web", "cmnt-root-rolling-launcher-v1"),
         "qdev-release-total": ("belilovsky/total-kz", "total-qdev-native-release-v1"),
         "qdev-release-qazposter": ("belilovsky/qazposter", "qazposter-native-release-v1"),
+        "qdev-release-qantar": ("belilovsky/qantar", "qantar-transactional-release-v1"),
         "qdev-release-rp": ("belilovsky/ipos", "rp-native-immutable-release-v1"),
     }
     for lane_name, (repository, adapter) in expected.items():
@@ -432,6 +465,7 @@ def test_product_lanes_cannot_drift_from_the_managed_registry() -> None:
         "qdev-release-cmnt": "cmnt",
         "qdev-release-total": "total",
         "qdev-release-qazposter": "qazposter",
+        "qdev-release-qantar": "qantar",
         "qdev-release-rp": "rp",
         "qdev-release-qazagents-static": "qazagents",
     }
@@ -665,7 +699,16 @@ def test_controller_initial_heartbeat_establishes_one_measured_anchor(
 
 
 def test_agent_profiles_bind_each_release_to_a_compiled_native_adapter() -> None:
-    assert set(AGENT.PROFILES) == {"ortcom", "cmnt", "total", "qazposter", "qmt", "qazpolit", "rp"}
+    assert set(AGENT.PROFILES) == {
+        "ortcom",
+        "cmnt",
+        "total",
+        "qazposter",
+        "qantar",
+        "qmt",
+        "qazpolit",
+        "rp",
+    }
     for profile in AGENT.PROFILES.values():
         release = _release(profile)
         assert AGENT._release(release, profile) == release
@@ -695,6 +738,21 @@ def test_qmt_candidate_evidence_is_exact_and_version_bound() -> None:
             AGENT._candidate_evidence({**evidence, field: invalid}, profile)
     with pytest.raises(AGENT.AgentError, match="shape"):
         AGENT._candidate_evidence({**evidence, "image_digest": DIGEST}, profile)
+
+
+def test_qantar_candidate_evidence_is_exact_and_capacity_bounded() -> None:
+    profile = AGENT.PROFILES["qantar"]
+    evidence = _candidate_evidence(profile)
+    assert AGENT._candidate_evidence(evidence, profile) == evidence
+    for field, invalid in (
+        ("expanded_release_bytes", True),
+        ("bundle_payload_bytes", 12 * 1024**3 + 1),
+        ("bundle_image_size_bytes", 0),
+    ):
+        with pytest.raises(AGENT.AgentError, match="Qantar candidate capacity"):
+            AGENT._candidate_evidence({**evidence, field: invalid}, profile)
+    with pytest.raises(AGENT.AgentError, match="shape"):
+        AGENT._candidate_evidence({**evidence, "artifact_ref": "untrusted"}, profile)
 
 
 def test_qmt_native_release_receives_only_signed_candidate_evidence(
@@ -969,6 +1027,37 @@ def test_agent_bootstraps_first_heartbeat_from_measured_runtime_and_retries_safe
         "bootstrap_anchor_measured",
         "bootstrap_anchor_persisted",
     ]
+
+
+def test_qantar_bootstrap_only_sends_heartbeat_without_polling_release_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _test_profile(tmp_path, "qantar")
+    config = _config(profile)
+    active = _variant(profile, "b")
+    rollback = _variant(profile, "c")
+    _patch_local_security(monkeypatch)
+    _provision_agent_state(profile, active, rollback)
+    monkeypatch.setattr(AGENT, "native_receipt", lambda *_, **__: _native_receipt(profile, active))
+    observed: list[str] = []
+
+    def fake_request(
+        _config: object,
+        _method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> tuple[int, bytes]:
+        observed.append(path)
+        assert path.endswith("/heartbeat")
+        assert payload is not None
+        return 200, b""
+
+    monkeypatch.setattr(AGENT, "request", fake_request)
+    result = AGENT.run_once(config, profile, bootstrap_only=True)
+    assert result["status"] == "heartbeat"
+    assert result["active_release"] == active
+    assert observed == [f"/internal/v1/release-hosts/{profile.placement}/heartbeat"]
 
 
 def test_agent_run_once_completes_signed_managed_release_without_name_or_type_errors(

@@ -135,6 +135,8 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "deploy/qdev-release-cmnt.service" in script
     assert "deploy/qdev-release-total.service" in script
     assert "deploy/qdev-release-qazposter.service" in script
+    assert "deploy/qdev-release-qantar.service" in script
+    assert "deploy/qdev-release-qantar.timer" in script
     assert "scripts/dispatch_fleet_bootstrap.py" in script
     assert "scripts/bootstrap_admin_platform_ledger_v3.py" in script
     assert "scripts/prepare_controller_candidate.py" in script
@@ -143,6 +145,9 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "scripts/controller_activation_assets.py" in script
     assert "scripts/qdev_controller_activation_adapter.py" in script
     assert "scripts/qdev_release_host_agent_enrol_adapter.py" in script
+    assert "scripts/qantar_release_host_enrol_adapter.py" in script
+    assert "scripts/qantar_release_host_enrol_apply.py" in script
+    assert "scripts/qantar_native_release_adapter.py" in script
     assert "scripts/qdev_fleet_worker_recovery_adapter.py" in script
     assert "scripts/qdev_fixed_worker_recovery_dispatch.py" in script
     assert "scripts/qdev_recovery_host_enrol_adapter.py" in script
@@ -157,6 +162,7 @@ def test_controller_activation_is_targeted_and_rollback_aware() -> None:
     assert "/usr/local/sbin/qdev-controller-activate" in script
     assert "/usr/local/sbin/qdev-controller-activation-assets" in script
     assert "/usr/local/sbin/qdev-release-host-agent-enrol" in script
+    assert "/usr/local/sbin/qantar-release-host-enrol" in script
     assert "/usr/local/sbin/qdev-fleet-worker-recovery" in script
     assert "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch" in script
     assert "/usr/local/sbin/qdev-recovery-host-enrol" in script

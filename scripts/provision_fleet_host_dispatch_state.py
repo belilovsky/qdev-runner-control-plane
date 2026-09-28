@@ -17,6 +17,17 @@ KEY_MAP = CONFIG_ROOT / "release-host-dispatch-keys.json"
 ENROLMENT_REGISTRY = CONFIG_ROOT / "release-host-enrolment-targets.json"
 RECOVERY_REGISTRY = CONFIG_ROOT / "fleet-worker-recovery-targets.json"
 RECOVERY_ADAPTER = "/usr/local/sbin/qdev-fixed-worker-recovery-dispatch"
+QANTAR_ENROLMENT_TARGET = {
+    "release_lane": "qdev-release-qantar",
+    "project_id": "qantar",
+    "placement": "qantar-production-controller",
+    "host_agent_mtls_identity": "qdev-host-agent:qantar-production-controller",
+    "native_host_adapter": "qantar-transactional-release-v1",
+    "rollback_reference": (
+        "scripts/deploy.sh automatic recovery and scripts/rollback.sh retained-release activation"
+    ),
+    "adapter_path": "/usr/local/sbin/qantar-release-host-enrol",
+}
 RECOVERY_TARGETS: dict[str, dict[str, object]] = {
     "actions.runner.belilovsky-platform-portal.qdev-platform-ci-187": {
         "worker_name": "qdev-platform-ci-187",
@@ -71,6 +82,7 @@ HOST_IDENTITIES = (
     "qdev-host-agent:total-qdev-origin",
     "qdev-host-agent:qazposter-production-controller",
     "qdev-host-agent:qazgeo-app-runtime",
+    "qdev-host-agent:qantar-production-controller",
     "qdev-host-agent:rp-private-runtime",
 )
 
@@ -170,6 +182,18 @@ def _reconcile_recovery_registry() -> None:
         )
 
 
+def _reconcile_enrolment_registry() -> None:
+    _read_or_create_registry(ENROLMENT_REGISTRY, "qdev-release-host-enrolment-targets-v1")
+    document = json.loads(ENROLMENT_REGISTRY.read_text(encoding="utf-8"))
+    targets = document["targets"]
+    existing = targets.get(QANTAR_ENROLMENT_TARGET["release_lane"])
+    if existing is not None and existing != QANTAR_ENROLMENT_TARGET:
+        raise ProvisionError("Qantar host enrolment target conflicts with policy")
+    if existing is None:
+        targets[QANTAR_ENROLMENT_TARGET["release_lane"]] = QANTAR_ENROLMENT_TARGET
+        _atomic_json(ENROLMENT_REGISTRY, {"schema": document["schema"], "targets": targets})
+
+
 def _slug(identity: str) -> str:
     return identity.replace(":", "-").replace("/", "-")
 
@@ -228,7 +252,7 @@ def main() -> int:
             raise ProvisionError("dispatch secret has an invalid size")
         mapping[identity] = str(secret_path)
     _atomic_json(KEY_MAP, mapping)
-    _read_or_create_registry(ENROLMENT_REGISTRY, "qdev-release-host-enrolment-targets-v1")
+    _reconcile_enrolment_registry()
     _reconcile_recovery_registry()
     print(f"fleet_host_dispatch_state=ready identities={len(HOST_IDENTITIES)}")
     return 0

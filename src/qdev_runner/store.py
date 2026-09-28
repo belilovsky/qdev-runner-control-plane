@@ -657,6 +657,25 @@ CREATE TABLE IF NOT EXISTS test_dispatch_intents (
 CREATE INDEX IF NOT EXISTS test_dispatch_intents_state_idx
     ON test_dispatch_intents(state, updated_at);
 
+-- The public artifact ingress may authenticate a Qantar release job, but it
+-- cannot read controller release state or the claim-signing key. Hand the
+-- exact candidate tuple to the internal broker through this narrow outbox.
+CREATE TABLE IF NOT EXISTS qantar_release_intents (
+    job_id INTEGER PRIMARY KEY,
+    source_sha TEXT NOT NULL,
+    artifact_digest TEXT NOT NULL,
+    artifact_ref TEXT NOT NULL,
+    capacity_evidence_json TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL CHECK(state IN ('queued','admitted','verified','rejected')),
+    release_id TEXT,
+    result_code TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+);
+CREATE INDEX IF NOT EXISTS qantar_release_intents_state_idx
+    ON qantar_release_intents(state, created_at);
+
 -- Retry requests have a stable client/request id and a separate attempt row;
 -- the original job remains immutable history while a provider retry receives
 -- its own run/job identity.
@@ -849,6 +868,16 @@ class Store:
     @staticmethod
     def _migrate_schema(connection: sqlite3.Connection) -> None:
         """Apply additive migrations to databases created by older brokers."""
+
+        qantar_intent_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(qantar_release_intents)").fetchall()
+        }
+        if "capacity_evidence_json" not in qantar_intent_columns:
+            connection.execute(
+                "ALTER TABLE qantar_release_intents ADD COLUMN "
+                "capacity_evidence_json TEXT NOT NULL DEFAULT '{}'"
+            )
 
         job_columns = {
             str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
@@ -1518,6 +1547,149 @@ class Store:
     def job(self, job_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def enqueue_qantar_release_intent(
+        self,
+        *,
+        job_id: int,
+        source_sha: str,
+        artifact_digest: str,
+        artifact_ref: str,
+        capacity_evidence: dict[str, int],
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist one exact Qantar candidate request from the public ingress."""
+
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT * FROM qantar_release_intents WHERE job_id=?", (job_id,)
+                ).fetchone()
+                capacity_evidence_json = json.dumps(
+                    capacity_evidence, sort_keys=True, separators=(",", ":")
+                )
+                candidate = (
+                    source_sha,
+                    artifact_digest,
+                    artifact_ref,
+                    capacity_evidence_json,
+                )
+                if existing is not None:
+                    stored = tuple(
+                        str(existing[field])
+                        for field in (
+                            "source_sha",
+                            "artifact_digest",
+                            "artifact_ref",
+                            "capacity_evidence_json",
+                        )
+                    )
+                    if stored != candidate:
+                        raise ValueError("Qantar release job already has a different candidate")
+                    connection.execute("COMMIT")
+                    return dict(existing), True
+                connection.execute(
+                    """
+                    INSERT INTO qantar_release_intents(
+                        job_id, source_sha, artifact_digest, artifact_ref,
+                        capacity_evidence_json, state, created_at, updated_at
+                    ) VALUES(?,?,?,?,?, 'queued', ?, ?)
+                    """,
+                    (
+                        job_id,
+                        source_sha,
+                        artifact_digest,
+                        artifact_ref,
+                        capacity_evidence_json,
+                        now,
+                        now,
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM qantar_release_intents WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        if row is None:  # pragma: no cover - transaction guard
+            raise RuntimeError("Qantar release intent insert did not return a row")
+        return dict(row), False
+
+    def pending_qantar_release_intents(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise ValueError("Qantar release intent limit is invalid")
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM qantar_release_intents WHERE state='queued' "
+                "ORDER BY created_at, job_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def admitted_qantar_release_intents(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise ValueError("Qantar release intent limit is invalid")
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM qantar_release_intents WHERE state='admitted' "
+                "ORDER BY updated_at, job_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def qantar_release_intent(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM qantar_release_intents WHERE job_id=?", (job_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def finish_qantar_release_intent(
+        self,
+        job_id: int,
+        *,
+        state: str,
+        release_id: str | None = None,
+        result_code: str | None = None,
+    ) -> dict[str, Any] | None:
+        if state not in {"admitted", "verified", "rejected"}:
+            raise ValueError("Qantar release intent terminal state is invalid")
+        now = time.time()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT * FROM qantar_release_intents WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if existing is None:
+                    connection.execute("COMMIT")
+                    return None
+                current_state = str(existing["state"])
+                allowed = {
+                    "queued": {"admitted", "rejected"},
+                    "admitted": {"verified", "rejected"},
+                    "verified": set(),
+                    "rejected": set(),
+                }
+                if state not in allowed.get(current_state, set()):
+                    connection.execute("COMMIT")
+                    return dict(existing)
+                connection.execute(
+                    """UPDATE qantar_release_intents
+                       SET state=?, release_id=COALESCE(?, release_id), result_code=?, updated_at=?
+                       WHERE job_id=? AND state=?""",
+                    (state, release_id, result_code, now, job_id, current_state),
+                )
+                row = connection.execute(
+                    "SELECT * FROM qantar_release_intents WHERE job_id=?", (job_id,)
+                ).fetchone()
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
         return dict(row) if row is not None else None
 
     def record_test_run(self, payload: dict[str, Any], digest: str) -> tuple[dict[str, Any], bool]:

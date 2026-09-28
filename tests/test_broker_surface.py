@@ -9,6 +9,7 @@ from typing import Literal
 from fastapi.testclient import TestClient
 
 from qdev_runner.broker import (
+    artifact_token,
     create_app,
     eligible_slot_health,
     oldest_pending_age_seconds,
@@ -18,6 +19,7 @@ from qdev_runner.controller_activation import (
     ControllerTuple,
     write_public_activation_projection,
 )
+from qdev_runner.models import QueuedJob
 from qdev_runner.policy import Policy
 from qdev_runner.settings import BrokerSettings
 from qdev_runner.store import Store
@@ -103,6 +105,74 @@ def test_internal_surface_rejects_public_webhook_route(
         response = client.post("/github/workflow-job", content=b"{}")
 
     assert response.status_code == 404
+
+
+def test_public_artifact_surface_only_queues_qantar_candidate_intent(
+    tmp_path: Path,
+    policy_files: tuple[Path, Path],
+) -> None:
+    inventory, profiles = policy_files
+    settings = _settings(tmp_path, inventory, profiles, surface="public")
+    store = Store(settings.database_path)
+    source_sha = "a" * 40
+    job_id = 700
+    job = QueuedJob(
+        delivery_id="qantar-release-delivery",
+        job_id=job_id,
+        run_id=600,
+        repository="belilovsky/qantar",
+        repository_id=1,
+        installation_id=300,
+        labels=("self-hosted", "Linux", "X64", "qdev-ci", "qdev-job-600-2-release"),
+        head_sha=source_sha,
+        head_branch="main",
+        payload={
+            "workflow_job": {
+                "id": job_id,
+                "run_id": 600,
+                "run_attempt": 2,
+                "name": "release",
+                "path": ".github/workflows/ci.yml@refs/heads/main",
+                "head_sha": source_sha,
+                "head_branch": "main",
+            }
+        },
+    )
+    store.enqueue(job)
+    store.set_status(job_id, "running")
+    with store.connect() as connection:
+        connection.execute("UPDATE jobs SET profile='qdev-ci' WHERE job_id=?", (job_id,))
+    app = create_app(settings, store=store, policy=Policy(inventory, profiles), github=object())
+    digest = "sha256:" + "b" * 64
+    headers = {
+        "X-QDev-Artifact-Token": artifact_token(
+            "artifact-key", "belilovsky/qantar", source_sha, job_id
+        )
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/artifacts/releases/qantar",
+            headers=headers,
+            json={
+                "schema": "qdev-qantar-ci-release-v1",
+                "job_id": job_id,
+                "source_sha": source_sha,
+                "artifact_digest": digest,
+                "artifact_ref": f"registry.ci.qdev.run/qantar@{digest}",
+                "expanded_release_bytes": 2_000_000,
+                "bundle_payload_bytes": 3_000_000,
+                "bundle_image_size_bytes": 4_000_000,
+                "application_image_size_bytes": 5_000_000,
+            },
+        )
+        status = client.get(f"/artifacts/releases/qantar/{job_id}", headers=headers)
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert status.status_code == 200
+    assert status.json()["status"] == "queued"
+    assert store.pending_qantar_release_intents()[0]["artifact_digest"] == digest
 
 
 def test_compose_assigns_disjoint_broker_surfaces() -> None:

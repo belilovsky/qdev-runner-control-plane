@@ -141,6 +141,22 @@ lanes:
     runtime_endpoints: [https://qpost.pro/health, https://qpost.pro/api/v1/integration-contract]
     rollback_reference: immutable previous-binary rollback contract
     required_readiness: [native, public, identity]
+  qdev-release-qantar:
+    project_id: qantar
+    # Logical placement only. QDev Fleet must install the fixed Qantar adapter,
+    # mTLS identity, and measured active/rollback tuple before this lane admits work.
+    placement: qantar-production-controller
+    client_mtls_identity: qdev-release-client:qantar
+    host_agent_mtls_identity: qdev-host-agent:qantar-production-controller
+    minimum_free_gib: 20
+    heartbeat_ttl_seconds: 90
+    artifact_repository: qantar
+    canonical_repository: belilovsky/qantar
+    artifact_ref_prefix: registry.ci.qdev.run/qantar
+    native_host_adapter: qantar-transactional-release-v1
+    runtime_endpoints: [https://q22.qdev.run/health, https://q22.qdev.run/ready, https://q22.qdev.run/release.json]
+    rollback_reference: scripts/deploy.sh automatic recovery and scripts/rollback.sh retained-release activation
+    required_readiness: [native, public, identity]
   qdev-release-qazgeo:
     project_id: qazgeo
     # Logical application-runtime placement. Admission remains fail-closed

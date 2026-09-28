@@ -65,6 +65,19 @@ entries:
     host_identity: qdev-release-agent:qazposter-production-controller
     owner: QazPoster
     admission_ledger: admin-platform
+  qantar:
+    project_id: qantar
+    kind: service
+    repository: belilovsky/qantar
+    canonical_ref: main
+    artifact_repository: registry.ci.qdev.run/qantar
+    allowed_profiles: [qdev-ci, qdev-ci-browser, qdev-ci-docker]
+    native_release_profile: qantar-transactional-release-v1
+    runtime_endpoints: [https://q22.qdev.run/health, https://q22.qdev.run/ready, https://q22.qdev.run/release.json]
+    rollback_reference: scripts/deploy.sh automatic recovery and scripts/rollback.sh retained-release activation
+    host_identity: qdev-release-agent:qantar-production-controller
+    owner: Qantar
+    admission_ledger: managed-production
   qazgeo:
     project_id: qazgeo
     kind: service

@@ -15,6 +15,7 @@ from qdev_runner.broker import (
     artifact_token,
     completed_run_conclusion,
     create_app,
+    qantar_ci_release_scope,
     registry_credentials,
     verify_signature,
     worker_authenticated,
@@ -53,6 +54,50 @@ def test_artifact_credentials_expire_with_job() -> None:
     assert not artifact_job_is_active(job, "belilovsky/repo", "abc", 1)
     assert not artifact_job_is_active(job, "belilovsky/other", "abc", 1)
     assert not artifact_job_is_active(None, "belilovsky/repo", "abc", 1)
+
+
+def test_qantar_release_scope_requires_the_exact_main_release_job() -> None:
+    source_sha = "a" * 40
+    job = {
+        "job_id": 700,
+        "run_id": 600,
+        "repository": "belilovsky/qantar",
+        "head_sha": source_sha,
+        "head_branch": "main",
+        "profile": "qdev-ci",
+        "status": "running",
+        "payload_json": json.dumps(
+            {
+                "workflow_job": {
+                    "id": 700,
+                    "run_id": 600,
+                    "run_attempt": 2,
+                    "name": "release",
+                    "path": ".github/workflows/ci.yml@refs/heads/main",
+                    "head_sha": source_sha,
+                    "head_branch": "main",
+                }
+            }
+        ),
+        "labels_json": json.dumps(
+            ["self-hosted", "Linux", "X64", "qdev-ci", "qdev-job-600-2-release"]
+        ),
+    }
+    assert qantar_ci_release_scope(job, source_sha, 700) == {
+        "run_id": 600,
+        "job_id": 700,
+        "attempt": 2,
+    }
+    payload = json.loads(job["payload_json"])
+    payload["workflow_job"]["path"] = ".github/workflows/unrelated.yml@refs/heads/main"
+    job["payload_json"] = json.dumps(payload)
+    assert qantar_ci_release_scope(job, source_sha, 700) is None
+    payload["workflow_job"]["path"] = "./.github/workflows/ci.yml@refs/heads/main"
+    job["payload_json"] = json.dumps(payload)
+    job["labels_json"] = json.dumps(
+        ["self-hosted", "Linux", "X64", "qdev-ci", "qdev-job-600-2-image"]
+    )
+    assert qantar_ci_release_scope(job, source_sha, 700) is None
 
 
 def test_registry_credentials_are_limited_to_docker_profile() -> None:

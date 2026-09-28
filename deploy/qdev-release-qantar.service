@@ -1,0 +1,15 @@
+[Unit]
+Description=QDev controller-managed Qantar transactional release agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /opt/qdev-release-agents/current/qdev_admin_platform_release_host_agent.py --profile qantar --config /etc/qdev-release-agents/admin-platform.env --once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/qdev-release-agents /opt/qantar /run /var/run/docker.sock

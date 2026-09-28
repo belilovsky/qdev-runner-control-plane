@@ -40,6 +40,12 @@ def test_managed_registry_separates_admin_wave_qazgeo_and_qazagents_static() -> 
         "https://qazagents.qdev.run/skills/index.json",
     )
     assert registry.validate_claim_if_managed("belilovsky/qazagents", "qdev-ci") == qazagents
+    qantar = registry.entry_for_repository("belilovsky/qantar")
+    assert qantar is not None
+    assert qantar.admission_ledger == "managed-production"
+    assert qantar.native_release_profile == "qantar-transactional-release-v1"
+    assert qantar.artifact_repository == "registry.ci.qdev.run/qantar"
+    assert registry.validate_claim_if_managed("belilovsky/qantar", "qdev-ci") == qantar
     with pytest.raises(ManagedRegistryError, match="profile"):
         registry.validate_claim_if_managed("belilovsky/qazagents", "qdev-ci-docker")
 

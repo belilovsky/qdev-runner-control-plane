@@ -164,6 +164,22 @@ PROFILES = {
         rollback_dispatcher=Path("/usr/local/sbin/qazposter-controller-rollback"),
         receipt_dispatcher=Path("/usr/local/sbin/qazposter-controller-receipt"),
     ),
+    "qantar": Profile(
+        name="qantar",
+        lane="qdev-release-qantar",
+        project_id="qantar",
+        repository="belilovsky/qantar",
+        placement="qantar-production-controller",
+        artifact_prefix="registry.ci.qdev.run/qantar",
+        adapter="qantar-transactional-release-v1",
+        minimum_free_gib=20,
+        state_path=_STATE_ROOT / "qantar.json",
+        lock_path=_LOCK_ROOT / "qdev-admin-platform-qantar.lock",
+        release_dispatcher=Path("/usr/local/sbin/qantar-controller-adapter"),
+        rollback_dispatcher=Path("/usr/local/sbin/qantar-controller-adapter"),
+        receipt_dispatcher=Path("/usr/local/sbin/qantar-controller-adapter"),
+        action_dispatcher=True,
+    ),
     "qmt": Profile(
         name="qmt",
         lane="qdev-release-qmt",
@@ -565,6 +581,23 @@ def invoke_native(
                 candidate_evidence["contract_digest"],
             ]
         )
+    elif profile.name == "qantar" and action == "release":
+        if candidate_evidence is None:
+            raise AgentError("Qantar release requires signed candidate evidence")
+        args.extend(
+            [
+                "--candidate-receipt-sha256",
+                candidate_evidence["candidate_receipt_sha256"],
+                "--expanded-release-bytes",
+                str(candidate_evidence["expanded_release_bytes"]),
+                "--bundle-payload-bytes",
+                str(candidate_evidence["bundle_payload_bytes"]),
+                "--bundle-image-size-bytes",
+                str(candidate_evidence["bundle_image_size_bytes"]),
+                "--application-image-size-bytes",
+                str(candidate_evidence["application_image_size_bytes"]),
+            ]
+        )
     elif profile.name == "qazpolit":
         args = ["--action", action, *args]
         if action == "release":
@@ -590,12 +623,26 @@ def _candidate_evidence(document: object, profile: Profile) -> dict[str, Any]:
         "migration_receipt_digest",
         "contract_digest",
     }
-    expected = qmt_fields if profile.name == "qmt" else generic_fields
+    qantar_fields = generic_fields | {
+        "expanded_release_bytes",
+        "bundle_payload_bytes",
+        "bundle_image_size_bytes",
+        "application_image_size_bytes",
+    }
+    expected = (
+        qmt_fields
+        if profile.name == "qmt"
+        else qantar_fields
+        if profile.name == "qantar"
+        else generic_fields
+    )
     if not isinstance(document, dict) or set(document) != expected:
         raise AgentError("controller candidate evidence shape is invalid")
     expected_schema = (
         "qdev-qmt-candidate-evidence-v1"
         if profile.name == "qmt"
+        else "qdev-qantar-ci-candidate-evidence-v1"
+        if profile.name == "qantar"
         else "qdev-release-candidate-evidence-v1"
     )
     if (
@@ -612,6 +659,20 @@ def _candidate_evidence(document: object, profile: Profile) -> dict[str, Any]:
         or not _HEX64.fullmatch(document["contract_digest"])
     ):
         raise AgentError("controller QMT candidate evidence is invalid")
+    if profile.name == "qantar":
+        limits = {
+            "expanded_release_bytes": 8 * 1024**3,
+            "bundle_payload_bytes": 12 * 1024**3,
+            "bundle_image_size_bytes": 64 * 1024**3,
+            "application_image_size_bytes": 64 * 1024**3,
+        }
+        if any(
+            isinstance(document.get(field), bool)
+            or not isinstance(document.get(field), int)
+            or not 1 <= document[field] <= maximum
+            for field, maximum in limits.items()
+        ):
+            raise AgentError("controller Qantar candidate capacity evidence is invalid")
     return document
 
 
@@ -1164,6 +1225,33 @@ def _runtime_evidence(
                 raise AgentError("native QazPolit legacy provenance is invalid")
         else:
             raise AgentError("native QazPolit artifact provenance is invalid")
+    elif profile.name == "qantar":
+        expected = {
+            "candidate_receipt_sha256",
+            "bundle_manifest_sha256",
+            "source_archive_sha256",
+            "image_receipt_sha256",
+            "image_sbom_sha256",
+            "application_image_id",
+        }
+        bootstrap_fields = {"legacy_runtime_receipt_sha256"}
+        if set(provenance) == bootstrap_fields:
+            if not isinstance(
+                provenance["legacy_runtime_receipt_sha256"], str
+            ) or not _HEX64.fullmatch(provenance["legacy_runtime_receipt_sha256"]):
+                raise AgentError("native Qantar bootstrap provenance is invalid")
+        elif set(provenance) != expected:
+            raise AgentError("native Qantar artifact provenance fields are invalid")
+        elif (
+            any(
+                not isinstance(provenance.get(field), str)
+                or not _HEX64.fullmatch(provenance[field])
+                for field in expected - {"application_image_id"}
+            )
+            or not isinstance(provenance.get("application_image_id"), str)
+            or not _DIGEST.fullmatch(provenance["application_image_id"])
+        ):
+            raise AgentError("native Qantar artifact provenance is invalid")
     elif profile.name == "rp":
         expected_dependencies = {
             "deployment_profile": "reports-private",
@@ -2378,7 +2466,9 @@ def _acquire_lock(path: Path) -> TextIO:
     return path.open("a+", encoding="utf-8")
 
 
-def run_once(config: Config, profile: Profile) -> dict[str, Any]:
+def run_once(config: Config, profile: Profile, *, bootstrap_only: bool = False) -> dict[str, Any]:
+    if bootstrap_only and profile.name != "qantar":
+        raise AgentError("bootstrap-only heartbeat is not enabled for this profile")
     with _acquire_lock(profile.lock_path) as lock:
         os.chmod(profile.lock_path, 0o600)
         try:
@@ -2436,6 +2526,8 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         active, rollback = read_state(profile.state_path, profile, allow_bootstrap=True)
         pending = _pending_operation(profile)
         if pending is not None:
+            if bootstrap_only:
+                raise AgentError("bootstrap heartbeat is blocked by a pending release operation")
             return _recover_pending(config, profile, active, rollback, pending)
 
         current_native = native_receipt(profile, current=True)
@@ -2450,6 +2542,13 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         )
         if status != 200:
             raise AgentError("controller rejected host-agent heartbeat")
+        if bootstrap_only:
+            return {
+                "status": "heartbeat",
+                "capacity_free_gib": beat["capacity_free_gib"],
+                "active_release": active,
+                "rollback_release": rollback,
+            }
         status, body = request(
             config,
             "GET",
@@ -2513,7 +2612,7 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
         )
         try:
             _ensure_live_lease(lease_expires_at)
-            if profile.name == "qmt":
+            if profile.name == "qmt" or profile.name == "qantar":
                 invoke_native(profile, "release", candidate, candidate_evidence)
             elif profile.name == "qazpolit":
                 invoke_native(
@@ -2549,6 +2648,11 @@ def run_once(config: Config, profile: Profile) -> dict[str, Any]:
                 }
             ):
                 raise AgentError("native QazPolit receipt does not bind private artifact delivery")
+            if profile.name == "qantar" and (
+                candidate_native.get("artifact_provenance", {}).get("candidate_receipt_sha256")
+                != candidate_evidence["candidate_receipt_sha256"]
+            ):
+                raise AgentError("native Qantar receipt does not bind candidate evidence")
             runtime_receipt = _completion_receipt(profile, candidate, active, candidate_native)
             context = _operation_context(
                 profile,
@@ -2654,11 +2758,18 @@ def main() -> int:
     parser.add_argument("--profile", choices=sorted(PROFILES), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--once", action="store_true", required=True)
+    parser.add_argument("--bootstrap-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("admin-platform release host agent must run as root")
     try:
-        result = run_once(load_config(args.config), PROFILES[args.profile])
+        if args.bootstrap_only and not args.once:
+            raise AgentError("bootstrap-only heartbeat requires --once")
+        result = run_once(
+            load_config(args.config),
+            PROFILES[args.profile],
+            bootstrap_only=args.bootstrap_only,
+        )
     except (AgentError, json.JSONDecodeError) as error:
         print(
             json.dumps({"status": "blocked", "reason": str(error)}, sort_keys=True),

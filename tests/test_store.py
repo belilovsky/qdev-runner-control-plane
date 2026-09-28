@@ -106,6 +106,71 @@ def test_coverage_baseline_is_immutable_and_idempotent(tmp_path: Path) -> None:
         raise AssertionError("conflicting baseline was accepted")
 
 
+def test_qantar_release_intent_is_idempotent_and_candidate_immutable(tmp_path: Path) -> None:
+    store = Store(tmp_path / "broker.db")
+    job = QueuedJob(
+        delivery_id="qantar-release-delivery",
+        job_id=700,
+        run_id=600,
+        repository="belilovsky/qantar",
+        repository_id=1,
+        installation_id=300,
+        labels=("self-hosted", "Linux", "X64", "qdev-ci", "qdev-job-600-2-release"),
+        head_sha="a" * 40,
+        head_branch="main",
+        payload={"workflow_job": {"run_attempt": 2}},
+    )
+    store.enqueue(job)
+    capacity_evidence = {
+        "expanded_release_bytes": 2_000_000,
+        "bundle_payload_bytes": 3_000_000,
+        "bundle_image_size_bytes": 4_000_000,
+        "application_image_size_bytes": 5_000_000,
+    }
+    first, idempotent = store.enqueue_qantar_release_intent(
+        job_id=700,
+        source_sha="a" * 40,
+        artifact_digest="sha256:" + "b" * 64,
+        artifact_ref="registry.ci.qdev.run/qantar@sha256:" + "b" * 64,
+        capacity_evidence=capacity_evidence,
+    )
+    assert first["state"] == "queued"
+    assert idempotent is False
+    duplicate, idempotent = store.enqueue_qantar_release_intent(
+        job_id=700,
+        source_sha="a" * 40,
+        artifact_digest="sha256:" + "b" * 64,
+        artifact_ref="registry.ci.qdev.run/qantar@sha256:" + "b" * 64,
+        capacity_evidence=capacity_evidence,
+    )
+    assert duplicate["job_id"] == 700
+    assert idempotent is True
+    with pytest.raises(ValueError, match="different candidate"):
+        store.enqueue_qantar_release_intent(
+            job_id=700,
+            source_sha="a" * 40,
+            artifact_digest="sha256:" + "c" * 64,
+            artifact_ref="registry.ci.qdev.run/qantar@sha256:" + "c" * 64,
+            capacity_evidence=capacity_evidence,
+        )
+    with pytest.raises(ValueError, match="different candidate"):
+        store.enqueue_qantar_release_intent(
+            job_id=700,
+            source_sha="a" * 40,
+            artifact_digest="sha256:" + "b" * 64,
+            artifact_ref="registry.ci.qdev.run/qantar@sha256:" + "b" * 64,
+            capacity_evidence={**capacity_evidence, "bundle_payload_bytes": 7_000_000},
+        )
+    completed = store.finish_qantar_release_intent(700, state="admitted", release_id="release-id")
+    assert completed is not None
+    assert completed["state"] == "admitted"
+    assert store.admitted_qantar_release_intents() == [completed]
+    verified = store.finish_qantar_release_intent(700, state="verified", release_id="release-id")
+    assert verified is not None
+    assert verified["state"] == "verified"
+    assert store.admitted_qantar_release_intents() == []
+
+
 def test_store_repairs_invalid_legacy_queue_timestamp_from_workflow_payload(tmp_path: Path) -> None:
     database = tmp_path / "broker.db"
     store = Store(database)

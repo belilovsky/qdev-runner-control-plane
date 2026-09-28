@@ -345,6 +345,8 @@ required=(
   deploy/qdev-release-qmt.service \
   deploy/qdev-release-qazpolit.service \
   deploy/qdev-release-qmt.compose.yml \
+  deploy/qdev-release-qantar.service \
+  deploy/qdev-release-qantar.timer \
   deploy/qdev-release-rp.service \
   deploy/Dockerfile.broker
 )
@@ -371,6 +373,9 @@ if [[ "$rollback_mode" != true ]]; then
     scripts/qdev_controller_activation_adapter.py
     scripts/provision_controller_activation_trust.py
     scripts/qdev_release_host_agent_enrol_adapter.py
+    scripts/qantar_release_host_enrol_adapter.py
+    scripts/qantar_release_host_enrol_apply.py
+    scripts/qantar_native_release_adapter.py
     scripts/qdev_fleet_worker_recovery_adapter.py
     scripts/qdev_fixed_worker_recovery_dispatch.py
     scripts/qdev_recovery_host_enrol_adapter.py
@@ -386,6 +391,7 @@ if [[ "$rollback_mode" != true ]]; then
     deploy/qdev-release-cmnt.service
     deploy/qdev-release-total.service
     deploy/qdev-release-qazposter.service
+    deploy/qdev-release-qantar.service
     deploy/qdev-fleet-host-dispatch.service
     deploy/qdev-fleet-host-dispatch.path
   )
@@ -1438,6 +1444,9 @@ install_fleet_host_dispatch() {
   atomic_install \
     "$release/scripts/qdev_release_host_agent_enrol_adapter.py" \
     /usr/local/sbin/qdev-release-host-agent-enrol 0755 || return 1
+  atomic_install \
+    "$release/scripts/qantar_release_host_enrol_adapter.py" \
+    /usr/local/sbin/qantar-release-host-enrol 0755 || return 1
   atomic_install \
     "$release/scripts/qdev_fleet_worker_recovery_adapter.py" \
     /usr/local/sbin/qdev-fleet-worker-recovery 0755 || return 1

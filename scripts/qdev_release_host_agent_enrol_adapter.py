@@ -325,7 +325,12 @@ def _registered_adapter(target: dict[str, Any]) -> Path | None:
     return path
 
 
-def _validate_child(raw: object, request: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+def _validate_child(
+    raw: object,
+    request: dict[str, Any],
+    target: dict[str, Any],
+    rollback: tuple[str, str, str, str, int],
+) -> dict[str, Any]:
     expected = {
         "schema",
         "status",
@@ -348,6 +353,8 @@ def _validate_child(raw: object, request: dict[str, Any], target: dict[str, Any]
         or raw.get("controller_release_digest") != request["controller_release_digest"]
         or raw.get("release_lane") != target["release_lane"]
         or raw.get("host_agent_mtls_identity") != target["host_agent_mtls_identity"]
+        or raw.get("rollback_source_sha") != rollback[0]
+        or raw.get("rollback_artifact_digest") != rollback[1]
         or not isinstance(raw.get("rollback_source_sha"), str)
         or not SHA.fullmatch(raw["rollback_source_sha"])
         or not isinstance(raw.get("rollback_artifact_digest"), str)
@@ -374,6 +381,13 @@ def main() -> int:
     child_request.pop("controller_image_digest")
     child_request.pop("controller_internal_image_digest")
     child_request.pop("activation_envelope_digest")
+    child_request["controller_rollback"] = {
+        "source_sha": rollback[0],
+        "artifact_digest": rollback[1],
+        "internal_artifact_digest": rollback[2],
+        "policy_digest": rollback[3],
+        "generation": rollback[4],
+    }
     child_envelope = {
         "schema": "qdev-fleet-bootstrap-adapter-request-v1",
         "request": child_request,
@@ -395,7 +409,7 @@ def main() -> int:
     )
     if completed.returncode != 0:
         raise AdapterError("child_adapter_failed")
-    child = _validate_child(json.loads(completed.stdout), request, target)
+    child = _validate_child(json.loads(completed.stdout), request, target, rollback)
     response = _response(
         request,
         target,
