@@ -2,12 +2,12 @@ schema_version: qdev-release-lanes-v2
 lanes:
   qdev-release-qaz-tours:
     project_id: qaz-tours
-    placement: vps-hostinger-186
+    placement: vps-apps-148
     # Caddy injects these identities only after it validates the corresponding
     # client certificate against the controller CA; clients cannot self-assert
     # either header through the public edge.
     client_mtls_identity: qdev-release-client:qaz-tours
-    host_agent_mtls_identity: qdev-host-agent:vps-hostinger-186
+    host_agent_mtls_identity: qdev-host-agent:vps-apps-148
     # Product capacity is independent from shared CI capacity.  It reserves
     # enough room for current, verified rollback and atomic candidate release.
     minimum_free_gib: 60
@@ -16,7 +16,7 @@ lanes:
     canonical_repository: belilovsky/qaz-tours
     artifact_ref_prefix: registry.ci.qdev.run/qaz-tours
     native_host_adapter: legacy-qaz-tours-v1
-    runtime_endpoints: [https://qaza.tours/.well-known/release.json]
+    runtime_endpoints: [https://qaz.tours/api/health/live]
     rollback_reference: qdev-release-host-state-v1
     required_readiness: [qazgeo]
   qdev-release-qaz-fund:

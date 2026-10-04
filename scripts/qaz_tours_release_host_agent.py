@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-PLACEMENT = "vps-hostinger-186"
+PLACEMENT = "vps-apps-148"
 LANE = "qdev-release-qaz-tours"
 PROJECT = "qaz-tours"
 STATE_SCHEMA = "qdev-release-host-state-v1"

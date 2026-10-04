@@ -240,9 +240,9 @@ def _app(
         "lanes": {
             "qdev-release-qaz-tours": {
                 "project_id": "qaz-tours",
-                "placement": "vps-hostinger-186",
+                "placement": "vps-apps-148",
                 "client_mtls_identity": "qdev-release-client:qaz-tours",
-                "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+                "host_agent_mtls_identity": "qdev-host-agent:vps-apps-148",
                 "minimum_free_gib": 60,
                 "heartbeat_ttl_seconds": 90,
                 "artifact_repository": "qaz-tours",
@@ -396,7 +396,7 @@ def _release_heartbeat() -> dict[str, Any]:
         "schema": "qdev-release-host-agent-heartbeat-v1",
         "release_lane": "qdev-release-qaz-tours",
         "project_id": "qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "state": "ready",
         "release_lock": "available",
         "capacity_free_gib": 64,
@@ -421,7 +421,7 @@ def _release_request(source_sha: str = "a" * 40) -> dict[str, Any]:
         "schema": "qdev-controller-release-request-v1",
         "release_lane": "qdev-release-qaz-tours",
         "project_id": "qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "source_sha": source_sha,
         "artifact_digest": digest,
         "artifact_ref": artifact_ref,
@@ -481,7 +481,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
 ) -> None:
     client = _app(tmp_path)
     product_headers = {"X-QDev-mTLS-Identity": "qdev-release-client:qaz-tours"}
-    host_headers = {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186"}
+    host_headers = {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-apps-148"}
 
     assert (
         client.post("/internal/v1/releases/qaz-tours", json=_release_request()).status_code == 403
@@ -504,7 +504,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
     )
     assert (
         client.post(
-            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            "/internal/v1/release-hosts/vps-apps-148/heartbeat",
             json=_release_heartbeat(),
             headers=host_headers,
         ).status_code
@@ -522,7 +522,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
         "release_id": receipt["release_id"],
         "release_lane": "qdev-release-qaz-tours",
         "project_id": "qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "source_sha": "a" * 40,
         "artifact_digest": "sha256:" + "b" * 64,
         "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "b" * 64,
@@ -541,12 +541,12 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
         == 409
     )
 
-    job = client.get("/internal/v1/release-hosts/vps-hostinger-186/jobs/next", headers=host_headers)
+    job = client.get("/internal/v1/release-hosts/vps-apps-148/jobs/next", headers=host_headers)
     assert job.status_code == 200
     assert job.json()["release_id"] == receipt["release_id"]
     assert (
         client.post(
-            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{receipt['release_id']}/complete",
+            f"/internal/v1/release-hosts/vps-apps-148/jobs/{receipt['release_id']}/complete",
             json={},
             headers=host_headers,
         ).status_code
@@ -557,7 +557,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
         "status": "verified",
         "project": "qaz-tours",
         "release_lane": "qdev-release-qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "source_sha": "a" * 40,
         "artifact_digest": "sha256:" + "b" * 64,
         "artifact_ref": "registry.ci.qdev.run/qaz-tours@sha256:" + "b" * 64,
@@ -571,7 +571,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
         },
     }
     completed = client.post(
-        f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{receipt['release_id']}/complete",
+        f"/internal/v1/release-hosts/vps-apps-148/jobs/{receipt['release_id']}/complete",
         json=runtime_receipt,
         headers=host_headers,
     )
@@ -590,7 +590,7 @@ def test_dedicated_qaz_tours_release_lane_binds_mtls_ci_capacity_and_runtime(
     [
         (
             None,
-            {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186"},
+            {"X-QDev-mTLS-Identity": "qdev-host-agent:vps-apps-148"},
         ),
         (
             "b" * 64,
@@ -614,16 +614,16 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
     settings: BrokerSettings = client.app.state.settings
     lane_document = {
         "project_id": "qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "client_mtls_identity": "qdev-release-client:qaz-tours",
-        "host_agent_mtls_identity": "qdev-host-agent:vps-hostinger-186",
+        "host_agent_mtls_identity": "qdev-host-agent:vps-apps-148",
         "minimum_free_gib": 60,
         "heartbeat_ttl_seconds": 90,
         "artifact_repository": "qaz-tours",
         "canonical_repository": "belilovsky/qaz-tours",
         "artifact_ref_prefix": "registry.ci.qdev.run/qaz-tours",
         "native_host_adapter": "legacy-qaz-tours-v1",
-        "runtime_endpoints": ["https://qaza.tours/.well-known/release.json"],
+        "runtime_endpoints": ["https://qaz.tours/api/health/live"],
         "rollback_reference": "qdev-release-host-state-v1",
         "required_readiness": ["qazgeo"],
     }
@@ -639,7 +639,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
         ),
         encoding="utf-8",
     )
-    host_identity = "qdev-host-agent:vps-hostinger-186"
+    host_identity = "qdev-host-agent:vps-apps-148"
     heartbeat = _release_heartbeat()
     heartbeat["bootstrap"] = True
     heartbeat["rollback"] = {
@@ -648,7 +648,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
     }
     assert (
         client.post(
-            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            "/internal/v1/release-hosts/vps-apps-148/heartbeat",
             json=heartbeat,
             headers=host_headers,
         ).status_code
@@ -694,7 +694,7 @@ def test_managed_next_job_is_bound_to_private_host_key_and_authenticated_lane(
     release_store = client.app.state.release_store
     release_store.admit(ReleaseAdmissionRequest.model_validate(request), lane, now=admission_now)
 
-    next_path = "/internal/v1/release-hosts/vps-hostinger-186/jobs/next"
+    next_path = "/internal/v1/release-hosts/vps-apps-148/jobs/next"
     blocked = client.get(next_path, headers=host_headers)
     assert blocked.status_code == 503
     assert blocked.json()["detail"] == "managed release host dispatch is unavailable"
@@ -804,6 +804,7 @@ def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_le
         {
             "release_lane": "qdev-release-qazpolit",
             "project_id": "qazpolit",
+            "placement": "vps-hostinger-186",
             "bootstrap": True,
         }
     )
@@ -1136,10 +1137,10 @@ def test_certificate_bound_release_lane_ignores_spoofed_identity_header(tmp_path
     heartbeat = _release_heartbeat()
     assert (
         client.post(
-            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            "/internal/v1/release-hosts/vps-apps-148/heartbeat",
             json=heartbeat,
             headers={
-                "X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186",
+                "X-QDev-mTLS-Identity": "qdev-host-agent:vps-apps-148",
                 "X-QDev-Client-Certificate-SHA256": "c" * 64,
             },
         ).status_code
@@ -1147,7 +1148,7 @@ def test_certificate_bound_release_lane_ignores_spoofed_identity_header(tmp_path
     )
     assert (
         client.post(
-            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            "/internal/v1/release-hosts/vps-apps-148/heartbeat",
             json=heartbeat,
             headers={
                 "X-QDev-mTLS-Identity": "spoofed",
@@ -1174,16 +1175,16 @@ def test_certificate_bound_host_status_and_rollback_reject_stale_certificate(
         "X-QDev-Client-Certificate-SHA256": "a" * 64,
     }
     host_headers = {
-        "X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186",
+        "X-QDev-mTLS-Identity": "qdev-host-agent:vps-apps-148",
         "X-QDev-Client-Certificate-SHA256": "b" * 64,
     }
     stale_host_headers = {
-        "X-QDev-mTLS-Identity": "qdev-host-agent:vps-hostinger-186",
+        "X-QDev-mTLS-Identity": "qdev-host-agent:vps-apps-148",
         "X-QDev-Client-Certificate-SHA256": "c" * 64,
     }
     assert (
         client.post(
-            "/internal/v1/release-hosts/vps-hostinger-186/heartbeat",
+            "/internal/v1/release-hosts/vps-apps-148/heartbeat",
             json=_release_heartbeat(),
             headers=host_headers,
         ).status_code
@@ -1199,21 +1200,21 @@ def test_certificate_bound_host_status_and_rollback_reject_stale_certificate(
 
     assert (
         client.get(
-            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{release_id}",
+            f"/internal/v1/release-hosts/vps-apps-148/jobs/{release_id}",
             headers=host_headers,
         ).status_code
         == 200
     )
     assert (
         client.get(
-            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{release_id}",
+            f"/internal/v1/release-hosts/vps-apps-148/jobs/{release_id}",
             headers=stale_host_headers,
         ).status_code
         == 403
     )
     assert (
         client.post(
-            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{release_id}/rollback",
+            f"/internal/v1/release-hosts/vps-apps-148/jobs/{release_id}/rollback",
             json={},
             headers=host_headers,
         ).status_code
@@ -1221,7 +1222,7 @@ def test_certificate_bound_host_status_and_rollback_reject_stale_certificate(
     )
     assert (
         client.post(
-            f"/internal/v1/release-hosts/vps-hostinger-186/jobs/{release_id}/rollback",
+            f"/internal/v1/release-hosts/vps-apps-148/jobs/{release_id}/rollback",
             json={},
             headers=stale_host_headers,
         ).status_code

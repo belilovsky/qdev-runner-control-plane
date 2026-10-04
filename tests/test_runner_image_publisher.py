@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,7 @@ def test_security_finding_count_covers_all_trivy_result_types() -> None:
 
 
 def test_remediation_receipt_is_bound_to_exact_image_and_findings(tmp_path: Path) -> None:
+    fixture_now = datetime.now(UTC).replace(microsecond=0)
     reference = "registry.example/runner@sha256:" + "a" * 64
     receipt = tmp_path / "receipt.json"
     receipt.write_text(
@@ -64,8 +66,12 @@ def test_remediation_receipt_is_bound_to_exact_image_and_findings(tmp_path: Path
                     "status": "accepted",
                     "decision_id": "runner-buildkit-20260905",
                     "owner": "QDev owner/operator",
-                    "reviewed_at": "2026-09-04T00:00:00Z",
-                    "review_by": "2026-10-04T00:00:00Z",
+                    "reviewed_at": (
+                        (fixture_now - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+                    ),
+                    "review_by": (
+                        (fixture_now + timedelta(days=29)).isoformat().replace("+00:00", "Z")
+                    ),
                     "reason": "No fixed upstream BuildKit release is available.",
                     "compensating_controls": ["Disposable isolated Docker sidecar"],
                 },

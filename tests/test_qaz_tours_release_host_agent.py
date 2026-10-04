@@ -31,7 +31,7 @@ def test_release_agent_accepts_only_its_controller_job_identity() -> None:
         "release_id": "release-1",
         "release_lane": "qdev-release-qaz-tours",
         "project_id": "qaz-tours",
-        "placement": "vps-hostinger-186",
+        "placement": "vps-apps-148",
         "source_sha": SHA,
         "artifact_digest": DIGEST,
         "artifact_ref": REFERENCE,
