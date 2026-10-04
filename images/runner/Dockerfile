@@ -133,7 +133,7 @@ WORKDIR /src
 RUN curl --fail --location --retry 5 \
       "https://github.com/moby/buildkit/archive/refs/tags/v${BUILDKIT_VERSION}.tar.gz" \
       --output /tmp/buildkit-source.tar.gz \
-    && printf '%s  %s\\n' "${BUILDKIT_SOURCE_SHA256}" /tmp/buildkit-source.tar.gz | sha256sum --check - \
+    && printf '%s  %s\n' "${BUILDKIT_SOURCE_SHA256}" /tmp/buildkit-source.tar.gz | sha256sum -c - \
     && tar --extract --gzip --strip-components=1 --file /tmp/buildkit-source.tar.gz --directory /src \
     && rm -f /tmp/buildkit-source.tar.gz \
     && go mod edit -require="github.com/moby/go-archive@v${BUILDKIT_GO_ARCHIVE_VERSION}" \
@@ -146,13 +146,20 @@ RUN curl --fail --location --retry 5 \
     && CGO_ENABLED=0 go build -trimpath \
          -ldflags "-s -w -X github.com/moby/buildkit/version.Version=v${BUILDKIT_VERSION} -X github.com/moby/buildkit/version.Revision=${BUILDKIT_SOURCE_REVISION} -X github.com/moby/buildkit/version.Package=github.com/moby/buildkit" \
          -o /out/buildctl ./cmd/buildctl \
-    && test -x /out/buildkitd /out/buildctl
+    && test -x /out/buildkitd && test -x /out/buildctl
 
 FROM base AS docker
 ARG BUILDKIT_VERSION=0.33.0
 ARG BUILDKIT_SOURCE_SHA256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306
 ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173
 USER root
+COPY install-pinned-node-package.sh /usr/local/bin/install-pinned-node-package
+RUN chmod 0555 /usr/local/bin/install-pinned-node-package \
+    && for runtime in node20 node24; do \
+         export PATH=/home/runner/actions-runner/externals/$runtime/bin:$PATH; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules brace-expansion 5.0.11 6b08a08e18ba70b4e1f746ddc3af9027d0ad9899b26211088bbd2209b73c468ce7d38170f457902018effc4db61451ae086c756cb27251f07ae31feccd449752; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules undici 6.28.1 cd6a5d4d50f9e07e3c088c9b2f4ad6437ba4a5bf5ddb7c0cede1f946d7dd99e3fbd1c587363b5fa3b3f8bd95fee42a0370ee772783eee6e5e9ee535f8dce8344; \
+       done
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/* \
     && test -n "${BUILDKIT_SOURCE_SHA256}" \
@@ -160,8 +167,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker.io docke
 COPY --from=buildkit-builder /out/buildkitd /usr/local/bin/buildkitd
 COPY --from=buildkit-builder /out/buildctl /usr/local/bin/buildctl
 RUN install -d -m 0555 /usr/local/share/qdev-buildkit \
-    && printf '%s\\n' "${BUILDKIT_SOURCE_REVISION}" > /usr/local/share/qdev-buildkit/source-revision \
-    && printf '%s\\n' "${BUILDKIT_SOURCE_SHA256}" > /usr/local/share/qdev-buildkit/source-sha256 \
+    && printf '%s\n' "${BUILDKIT_SOURCE_REVISION}" > /usr/local/share/qdev-buildkit/source-revision \
+    && printf '%s\n' "${BUILDKIT_SOURCE_SHA256}" > /usr/local/share/qdev-buildkit/source-sha256 \
     && chmod 0444 /usr/local/share/qdev-buildkit/source-revision /usr/local/share/qdev-buildkit/source-sha256 \
     && chmod 0555 /usr/local/bin/buildkitd /usr/local/bin/buildctl \
     && /usr/local/bin/buildkitd --version | grep -F "v${BUILDKIT_VERSION}" \
