@@ -133,7 +133,7 @@ WORKDIR /src
 RUN curl --fail --location --retry 5 \
       "https://github.com/moby/buildkit/archive/refs/tags/v${BUILDKIT_VERSION}.tar.gz" \
       --output /tmp/buildkit-source.tar.gz \
-    && printf '%s  %s\\n' "${BUILDKIT_SOURCE_SHA256}" /tmp/buildkit-source.tar.gz | sha256sum --check - \
+    && printf '%s  %s\n' "${BUILDKIT_SOURCE_SHA256}" /tmp/buildkit-source.tar.gz | sha256sum -c - \
     && tar --extract --gzip --strip-components=1 --file /tmp/buildkit-source.tar.gz --directory /src \
     && rm -f /tmp/buildkit-source.tar.gz \
     && go mod edit -require="github.com/moby/go-archive@v${BUILDKIT_GO_ARCHIVE_VERSION}" \
@@ -146,7 +146,7 @@ RUN curl --fail --location --retry 5 \
     && CGO_ENABLED=0 go build -trimpath \
          -ldflags "-s -w -X github.com/moby/buildkit/version.Version=v${BUILDKIT_VERSION} -X github.com/moby/buildkit/version.Revision=${BUILDKIT_SOURCE_REVISION} -X github.com/moby/buildkit/version.Package=github.com/moby/buildkit" \
          -o /out/buildctl ./cmd/buildctl \
-    && test -x /out/buildkitd /out/buildctl
+    && test -x /out/buildkitd && test -x /out/buildctl
 
 FROM base AS docker
 ARG BUILDKIT_VERSION=0.33.0
@@ -160,8 +160,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker.io docke
 COPY --from=buildkit-builder /out/buildkitd /usr/local/bin/buildkitd
 COPY --from=buildkit-builder /out/buildctl /usr/local/bin/buildctl
 RUN install -d -m 0555 /usr/local/share/qdev-buildkit \
-    && printf '%s\\n' "${BUILDKIT_SOURCE_REVISION}" > /usr/local/share/qdev-buildkit/source-revision \
-    && printf '%s\\n' "${BUILDKIT_SOURCE_SHA256}" > /usr/local/share/qdev-buildkit/source-sha256 \
+    && printf '%s\n' "${BUILDKIT_SOURCE_REVISION}" > /usr/local/share/qdev-buildkit/source-revision \
+    && printf '%s\n' "${BUILDKIT_SOURCE_SHA256}" > /usr/local/share/qdev-buildkit/source-sha256 \
     && chmod 0444 /usr/local/share/qdev-buildkit/source-revision /usr/local/share/qdev-buildkit/source-sha256 \
     && chmod 0555 /usr/local/bin/buildkitd /usr/local/bin/buildctl \
     && /usr/local/bin/buildkitd --version | grep -F "v${BUILDKIT_VERSION}" \
