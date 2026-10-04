@@ -12,6 +12,7 @@ activation:
   max_envelope_ttl_seconds: 1800
 enrolment:
   lanes:
+    - qdev-release-qaz-tours
     - qdev-release-ortcom
     - qdev-release-cmnt
     - qdev-release-total
