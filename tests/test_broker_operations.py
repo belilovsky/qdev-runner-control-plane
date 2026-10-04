@@ -804,6 +804,7 @@ def test_qazpolit_private_archive_delivery_is_bound_to_the_current_dispatched_le
         {
             "release_lane": "qdev-release-qazpolit",
             "project_id": "qazpolit",
+            "placement": "vps-hostinger-186",
             "bootstrap": True,
         }
     )
