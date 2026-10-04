@@ -9,7 +9,7 @@ archive=/tmp/${package_name}-${package_version}.tgz
 package_root=${node_modules_root}/${package_name}
 
 case "${package_name}" in
-  brace-expansion|ip-address|tar) ;;
+  brace-expansion|ip-address|tar|undici) ;;
   *)
     echo "unsupported pinned package: ${package_name}" >&2
     exit 2

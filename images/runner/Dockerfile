@@ -153,6 +153,13 @@ ARG BUILDKIT_VERSION=0.33.0
 ARG BUILDKIT_SOURCE_SHA256=c365476e1b10e27a2ab809e3a7a6dcd0647a60fa6e8917799b894d4127af7306
 ARG BUILDKIT_SOURCE_REVISION=dddd5621af04ea57823085c93a063383f71d3173
 USER root
+COPY install-pinned-node-package.sh /usr/local/bin/install-pinned-node-package
+RUN chmod 0555 /usr/local/bin/install-pinned-node-package \
+    && for runtime in node20 node24; do \
+         export PATH=/home/runner/actions-runner/externals/$runtime/bin:$PATH; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules brace-expansion 5.0.11 6b08a08e18ba70b4e1f746ddc3af9027d0ad9899b26211088bbd2209b73c468ce7d38170f457902018effc4db61451ae086c756cb27251f07ae31feccd449752; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules undici 6.28.1 cd6a5d4d50f9e07e3c088c9b2f4ad6437ba4a5bf5ddb7c0cede1f946d7dd99e3fbd1c587363b5fa3b3f8bd95fee42a0370ee772783eee6e5e9ee535f8dce8344; \
+       done
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io docker-buildx docker-compose-v2 \
     && rm -rf /var/lib/apt/lists/* \
     && test -n "${BUILDKIT_SOURCE_SHA256}" \
