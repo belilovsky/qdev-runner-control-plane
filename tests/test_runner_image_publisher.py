@@ -66,8 +66,12 @@ def test_remediation_receipt_is_bound_to_exact_image_and_findings(tmp_path: Path
                     "status": "accepted",
                     "decision_id": "runner-buildkit-20260905",
                     "owner": "QDev owner/operator",
-                    "reviewed_at": (fixture_now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
-                    "review_by": (fixture_now + timedelta(days=29)).isoformat().replace("+00:00", "Z"),
+                    "reviewed_at": (
+                        (fixture_now - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+                    ),
+                    "review_by": (
+                        (fixture_now + timedelta(days=29)).isoformat().replace("+00:00", "Z")
+                    ),
                     "reason": "No fixed upstream BuildKit release is available.",
                     "compensating_controls": ["Disposable isolated Docker sidecar"],
                 },
