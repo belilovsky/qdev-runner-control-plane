@@ -47,6 +47,14 @@ REQUEST_SCHEMA = "qdev-fleet-bootstrap-adapter-request-v2"
 ACTIVATE_ACTION = "activate-controller"
 RECONCILE_ACTION = "reconcile-controller-activation"
 ACTIONS = (ACTIVATE_ACTION, RECONCILE_ACTION)
+CAPACITY_ENVIRONMENT_ALLOWLIST = (
+    "QDEV_CONTROLLER_CAPACITY_EXCEPTION",
+    "QDEV_CONTROLLER_CAPACITY_EXCEPTION_REVISION",
+    "QDEV_CONTROLLER_MAX_DISK_USED_PCT",
+    "QDEV_CONTROLLER_MIN_FREE_GIB",
+    "QDEV_CONTROLLER_MIN_MEMORY_AVAILABLE_GIB",
+    "QDEV_CONTROLLER_MAX_LOAD_PER_CPU",
+)
 ACTIVATION_ENVELOPE_SCHEMA = "qdev-controller-activation-envelope-v1"
 ACTIVATION_STATUS_SCHEMA = "qdev-controller-activation-status-v2"
 LEGACY_ACTIVATION_STATUS_SCHEMA = "qdev-controller-activation-status-v1"
@@ -1398,6 +1406,33 @@ def persist_activation_failure_receipt(error: BaseException) -> dict[str, Any]:
     return receipt
 
 
+def _activation_environment(
+    *, activation_envelope: Path, public_key: Path, artifact_manifest: Path
+) -> dict[str, str]:
+    """Build the small, explicit environment accepted by the entrypoint.
+
+    Capacity is normally fixed by the candidate defaults.  A root-owned host
+    unit can supply the bounded controller-capacity contract only through this
+    allowlist; the candidate payload still validates every value, its exact
+    revision, and the measured host state before any mutation.
+    """
+
+    environment = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONNOUSERSITE": "1",
+        "QDEV_CONTROLLER_ACTIVATION_ENVELOPE": str(activation_envelope),
+        "QDEV_CONTROLLER_ACTIVATION_PUBLIC_KEY": str(public_key),
+        "QDEV_CONTROLLER_ARTIFACT_MANIFEST": str(artifact_manifest),
+    }
+    for name in CAPACITY_ENVIRONMENT_ALLOWLIST:
+        value = os.environ.get(name)
+        if value is not None:
+            environment[name] = value
+    return environment
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise AdapterError("root_identity_required")
@@ -1487,15 +1522,11 @@ def main() -> int:
         and current_image == request["controller_image_digest"]
         and current_internal_image == request["controller_internal_image_digest"]
     )
-    environment = {
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PYTHONNOUSERSITE": "1",
-        "QDEV_CONTROLLER_ACTIVATION_ENVELOPE": str(activation_envelope),
-        "QDEV_CONTROLLER_ACTIVATION_PUBLIC_KEY": str(public_key),
-        "QDEV_CONTROLLER_ARTIFACT_MANIFEST": str(artifact_manifest),
-    }
+    environment = _activation_environment(
+        activation_envelope=activation_envelope,
+        public_key=public_key,
+        artifact_manifest=artifact_manifest,
+    )
     if not ACTIVATION_STATUS_PATH.exists():
         environment["QDEV_CONTROLLER_ALLOW_MEASURED_STATUS_BOOTSTRAP"] = "true"
     _FAILURE_CONTEXT["stage"] = "entrypoint"
