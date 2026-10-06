@@ -36,8 +36,7 @@ upload_report() {
     lcov) content_type="text/plain" ;;
   esac
   local -a curl_args=(
-    curl --fail-with-body --silent --show-error --retry 1
-    --header "X-Qdev-Artifact-Token: ${QDEV_ARTIFACT_TOKEN}"
+    curl --config - --fail-with-body --silent --show-error --retry 1
     --header "X-Qdev-SHA256: ${sha256}"
     --header "Content-Type: ${content_type}"
   )
@@ -52,7 +51,15 @@ upload_report() {
     curl_args+=(--header "X-Qdev-Test-Profile: ${QDEV_TEST_PROFILE}")
   fi
   curl_args+=(--header "X-Qdev-Test-Format: ${report_format}" --upload-file "$report_path" "$url")
-  "${curl_args[@]}"
+  # Keep the short-lived credential out of curl's process arguments and
+  # environment. Curl reads its header configuration from stdin; the report
+  # body comes from its file.
+  local token="$QDEV_ARTIFACT_TOKEN"
+  (
+    unset QDEV_ARTIFACT_TOKEN
+    printf 'header = "X-Qdev-Artifact-Token: %s"\n' "$token" \
+      | "${curl_args[@]}"
+  )
 }
 
 uploaded=0

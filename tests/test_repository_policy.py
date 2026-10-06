@@ -119,8 +119,67 @@ def test_installer_installs_test_report_uploader(tmp_path: Path) -> None:
     assert uploader.is_file()
     assert uploader.stat().st_mode & 0o111
     contents = uploader.read_text(encoding="utf-8")
+    assert uploader.read_bytes() == (ROOT / "templates/qdev-upload-test-report.sh").read_bytes()
     assert "qdev-test-run.json" in contents
     assert "QDEV_TEST_REPORT" in contents
+
+
+def test_test_report_uploader_keeps_token_out_of_curl_arguments(tmp_path: Path) -> None:
+    root = repository(tmp_path, GOOD_WORKFLOW)
+    load_installer().install(root)
+    uploader = root / ".github/scripts/qdev-upload-test-report.sh"
+    report = tmp_path / "junit.xml"
+    report.write_text("<testsuite/>\n", encoding="utf-8")
+    captured_arguments = tmp_path / "curl-arguments.txt"
+    captured_config = tmp_path / "curl-config.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "${QDEV_TEST_ARGV:?}"
+cat > "${QDEV_TEST_CONFIG:?}"
+if grep -Fq -- "${QDEV_TEST_TOKEN_EXPECTED:?}" "${QDEV_TEST_ARGV}"; then
+  exit 91
+fi
+if [[ ${QDEV_ARTIFACT_TOKEN+x} ]]; then
+  exit 92
+fi
+grep -Fxq -- "header = \"X-Qdev-Artifact-Token: ${QDEV_TEST_TOKEN_EXPECTED}\"" "${QDEV_TEST_CONFIG}"
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    token = "0123456789abcdef" * 4
+    environment = os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "QDEV_ARTIFACT_URL": "https://ci.example.test/artifacts",
+        "QDEV_ARTIFACT_TOKEN": token,
+        "QDEV_TEST_TOKEN_EXPECTED": token,
+        "QDEV_REPOSITORY": "owner/repository",
+        "QDEV_HEAD_SHA": "a" * 40,
+        "QDEV_JOB_ID": "123",
+        "QDEV_TEST_JUNIT": str(report),
+        "QDEV_TEST_SUITE": "repo-policy",
+        "QDEV_TEST_ARGV": str(captured_arguments),
+        "QDEV_TEST_CONFIG": str(captured_config),
+    }
+    for helper in (uploader, ROOT / ".github/scripts/qdev-upload-test-report.sh"):
+        result = subprocess.run(  # noqa: S603
+            ["/usr/bin/env", "bash", str(helper)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert result.returncode == 0, result.stderr
+        arguments = captured_arguments.read_text(encoding="utf-8")
+        assert token not in arguments
+        assert "--config\n-\n" in arguments
+        assert captured_config.read_text(encoding="utf-8") == (
+            f'header = "X-Qdev-Artifact-Token: {token}"\n'
+        )
 
 
 def test_installer_is_idempotent_without_existing_agents(tmp_path: Path) -> None:
