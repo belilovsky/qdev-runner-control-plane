@@ -327,7 +327,11 @@ The explicit profile list is bound into every signed provenance record; the
 manifest must contain exactly the images required by those profiles. Browser
 and Docker profiles remain disabled. Omitting `--profile` preserves the legacy
 four-image release requirement. The general target exposes its pinned Node 24
-and npm binaries through the image's native PATH.
+and npm binaries through the image's native PATH. When measured registry space
+cannot accommodate fresh duplicate base layers, the general-incremental target
+reuses the retained immutable general image and repairs both bundled npm runtimes.
+It requires the same current security scans, source binding and signed catalog;
+its image label records the selected target. It does not enable extra profiles.
 
 The worker provisioner does not download a BuildKit release archive.  The
 Docker executor image is built from the pinned BuildKit source and carries
