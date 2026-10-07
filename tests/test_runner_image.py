@@ -13,6 +13,16 @@ def test_native_node_path_is_confined_to_general_target() -> None:
     assert native_path not in other
 
 
+def test_general_image_repairs_both_bundled_npm_runtimes() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    _, rest = dockerfile.split("FROM base AS general", maxsplit=1)
+    general, _ = rest.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    assert "for runtime in node20 node24" in general
+    assert "brace-expansion 5.0.11 6b08a08e" in general
+    assert "undici 6.28.1 cd6a5d4d" in general
+    assert "install-pinned-node-package /home/runner/actions-runner/externals/$runtime" in general
+
+
 def test_python_setup_prerequisite_is_in_general_and_browser_images() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 
@@ -188,3 +198,17 @@ def test_docker_profile_logs_in_with_job_scoped_registry_credentials() -> None:
     assert "QDEV_REGISTRY_PASSWORD" in entrypoint
     assert "--password-stdin" in entrypoint
     assert "QDEV_REGISTRY_URL" in entrypoint
+
+
+def test_incremental_general_reuses_only_retained_immutable_general() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    _, rest = dockerfile.split("AS general-incremental", maxsplit=1)
+    incremental, _ = rest.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    assert "for runtime in node20 node24" in incremental
+    assert "brace-expansion 5.0.11" in incremental
+    assert "undici 6.28.1" in incremental
+    assert "ENV PATH=/home/runner/actions-runner/externals/node24/bin:" in incremental
+    assert (
+        "368423cab531fdc76b06df6fe742f10f62d3638fdf98eb7d7f12d9e33d3a4dc4"
+        " AS general-incremental" in dockerfile
+    )

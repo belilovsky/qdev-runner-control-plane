@@ -45,6 +45,13 @@ ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 FROM base AS general
 ENV PATH=/home/runner/actions-runner/externals/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER root
+COPY install-pinned-node-package.sh /usr/local/bin/install-pinned-node-package
+RUN chmod 0555 /usr/local/bin/install-pinned-node-package \
+    && for runtime in node20 node24; do \
+         export PATH=/home/runner/actions-runner/externals/$runtime/bin:$PATH; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules brace-expansion 5.0.11 6b08a08e18ba70b4e1f746ddc3af9027d0ad9899b26211088bbd2209b73c468ce7d38170f457902018effc4db61451ae086c756cb27251f07ae31feccd449752; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules undici 6.28.1 cd6a5d4d50f9e07e3c088c9b2f4ad6437ba4a5bf5ddb7c0cede1f946d7dd99e3fbd1c587363b5fa3b3f8bd95fee42a0370ee772783eee6e5e9ee535f8dce8344; \
+       done
 # PostgreSQL's ssl-cert dependency creates a host-local snakeoil identity during
 # package installation. Disposable CI clusters do not use it, so never publish
 # that generated private key in the immutable runner image.
@@ -60,6 +67,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-16 \
        done \
     && /usr/lib/postgresql/16/bin/postgres --version | grep -Eq ' 16\.'
 USER runner
+
+# Reuse the retained immutable general image when the registry cannot store a
+# duplicate base/toolchain layer. This target repairs only native Node/npm and
+# must pass the same live scans and signed profile-scoped publication.
+FROM registry.ci.qdev.run/qdev/actions-runner@sha256:368423cab531fdc76b06df6fe742f10f62d3638fdf98eb7d7f12d9e33d3a4dc4 AS general-incremental
+ENV PATH=/home/runner/actions-runner/externals/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER root
+COPY install-pinned-node-package.sh /usr/local/bin/install-pinned-node-package
+RUN chmod 0555 /usr/local/bin/install-pinned-node-package \
+    && for runtime in node20 node24; do \
+         export PATH=/home/runner/actions-runner/externals/$runtime/bin:$PATH; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules brace-expansion 5.0.11 6b08a08e18ba70b4e1f746ddc3af9027d0ad9899b26211088bbd2209b73c468ce7d38170f457902018effc4db61451ae086c756cb27251f07ae31feccd449752; \
+         /usr/local/bin/install-pinned-node-package /home/runner/actions-runner/externals/$runtime/lib/node_modules/npm/node_modules undici 6.28.1 cd6a5d4d50f9e07e3c088c9b2f4ad6437ba4a5bf5ddb7c0cede1f946d7dd99e3fbd1c587363b5fa3b3f8bd95fee42a0370ee772783eee6e5e9ee535f8dce8344; \
+       done
+USER runner
+LABEL org.qdev.runner.build-target="general-incremental"
 
 # Playwright clients installed by browser jobs must stay in lockstep with the
 # bundled Chromium revision. This is v1.62.1-noble-amd64, pinned by its OCI
