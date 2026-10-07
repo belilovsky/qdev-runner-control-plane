@@ -43,6 +43,7 @@ WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["/usr/local/bin/qdev-runner-entrypoint"]
 
 FROM base AS general
+ENV PATH=/home/runner/actions-runner/externals/node24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER root
 # PostgreSQL's ssl-cert dependency creates a host-local snakeoil identity during
 # package installation. Disposable CI clusters do not use it, so never publish

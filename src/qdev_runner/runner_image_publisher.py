@@ -17,7 +17,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from qdev_runner.runner_image_release import (
+    REQUIRED_IMAGES,
     RunnerImageReleaseError,
+    required_images_for_profiles,
     validate,
     validate_remediation_receipt,
     verify_evidence,
@@ -174,6 +176,7 @@ def publish(
     public_key_path: Path,
     source_ci_run: str,
     source_ci_status: str,
+    profiles: Sequence[str] | None = None,
     repository: str = "belilovsky/qdev-runner-control-plane",
     issuer: str = "https://ci.qdev.run",
     identity: str = "https://ci.qdev.run/runner-images",
@@ -184,8 +187,17 @@ def publish(
     _git_clean_exact(repo, revision, runner)
     if source_ci_status not in {"passed", "locally_verified_provider_blocked"}:
         raise RunnerImageReleaseError("source CI status is not an accepted verified state")
-    if len(images) != 4 or len({image.environment_key for image in images}) != 4:
-        raise RunnerImageReleaseError("exactly four distinct executor images are required")
+    profile_scope = sorted(profiles) if profiles is not None else None
+    required_images = (
+        required_images_for_profiles(profile_scope) if profiles is not None else REQUIRED_IMAGES
+    )
+    if (
+        len(images) != len(required_images)
+        or {image.environment_key for image in images} != required_images
+    ):
+        raise RunnerImageReleaseError(
+            "exactly the distinct images for the release scope are required"
+        )
     if evidence_root.exists():
         raise RunnerImageReleaseError("evidence root already exists")
     key = load_private_key(private_key_path)
@@ -207,6 +219,7 @@ def publish(
         "revision": revision,
         "source_ci_run": source_ci_run,
         "source_ci_status": source_ci_status,
+        **({"profiles": profile_scope} if profiles is not None else {}),
     }
     try:
         for image in images:
@@ -361,6 +374,7 @@ def publish(
         manifest: dict[str, Any] = {
             "schema": "qdev-runner-image-release-v1",
             "release_revision": revision,
+            **({"profiles": profile_scope} if profiles is not None else {}),
             "generated_at": now,
             "evidence_root": str(evidence_root.resolve()),
             "source_binding": source_binding | {"dockerfile_sha256": dockerfile_hash},

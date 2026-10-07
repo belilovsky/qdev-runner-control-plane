@@ -321,6 +321,14 @@ mode 0600 on the controller host and is never copied into the evidence root.
 The publisher refuses mutable references, dirty source, a revision mismatch,
 Critical findings, and unreviewed High findings.
 
+For a worker enabled only for `qdev-ci`, build only the `general` target from
+`images/runner/Dockerfile` and publish with `--profile qdev-ci --general <immutable-ref>`.
+The explicit profile list is bound into every signed provenance record; the
+manifest must contain exactly the images required by those profiles. Browser
+and Docker profiles remain disabled. Omitting `--profile` preserves the legacy
+four-image release requirement. The general target exposes its pinned Node 24
+and npm binaries through the image's native PATH.
+
 The worker provisioner does not download a BuildKit release archive.  The
 Docker executor image is built from the pinned BuildKit source and carries
 `/usr/local/share/qdev-buildkit/source-revision` and `source-sha256` markers.

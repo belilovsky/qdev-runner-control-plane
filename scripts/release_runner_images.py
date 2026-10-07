@@ -8,6 +8,11 @@ import json
 from pathlib import Path
 
 from qdev_runner.runner_image_publisher import ImageInput, initialize_key, publish
+from qdev_runner.runner_image_release import (
+    PROFILE_IMAGES,
+    REQUIRED_IMAGES,
+    required_images_for_profiles,
+)
 
 
 def main() -> int:
@@ -21,50 +26,45 @@ def main() -> int:
     parser.add_argument("--initialize-signing-key", action="store_true")
     parser.add_argument("--source-ci-run", required=True)
     parser.add_argument("--source-ci-status", required=True)
-    parser.add_argument("--general", required=True)
-    parser.add_argument("--browser", required=True)
-    parser.add_argument("--docker", required=True)
-    parser.add_argument("--sidecar", required=True)
+    parser.add_argument("--profile", action="append", choices=sorted(PROFILE_IMAGES))
+    parser.add_argument("--general")
+    parser.add_argument("--browser")
+    parser.add_argument("--docker")
+    parser.add_argument("--sidecar")
     parser.add_argument("--general-remediation", type=Path)
     parser.add_argument("--browser-remediation", type=Path)
     parser.add_argument("--docker-remediation", type=Path)
     parser.add_argument("--sidecar-remediation", type=Path)
     args = parser.parse_args()
+    required = (
+        required_images_for_profiles(args.profile) if args.profile is not None else REQUIRED_IMAGES
+    )
+    images = []
+    for environment_key, prefix in (
+        ("QDEV_RUNNER_IMAGE", "general"),
+        ("QDEV_RUNNER_BROWSER_IMAGE", "browser"),
+        ("QDEV_RUNNER_DOCKER_IMAGE", "docker"),
+        ("QDEV_DOCKER_SIDECAR_IMAGE", "sidecar"),
+    ):
+        reference = getattr(args, prefix)
+        remediation = getattr(args, prefix + "_remediation")
+        if environment_key in required:
+            if not reference:
+                parser.error(f"--{prefix} is required for the selected release scope")
+            images.append(
+                ImageInput(
+                    environment_key, prefix, reference, "images/runner/Dockerfile", remediation
+                )
+            )
+        elif reference or remediation:
+            parser.error(f"--{prefix} is outside the selected release scope")
     if args.initialize_signing_key:
         initialize_key(args.private_key, args.public_key)
     manifest = publish(
         repo=args.repo.resolve(),
         revision=args.revision,
-        images=[
-            ImageInput(
-                "QDEV_RUNNER_IMAGE",
-                "general",
-                args.general,
-                "images/runner/Dockerfile",
-                args.general_remediation,
-            ),
-            ImageInput(
-                "QDEV_RUNNER_BROWSER_IMAGE",
-                "browser",
-                args.browser,
-                "images/runner/Dockerfile",
-                args.browser_remediation,
-            ),
-            ImageInput(
-                "QDEV_RUNNER_DOCKER_IMAGE",
-                "docker",
-                args.docker,
-                "images/runner/Dockerfile",
-                args.docker_remediation,
-            ),
-            ImageInput(
-                "QDEV_DOCKER_SIDECAR_IMAGE",
-                "sidecar",
-                args.sidecar,
-                "images/runner/Dockerfile",
-                args.sidecar_remediation,
-            ),
-        ],
+        images=images,
+        profiles=args.profile,
         evidence_root=args.evidence_root,
         manifest_path=args.manifest,
         private_key_path=args.private_key,
