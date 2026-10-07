@@ -377,14 +377,26 @@ def runtime_proof(release: dict[str, str]) -> dict[str, str]:
         live, readiness = json.loads(local)
     except (ValueError, json.JSONDecodeError) as error:
         raise AgentError("container health response is invalid") from error
+    if not isinstance(live, dict) or not isinstance(readiness, dict):
+        raise AgentError("container health response is invalid")
     if (
         live.get("status") != "ok"
         or live.get("probe") != "liveness"
         or live.get("revision") != release["source_sha"]
     ):
         raise AgentError("container liveness does not match release")
-    qazgeo = readiness.get("dependencies", {}).get("qazgeo", {}).get("status")
-    if readiness.get("status") != "ok" or qazgeo not in {"ok", "degraded"}:
+    dependencies = readiness.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise AgentError("container readiness dependencies are invalid")
+    qazgeo = dependencies.get("qazgeo")
+    if isinstance(qazgeo, dict):
+        qazgeo = qazgeo.get("status")
+    if (
+        readiness.get("status") != "ok"
+        or readiness.get("revision") != release["source_sha"]
+        or not isinstance(qazgeo, str)
+        or qazgeo not in {"ok", "degraded"}
+    ):
         raise AgentError("container readiness is not truthful")
     public = _run(
         [
@@ -404,7 +416,8 @@ def runtime_proof(release: dict[str, str]) -> dict[str, str]:
     except json.JSONDecodeError as error:
         raise AgentError("public liveness response is invalid") from error
     if (
-        public_health.get("status") != "ok"
+        not isinstance(public_health, dict)
+        or public_health.get("status") != "ok"
         or public_health.get("revision") != release["source_sha"]
     ):
         raise AgentError("public liveness does not match promoted release")
