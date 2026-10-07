@@ -46,6 +46,28 @@ class RunnerImageReleaseError(ValueError):
     """Raised when an image release cannot identify verified immutable inputs."""
 
 
+PROFILE_IMAGES = {
+    "qdev-ci": frozenset({"QDEV_RUNNER_IMAGE"}),
+    "qdev-ci-browser": frozenset({"QDEV_RUNNER_BROWSER_IMAGE"}),
+    "qdev-ci-docker": frozenset({"QDEV_RUNNER_DOCKER_IMAGE", "QDEV_DOCKER_SIDECAR_IMAGE"}),
+}
+
+
+def required_images_for_profiles(profiles: object) -> frozenset[str]:
+    """Resolve an explicit, nonempty executor scope without weakening legacy releases."""
+
+    if (
+        not isinstance(profiles, list)
+        or not profiles
+        or any(
+            not isinstance(profile, str) or profile not in PROFILE_IMAGES for profile in profiles
+        )
+        or len(set(profiles)) != len(profiles)
+    ):
+        raise RunnerImageReleaseError("profiles must be a nonempty list of distinct known profiles")
+    return frozenset().union(*(PROFILE_IMAGES[profile] for profile in profiles))
+
+
 def _utc_timestamp(value: object, field: str) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise RunnerImageReleaseError(f"{field} must be a UTC timestamp")
@@ -137,6 +159,11 @@ def validate(value: object, *, expected_revision: str | None = None) -> dict[str
     """
 
     manifest = _require_mapping(value, "manifest")
+    required_images = (
+        required_images_for_profiles(manifest["profiles"])
+        if "profiles" in manifest
+        else REQUIRED_IMAGES
+    )
     if manifest.get("schema") != SCHEMA:
         raise RunnerImageReleaseError("schema is not qdev-runner-image-release-v1")
     revision = manifest.get("release_revision")
@@ -209,10 +236,10 @@ def validate(value: object, *, expected_revision: str | None = None) -> dict[str
             )
         references[key] = reference
 
-    missing = sorted(REQUIRED_IMAGES - references.keys())
+    missing = sorted(required_images - references.keys())
     if missing:
         raise RunnerImageReleaseError("missing required artifacts: " + ", ".join(missing))
-    extra = sorted(references.keys() - REQUIRED_IMAGES)
+    extra = sorted(references.keys() - required_images)
     if extra:
         raise RunnerImageReleaseError("unexpected artifacts: " + ", ".join(extra))
     return references
@@ -354,6 +381,8 @@ def verify_evidence(value: object, *, manifest_path: Path | None = None) -> None
         )
         if provenance_source.get("revision") != manifest.get("release_revision"):
             raise RunnerImageReleaseError(f"{key} provenance source revision mismatch")
+        if provenance_source.get("profiles") != manifest.get("profiles"):
+            raise RunnerImageReleaseError(f"{key} provenance profile scope mismatch")
         if scans.get("sbom") != artifact.get("sbom_digest"):
             raise RunnerImageReleaseError(f"{key} provenance SBOM binding mismatch")
         if scans.get("security") != review.get("report_digest"):

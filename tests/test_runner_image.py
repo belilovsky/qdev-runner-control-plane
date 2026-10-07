@@ -3,6 +3,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_native_node_path_is_confined_to_general_target() -> None:
+    dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
+    base, rest = dockerfile.split("FROM base AS general", maxsplit=1)
+    general, other = rest.split("FROM mcr.microsoft.com/playwright", maxsplit=1)
+    native_path = "ENV PATH=/home/runner/actions-runner/externals/node24/bin:"
+    assert native_path in general
+    assert native_path not in base
+    assert native_path not in other
+
+
 def test_python_setup_prerequisite_is_in_general_and_browser_images() -> None:
     dockerfile = (ROOT / "images/runner/Dockerfile").read_text(encoding="utf-8")
 

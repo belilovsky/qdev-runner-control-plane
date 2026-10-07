@@ -66,6 +66,40 @@ def test_valid_manifest_covers_all_executor_images() -> None:
     assert all("@sha256:" in reference for reference in references.values())
 
 
+def test_general_profile_catalog_requires_only_its_image() -> None:
+    value = manifest()
+    value["profiles"] = ["qdev-ci"]
+    value["artifacts"] = [artifact("QDEV_RUNNER_IMAGE", "1")]
+    assert set(validate(value)) == {"QDEV_RUNNER_IMAGE"}
+    value["artifacts"] = []
+    with pytest.raises(RunnerImageReleaseError, match="missing required"):
+        validate(value)
+    value["artifacts"] = [
+        artifact("QDEV_RUNNER_IMAGE", "1"),
+        artifact("QDEV_RUNNER_BROWSER_IMAGE", "2"),
+    ]
+    with pytest.raises(RunnerImageReleaseError, match="unexpected artifacts"):
+        validate(value)
+
+
+@pytest.mark.parametrize(
+    "profiles", [None, [], "qdev-ci", ["unknown"], ["qdev-ci", "qdev-ci"], [1], [{}]]
+)
+def test_explicit_profile_scope_fails_closed(profiles: object) -> None:
+    value = manifest()
+    value["profiles"] = profiles
+    with pytest.raises(RunnerImageReleaseError, match="profiles must"):
+        validate(value)
+
+
+def test_docker_profile_catalog_requires_the_sidecar() -> None:
+    value = manifest()
+    value["profiles"] = ["qdev-ci-docker"]
+    value["artifacts"] = [artifact("QDEV_RUNNER_DOCKER_IMAGE", "3")]
+    with pytest.raises(RunnerImageReleaseError, match="QDEV_DOCKER_SIDECAR_IMAGE"):
+        validate(value)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
