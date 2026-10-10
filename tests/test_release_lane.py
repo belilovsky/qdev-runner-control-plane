@@ -951,3 +951,17 @@ def test_rp_runtime_receipts_bind_the_reports_private_dependency_contract() -> N
             artifact_digest=RP_DIGEST,
             artifact_ref=RP_REF,
         )
+
+
+def test_public_ipos_lane_is_distinct_from_private_rp() -> None:
+    policy = ReleaseLanePolicy(LANES_PATH)
+    public = policy.lane("qdev-release-ipos-public")
+    private = policy.lane("qdev-release-rp")
+    assert public.project_id == "ipos"
+    assert public.placement == "ipos-public-runtime"
+    assert public.canonical_repository == private.canonical_repository == "belilovsky/ipos"
+    assert public.native_host_adapter == "ipos-public-native-immutable-release-v1"
+    assert public.artifact_ref_prefix == "registry.ci.qdev.run/belilovsky/ipos-app"
+    assert "worker" in public.required_readiness
+    assert public.host_agent_mtls_identity != private.host_agent_mtls_identity
+    assert public.runtime_endpoints[-1] == "https://ipos.qdev.run/api/v1/system/release-identity"

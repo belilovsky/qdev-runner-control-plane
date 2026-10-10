@@ -199,3 +199,19 @@ lanes:
     runtime_endpoints: [https://rp.qdev.run/health, https://rp.qdev.run/ready]
     rollback_reference: controller-verified immutable RP rollback receipt
     required_readiness: [native, public, identity]
+  qdev-release-ipos-public:
+    project_id: ipos
+    placement: ipos-public-runtime
+    client_mtls_identity: qdev-release-client:ipos-public
+    host_agent_mtls_identity: qdev-host-agent:ipos-public-runtime
+    # Ordinary policy remains in force; the owner-authorized exception is
+    # evaluated separately for the exact release/target and measured operation.
+    minimum_free_gib: 40
+    heartbeat_ttl_seconds: 90
+    artifact_repository: belilovsky/ipos-app
+    canonical_repository: belilovsky/ipos
+    artifact_ref_prefix: registry.ci.qdev.run/belilovsky/ipos-app
+    native_host_adapter: ipos-public-native-immutable-release-v1
+    runtime_endpoints: [https://ipos.qdev.run/health, https://ipos.qdev.run/ready, https://ipos.qdev.run/api/v1/system/release-identity]
+    rollback_reference: deploy/rollback-immutable.sh and retained legacy-route rollback receipt
+    required_readiness: [native, public, identity, worker]

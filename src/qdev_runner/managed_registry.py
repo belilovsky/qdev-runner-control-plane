@@ -36,6 +36,7 @@ class ManagedRegistryEntry:
     host_identity: str
     owner: str
     admission_ledger: str
+    repository_claim_default: bool = True
 
 
 class ManagedRegistry:
@@ -52,7 +53,7 @@ class ManagedRegistry:
         if not isinstance(raw_entries, dict) or not raw_entries:
             raise ManagedRegistryError("managed registry has no entries")
         entries: dict[str, ManagedRegistryEntry] = {}
-        repositories: set[str] = set()
+        repositories: dict[str, list[ManagedRegistryEntry]] = {}
         expected = {
             "project_id",
             "kind",
@@ -70,7 +71,7 @@ class ManagedRegistry:
         for entry_id, raw in raw_entries.items():
             if not isinstance(entry_id, str) or not _ENTRY_ID.fullmatch(entry_id):
                 raise ManagedRegistryError("managed registry entry id is invalid")
-            if not isinstance(raw, dict) or set(raw) != expected:
+            if not isinstance(raw, dict) or set(raw) - {"repository_claim_default"} != expected:
                 raise ManagedRegistryError("managed registry fields are invalid")
             required = expected - {"allowed_profiles", "runtime_endpoints"}
             if not all(isinstance(raw[key], str) and raw[key].strip() for key in required):
@@ -86,8 +87,9 @@ class ManagedRegistry:
                 or not _HOST_IDENTITY.fullmatch(host_identity)
             ):
                 raise ManagedRegistryError("managed registry identity is invalid")
-            if repository in repositories:
-                raise ManagedRegistryError("managed registry repository is duplicated")
+            claim_default = raw.get("repository_claim_default", True)
+            if not isinstance(claim_default, bool):
+                raise ManagedRegistryError("managed registry claim default must be boolean")
             if raw["admission_ledger"] not in {"admin-platform", "managed-production"}:
                 raise ManagedRegistryError("managed registry admission ledger is invalid")
             profiles = raw["allowed_profiles"]
@@ -123,11 +125,30 @@ class ManagedRegistry:
                 host_identity=host_identity,
                 owner=str(raw["owner"]),
                 admission_ledger=str(raw["admission_ledger"]),
+                repository_claim_default=claim_default,
             )
-            repositories.add(repository)
+            repositories.setdefault(repository, []).append(entries[entry_id])
         self.entries = tuple(entries.values())
         self._by_entry_id = entries
-        self._by_repository = {entry.repository: entry for entry in self.entries}
+        self._by_repository: dict[str, ManagedRegistryEntry] = {}
+        for repository, group in repositories.items():
+            defaults = [entry for entry in group if entry.repository_claim_default]
+            if len(defaults) != 1:
+                raise ManagedRegistryError("managed repository requires exactly one claim default")
+            default = defaults[0]
+            if len(group) > 1 and (
+                any(entry.kind != "service" for entry in group)
+                or len({entry.project_id for entry in group}) != len(group)
+                or len({entry.host_identity for entry in group}) != len(group)
+                or len({entry.native_release_profile for entry in group}) != len(group)
+                or any(
+                    (entry.canonical_ref, entry.allowed_profiles, entry.admission_ledger)
+                    != (default.canonical_ref, default.allowed_profiles, default.admission_ledger)
+                    for entry in group
+                )
+            ):
+                raise ManagedRegistryError("shared repository release profiles are inconsistent")
+            self._by_repository[repository] = default
 
     def entry_for_id(self, entry_id: str) -> ManagedRegistryEntry | None:
         """Return one registry record by its stable controller identity."""
@@ -158,6 +179,7 @@ class ManagedRegistry:
                     "host_identity": entry.host_identity,
                     "owner": entry.owner,
                     "admission_ledger": entry.admission_ledger,
+                    "repository_claim_default": entry.repository_claim_default,
                 }
                 for entry in self.entries
             ],
