@@ -104,3 +104,17 @@ entries:
     host_identity: qdev-release-agent:rp-private-runtime
     owner: RP
     admission_ledger: managed-production
+  ipos:
+    project_id: ipos
+    kind: service
+    repository: belilovsky/ipos
+    repository_claim_default: false
+    canonical_ref: main
+    artifact_repository: belilovsky/ipos-app
+    allowed_profiles: [qdev-ci, qdev-ci-docker]
+    native_release_profile: ipos-public-native-immutable-release-v1
+    runtime_endpoints: [https://ipos.qdev.run/health, https://ipos.qdev.run/ready, https://ipos.qdev.run/api/v1/system/release-identity]
+    rollback_reference: deploy/rollback-immutable.sh and retained legacy-route rollback receipt
+    host_identity: qdev-release-agent:ipos-public-runtime
+    owner: IPOS CMS
+    admission_ledger: managed-production
