@@ -104,8 +104,10 @@ and is removed with the runner container and private env-file after the job.
   `qdev-test-run-v1` receipt remains supported through `QDEV_TEST_REPORT`.
   Pass the registered `QDEV_TEST_SUITE`, workflow and profile, and use the
   short-lived `QDEV_ARTIFACT_TOKEN`, repository, SHA and numeric job identity
-  injected by the controller. The helper is not a test runner and never
-  accepts arbitrary commands or sends worker credentials to a browser.
+  injected by the controller. Pass the token to curl through stdin-based config;
+  never put it in process arguments or write it to a temporary file. The helper
+  is not a test runner and never accepts arbitrary commands or sends worker
+  credentials to a browser.
   Artifacts are addressed by repository, SHA, job, attempt and suite, checked
   with SHA-256, and retained according to `.github/qdev-runner.yml`.
 - Push OCI images required by CI to `registry.ci.qdev.run`; deployment images
