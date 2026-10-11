@@ -121,7 +121,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         head_sha="a" * 40,
         profiles=("qdev-ci-docker",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=90,
+        max_disk_used_pct=95,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -136,7 +136,7 @@ async def test_worker_applies_only_valid_disk_scoped_override(tmp_path: Path) ->
         assert state.effective.allowed
         assert state.profiles == ("qdev-ci-docker",)
         assert state.min_disk_free_gib == 4.5
-        assert state.max_disk_used_pct == 90
+        assert state.max_disk_used_pct == 95
         assert state.directive_id == directive.operation_id
         assert state.directive_repository == "belilovsky/qazshield"
         assert state.directive_head_sha == "a" * 40
@@ -159,7 +159,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
         head_sha="a" * 40,
         profiles=("qdev-ci",),
         min_disk_free_gib=4.5,
-        max_disk_used_pct=90,
+        max_disk_used_pct=95,
         owner="qdev-fleet-operations",
         reason="bounded FIFO recovery",
         duration_seconds=900,
@@ -170,7 +170,7 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
             directive_payload=directive.model_dump(mode="json", by_alias=True),
         )
         assert admission.effective.allowed
-        worker.capacity = _disk_blocked_raw
+        worker.capacity = lambda: replace(_disk_blocked_raw(), disk_used_pct=94.9)
         output, detail = await worker.wait_for_runner(
             CompletedRunnerProcess(),  # type: ignore[arg-type]
             {"job_id": 123},
@@ -179,6 +179,43 @@ async def test_worker_uses_validated_override_for_running_job_floor(tmp_path: Pa
         )
         assert output == b"runner completed"
         assert detail == ""
+    finally:
+        await worker.close()
+
+
+async def test_worker_stops_at_scoped_ninety_five_percent_ceiling(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    store = OperationStore(
+        tmp_path / "operations",
+        worker_signing_key="worker-signing-key",
+        receipt_signing_key="receipt-signing-key",
+    )
+    directive = store.create_capacity_override(
+        worker_name="srv1879763-light-primary",
+        claim_scope_id="scope-v2-test",
+        repository="belilovsky/qazshield",
+        head_sha="a" * 40,
+        profiles=("qdev-ci-docker",),
+        min_disk_free_gib=4.5,
+        max_disk_used_pct=95,
+        owner="qdev-fleet-operations",
+        reason="bounded FIFO recovery",
+        duration_seconds=900,
+    )
+    try:
+        admission = worker.admission_state(
+            raw=_disk_blocked_raw(),
+            directive_payload=directive.model_dump(mode="json", by_alias=True),
+        )
+        worker.capacity = lambda: replace(_disk_blocked_raw(), disk_used_pct=95.0)
+        output, detail = await worker.wait_for_runner(
+            ExpiringRunnerProcess(),  # type: ignore[arg-type]
+            {"job_id": 123},
+            timeout=60,
+            admission=admission,
+        )
+        assert output == b"runner stopped after directive expiry"
+        assert detail == "worker disk hard floor reached: used=95.00% maximum=95.00%"
     finally:
         await worker.close()
 

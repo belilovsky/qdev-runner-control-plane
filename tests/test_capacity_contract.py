@@ -1,4 +1,4 @@
-"""One published capacity contract across code, scripts and documentation."""
+"""Keep baseline activation limits and scoped runtime overrides explicit."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from qdev_runner.claim_scope import MAX_TTL
 from qdev_runner.operations import (
     HARD_MAX_DISK_USED_PCT,
     HARD_MIN_FREE_GIB,
+    MAX_OVERRIDE_DISK_USED_PCT,
     MAX_OVERRIDE_SECONDS,
     OperationStore,
 )
@@ -77,11 +78,12 @@ def _run_gate(
     )
 
 
-def test_published_bounds_are_identical_in_operations_and_the_activation_gate() -> None:
+def test_baseline_and_scoped_override_bounds_are_separate() -> None:
     gate = _load_gate()
 
     assert gate.HARD_MIN_FREE_GIB == HARD_MIN_FREE_GIB == 4.5
     assert gate.HARD_MAX_DISK_USED_PCT == HARD_MAX_DISK_USED_PCT == 90.0
+    assert MAX_OVERRIDE_DISK_USED_PCT == 95.0
     assert MAX_OVERRIDE_SECONDS == 900
     assert int(MAX_TTL.total_seconds()) == 900
 
@@ -232,10 +234,13 @@ def test_ttl_longer_than_nine_hundred_seconds_is_rejected(tmp_path: Path) -> Non
 def test_repository_documentation_states_the_same_bounds() -> None:
     recovery = (ROOT / "docs/controller-capacity-recovery.md").read_text(encoding="utf-8")
     operating = (ROOT / "docs/github-actions-operating-model.md").read_text(encoding="utf-8")
+    recovery = " ".join(recovery.split())
 
-    assert "4.5 GiB free and 90% maximum use" in recovery
-    assert "within 900 seconds" in recovery
-    assert "clamps it to the published 90% ceiling" in recovery
+    assert "keeps a 4.5 GiB hard free-space floor" in recovery
+    assert "may raise the live job ceiling to at most 95%" in recovery
+    assert "The separate controller activation gate stays at 90%." in recovery
+    assert "expires within 900 seconds" in recovery
+    assert "published 90% activation ceiling" in recovery
     assert "Revision-pinned QazPolit bootstrap exception" in recovery
     assert "91% maximum use" in recovery
     assert "30 GiB free and 85% used" in operating

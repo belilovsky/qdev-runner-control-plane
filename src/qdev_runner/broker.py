@@ -87,8 +87,8 @@ from .models import (
 )
 from .operations import (
     DISK_ONLY_BLOCKERS,
-    HARD_MAX_DISK_USED_PCT,
     HARD_MIN_FREE_GIB,
+    MAX_OVERRIDE_DISK_USED_PCT,
     MAX_OVERRIDE_SECONDS,
     CapacityOverrideConflict,
     OperationStore,
@@ -361,7 +361,7 @@ class CapacityOverrideRequest(BaseModel):
     claim_scope_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
     profiles: list[str] = Field(min_length=1)
     min_disk_free_gib: float = Field(ge=HARD_MIN_FREE_GIB)
-    max_disk_used_pct: float = Field(ge=0, le=HARD_MAX_DISK_USED_PCT)
+    max_disk_used_pct: float = Field(ge=0, le=MAX_OVERRIDE_DISK_USED_PCT)
     duration_seconds: int = Field(ge=1, le=MAX_OVERRIDE_SECONDS)
     owner: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
@@ -4284,7 +4284,7 @@ def create_app(
                 not blockers
                 or not blockers.issubset(DISK_ONLY_BLOCKERS)
                 or raw_free_gib < HARD_MIN_FREE_GIB
-                or raw_used_pct >= HARD_MAX_DISK_USED_PCT
+                or raw_used_pct >= MAX_OVERRIDE_DISK_USED_PCT
                 or audit.get("admission", {}).get("directive_id")
             ):
                 raise HTTPException(status_code=409, detail="worker capacity admission is closed")
