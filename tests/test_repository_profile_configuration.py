@@ -75,6 +75,26 @@ def test_qazcompute_docker_admission_is_repository_scoped() -> None:
     assert policy.profiles["qdev-ci-docker"].disk_mb == 20 * 1024
 
 
+def test_qazcompute_ci_reports_and_owner_recovery_are_registered() -> None:
+    root = Path(__file__).resolve().parents[1]
+    policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
+
+    registration = policy.test_workflow(
+        "belilovsky/qazcompute",
+        ".github/workflows/ci.yml",
+        suite="qazcompute-tests",
+        profile="qdev-ci-docker",
+        ref="main",
+    )
+
+    assert registration is not None
+    assert registration.required
+    assert (
+        ".github/workflows/owner-recovery-image.yml"
+        in policy.repository("belilovsky/qazcompute").workflows
+    )
+
+
 def test_mcp_servers_docker_admission_is_repository_scoped() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = Policy(root / "inventory/repos.json", root / "config/profiles.yml")
